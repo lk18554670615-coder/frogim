@@ -1,0 +1,52 @@
+# Web 构建只安装 Flutter Web 所需组件，避免把 Android SDK 带入构建机。
+# 版本标签与本项目验收使用的 Flutter 3.44.8 完全一致。
+FROM debian:bookworm-slim AS build
+
+ARG FLUTTER_VERSION=3.44.8
+ENV FLUTTER_ROOT=/opt/flutter
+ENV PATH="${FLUTTER_ROOT}/bin:${PATH}"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git unzip xz-utils \
+    && rm -rf /var/lib/apt/lists/* \
+    && git init "$FLUTTER_ROOT" \
+    && git -C "$FLUTTER_ROOT" remote add origin https://github.com/flutter/flutter.git \
+    && git -C "$FLUTTER_ROOT" fetch --depth 1 origin tag "$FLUTTER_VERSION" \
+    && git -C "$FLUTTER_ROOT" checkout --detach FETCH_HEAD \
+    && git config --global --add safe.directory "$FLUTTER_ROOT" \
+    && flutter config --enable-web \
+    && flutter precache --web \
+    && flutter --version
+
+WORKDIR /workspace
+
+COPY packages/getuiflut packages/getuiflut
+COPY apps/mobile apps/mobile
+
+WORKDIR /workspace/apps/mobile
+RUN flutter pub get
+
+ARG WEB_API_BASE_URL
+ARG WEB_WS_URL
+ARG WEB_BASE_HREF=/web/
+ARG APP_ENV=production
+ARG ENABLE_DEMO=false
+
+RUN test -n "$WEB_API_BASE_URL" \
+    && test -n "$WEB_WS_URL" \
+    && flutter build web --release \
+      --base-href "$WEB_BASE_HREF" \
+      --dart-define=APP_ENV="$APP_ENV" \
+      --dart-define=API_BASE_URL="$WEB_API_BASE_URL" \
+      --dart-define=WS_URL="$WEB_WS_URL" \
+      --dart-define=ENABLE_DEMO="$ENABLE_DEMO"
+
+FROM nginxinc/nginx-unprivileged:1.29-alpine
+
+COPY apps/mobile/web-nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /workspace/apps/mobile/build/web /usr/share/nginx/html
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1

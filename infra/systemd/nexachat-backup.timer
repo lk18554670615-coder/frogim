@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Linli IM database and media backup
+
+[Timer]
+OnCalendar=*-*-* 04:23:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

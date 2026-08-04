@@ -1,0 +1,14 @@
+DROP TABLE IF EXISTS audit_logs;
+DROP TABLE IF EXISTS reports;
+DROP TABLE IF EXISTS user_sync_events;
+DROP TABLE IF EXISTS message_receipts;
+DROP TABLE IF EXISTS messages;
+DROP TABLE IF EXISTS conversation_members;
+DROP TABLE IF EXISTS groups;
+DROP TABLE IF EXISTS direct_conversations;
+DROP TABLE IF EXISTS conversations;
+DROP TABLE IF EXISTS blocks;
+DROP TABLE IF EXISTS friendships;
+DROP TABLE IF EXISTS friend_requests;
+DROP TABLE IF EXISTS devices;
+DROP TABLE IF EXISTS users;

@@ -1,0 +1,30 @@
+plugins {
+    id 'com.android.library'
+}
+
+group 'com.getui.getuiflut'
+version '0.2.41-linlitong.1'
+
+android {
+    namespace 'com.getui.getuiflut'
+    compileSdk 36
+
+    defaultConfig {
+        minSdk 23
+    }
+
+    lint {
+        disable 'InvalidPackage'
+    }
+}
+
+repositories {
+    google()
+    mavenCentral()
+    maven { url 'https://mvn.getui.com/nexus/content/repositories/releases/' }
+}
+
+dependencies {
+    implementation 'com.google.code.gson:gson:2.13.2'
+    compileOnly 'com.getui:gtsdk:3.3.12.0'
+}

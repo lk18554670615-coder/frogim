@@ -1,0 +1,44 @@
+server {
+  listen 8080;
+  server_name _;
+  server_tokens off;
+  root /usr/share/nginx/html;
+
+  location = /healthz {
+    access_log off;
+    default_type text/plain;
+    return 200 "ok\n";
+  }
+
+  # 入口与协议代码禁止强缓存，防止联调时浏览器继续运行旧版本。
+  location ~ ^/(?:index\.html|flutter_bootstrap\.js|main\.dart\.js|flutter_service_worker\.js|version\.json|manifest\.json)$ {
+    try_files $uri =404;
+    add_header Cache-Control "no-cache, no-store, must-revalidate";
+  }
+
+  # REST、媒体签名地址、WSS 握手均转发到远程真实服务。
+  location ^~ /v1/ {
+    proxy_pass http://remote-gateway:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 65s;
+    add_header Cache-Control "no-store";
+  }
+
+  location / {
+    try_files $uri $uri/ /index.html;
+    add_header Cache-Control "no-cache";
+  }
+
+  location ~* \.(?:js|css|wasm|png|jpg|jpeg|gif|svg|ico|woff2?)$ {
+    try_files $uri =404;
+    expires 7d;
+    add_header Cache-Control "public, max-age=604800, immutable";
+  }
+}

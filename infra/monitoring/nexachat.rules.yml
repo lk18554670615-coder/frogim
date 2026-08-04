@@ -1,0 +1,29 @@
+groups:
+  - name: nexachat-availability
+    rules:
+      - alert: NexaChatServerDown
+        expr: up{job="nexachat-server"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 邻里通讯 API 不可用
+          description: Prometheus 已连续两分钟无法抓取 linli-im 服务。
+
+      - alert: NexaChatErrorRateIncreasing
+        expr: rate(im_errors_total[5m]) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 邻里通讯错误率持续升高
+          description: linli-im 服务已连续十分钟每秒产生超过 0.2 个错误。
+
+      - alert: NexaChatNoHTTPActivity
+        expr: rate(im_http_requests_total[15m]) == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: 邻里通讯没有可观测的 HTTP 流量
+          description: 请先检查入口路由和客户端连通性，再判定是否为服务中断。

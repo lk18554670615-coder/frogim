@@ -1,0 +1,212 @@
+# 兼容标识：该 project 名决定现有本地 volume/network 命名，禁止仅为品牌统一修改。
+name: nexachat
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "${DOCKER_LOG_MAX_SIZE:-20m}"
+    max-file: "${DOCKER_LOG_MAX_FILES:-5}"
+    compress: "true"
+
+services:
+  # Flutter Web 正式构建；浏览器通过宿主机的 REST/WebSocket 地址访问本地服务端。
+  web:
+    build:
+      context: ..
+      dockerfile: apps/mobile/Dockerfile.web
+      args:
+        WEB_API_BASE_URL: http://127.0.0.1:${WEB_PORT:-8090}
+        WEB_WS_URL: ws://127.0.0.1:${WEB_PORT:-8090}/v1/ws
+        WEB_BASE_HREF: /
+        # 本地容器仍连接真实 API，只允许 HTTP 回环地址；生产 Compose 不覆盖此安全模式。
+        APP_ENV: development
+        ENABLE_DEMO: "false"
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8090}:8080"
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+  admin:
+    build:
+      context: ../apps/admin
+    ports:
+      - "127.0.0.1:${ADMIN_PORT:-8088}:8080"
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+  server:
+    build:
+      context: ../server
+    environment:
+      IM_ADDR: :8080
+      IM_MODE: full
+      IM_ENV: ${IM_ENV:-development}
+      IM_LOG_LEVEL: ${IM_LOG_LEVEL:-info}
+      IM_DATABASE_URL: postgres://${POSTGRES_USER:-nexachat}:${POSTGRES_PASSWORD:-nexachat}@postgres:5432/${POSTGRES_DB:-nexachat}?sslmode=disable
+      IM_REDIS_URL: redis://:${REDIS_PASSWORD:-local-redis-password}@redis:6379/0
+      IM_JWT_SECRET: ${IM_JWT_SECRET:-local-development-jwt-secret-change-me}
+      IM_ADMIN_EMAIL: ${IM_ADMIN_EMAIL:-admin@nexachat.local}
+      IM_ADMIN_PASSWORD_HASH: ${IM_ADMIN_PASSWORD_HASH:-$$2a$$12$$rAyv6obDffJSqZ1aaqOCR.ER2UXp8ZPsEl2bJCTovnsJJrFshtxNW}
+      IM_ADMIN_TOTP_SECRET: ${IM_ADMIN_TOTP_SECRET:-JBSWY3DPEHPK3PXP}
+      IM_ADMIN_SHARED_KEY_ENABLED: "false"
+      IM_ADMIN_KEY: ""
+      IM_DEV_MODE: ${IM_DEV_MODE:-true}
+      IM_DEV_ALLOW_CONTAINER_BIND: ${IM_DEV_ALLOW_CONTAINER_BIND:-true}
+      # 本文件仅用于本机 Docker 验收；服务在容器内监听所有网卡，但宿主机端口固定绑定 127.0.0.1。
+      IM_IP_TEST_ONLY: ${IM_IP_TEST_ONLY:-true}
+      IM_TRUST_PROXY: "false"
+      IM_DEV_OTP_CODE: ${IM_DEV_OTP_CODE:-123456}
+      IM_GETUI_APP_ID: ${IM_GETUI_APP_ID:-}
+      IM_GETUI_APP_KEY: ${IM_GETUI_APP_KEY:-}
+      IM_GETUI_MASTER_SECRET: ${IM_GETUI_MASTER_SECRET:-}
+      IM_PUSH_PROVIDER: ${IM_PUSH_PROVIDER:-log}
+      IM_S3_ENDPOINT: minio:9000
+      # 本地 Flutter/浏览器从宿主机直传；生产环境使用 HTTPS 网关地址。
+      IM_S3_PUBLIC_ENDPOINT: ${IM_S3_PUBLIC_ENDPOINT:-127.0.0.1:9000}
+      IM_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-nexachat}
+      IM_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+      IM_S3_BUCKET: ${IM_S3_BUCKET:-nexachat-media}
+      IM_S3_SECURE: "false"
+      IM_S3_PUBLIC_SECURE: "false"
+      IM_CALL_INVITE_TTL: ${IM_CALL_INVITE_TTL:-30s}
+      IM_RTC_STUN_URLS: ${IM_RTC_STUN_URLS:-stun:stun.cloudflare.com:3478}
+      IM_RTC_TURN_URLS: ${IM_RTC_TURN_URLS:-turn:127.0.0.1:3478?transport=udp,turn:127.0.0.1:3478?transport=tcp}
+      IM_RTC_TURN_USERNAME: ${IM_RTC_TURN_USERNAME:-linli-local}
+      IM_RTC_TURN_CREDENTIAL: ${IM_RTC_TURN_CREDENTIAL:-local-turn-password}
+    ports:
+      - "127.0.0.1:${SERVER_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+    logging: *default-logging
+
+  # 本地音视频中继；真机联调时把 IM_RTC_TURN_URLS 中的地址改为本机局域网 IP。
+  coturn:
+    image: coturn/coturn:4.16.0-r0
+    command:
+      - --log-file=stdout
+      - --fingerprint
+      - --lt-cred-mech
+      - --user=${IM_RTC_TURN_USERNAME:-linli-local}:${IM_RTC_TURN_CREDENTIAL:-local-turn-password}
+      - --realm=linli-im-local
+      - --server-name=linli-im-local-turn
+      - --min-port=49160
+      - --max-port=49200
+      - --stale-nonce=600
+      - --no-multicast-peers
+    ports:
+      - "127.0.0.1:${TURN_PORT:-3478}:3478/tcp"
+      - "127.0.0.1:${TURN_PORT:-3478}:3478/udp"
+      - "127.0.0.1:49160-49200:49160-49200/udp"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/lib/coturn
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    healthcheck:
+      test: ["CMD-SHELL", "turnutils_stunclient 127.0.0.1 >/dev/null 2>&1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    logging: *default-logging
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nexachat}
+      POSTGRES_USER: ${POSTGRES_USER:-nexachat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexachat}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexachat} -d ${POSTGRES_DB:-nexachat}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    logging: *default-logging
+
+  redis:
+    image: redis:8-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-local-redis-password}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$${REDIS_PASSWORD}\""]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    logging: *default-logging
+
+  minio:
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-nexachat}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+    logging: *default-logging
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-nexachat}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+      IM_S3_BUCKET: ${IM_S3_BUCKET:-nexachat-media}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}";
+        do sleep 1; done;
+        mc mb --ignore-existing "local/$${IM_S3_BUCKET}";
+        mc anonymous set none "local/$${IM_S3_BUCKET}"
+    restart: "no"
+    logging: *default-logging
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PC Web 视觉对照</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #e9edf3; color: #0f172a; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+      .head { height: 60px; display: flex; align-items: center; padding: 0 22px; font-size: 18px; font-weight: 650; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 0 16px 16px; }
+      .panel { height: 680px; overflow: hidden; border: 1px solid #dfe4ec; border-radius: 14px; background: #fff; box-shadow: 0 10px 28px #0f172a14; }
+      .label { height: 44px; display: flex; align-items: center; padding: 0 16px; border-bottom: 1px solid #e5e7eb; font-size: 14px; font-weight: 650; }
+      .canvas { position: relative; height: 636px; overflow: hidden; background: #f5f7fa; }
+      .source img { position: absolute; top: -240px; left: -160px; width: 960px; height: auto; }
+      .implementation img { width: 100%; height: 100%; object-fit: contain; background: #f5f7fa; }
+    </style>
+  </head>
+  <body>
+    <header class="head">PC Web 视觉对照：用户参考作品 / 邻里通讯实现</header>
+    <main class="grid">
+      <section class="panel">
+        <div class="label">参考：LESSO CC4.0 PC</div>
+        <div class="canvas source"><img src="source-board-01.webp" alt="用户参考作品"></div>
+      </section>
+      <section class="panel">
+        <div class="label">实现：邻里通讯桌面工作台</div>
+        <div class="canvas implementation"><img src="implementation-web-workspace-1280x900.png" alt="邻里通讯桌面工作台"></div>
+      </section>
+    </main>
+  </body>
+</html>

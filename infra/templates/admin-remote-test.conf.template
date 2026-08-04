@@ -1,0 +1,43 @@
+server {
+  listen 8080;
+  server_name _;
+  server_tokens off;
+  root /usr/share/nginx/html;
+  index index.html;
+
+  client_max_body_size 1m;
+  add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data:; connect-src 'self' https: wss:; font-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" always;
+  add_header Referrer-Policy "no-referrer" always;
+  add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header X-Frame-Options "DENY" always;
+
+  location = /healthz {
+    access_log off;
+    default_type text/plain;
+    return 200 "ok\n";
+  }
+
+  # 管理端只代理远程管理 API，不在浏览器中暴露远程密钥。
+  location /api/ {
+    proxy_pass http://remote-gateway:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Request-ID $request_id;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 30s;
+  }
+
+  location ~* "^/assets/.+\.(css|js)$" {
+    try_files $uri =404;
+    expires 1y;
+  }
+
+  location / {
+    try_files $uri $uri/ /index.html;
+    expires -1;
+  }
+}

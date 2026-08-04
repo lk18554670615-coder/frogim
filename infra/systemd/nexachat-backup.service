@@ -1,0 +1,8 @@
+[Unit]
+Description=Back up Linli IM PostgreSQL and media
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/nexachat backup

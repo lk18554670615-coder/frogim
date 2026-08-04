@@ -1,0 +1,14 @@
+ALTER TABLE im_friend_requests ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'search';
+ALTER TABLE im_friend_requests ADD COLUMN IF NOT EXISTS source_id text NOT NULL DEFAULT '';
+ALTER TABLE im_friend_requests ADD COLUMN IF NOT EXISTS expires_at timestamptz;
+ALTER TABLE im_friend_requests ADD COLUMN IF NOT EXISTS updated_at timestamptz;
+ALTER TABLE im_friend_requests ADD COLUMN IF NOT EXISTS resolved_at timestamptz;
+UPDATE im_friend_requests SET expires_at=COALESCE(expires_at,created_at+interval '7 days'),updated_at=COALESCE(updated_at,created_at) WHERE expires_at IS NULL OR updated_at IS NULL;
+ALTER TABLE im_friend_requests ALTER COLUMN expires_at SET NOT NULL;
+ALTER TABLE im_friend_requests ALTER COLUMN updated_at SET NOT NULL;
+ALTER TABLE im_friend_requests DROP CONSTRAINT IF EXISTS im_friend_requests_from_user_id_to_user_id_status_key;
+CREATE UNIQUE INDEX IF NOT EXISTS im_friend_requests_pending_idx ON im_friend_requests(from_user_id,to_user_id) WHERE status='pending';
+CREATE INDEX IF NOT EXISTS im_friend_requests_expiry_idx ON im_friend_requests(expires_at,id) WHERE status='pending';
+ALTER TABLE im_friendships ADD COLUMN IF NOT EXISTS remark text NOT NULL DEFAULT '';
+ALTER TABLE im_friendships ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}';
+ALTER TABLE im_friendships ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();

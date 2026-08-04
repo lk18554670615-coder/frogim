@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package linli.im.v1;
+option go_package = "github.com/linli/im/protocol/im/v1;imv1";
+
+// JSON and Protobuf transports share these envelope fields. The initial server
+// uses JSON over WebSocket; binary Protobuf can be negotiated without changing semantics.
+message Envelope {
+  uint32 version = 1;
+  string request_id = 2;
+  string type = 3;
+  int64 user_sync_seq = 4;
+  bytes payload = 5;
+  Error error = 6;
+}
+
+message Error { string code = 1; string message = 2; bool retryable = 3; }
+
+message CallSignal {
+  string conversation_id = 1;
+  string call_id = 2;
+  string media_type = 3;
+  string sdp = 4;
+  string candidate = 5;
+  string sdp_mid = 6;
+  int32 sdp_mline_index = 7;
+  string reason = 8;
+  string signal_id = 9;
+  string sdp_type = 10;
+  string callee_user_id = 11;
+}

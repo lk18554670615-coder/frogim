@@ -1,0 +1,338 @@
+# 兼容标识：生产 project 名关联既有 volume/network，迁移前不得修改。
+name: nexachat-production
+
+x-logging: &production-logging
+  driver: json-file
+  options:
+    max-size: "${DOCKER_LOG_MAX_SIZE:-20m}"
+    max-file: "${DOCKER_LOG_MAX_FILES:-10}"
+    compress: "true"
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  init: true
+  logging: *production-logging
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  gateway:
+    <<: *service-defaults
+    image: caddy:2.10-alpine
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN}
+      TLS_EMAIL: ${TLS_EMAIL:?set TLS_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/caddy/data:/data
+      - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/caddy/config:/config
+    networks:
+      - edge
+      - app
+    depends_on:
+      web:
+        condition: service_healthy
+      admin:
+        condition: service_healthy
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  web:
+    <<: *service-defaults
+    build:
+      context: ..
+      dockerfile: apps/mobile/Dockerfile.web
+      args:
+        WEB_API_BASE_URL: https://${DOMAIN:?set DOMAIN}
+        WEB_WS_URL: wss://${DOMAIN:?set DOMAIN}/v1/ws
+        WEB_BASE_HREF: /web/
+    expose:
+      - "8080"
+    networks:
+      - app
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 20s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+
+  admin:
+    <<: *service-defaults
+    build:
+      context: ../apps/admin
+      args:
+        VITE_ADMIN_API_URL: /api/v1/admin
+        VITE_ALLOW_DEMO: "false"
+    expose:
+      - "8080"
+    networks:
+      - app
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 20s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+
+  server:
+    <<: *service-defaults
+    build:
+      context: ../server
+    environment:
+      IM_ADDR: :8080
+      IM_MODE: full
+      IM_ENV: production
+      IM_LOG_LEVEL: ${IM_LOG_LEVEL:-info}
+      IM_DATABASE_URL: ${IM_DATABASE_URL:?set IM_DATABASE_URL}
+      IM_REDIS_URL: ${IM_REDIS_URL:?set IM_REDIS_URL}
+      IM_JWT_SECRET: ${IM_JWT_SECRET:?set IM_JWT_SECRET}
+      IM_ADMIN_EMAIL: ${IM_ADMIN_EMAIL:?set IM_ADMIN_EMAIL}
+      IM_ADMIN_PASSWORD_HASH: ${IM_ADMIN_PASSWORD_HASH:?set IM_ADMIN_PASSWORD_HASH}
+      IM_ADMIN_TOTP_SECRET: ${IM_ADMIN_TOTP_SECRET:?set IM_ADMIN_TOTP_SECRET}
+      IM_ADMIN_SHARED_KEY_ENABLED: "false"
+      IM_ADMIN_KEY: ""
+      IM_PUSH_PROVIDER: ${IM_PUSH_PROVIDER:?set IM_PUSH_PROVIDER}
+      IM_GETUI_APP_ID: ${IM_GETUI_APP_ID:-}
+      IM_GETUI_APP_KEY: ${IM_GETUI_APP_KEY:-}
+      IM_GETUI_MASTER_SECRET: ${IM_GETUI_MASTER_SECRET:-}
+      IM_DEV_MODE: "false"
+      IM_DEV_ALLOW_CONTAINER_BIND: "false"
+      IM_TRUST_PROXY: "true"
+      IM_ACCESS_TTL: ${IM_ACCESS_TTL:-15m}
+      IM_REFRESH_TTL: ${IM_REFRESH_TTL:-720h}
+      IM_MEDIA_MAX_BYTES: ${IM_MEDIA_MAX_BYTES:-104857600}
+      IM_PUSH_WEBHOOK_URL: ${IM_PUSH_WEBHOOK_URL:-}
+      IM_PUSH_WEBHOOK_TOKEN: ${IM_PUSH_WEBHOOK_TOKEN:-}
+      IM_OTP_WEBHOOK_URL: ${IM_OTP_WEBHOOK_URL:?set IM_OTP_WEBHOOK_URL}
+      IM_OTP_WEBHOOK_TOKEN: ${IM_OTP_WEBHOOK_TOKEN:?set IM_OTP_WEBHOOK_TOKEN}
+      IM_S3_ENDPOINT: minio:9000
+      IM_S3_PUBLIC_ENDPOINT: ${IM_S3_PUBLIC_ENDPOINT:?set IM_S3_PUBLIC_ENDPOINT}
+      IM_S3_ACCESS_KEY: ${MINIO_APP_USER:?set MINIO_APP_USER}
+      IM_S3_SECRET_KEY: ${MINIO_APP_PASSWORD:?set MINIO_APP_PASSWORD}
+      IM_S3_BUCKET: ${IM_S3_BUCKET:-nexachat-media}
+      IM_S3_REGION: ${IM_S3_REGION:-us-east-1}
+      IM_S3_SECURE: "false"
+      IM_S3_PUBLIC_SECURE: ${IM_S3_PUBLIC_SECURE:-true}
+      IM_CALL_INVITE_TTL: ${IM_CALL_INVITE_TTL:-30s}
+      IM_RTC_STUN_URLS: ${IM_RTC_STUN_URLS:?set IM_RTC_STUN_URLS}
+      IM_RTC_TURN_URLS: ${IM_RTC_TURN_URLS:?set IM_RTC_TURN_URLS}
+      IM_RTC_TURN_USERNAME: ${IM_RTC_TURN_USERNAME:?set IM_RTC_TURN_USERNAME}
+      IM_RTC_TURN_CREDENTIAL: ${IM_RTC_TURN_CREDENTIAL:?set IM_RTC_TURN_CREDENTIAL}
+    expose:
+      - "8080"
+    networks:
+      - app
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s
+
+  # WebRTC 媒体中继服务。生产环境需要在云防火墙放行 3478 TCP/UDP 与 49160-49200 UDP。
+  coturn:
+    <<: *service-defaults
+    image: coturn/coturn:4.16.0-r0
+    network_mode: host
+    environment:
+      DETECT_EXTERNAL_IP: "yes"
+      DETECT_RELAY_IP: "yes"
+    command:
+      - --log-file=stdout
+      - --fingerprint
+      - --lt-cred-mech
+      - --user=${IM_RTC_TURN_USERNAME:?set IM_RTC_TURN_USERNAME}:${IM_RTC_TURN_CREDENTIAL:?set IM_RTC_TURN_CREDENTIAL}
+      - --realm=${DOMAIN:?set DOMAIN}
+      - --server-name=linli-im-turn
+      - --min-port=49160
+      - --max-port=49200
+      - --stale-nonce=600
+      - --no-multicast-peers
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/lib/coturn
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    healthcheck:
+      test: ["CMD-SHELL", "turnutils_stunclient 127.0.0.1 >/dev/null 2>&1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  postgres:
+    <<: *service-defaults
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: --data-checksums
+    expose:
+      - "5432"
+    volumes:
+      - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/postgres/data:/var/lib/postgresql/data
+      - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/postgres/archive:/var/lib/postgresql/archive
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    shm_size: 256mb
+
+  redis:
+    <<: *service-defaults
+    image: redis:8-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --appendfsync everysec --requirepass \"$${REDIS_PASSWORD}\""]
+    expose:
+      - "6379"
+    volumes:
+      - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/redis:/data
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    <<: *service-defaults
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+    expose:
+      - "9000"
+      - "9001"
+    volumes:
+      - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/minio:/data
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+      MINIO_APP_USER: ${MINIO_APP_USER:?set MINIO_APP_USER}
+      MINIO_APP_PASSWORD: ${MINIO_APP_PASSWORD:?set MINIO_APP_PASSWORD}
+      IM_S3_BUCKET: ${IM_S3_BUCKET:-nexachat-media}
+    volumes:
+      - ./minio-init.sh:/config/minio-init.sh:ro
+    entrypoint: ["/bin/sh", "/config/minio-init.sh"]
+    networks:
+      - data
+    restart: "no"
+    logging: *production-logging
+
+  prometheus:
+    <<: *service-defaults
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}
+      - --web.enable-lifecycle
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/nexachat.rules.yml:/etc/prometheus/nexachat.rules.yml:ro
+      - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/monitoring/prometheus:/prometheus
+    expose:
+      - "9090"
+    networks:
+      - app
+    depends_on:
+      server:
+        condition: service_healthy
+
+  grafana:
+    <<: *service-defaults
+    image: grafana/grafana:12.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/monitoring/grafana:/var/lib/grafana
+    expose:
+      - "3000"
+    networks:
+      - app
+    depends_on:
+      - prometheus
+
+  minio-client:
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z
+    profiles: ["ops"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+      IM_S3_BUCKET: ${IM_S3_BUCKET:-nexachat-media}
+    volumes:
+      - ${BACKUP_DIR:-./backups}:/backup
+    networks:
+      - data
+    entrypoint: ["/bin/sh"]
+
+networks:
+  edge:
+  app:
+    internal: true
+  data:
+    internal: true

@@ -1,0 +1,91 @@
+{
+	admin 127.0.0.1:2019
+}
+
+:443 {
+	tls /etc/letsencrypt/live/{$SERVER_IP}/fullchain.pem /etc/letsencrypt/live/{$SERVER_IP}/privkey.pem
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https: wss:; font-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(self), microphone=(self), geolocation=(self), payment=(), usb=()"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		-Server
+	}
+
+	@backend path /v1/* /api/* /health /ready
+	handle @backend {
+		reverse_proxy {
+			dynamic a server 8080 {
+				refresh 5s
+			}
+			lb_policy least_conn
+			lb_try_duration 5s
+			lb_try_interval 250ms
+			header_up X-Request-ID {http.request.uuid}
+		}
+	}
+
+	handle_path /downloads/* {
+		root * /srv/downloads
+		header Content-Disposition "attachment"
+		file_server
+	}
+
+	@storage path /nexachat-media/*
+	handle @storage {
+		reverse_proxy minio:9000
+	}
+
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	handle /metrics {
+		respond "not found" 404
+	}
+
+	handle /web {
+		redir /web/ permanent
+	}
+
+	handle_path /web/* {
+		reverse_proxy web:8080 {
+			health_uri /healthz
+			health_interval 15s
+			health_timeout 3s
+		}
+	}
+
+	handle {
+		reverse_proxy admin:8080 {
+			health_uri /healthz
+			health_interval 15s
+			health_timeout 3s
+		}
+	}
+
+	log {
+		output stdout
+		format filter {
+			request>uri query {
+				replace ticket REDACTED
+				replace token REDACTED
+			}
+			wrap json
+		}
+	}
+}
+
+http://{$SERVER_IP} {
+	handle /.well-known/acme-challenge/* {
+		root * /var/www/certbot
+		file_server
+	}
+	handle {
+		redir https://{$SERVER_IP}{uri} permanent
+	}
+}

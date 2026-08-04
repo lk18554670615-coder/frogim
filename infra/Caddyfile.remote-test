@@ -1,0 +1,20 @@
+{
+	admin off
+}
+
+:8080 {
+	# 仅允许前端联调所需路径，其他请求不会被转发到远程服务器。
+	@remote path /v1/* /api/* /health /ready /nexachat-media/*
+	handle @remote {
+		reverse_proxy {$REMOTE_SERVER_ORIGIN} {
+			header_up Host {upstream_hostport}
+			# 浏览器使用本地同源地址联调；转发 WSS 时改写为远端已授权来源，
+			# 避免放宽生产 IM 服务的 Origin 白名单。
+			header_up Origin {$REMOTE_SERVER_ORIGIN}
+		}
+	}
+
+	handle {
+		respond "not found" 404
+	}
+}

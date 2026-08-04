@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew Linli IM IP TLS certificate
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/nexachat renew-cert

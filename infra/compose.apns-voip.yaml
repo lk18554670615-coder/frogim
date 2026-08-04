@@ -1,0 +1,14 @@
+# 与 compose.production.yaml 或 compose.ip.yaml 叠加使用；本文件不包含任何 Apple 私钥。
+services:
+  server:
+    environment:
+      IM_APNS_VOIP_KEY_ID: ${IM_APNS_VOIP_KEY_ID:?set IM_APNS_VOIP_KEY_ID}
+      IM_APNS_VOIP_TEAM_ID: ${IM_APNS_VOIP_TEAM_ID:?set IM_APNS_VOIP_TEAM_ID}
+      IM_APNS_VOIP_BUNDLE_ID: ${IM_APNS_VOIP_BUNDLE_ID:-com.linlitong.imapp}
+      IM_APNS_VOIP_PRIVATE_KEY_FILE: /run/secrets/apns-auth-key.p8
+      IM_APNS_VOIP_SANDBOX: ${IM_APNS_VOIP_SANDBOX:-false}
+    volumes:
+      - type: bind
+        source: ${APNS_VOIP_PRIVATE_KEY_HOST_FILE:?set APNS_VOIP_PRIVATE_KEY_HOST_FILE}
+        target: /run/secrets/apns-auth-key.p8
+        read_only: true

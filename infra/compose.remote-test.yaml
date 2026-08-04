@@ -1,0 +1,77 @@
+# 本地前端连接远程真实资源的专用模式。
+# 此文件故意不定义 server/postgres/redis/minio/coturn，防止误连本地业务资源。
+name: nexachat-remote-test
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "${DOCKER_LOG_MAX_SIZE:-20m}"
+    max-file: "${DOCKER_LOG_MAX_FILES:-5}"
+    compress: "true"
+
+services:
+  # 本地只做 TLS 校验和转发；Caddy 的 Go TLS 栈可严格校验仅含 IP SAN 的公网证书。
+  remote-gateway:
+    image: caddy:2.10-alpine
+    environment:
+      REMOTE_SERVER_ORIGIN: ${REMOTE_SERVER_ORIGIN:?请在 .env.remote-test 配置远程 HTTPS 地址}
+    volumes:
+      - ./Caddyfile.remote-test:/etc/caddy/Caddyfile:ro
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    restart: unless-stopped
+    logging: *default-logging
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/mobile/Dockerfile.web
+      args:
+        # 浏览器只访问本地同源路径，由下方 Nginx 安全转发至远程 HTTPS/WSS。
+        WEB_API_BASE_URL: http://127.0.0.1:${WEB_PORT:-8090}
+        WEB_WS_URL: ws://127.0.0.1:${WEB_PORT:-8090}/v1/ws
+        WEB_BASE_HREF: /
+        APP_ENV: staging
+        ENABLE_DEMO: "false"
+    environment:
+      REMOTE_SERVER_ORIGIN: ${REMOTE_SERVER_ORIGIN:?请在 .env.remote-test 配置远程 HTTPS 地址}
+      NGINX_ENVSUBST_FILTER: ^REMOTE_SERVER_ORIGIN$$
+    volumes:
+      - ./templates/web-remote-test.conf.template:/etc/nginx/templates/default.conf.template:ro
+    # Nginx 以非 root 用户启动，仅允许在内存中生成本次联调配置。
+    tmpfs:
+      - /etc/nginx/conf.d:uid=101,gid=101,mode=0755
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8090}:8080"
+    depends_on:
+      remote-gateway:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+  admin:
+    build:
+      context: ../apps/admin
+      args:
+        VITE_ADMIN_API_URL: /api/v1/admin
+        VITE_ALLOW_DEMO: "false"
+    environment:
+      REMOTE_SERVER_ORIGIN: ${REMOTE_SERVER_ORIGIN:?请在 .env.remote-test 配置远程 HTTPS 地址}
+      NGINX_ENVSUBST_FILTER: ^REMOTE_SERVER_ORIGIN$$
+    volumes:
+      - ./templates/admin-remote-test.conf.template:/etc/nginx/templates/default.conf.template:ro
+    tmpfs:
+      - /etc/nginx/conf.d:uid=101,gid=101,mode=0755
+    ports:
+      - "127.0.0.1:${ADMIN_PORT:-8088}:8080"
+    depends_on:
+      remote-gateway:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging

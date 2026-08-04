@@ -1,0 +1,17 @@
+.git
+.gitignore
+.dart_tool
+.idea
+.vscode
+.DS_Store
+**/.dart_tool
+**/.flutter-plugins*
+**/.packages
+**/build
+**/coverage
+**/node_modules
+artifacts
+data
+docs/archive
+*.log
+

@@ -1,0 +1,3 @@
+ALTER TABLE im_users ADD COLUMN IF NOT EXISTS banned_until timestamptz;
+ALTER TABLE im_audits ADD COLUMN IF NOT EXISTS result text NOT NULL DEFAULT 'success';
+ALTER TABLE im_audits ADD COLUMN IF NOT EXISTS ip text NOT NULL DEFAULT '';

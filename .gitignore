@@ -1,0 +1,39 @@
+.DS_Store
+.env
+.env.remote-test
+.env.*.local
+# 所有真实环境配置默认禁止提交，仅允许脱敏示例文件进入版本库。
+.env.*
+!.env.example
+!.env.*.example
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.*.example
+
+# 生产凭据、证书私钥与安装后生成的初始账号信息。
+**/config.env
+**/initial-credentials.txt
+**/*credentials*.txt
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.jks
+*.keystore
+apps/mobile/android/key.properties
+apps/mobile/ios/Runner/GoogleService-Info.plist
+apps/mobile/android/app/google-services.json
+
+apps/mobile/android/local.properties
+apps/mobile/dart_defines.local.json
+.idea/
+.vscode/
+coverage/
+dist/
+build/
+*.log
+
+# Local service state
+.data/
