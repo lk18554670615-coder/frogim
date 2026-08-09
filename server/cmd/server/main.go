@@ -29,7 +29,11 @@ func main() {
 	defer cancel()
 	var persistence store.Persistence = store.Memory{}
 	if cfg.Mode == "full" {
-		pg, err := store.NewPostgres(ctx, cfg.DatabaseURL)
+		pg, err := store.NewPostgresWithOptions(ctx, cfg.DatabaseURL, store.PostgresOptions{
+			MaxConns: int32(cfg.DBMaxConns), MinConns: int32(cfg.DBMinConns),
+			MaxConnLifetime: cfg.DBMaxConnLifetime, MaxConnIdleTime: cfg.DBMaxConnIdleTime,
+			HealthCheckPeriod: cfg.DBHealthCheckPeriod, StatementTimeout: cfg.DBStatementTimeout,
+		})
 		if err != nil {
 			slog.Error("postgres unavailable", "error", err)
 			os.Exit(1)
@@ -58,7 +62,7 @@ func main() {
 			slog.Error("push provider unavailable", "error", err)
 			os.Exit(1)
 		}
-		go push.NewDispatcher(outbox, provider).Run(workerCtx)
+		go push.NewDispatcherWithOptions(outbox, provider, push.DispatcherOptions{Workers: cfg.PushWorkers, BatchSize: cfg.PushBatchSize, Interval: 100 * time.Millisecond}).Run(workerCtx)
 	}
 	if cfg.DevMode {
 		if err := application.SeedDemo(); err != nil {
@@ -73,6 +77,8 @@ func main() {
 	go application.RunAnnouncementScheduler(workerCtx)
 	go application.RunScheduledMessages(workerCtx)
 	go application.RunMessageExpirations(workerCtx)
+	go application.RunMessageFanout(workerCtx, cfg.MessageFanoutBatchSize)
+	go application.RunRuntimeCleanup(workerCtx, cfg.RuntimeCleanupInterval, store.RetentionPolicy{SyncEvents: cfg.SyncRetention, Outbox: cfg.OutboxRetention})
 	go application.RunBanExpirations(workerCtx)
 	if events, ok := persistence.(store.EventSubscriber); ok {
 		go func() {

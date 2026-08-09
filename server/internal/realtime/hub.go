@@ -1,6 +1,7 @@
 package realtime
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -31,35 +32,42 @@ type Error struct {
 	Retryable bool   `json:"retryable"`
 }
 type Client struct {
-	uid, ip     string
-	conn        *websocket.Conn
-	send        chan []byte
-	expiresAt   time.Time
-	frameWindow time.Time
-	frames      int
+	uid, ip       string
+	conn          *websocket.Conn
+	send          chan []byte
+	expiresAt     time.Time
+	frameWindow   time.Time
+	frames        int
+	done          chan struct{}
+	ctx           context.Context
+	nextAuthCheck time.Time
 }
 type Hub struct {
-	mu                   sync.RWMutex
-	clients              map[string]map[*Client]struct{}
-	byIP                 map[string]int
-	app                  *app.App
-	allowedOrigins       map[string]bool
-	maxPerUser, maxPerIP int
-	trustProxy           bool
+	mu                                   sync.RWMutex
+	clients                              map[string]map[*Client]struct{}
+	byIP                                 map[string]int
+	total                                int
+	app                                  *app.App
+	allowedOrigins                       map[string]bool
+	maxPerUser, maxPerIP, maxConnections int
+	trustProxy                           bool
 }
 
-func New(a *app.App, origins []string, maxPerUser, maxPerIP int, trustProxy bool) *Hub {
+func New(a *app.App, origins []string, maxPerUser, maxPerIP, maxConnections int, trustProxy bool) *Hub {
 	if maxPerUser <= 0 {
 		maxPerUser = 5
 	}
 	if maxPerIP <= 0 {
 		maxPerIP = 20
 	}
+	if maxConnections <= 0 {
+		maxConnections = 10000
+	}
 	allowed := make(map[string]bool, len(origins))
 	for _, origin := range origins {
 		allowed[origin] = true
 	}
-	h := &Hub{clients: map[string]map[*Client]struct{}{}, byIP: map[string]int{}, app: a, allowedOrigins: allowed, maxPerUser: maxPerUser, maxPerIP: maxPerIP, trustProxy: trustProxy}
+	h := &Hub{clients: map[string]map[*Client]struct{}{}, byIP: map[string]int{}, app: a, allowedOrigins: allowed, maxPerUser: maxPerUser, maxPerIP: maxPerIP, maxConnections: maxConnections, trustProxy: trustProxy}
 	a.SetEventSink(h.Publish)
 	return h
 }
@@ -68,14 +76,15 @@ func (h *Hub) Publish(userIDs []string, typ string, payload any) {
 	raw, _ := json.Marshal(payload)
 	env, _ := json.Marshal(Envelope{Version: 1, Type: typ, Payload: raw})
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	targets := make([]*Client, 0)
 	for _, uid := range userIDs {
 		for c := range h.clients[uid] {
-			select {
-			case c.send <- env:
-			default: // slow consumers recover from the durable sync cursor
-			}
+			targets = append(targets, c)
 		}
+	}
+	h.mu.RUnlock()
+	for _, c := range targets {
+		h.enqueue(c, env)
 	}
 }
 
@@ -98,7 +107,7 @@ func (h *Hub) Serve(w http.ResponseWriter, r *http.Request, uid string, expiresA
 	}
 	ip := netutil.ClientIP(r, h.trustProxy)
 	h.mu.Lock()
-	if len(h.clients[uid]) >= h.maxPerUser || h.byIP[ip] >= h.maxPerIP {
+	if h.total >= h.maxConnections || len(h.clients[uid]) >= h.maxPerUser || h.byIP[ip] >= h.maxPerIP {
 		h.mu.Unlock()
 		http.Error(w, "connection budget exceeded", http.StatusTooManyRequests)
 		return
@@ -112,9 +121,9 @@ func (h *Hub) Serve(w http.ResponseWriter, r *http.Request, uid string, expiresA
 	if err != nil {
 		return
 	}
-	c := &Client{uid: uid, ip: ip, conn: conn, send: make(chan []byte, 128), expiresAt: expiresAt, frameWindow: time.Now().Add(time.Minute)}
+	c := &Client{uid: uid, ip: ip, conn: conn, send: make(chan []byte, 128), done: make(chan struct{}), ctx: r.Context(), expiresAt: expiresAt, frameWindow: time.Now().Add(time.Minute), nextAuthCheck: time.Now().Add(time.Minute)}
 	h.mu.Lock()
-	if len(h.clients[uid]) >= h.maxPerUser || h.byIP[ip] >= h.maxPerIP {
+	if h.total >= h.maxConnections || len(h.clients[uid]) >= h.maxPerUser || h.byIP[ip] >= h.maxPerIP {
 		h.mu.Unlock()
 		_ = conn.Close()
 		return
@@ -124,6 +133,7 @@ func (h *Hub) Serve(w http.ResponseWriter, r *http.Request, uid string, expiresA
 	}
 	h.clients[uid][c] = struct{}{}
 	h.byIP[ip]++
+	h.total++
 	h.mu.Unlock()
 	h.app.Metrics.WSConnections.Add(1)
 	go h.writer(c)
@@ -139,7 +149,8 @@ func (h *Hub) remove(c *Client) {
 		if h.byIP[c.ip] <= 0 {
 			delete(h.byIP, c.ip)
 		}
-		close(c.send)
+		h.total--
+		close(c.done)
 	}
 	if len(h.clients[c.uid]) == 0 {
 		delete(h.clients, c.uid)
@@ -151,17 +162,20 @@ func (h *Hub) remove(c *Client) {
 func (h *Hub) send(c *Client, typ string, p any) {
 	raw, _ := json.Marshal(p)
 	b, _ := json.Marshal(Envelope{Version: 1, Type: typ, Payload: raw})
-	select {
-	case c.send <- b:
-	default:
-	}
+	h.enqueue(c, b)
 }
 func (h *Hub) reply(c *Client, req Envelope, typ string, p any, e *Error) {
 	raw, _ := json.Marshal(p)
 	b, _ := json.Marshal(Envelope{Version: 1, RequestID: req.RequestID, Type: typ, Payload: raw, Error: e})
+	h.enqueue(c, b)
+}
+func (h *Hub) enqueue(c *Client, payload []byte) {
 	select {
-	case c.send <- b:
+	case <-c.done:
+		return
+	case c.send <- payload:
 	default:
+		h.app.Metrics.WSDroppedEvents.Add(1)
 	}
 }
 func (h *Hub) writer(c *Client) {
@@ -169,6 +183,8 @@ func (h *Hub) writer(c *Client) {
 	defer ticker.Stop()
 	for {
 		select {
+		case <-c.done:
+			return
 		case msg, ok := <-c.send:
 			if !ok {
 				return
@@ -213,10 +229,13 @@ func (h *Hub) reader(c *Client) {
 			h.reply(c, req, "error", nil, &Error{Code: "RATE_LIMITED", Message: "too many realtime frames", Retryable: true})
 			return
 		}
-		u, err := h.app.User(c.uid)
-		if err != nil || u.Banned {
-			h.reply(c, req, "error", nil, &Error{Code: "FORBIDDEN", Message: "account unavailable"})
-			return
+		if now.After(c.nextAuthCheck) {
+			u, err := h.app.UserContext(c.ctx, c.uid)
+			if err != nil || u.Banned {
+				h.reply(c, req, "error", nil, &Error{Code: "FORBIDDEN", Message: "account unavailable"})
+				return
+			}
+			c.nextAuthCheck = now.Add(time.Minute)
 		}
 		switch req.Type {
 		case "ping":
@@ -230,7 +249,7 @@ func (h *Hub) reader(c *Client) {
 				h.reply(c, req, "error", nil, &Error{Code: "BAD_PAYLOAD", Message: "invalid payload"})
 				continue
 			}
-			m, duplicate, err := h.app.SendMessage(c.uid, p.ConversationID, p.ClientMsgID, p.MessageType, p.Body, p.ReplyToID)
+			m, duplicate, err := h.app.SendMessageContext(c.ctx, c.uid, p.ConversationID, p.ClientMsgID, p.MessageType, p.Body, p.ReplyToID)
 			if err != nil {
 				h.reply(c, req, "error", nil, appError(err))
 				continue
@@ -253,11 +272,10 @@ func (h *Hub) reader(c *Client) {
 				Typing         bool
 			}
 			_ = json.Unmarshal(req.Payload, &p)
-			if !h.app.CanAccess(c.uid, p.ConversationID) {
-				h.reply(c, req, "error", nil, &Error{Code: "FORBIDDEN", Message: "not a conversation member"})
+			if err := h.app.SetTypingContext(c.ctx, c.uid, p.ConversationID, p.Typing); err != nil {
+				h.reply(c, req, "error", nil, appError(err))
 				continue
 			}
-			h.app.SetTyping(c.uid, p.ConversationID, p.Typing)
 			h.reply(c, req, "typing.ack", p, nil)
 		case "call.offer", "call.answer", "call.ice", "call.end", "call.signal.received":
 			var p map[string]any
@@ -282,7 +300,7 @@ func (h *Hub) reader(c *Client) {
 				Limit int
 			}
 			_ = json.Unmarshal(req.Payload, &p)
-			events, cursor, more := h.app.Sync(c.uid, p.After, p.Limit)
+			events, cursor, more := h.app.SyncContext(c.ctx, c.uid, p.After, p.Limit)
 			h.reply(c, req, "sync.result", map[string]any{"events": events, "cursor": cursor, "hasMore": more}, nil)
 		default:
 			h.reply(c, req, "error", nil, &Error{Code: "UNKNOWN_TYPE", Message: "unknown envelope type"})

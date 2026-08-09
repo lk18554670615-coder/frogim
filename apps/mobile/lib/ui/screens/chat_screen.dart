@@ -166,7 +166,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                       Text(
                         widget.conversation.kind == ConversationKind.group
-                            ? '${widget.conversation.members.length} 位成员'
+                            ? '${widget.conversation.memberCount} 位成员'
                             : (peer?.isOnline ?? false)
                             ? '在线'
                             : '稍后回复',
@@ -1845,7 +1845,7 @@ class ChatInfoScreen extends StatelessWidget {
                 SettingTile(
                   icon: CupertinoIcons.person_2,
                   title: '群聊资料与管理',
-                  subtitle: '${conversation.members.length} 位成员',
+                  subtitle: '${conversation.memberCount} 位成员',
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (_) => GroupDetailsScreen(

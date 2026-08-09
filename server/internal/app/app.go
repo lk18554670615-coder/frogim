@@ -54,7 +54,36 @@ func validHandle(handle string) bool {
 	return !reserved && !strings.HasPrefix(handle, "admin_") && !strings.HasPrefix(handle, "official_") && !strings.HasPrefix(handle, "system_")
 }
 
-type Metrics struct{ Requests, Messages, WSConnections, Errors atomic.Int64 }
+var httpDurationBuckets = [...]time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 25 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second, 5 * time.Second}
+
+type Metrics struct {
+	Requests, Messages, WSConnections, Errors  atomic.Int64
+	HTTPInFlight, WSDroppedEvents              atomic.Int64
+	FanoutRecipients, RetentionDeleted         atomic.Int64
+	HTTPDurationNanoseconds, HTTPDurationCount atomic.Int64
+	HTTPDurationBuckets                        [len(httpDurationBuckets)]atomic.Int64
+	HTTPStatusClasses                          [5]atomic.Int64
+}
+
+func (m *Metrics) ObserveHTTP(duration time.Duration, status int) {
+	m.HTTPDurationNanoseconds.Add(duration.Nanoseconds())
+	m.HTTPDurationCount.Add(1)
+	for index, boundary := range httpDurationBuckets {
+		if duration <= boundary {
+			m.HTTPDurationBuckets[index].Add(1)
+		}
+	}
+	if status >= 100 && status < 600 {
+		m.HTTPStatusClasses[status/100-1].Add(1)
+	}
+	if status >= 500 {
+		m.Errors.Add(1)
+	}
+}
+
+func HTTPDurationBuckets() []time.Duration {
+	return httpDurationBuckets[:]
+}
 
 type EventSink func(userIDs []string, typ string, payload any)
 
@@ -73,8 +102,8 @@ type App struct {
 	announcementReads map[string]map[string]time.Time
 	callInviteTTL     time.Duration
 	friendMetadata    map[string]store.FriendMetadata
-	policyMu          sync.Mutex
-	policyLoadedAt    time.Time
+	policyRefreshing  atomic.Bool
+	policyLoadedAt    atomic.Int64
 }
 type refreshSession struct {
 	UserID    string
@@ -94,6 +123,7 @@ func New(ctx context.Context, p store.Persistence) (*App, error) {
 	}
 	a := &App{state: s, persistence: p, refreshSessions: map[string]refreshSession{}, passwordHashes: map[string]string{}, calls: map[string]*model.CallSession{}, announcements: map[string]*model.Announcement{}, announcementReads: map[string]map[string]time.Time{}, callInviteTTL: 30 * time.Second, friendMetadata: map[string]store.FriendMetadata{}}
 	a.ensureMaps()
+	a.refreshPolicySettings(true)
 	return a, nil
 }
 
@@ -331,21 +361,38 @@ func (a *App) refreshPolicySettings(force bool) {
 	if !ok {
 		return
 	}
-	a.policyMu.Lock()
-	defer a.policyMu.Unlock()
-	if !force && time.Since(a.policyLoadedAt) < 2*time.Second {
+	loadedAt := time.Unix(0, a.policyLoadedAt.Load())
+	if !force && !loadedAt.IsZero() && time.Since(loadedAt) < 5*time.Second {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	settings, err := policies.RuntimeSettings(ctx)
-	if err != nil {
+	if !a.policyRefreshing.CompareAndSwap(false, true) {
 		return
 	}
-	a.mu.Lock()
-	a.state.Settings = settings
-	a.mu.Unlock()
-	a.policyLoadedAt = time.Now()
+	load := func() {
+		defer a.policyRefreshing.Store(false)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		settings, err := policies.RuntimeSettings(ctx)
+		if err != nil {
+			return
+		}
+		a.mu.Lock()
+		a.state.Settings = settings
+		a.mu.Unlock()
+		a.policyLoadedAt.Store(time.Now().UnixNano())
+	}
+	if force {
+		load()
+		return
+	}
+	go load()
+}
+
+func (a *App) RuntimeStats(ctx context.Context) (store.RuntimeStats, error) {
+	if source, ok := a.persistence.(store.RuntimeStatsStore); ok {
+		return source.RuntimeStats(ctx)
+	}
+	return store.RuntimeStats{}, nil
 }
 
 func (a *App) settingIntLocked(key string, fallback int) int {
@@ -493,8 +540,12 @@ func (a *App) ResetPassword(phone, password string) error {
 }
 
 func (a *App) User(uid string) (*model.User, error) {
+	return a.UserContext(context.Background(), uid)
+}
+
+func (a *App) UserContext(parent context.Context, uid string) (*model.User, error) {
 	if q, ok := a.persistence.(store.QueryStore); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 		defer cancel()
 		u, err := q.GetUser(ctx, uid)
 		if err == store.ErrNotFound {
@@ -1401,6 +1452,50 @@ func (a *App) GroupMembers(uid, cid string) ([]*model.ConversationMember, error)
 	}
 	return out, nil
 }
+func (a *App) GroupMembersPage(parent context.Context, uid, cid, cursor string, limit int) ([]*model.ConversationMember, string, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	if q, ok := a.persistence.(store.ConversationMemberPageStore); ok {
+		ctx, cancel := context.WithTimeout(parent, 4*time.Second)
+		defer cancel()
+		items, next, err := q.ListConversationMembersPage(ctx, uid, cid, cursor, limit)
+		return items, next, mapStoreError(err)
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.state.Members[cid][uid] == nil {
+		return nil, "", ErrForbidden
+	}
+	all := make([]*model.ConversationMember, 0, len(a.state.Members[cid]))
+	for _, member := range a.state.Members[cid] {
+		copy := *member
+		copy.ID = copy.UserID
+		if user := a.state.Users[copy.UserID]; user != nil {
+			copy.Name, copy.Handle, copy.AvatarURL = user.Name, user.Handle, user.AvatarURL
+		}
+		all = append(all, &copy)
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].JoinedAt.Equal(all[j].JoinedAt) {
+			return all[i].JoinedAt.Before(all[j].JoinedAt)
+		}
+		return all[i].UserID < all[j].UserID
+	})
+	offset, err := strconv.Atoi(cursor)
+	if err != nil || offset < 0 {
+		offset = 0
+	}
+	if offset >= len(all) {
+		return []*model.ConversationMember{}, "", nil
+	}
+	end := min(offset+limit, len(all))
+	next := ""
+	if end < len(all) {
+		next = strconv.Itoa(end)
+	}
+	return all[offset:end], next, nil
+}
 func (a *App) RemoveGroupMember(actor, cid, target string) error {
 	if groups, ok := a.persistence.(store.GroupStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1654,14 +1749,19 @@ func (a *App) groupMemberAction(action store.GroupMemberAction) error {
 }
 
 func (a *App) Conversations(uid string) []map[string]any {
+	out, _ := a.ConversationsContext(context.Background(), uid)
+	return out
+}
+
+func (a *App) ConversationsContext(parent context.Context, uid string) ([]map[string]any, error) {
 	if q, ok := a.persistence.(store.QueryStore); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		ctx, cancel := context.WithTimeout(parent, 4*time.Second)
 		defer cancel()
 		out, err := q.ListConversations(ctx, uid, 100)
-		if err == nil {
-			return out
+		if err != nil {
+			return nil, mapStoreError(err)
 		}
-		return []map[string]any{}
+		return out, nil
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -1688,7 +1788,26 @@ func (a *App) Conversations(uid string) []map[string]any {
 			}
 			safeMembers = append(safeMembers, &memberCopy)
 		}
-		sort.Slice(safeMembers, func(i, j int) bool { return safeMembers[i].UserID < safeMembers[j].UserID })
+		sort.Slice(safeMembers, func(i, j int) bool {
+			priority := func(member *model.ConversationMember) int {
+				if member.UserID == uid {
+					return 0
+				}
+				if member.Role == "owner" {
+					return 1
+				}
+				return 2
+			}
+			left, right := priority(safeMembers[i]), priority(safeMembers[j])
+			if left != right {
+				return left < right
+			}
+			return safeMembers[i].UserID < safeMembers[j].UserID
+		})
+		memberCount := len(safeMembers)
+		if c.Type == "group" && len(safeMembers) > 8 {
+			safeMembers = safeMembers[:8]
+		}
 		conversationCopy := *c
 		mentionUnreadCount := int64(0)
 		if c.Type == "group" {
@@ -1698,7 +1817,7 @@ func (a *App) Conversations(uid string) []map[string]any {
 				}
 			}
 		}
-		out = append(out, map[string]any{"conversation": &conversationCopy, "membership": m, "lastMessage": last, "unreadCount": max(int64(0), c.LastMessageSeq-m.LastReadSeq), "mentionUnreadCount": mentionUnreadCount, "members": safeMembers})
+		out = append(out, map[string]any{"conversation": &conversationCopy, "membership": m, "lastMessage": last, "unreadCount": max(int64(0), c.LastMessageSeq-m.LastReadSeq), "mentionUnreadCount": mentionUnreadCount, "members": safeMembers, "memberCount": memberCount})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		left := out[i]["membership"].(*model.ConversationMember)
@@ -1708,7 +1827,7 @@ func (a *App) Conversations(uid string) []map[string]any {
 		}
 		return out[i]["conversation"].(*model.Conversation).UpdatedAt.After(out[j]["conversation"].(*model.Conversation).UpdatedAt)
 	})
-	return out
+	return out, nil
 }
 
 func messageMentionsUser(message *model.Message, uid string) bool {
@@ -1736,7 +1855,11 @@ func messageMentionsUser(message *model.Message, uid string) bool {
 }
 
 func (a *App) SendMessage(uid, cid, clientID, typ string, body map[string]any, reply string) (*model.Message, bool, error) {
-	return a.sendMessage(uid, cid, clientID, typ, body, reply, 0, false)
+	return a.SendMessageContext(context.Background(), uid, cid, clientID, typ, body, reply)
+}
+
+func (a *App) SendMessageContext(ctx context.Context, uid, cid, clientID, typ string, body map[string]any, reply string) (*model.Message, bool, error) {
+	return a.sendMessage(ctx, uid, cid, clientID, typ, body, reply, 0, false)
 }
 
 func validateScheduledMessage(clientID, typ string, body map[string]any, expiresInSeconds int64, scheduledAt time.Time, now time.Time) error {
@@ -1876,11 +1999,77 @@ func (a *App) RunMessageExpirations(ctx context.Context) {
 	}
 }
 
-func (a *App) SendMessageWithExpiry(uid, cid, clientID, typ string, body map[string]any, reply string, expiresInSeconds int64) (*model.Message, bool, error) {
-	return a.sendMessage(uid, cid, clientID, typ, body, reply, expiresInSeconds, false)
+func (a *App) RunMessageFanout(ctx context.Context, batch int) {
+	worker, ok := a.persistence.(store.MessageFanoutStore)
+	if !ok {
+		return
+	}
+	idleTicker := time.NewTicker(100 * time.Millisecond)
+	defer idleTicker.Stop()
+	for ctx.Err() == nil {
+		processed, worked, err := worker.ProcessMessageFanout(ctx, batch)
+		if err != nil {
+			if ctx.Err() == nil {
+				time.Sleep(time.Second)
+			}
+			continue
+		}
+		if processed > 0 {
+			a.Metrics.FanoutRecipients.Add(int64(processed))
+		}
+		if worked {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-idleTicker.C:
+		}
+	}
 }
 
-func (a *App) sendMessage(uid, cid, clientID, typ string, body map[string]any, reply string, expiresInSeconds int64, generated bool) (*model.Message, bool, error) {
+func (a *App) RunRuntimeCleanup(ctx context.Context, interval time.Duration, policy store.RetentionPolicy) {
+	cleaner, ok := a.persistence.(store.RuntimeMaintenanceStore)
+	if !ok {
+		return
+	}
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		for range 20 {
+			cleanupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			removed, err := cleaner.CleanupRuntimeData(cleanupCtx, policy, 1000)
+			cancel()
+			if err != nil {
+				break
+			}
+			if removed > 0 {
+				a.Metrics.RetentionDeleted.Add(removed)
+			}
+			if removed < 1000 {
+				break
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (a *App) SendMessageWithExpiry(uid, cid, clientID, typ string, body map[string]any, reply string, expiresInSeconds int64) (*model.Message, bool, error) {
+	return a.SendMessageWithExpiryContext(context.Background(), uid, cid, clientID, typ, body, reply, expiresInSeconds)
+}
+
+func (a *App) SendMessageWithExpiryContext(ctx context.Context, uid, cid, clientID, typ string, body map[string]any, reply string, expiresInSeconds int64) (*model.Message, bool, error) {
+	return a.sendMessage(ctx, uid, cid, clientID, typ, body, reply, expiresInSeconds, false)
+}
+
+func (a *App) sendMessage(parent context.Context, uid, cid, clientID, typ string, body map[string]any, reply string, expiresInSeconds int64, generated bool) (*model.Message, bool, error) {
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" || len(clientID) > 100 {
 		return nil, false, ErrInvalid
@@ -2006,7 +2195,9 @@ func (a *App) sendMessage(uid, cid, clientID, typ string, body map[string]any, r
 		expiresAt = &value
 	}
 	if db, ok := a.persistence.(store.MessageStore); ok {
-		m, duplicate, events, err := db.SendMessage(context.Background(), store.MessageInput{UserID: uid, ConversationID: cid, ClientMsgID: clientID, Type: typ, Body: body, Mentions: mentions, MentionAll: mentionAll, ReplyToID: reply, MessageID: id("msg"), CreatedAt: now.UnixMilli(), ExpiresAt: expiresAt})
+		ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+		defer cancel()
+		m, duplicate, events, err := db.SendMessage(ctx, store.MessageInput{UserID: uid, ConversationID: cid, ClientMsgID: clientID, Type: typ, Body: body, Mentions: mentions, MentionAll: mentionAll, ReplyToID: reply, MessageID: id("msg"), CreatedAt: now.UnixMilli(), ExpiresAt: expiresAt})
 		if err != nil {
 			switch err {
 			case store.ErrForbidden:
@@ -2255,7 +2446,7 @@ func (a *App) ForwardMessages(uid, targetID string, sourceIDs []string, mode, cl
 		for _, source := range sources {
 			entries = append(entries, map[string]any{"sourceMessageId": source.ID, "senderId": source.SenderID, "createdAt": source.CreatedAt, "type": source.Type, "summary": forwardSummary(source)})
 		}
-		message, duplicate, err := a.sendMessage(uid, targetID, "forward:"+clientBatchID, "chat_history", map[string]any{"forwarded": true, "mode": "merged", "entries": entries}, "", 0, true)
+		message, duplicate, err := a.sendMessage(context.Background(), uid, targetID, "forward:"+clientBatchID, "chat_history", map[string]any{"forwarded": true, "mode": "merged", "entries": entries}, "", 0, true)
 		if err != nil {
 			return nil, false, err
 		}
@@ -2267,7 +2458,7 @@ func (a *App) ForwardMessages(uid, targetID string, sourceIDs []string, mode, cl
 		_ = json.Unmarshal(raw, &body)
 		body["forwarded"] = true
 		body["sourceMessageId"] = source.ID
-		message, duplicate, err := a.sendMessage(uid, targetID, fmt.Sprintf("forward:%s:%d", clientBatchID, index), source.Type, body, "", 0, true)
+		message, duplicate, err := a.sendMessage(context.Background(), uid, targetID, fmt.Sprintf("forward:%s:%d", clientBatchID, index), source.Type, body, "", 0, true)
 		if err != nil {
 			return nil, false, err
 		}
@@ -2932,16 +3123,27 @@ func (a *App) CanAccess(uid, cid string) bool {
 	return a.state.Members[cid][uid] != nil
 }
 func (a *App) SetTyping(uid, cid string, typing bool) {
+	_ = a.SetTypingContext(context.Background(), uid, cid, typing)
+}
+func (a *App) SetTypingContext(parent context.Context, uid, cid string, typing bool) error {
 	if q, ok := a.persistence.(store.QueryStore); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 		defer cancel()
 		access, err := q.CanAccessConversation(ctx, uid, cid)
 		if err != nil || !access {
-			return
+			if err != nil {
+				return err
+			}
+			return ErrForbidden
 		}
 		ids, err := q.ConversationMemberIDs(ctx, cid)
 		if err != nil {
-			return
+			return err
+		}
+		// Typing is an ephemeral hint. Broadcasting it to a very large group is
+		// disproportionate and can create thousands of writes per keystroke.
+		if len(ids) > 500 {
+			return nil
 		}
 		others := make([]string, 0, len(ids))
 		for _, x := range ids {
@@ -2951,14 +3153,14 @@ func (a *App) SetTyping(uid, cid string, typing bool) {
 		}
 		a.publish(others, "typing", map[string]any{"conversationId": cid, "userId": uid, "typing": typing, "expiresAt": time.Now().Add(6 * time.Second)})
 		if bus, ok := a.persistence.(store.EphemeralBus); ok {
-			_ = bus.PublishEphemeral(context.Background(), others, "typing", map[string]any{"conversationId": cid, "userId": uid, "typing": typing, "expiresAt": time.Now().Add(6 * time.Second)})
+			_ = bus.PublishEphemeral(ctx, others, "typing", map[string]any{"conversationId": cid, "userId": uid, "typing": typing, "expiresAt": time.Now().Add(6 * time.Second)})
 		}
-		return
+		return nil
 	}
 	a.mu.RLock()
 	if a.state.Members[cid][uid] == nil {
 		a.mu.RUnlock()
-		return
+		return ErrForbidden
 	}
 	ids := memberIDs(a.state.Members[cid])
 	a.mu.RUnlock()
@@ -2969,6 +3171,7 @@ func (a *App) SetTyping(uid, cid string, typing bool) {
 		}
 	}
 	a.publish(others, "typing", map[string]any{"conversationId": cid, "userId": uid, "typing": typing, "expiresAt": time.Now().Add(6 * time.Second)})
+	return nil
 }
 func (a *App) callMemberIDs(uid, cid string) ([]string, error) {
 	if q, ok := a.persistence.(store.QueryStore); ok {
@@ -3331,8 +3534,11 @@ func (a *App) SignalCall(uid, cid, typ string, payload map[string]any) error {
 }
 func stringValue(v any) string { s, _ := v.(string); return s }
 func (a *App) Sync(uid string, after int64, limit int) ([]*model.SyncEvent, int64, bool) {
+	return a.SyncContext(context.Background(), uid, after, limit)
+}
+func (a *App) SyncContext(parent context.Context, uid string, after int64, limit int) ([]*model.SyncEvent, int64, bool) {
 	if q, ok := a.persistence.(store.QueryStore); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		ctx, cancel := context.WithTimeout(parent, 4*time.Second)
 		defer cancel()
 		events, cursor, more, err := q.ListSync(ctx, uid, after, limit)
 		if err == nil {
@@ -4328,9 +4534,7 @@ func (a *App) UpdateSettings(actor string, settings map[string]any) error {
 			a.state.Settings[key] = value
 		}
 		a.mu.Unlock()
-		a.policyMu.Lock()
-		a.policyLoadedAt = time.Now()
-		a.policyMu.Unlock()
+		a.policyLoadedAt.Store(time.Now().UnixNano())
 		return nil
 	}
 	a.mu.Lock()

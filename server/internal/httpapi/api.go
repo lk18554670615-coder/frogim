@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -126,7 +127,7 @@ func New(cfg config.Config, a *app.App) *API {
 		x.cleaner = cleaner
 	}
 	a.SetCallInviteTTL(cfg.CallInviteTTL)
-	x.hub = realtime.New(a, cfg.AllowedOrigins, cfg.WSMaxPerUser, cfg.WSMaxPerIP, cfg.TrustProxy)
+	x.hub = realtime.New(a, cfg.AllowedOrigins, cfg.WSMaxPerUser, cfg.WSMaxPerIP, cfg.WSMaxConnections, cfg.TrustProxy)
 	x.mux = http.NewServeMux()
 	x.routes()
 	return x
@@ -379,6 +380,42 @@ func (x *API) middleware(next http.Handler) http.Handler {
 		}
 		x.app.Metrics.Requests.Add(1)
 		probe := r.URL.Path == "/health" || r.URL.Path == "/ready" || r.URL.Path == "/metrics"
+		x.app.Metrics.HTTPInFlight.Add(1)
+		defer func() {
+			if v := recover(); v != nil {
+				slog.Error("请求处理发生异常", "event", "http.panic", "requestId", requestID, "method", r.Method, "path", r.URL.Path, "error", v)
+				writeError(w, http.StatusInternalServerError, "INTERNAL", "internal server error")
+			}
+			x.app.Metrics.HTTPInFlight.Add(-1)
+			status := capture.status
+			if status == 0 {
+				status = http.StatusOK
+			}
+			duration := time.Since(started)
+			x.app.Metrics.ObserveHTTP(duration, status)
+			if probe {
+				return
+			}
+			path := r.Pattern
+			if path == "" {
+				path = r.URL.Path
+			}
+			attributes := []any{"event", "http.request", "requestId", requestID, "method", r.Method, "path", path, "status", status, "durationMs", duration.Milliseconds(), "bytes", capture.bytes}
+			sampleRate := x.cfg.HTTPLogSuccessSampleRate
+			sampleEvery := int64(1)
+			if sampleRate > 0 && sampleRate < 1 {
+				sampleEvery = max(int64(1), int64(1/sampleRate))
+			}
+			sampled := sampleRate >= 1 || (sampleRate > 0 && x.app.Metrics.Requests.Load()%sampleEvery == 0)
+			switch {
+			case status >= 500:
+				slog.Error("HTTP request completed", attributes...)
+			case status >= 400:
+				slog.Warn("HTTP request completed", attributes...)
+			case duration >= 250*time.Millisecond || sampled:
+				slog.Info("HTTP request completed", attributes...)
+			}
+		}()
 		adminPath := strings.HasPrefix(r.URL.Path, "/v1/admin/") || strings.HasPrefix(r.URL.Path, "/api/v1/admin/")
 		if !probe && !adminPath {
 			if maintenance, announcement := x.app.MaintenanceStatus(); maintenance {
@@ -389,38 +426,16 @@ func (x *API) middleware(next http.Handler) http.Handler {
 				return
 			}
 		}
-		if !probe && !x.allow("http:"+x.clientIP(r), 300, time.Minute) {
+		if !probe && !x.limits.allow("http:"+x.clientIP(r), 300, time.Minute) {
 			w.Header().Set("Retry-After", "60")
 			writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "too many requests")
 			return
 		}
-		defer func() {
-			if v := recover(); v != nil {
-				x.app.Metrics.Errors.Add(1)
-				slog.Error("请求处理发生异常", "event", "http.panic", "requestId", requestID, "method", r.Method, "path", r.URL.Path, "error", v)
-				writeError(w, http.StatusInternalServerError, "INTERNAL", "internal server error")
-			}
-			if !probe {
-				status := capture.status
-				if status == 0 {
-					status = http.StatusOK
-				}
-				attributes := []any{"event", "http.request", "requestId", requestID, "method", r.Method, "path", r.URL.Path, "status", status, "durationMs", time.Since(started).Milliseconds(), "bytes", capture.bytes}
-				switch {
-				case status >= 500:
-					slog.Error("HTTP 请求完成", attributes...)
-				case status >= 400:
-					slog.Warn("HTTP 请求完成", attributes...)
-				default:
-					slog.Info("HTTP 请求完成", attributes...)
-				}
-			}
-		}()
 		next.ServeHTTP(w, r)
 	})
 }
-func (x *API) allow(key string, max int, window time.Duration) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+func (x *API) allow(parent context.Context, key string, max int, window time.Duration) bool {
+	ctx, cancel := context.WithTimeout(parent, time.Second)
 	defer cancel()
 	if allowed, err := x.app.AllowRate(ctx, key, max, window); err == nil {
 		return allowed
@@ -445,7 +460,7 @@ func (x *API) requireAuth(next http.Handler) http.Handler {
 			writeError(w, 401, "UNAUTHENTICATED", err.Error())
 			return
 		}
-		u, err := x.app.User(uid)
+		u, err := x.app.UserContext(r.Context(), uid)
 		if err != nil || u.Banned {
 			writeError(w, 403, "FORBIDDEN", "account unavailable")
 			return
@@ -555,7 +570,31 @@ func (x *API) ready(w http.ResponseWriter, r *http.Request) {
 }
 func (x *API) metrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	fmt.Fprintf(w, "im_http_requests_total %d\nim_messages_sent_total %d\nim_websocket_connections %d\nim_errors_total %d\n", x.app.Metrics.Requests.Load(), x.app.Metrics.Messages.Load(), x.app.Metrics.WSConnections.Load(), x.app.Metrics.Errors.Load())
+	metrics := &x.app.Metrics
+	fmt.Fprintf(w, "im_http_requests_total %d\nim_http_requests_in_flight %d\nim_messages_sent_total %d\nim_websocket_connections %d\nim_websocket_dropped_events_total %d\nim_errors_total %d\nim_message_fanout_recipients_total %d\nim_runtime_retention_deleted_total %d\n",
+		metrics.Requests.Load(), metrics.HTTPInFlight.Load(), metrics.Messages.Load(), metrics.WSConnections.Load(), metrics.WSDroppedEvents.Load(), metrics.Errors.Load(), metrics.FanoutRecipients.Load(), metrics.RetentionDeleted.Load())
+	for index, boundary := range app.HTTPDurationBuckets() {
+		fmt.Fprintf(w, "im_http_request_duration_seconds_bucket{le=\"%g\"} %d\n", boundary.Seconds(), metrics.HTTPDurationBuckets[index].Load())
+	}
+	count := metrics.HTTPDurationCount.Load()
+	fmt.Fprintf(w, "im_http_request_duration_seconds_bucket{le=\"+Inf\"} %d\nim_http_request_duration_seconds_sum %g\nim_http_request_duration_seconds_count %d\n", count, float64(metrics.HTTPDurationNanoseconds.Load())/float64(time.Second), count)
+	for index := range metrics.HTTPStatusClasses {
+		fmt.Fprintf(w, "im_http_responses_total{class=\"%dxx\"} %d\n", index+1, metrics.HTTPStatusClasses[index].Load())
+	}
+	var memory runtime.MemStats
+	runtime.ReadMemStats(&memory)
+	fmt.Fprintf(w, "im_runtime_goroutines %d\nim_runtime_heap_alloc_bytes %d\nim_runtime_heap_inuse_bytes %d\nim_runtime_gc_cycles_total %d\n", runtime.NumGoroutine(), memory.HeapAlloc, memory.HeapInuse, memory.NumGC)
+	ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+	defer cancel()
+	stats, err := x.app.RuntimeStats(ctx)
+	if err != nil {
+		fmt.Fprintln(w, "im_store_metrics_up 0")
+		return
+	}
+	fmt.Fprintf(w, "im_store_metrics_up 1\nim_db_pool_max_connections %d\nim_db_pool_total_connections %d\nim_db_pool_idle_connections %d\nim_db_pool_acquired_connections %d\nim_db_pool_acquires_total %d\nim_db_pool_empty_acquires_total %d\nim_db_pool_canceled_acquires_total %d\nim_db_pool_acquire_duration_seconds_total %g\n",
+		stats.DBMaxConnections, stats.DBTotalConnections, stats.DBIdleConnections, stats.DBAcquiredConnections, stats.DBAcquireCount, stats.DBEmptyAcquireCount, stats.DBCanceledAcquireCount, stats.DBAcquireDurationSeconds)
+	fmt.Fprintf(w, "im_redis_pool_total_connections %d\nim_redis_pool_idle_connections %d\nim_redis_pool_timeouts_total %d\nim_push_outbox_pending %d\nim_push_outbox_oldest_seconds %g\nim_event_outbox_pending %d\nim_event_outbox_oldest_seconds %g\nim_message_fanout_pending %d\nim_message_fanout_oldest_seconds %g\n",
+		stats.RedisTotalConnections, stats.RedisIdleConnections, stats.RedisTimeouts, stats.PushPending, stats.OldestPushSeconds, stats.EventPending, stats.OldestEventSeconds, stats.FanoutPending, stats.OldestFanoutSeconds)
 }
 func (x *API) requestCode(w http.ResponseWriter, r *http.Request) {
 	var p struct {
@@ -565,7 +604,7 @@ func (x *API) requestCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_ARGUMENT", "phone is required")
 		return
 	}
-	if !x.allow("otp-ip:"+x.clientIP(r), 5, 10*time.Minute) || !x.allow("otp-phone:"+strings.TrimSpace(p.Phone), 3, 10*time.Minute) {
+	if !x.allow(r.Context(), "otp-ip:"+x.clientIP(r), 5, 10*time.Minute) || !x.allow(r.Context(), "otp-phone:"+strings.TrimSpace(p.Phone), 3, 10*time.Minute) {
 		w.Header().Set("Retry-After", "600")
 		writeError(w, 429, "RATE_LIMITED", "verification requests are temporarily limited")
 		return
@@ -587,7 +626,7 @@ func (x *API) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_ARGUMENT", "phone and code are required")
 		return
 	}
-	if !x.allow("login-ip:"+x.clientIP(r), 10, 10*time.Minute) || !x.allow("login-phone:"+p.Phone, 8, 10*time.Minute) {
+	if !x.allow(r.Context(), "login-ip:"+x.clientIP(r), 10, 10*time.Minute) || !x.allow(r.Context(), "login-phone:"+p.Phone, 8, 10*time.Minute) {
 		w.Header().Set("Retry-After", "600")
 		writeError(w, 429, "RATE_LIMITED", "too many login attempts")
 		return
@@ -635,7 +674,7 @@ func (x *API) register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "phone, code, password and name are required")
 		return
 	}
-	if !x.allow("register-ip:"+x.clientIP(r), 8, 10*time.Minute) || !x.allow("register-phone:"+p.Phone, 5, 10*time.Minute) {
+	if !x.allow(r.Context(), "register-ip:"+x.clientIP(r), 8, 10*time.Minute) || !x.allow(r.Context(), "register-phone:"+p.Phone, 5, 10*time.Minute) {
 		w.Header().Set("Retry-After", "600")
 		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "too many registration attempts")
 		return
@@ -665,7 +704,7 @@ func (x *API) passwordLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "phone or password is incorrect")
 		return
 	}
-	if !x.allow("password-login-ip:"+x.clientIP(r), 12, 10*time.Minute) || !x.allow("password-login-phone:"+p.Phone, 8, 10*time.Minute) {
+	if !x.allow(r.Context(), "password-login-ip:"+x.clientIP(r), 12, 10*time.Minute) || !x.allow(r.Context(), "password-login-phone:"+p.Phone, 8, 10*time.Minute) {
 		w.Header().Set("Retry-After", "600")
 		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "too many login attempts")
 		return
@@ -684,7 +723,7 @@ func (x *API) passwordResetCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Phone = strings.TrimSpace(p.Phone)
-	if !x.allow("reset-ip:"+x.clientIP(r), 5, 10*time.Minute) || !x.allow("reset-phone:"+p.Phone, 3, 10*time.Minute) {
+	if !x.allow(r.Context(), "reset-ip:"+x.clientIP(r), 5, 10*time.Minute) || !x.allow(r.Context(), "reset-phone:"+p.Phone, 3, 10*time.Minute) {
 		w.Header().Set("Retry-After", "600")
 		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "verification requests are temporarily limited")
 		return
@@ -705,7 +744,7 @@ func (x *API) passwordReset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "phone, code and password are required")
 		return
 	}
-	if !x.allow("reset-confirm-ip:"+x.clientIP(r), 8, 10*time.Minute) || !x.allow("reset-confirm-phone:"+p.Phone, 5, 10*time.Minute) {
+	if !x.allow(r.Context(), "reset-confirm-ip:"+x.clientIP(r), 8, 10*time.Minute) || !x.allow(r.Context(), "reset-confirm-phone:"+p.Phone, 5, 10*time.Minute) {
 		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "too many reset attempts")
 		return
 	}
@@ -741,7 +780,7 @@ func (x *API) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 func (x *API) adminLogin(w http.ResponseWriter, r *http.Request) {
-	if !x.allow("admin-login:"+x.clientIP(r), 5, 10*time.Minute) {
+	if !x.allow(r.Context(), "admin-login:"+x.clientIP(r), 5, 10*time.Minute) {
 		x.app.RecordAdminAudit("unknown", "admin.login", "admin_session", "login", "failed", x.clientIP(r), map[string]any{"reason": "rate limited"})
 		writeError(w, 429, "RATE_LIMITED", "too many administrator login attempts")
 		return
@@ -827,7 +866,7 @@ func (x *API) updateMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (x *API) requestAccountDeletionCode(w http.ResponseWriter, r *http.Request) {
-	if !x.allow("account-delete-code-user:"+uid(r), 3, 30*time.Minute) {
+	if !x.allow(r.Context(), "account-delete-code-user:"+uid(r), 3, 30*time.Minute) {
 		w.Header().Set("Retry-After", "1800")
 		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "verification requests are temporarily limited")
 		return
@@ -865,7 +904,7 @@ func (x *API) deleteAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "verification code is required")
 		return
 	}
-	if !x.allow("account-delete-user:"+uid(r), 5, 30*time.Minute) {
+	if !x.allow(r.Context(), "account-delete-user:"+uid(r), 5, 30*time.Minute) {
 		w.Header().Set("Retry-After", "1800")
 		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "too many deletion attempts")
 		return
@@ -966,7 +1005,7 @@ func (x *API) requestPhoneChangeCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Phone = strings.TrimSpace(p.Phone)
-	if !x.allow("phone-change-user:"+uid(r), 3, 10*time.Minute) || !x.allow("phone-change-phone:"+p.Phone, 3, 10*time.Minute) {
+	if !x.allow(r.Context(), "phone-change-user:"+uid(r), 3, 10*time.Minute) || !x.allow(r.Context(), "phone-change-phone:"+p.Phone, 3, 10*time.Minute) {
 		w.Header().Set("Retry-After", "600")
 		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "verification requests are temporarily limited")
 		return
@@ -1326,7 +1365,11 @@ func (x *API) blocks(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, map[string]any{"items": items})
 }
 func (x *API) conversations(w http.ResponseWriter, r *http.Request) {
-	items := x.app.Conversations(uid(r))
+	items, err := x.app.ConversationsContext(r.Context(), uid(r))
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
 	for _, item := range items {
 		if conversation, ok := item["conversation"].(*model.Conversation); ok {
 			if mediaID := avatarMediaIDFromPath(conversation.AvatarURL); mediaID != "" {
@@ -1541,7 +1584,8 @@ func (x *API) addMembers(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, map[string]bool{"updated": true})
 }
 func (x *API) groupMembers(w http.ResponseWriter, r *http.Request) {
-	items, err := x.app.GroupMembers(uid(r), r.PathValue("id"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, next, err := x.app.GroupMembersPage(r.Context(), uid(r), r.PathValue("id"), r.URL.Query().Get("cursor"), limit)
 	if err != nil {
 		handleErr(w, err)
 		return
@@ -1551,7 +1595,7 @@ func (x *API) groupMembers(w http.ResponseWriter, r *http.Request) {
 			item.AvatarURL = x.signedAvatarValue(mediaID)
 		}
 	}
-	write(w, 200, map[string]any{"items": items})
+	write(w, 200, map[string]any{"items": items, "nextCursor": next})
 }
 func (x *API) removeMember(w http.ResponseWriter, r *http.Request) {
 	if err := x.app.RemoveGroupMember(uid(r), r.PathValue("id"), r.PathValue("userId")); err != nil {
@@ -1594,7 +1638,7 @@ func (x *API) sendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_ARGUMENT", "invalid request")
 		return
 	}
-	m, duplicate, err := x.app.SendMessageWithExpiry(uid(r), r.PathValue("id"), p.ClientMsgID, p.Type, p.Body, p.ReplyToID, p.ExpiresInSeconds)
+	m, duplicate, err := x.app.SendMessageWithExpiryContext(r.Context(), uid(r), r.PathValue("id"), p.ClientMsgID, p.Type, p.Body, p.ReplyToID, p.ExpiresInSeconds)
 	if err != nil {
 		handleErr(w, err)
 		return
@@ -1839,17 +1883,20 @@ func (x *API) hideConversation(w http.ResponseWriter, r *http.Request) {
 }
 func (x *API) typing(w http.ResponseWriter, r *http.Request) {
 	var p struct{ Typing bool }
-	if decode(r, &p) != nil || !x.app.CanAccess(uid(r), r.PathValue("id")) {
+	if decode(r, &p) != nil {
+		writeError(w, 400, "INVALID_ARGUMENT", "invalid request")
+		return
+	}
+	if err := x.app.SetTypingContext(r.Context(), uid(r), r.PathValue("id"), p.Typing); err != nil {
 		writeError(w, 403, "FORBIDDEN", "not a conversation member")
 		return
 	}
-	x.app.SetTyping(uid(r), r.PathValue("id"), p.Typing)
 	w.WriteHeader(204)
 }
 func (x *API) sync(w http.ResponseWriter, r *http.Request) {
 	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	events, cursor, more := x.app.Sync(uid(r), after, limit)
+	events, cursor, more := x.app.SyncContext(r.Context(), uid(r), after, limit)
 	var err error
 	events, err = x.syncEventsWithDownloadURLs(r.Context(), uid(r), events)
 	if err != nil {
@@ -1887,7 +1934,7 @@ func (x *API) readAnnouncement(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 func (x *API) websocketTicket(w http.ResponseWriter, r *http.Request) {
-	if !x.allow("ws-ticket-issue:"+uid(r), 30, time.Minute) {
+	if !x.allow(r.Context(), "ws-ticket-issue:"+uid(r), 30, time.Minute) {
 		w.Header().Set("Retry-After", "60")
 		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "too many websocket ticket requests")
 		return
@@ -1926,7 +1973,7 @@ func (x *API) websocket(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "TICKET_USED", "websocket ticket has already been used")
 		return
 	}
-	u, err := x.app.User(claims.Subject)
+	u, err := x.app.UserContext(r.Context(), claims.Subject)
 	if err != nil || u.Banned {
 		writeError(w, 403, "FORBIDDEN", "account unavailable")
 		return
@@ -2304,10 +2351,10 @@ func (x *API) settingsPayload() map[string]any {
 		"pushProvider": x.cfg.PushProvider, "mediaMaxSizeMB": x.cfg.MediaMaxBytes / (1 << 20),
 		"apnsVoipSandbox":          x.cfg.APNSVoIPSandbox,
 		"callInviteTimeoutSeconds": int64(x.cfg.CallInviteTTL / time.Second), "websocketMaxPerUser": x.cfg.WSMaxPerUser,
-		"websocketMaxPerIP": x.cfg.WSMaxPerIP, "accessTokenMinutes": int64(x.cfg.AccessTTL / time.Minute),
+		"websocketMaxPerIP": x.cfg.WSMaxPerIP, "websocketMaxConnections": x.cfg.WSMaxConnections, "accessTokenMinutes": int64(x.cfg.AccessTTL / time.Minute),
 		"refreshTokenHours": int64(x.cfg.RefreshTTL / time.Hour),
 	}
-	values["restartRequiredKeys"] = []string{"pushProvider", "mediaMaxSizeMB", "callInviteTimeoutSeconds", "websocketMaxPerUser", "websocketMaxPerIP", "accessTokenMinutes", "refreshTokenHours"}
+	values["restartRequiredKeys"] = []string{"pushProvider", "mediaMaxSizeMB", "callInviteTimeoutSeconds", "websocketMaxPerUser", "websocketMaxPerIP", "websocketMaxConnections", "accessTokenMinutes", "refreshTokenHours"}
 	return values
 }
 func (x *API) settings(w http.ResponseWriter, r *http.Request) { write(w, 200, x.settingsPayload()) }

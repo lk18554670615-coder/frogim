@@ -1,4 +1,51 @@
 groups:
+  - name: nexachat-performance
+    rules:
+      - alert: NexaChatHighHTTPP95Latency
+        expr: histogram_quantile(0.95, sum by (le) (rate(im_http_request_duration_seconds_bucket[5m]))) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: NexaChat API P95 latency is high
+          description: Global HTTP P95 latency has remained above 500 ms for ten minutes.
+
+      - alert: NexaChatDatabasePoolSaturated
+        expr: im_db_pool_acquired_connections / im_db_pool_max_connections > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: NexaChat database pool is close to saturation
+          description: More than 80 percent of the configured PostgreSQL pool has been acquired for five minutes.
+
+      - alert: NexaChatPushBacklogOld
+        expr: im_push_outbox_oldest_seconds > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: NexaChat push delivery backlog is delayed
+          description: The oldest pending push has waited more than one minute.
+
+      - alert: NexaChatMessageFanoutBacklog
+        expr: im_message_fanout_oldest_seconds > 10 or im_message_fanout_pending > 100
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: NexaChat durable message fanout is falling behind
+          description: Per-user sync expansion cannot keep up with incoming messages.
+
+      - alert: NexaChatWebSocketDrops
+        expr: rate(im_websocket_dropped_events_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: NexaChat WebSocket clients are falling behind
+          description: Slow WebSocket consumers are dropping live events and relying on durable cursor recovery.
+
   - name: nexachat-availability
     rules:
       - alert: NexaChatServerDown

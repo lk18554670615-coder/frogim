@@ -21,6 +21,10 @@ Prometheus 每 15 秒抓取内部 `/metrics`，规则文件目前保留兼容名
 - `NexaChatServerDown`（兼容告警 ID）：立即通知值班人员。
 - 错误率持续上升：15 分钟内开始调查。
 - 长时间无 HTTP 流量：核对业务时段、入口和客户端。
+- `NexaChatHighHTTPP95Latency`：检查慢请求、数据库池等待和依赖延迟。
+- `NexaChatDatabasePoolSaturated`：检查实例连接总预算和慢 SQL。
+- `NexaChatPushBacklogOld` / `NexaChatMessageFanoutBacklog`：检查推送提供商、后台 worker 和数据库写入能力。
+- `NexaChatWebSocketDrops`：检查慢客户端、实例内存和网络拥塞。
 - 主机磁盘、PostgreSQL 连接/WAL、Redis 内存、MinIO 容量、证书到期和备份失败。
 
 每条告警必须有负责人、升级路径和本手册链接。上线前、变更后和每季度测试送达。

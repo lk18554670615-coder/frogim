@@ -680,6 +680,7 @@ class LiveImRepository implements ImRepository, CallRepository {
       'announcement.published' ||
       'announcement.updated' ||
       'announcement.withdrawn' => ImEventType.announcementChanged,
+      'sync.reset_required' => ImEventType.conversationChanged,
       'typing' => ImEventType.typing,
       _ => ImEventType.unknown,
     };
@@ -751,6 +752,8 @@ class LiveImRepository implements ImRepository, CallRepository {
           (item['mentionUnreadCount'] as num?)?.toInt() ??
           (membership?['mentionUnreadCount'] as num?)?.toInt(),
       members: resolvedMembers,
+      memberCount:
+          (item['memberCount'] as num?)?.toInt() ?? resolvedMembers.length,
     );
   }
 
@@ -997,13 +1000,22 @@ class LiveImRepository implements ImRepository, CallRepository {
 
   @override
   Future<List<GroupMember>> groupMembers(String conversationId) async {
-    final data = await _get('/v1/groups/$conversationId/members');
+    final rows = <Object?>[];
+    String cursor = '';
+    do {
+      final suffix = cursor.isEmpty
+          ? '?limit=200'
+          : '?limit=200&cursor=${Uri.encodeQueryComponent(cursor)}';
+      final data = await _get('/v1/groups/$conversationId/members$suffix');
+      rows.addAll(data['items'] as List<Object?>? ?? const []);
+      cursor = data['nextCursor'] as String? ?? '';
+    } while (cursor.isNotEmpty);
     final known = <String, AppUser>{
       for (final user in await contacts()) user.id: user,
     };
     final me = currentUser;
     if (me != null) known[me.id] = me;
-    return (data['items'] as List<Object?>? ?? const []).map((raw) {
+    return rows.map((raw) {
       final item = raw! as Map<String, Object?>;
       final id = item['userId']! as String;
       return GroupMember(

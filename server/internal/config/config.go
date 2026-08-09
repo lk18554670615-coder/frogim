@@ -31,10 +31,16 @@ type Config struct {
 	AdminSharedKeyEnabled                                                bool
 	DevAllowContainerBind                                                bool
 	DevIPTestOnly                                                        bool
-	WSMaxPerUser, WSMaxPerIP                                             int
+	WSMaxPerUser, WSMaxPerIP, WSMaxConnections                           int
+	DBMaxConns, DBMinConns                                               int
+	PushWorkers, PushBatchSize, MessageFanoutBatchSize                   int
 	MediaMaxBytes                                                        int64
 	AccessTTL, RefreshTTL                                                time.Duration
 	CallInviteTTL                                                        time.Duration
+	DBMaxConnLifetime, DBMaxConnIdleTime, DBHealthCheckPeriod            time.Duration
+	DBStatementTimeout                                                   time.Duration
+	RuntimeCleanupInterval, SyncRetention, OutboxRetention               time.Duration
+	HTTPLogSuccessSampleRate                                             float64
 }
 
 func Load() Config {
@@ -50,9 +56,14 @@ func Load() Config {
 		S3Endpoint: os.Getenv("IM_S3_ENDPOINT"), S3PublicEndpoint: os.Getenv("IM_S3_PUBLIC_ENDPOINT"), S3AccessKey: os.Getenv("IM_S3_ACCESS_KEY"), S3SecretKey: os.Getenv("IM_S3_SECRET_KEY"), S3Bucket: value("IM_S3_BUCKET", "nexachat-media"), S3Region: value("IM_S3_REGION", "us-east-1"), S3Secure: boolValue("IM_S3_SECURE", false), S3PublicSecure: boolValue("IM_S3_PUBLIC_SECURE", false),
 		DevMode: boolValue("IM_DEV_MODE", false), TrustProxy: boolValue("IM_TRUST_PROXY", false), DevAllowContainerBind: boolValue("IM_DEV_ALLOW_CONTAINER_BIND", false), DevIPTestOnly: boolValue("IM_IP_TEST_ONLY", false), DevOTPCode: os.Getenv("IM_DEV_OTP_CODE"), AllowedOrigins: csv("IM_ALLOWED_ORIGINS"),
 		RTCSTUNURLs: csv("IM_RTC_STUN_URLS"), RTCTURNURLs: csv("IM_RTC_TURN_URLS"), RTCTURNUsername: os.Getenv("IM_RTC_TURN_USERNAME"), RTCTURNCredential: os.Getenv("IM_RTC_TURN_CREDENTIAL"),
-		WSMaxPerUser: intValue("IM_WS_MAX_PER_USER", 5), WSMaxPerIP: intValue("IM_WS_MAX_PER_IP", 20),
-		MediaMaxBytes: int64Value("IM_MEDIA_MAX_BYTES", 100<<20),
-		AccessTTL:     duration("IM_ACCESS_TTL", 15*time.Minute), RefreshTTL: duration("IM_REFRESH_TTL", 30*24*time.Hour),
+		WSMaxPerUser: intValue("IM_WS_MAX_PER_USER", 5), WSMaxPerIP: intValue("IM_WS_MAX_PER_IP", 20), WSMaxConnections: intValue("IM_WS_MAX_CONNECTIONS", 10000),
+		DBMaxConns: intValue("IM_DB_MAX_CONNS", 20), DBMinConns: intValue("IM_DB_MIN_CONNS", 2),
+		DBMaxConnLifetime: duration("IM_DB_MAX_CONN_LIFETIME", time.Hour), DBMaxConnIdleTime: duration("IM_DB_MAX_CONN_IDLE_TIME", 15*time.Minute), DBHealthCheckPeriod: duration("IM_DB_HEALTH_CHECK_PERIOD", time.Minute), DBStatementTimeout: duration("IM_DB_STATEMENT_TIMEOUT", 15*time.Second),
+		PushWorkers: intValue("IM_PUSH_WORKERS", 16), PushBatchSize: intValue("IM_PUSH_BATCH_SIZE", 200), MessageFanoutBatchSize: intValue("IM_MESSAGE_FANOUT_BATCH_SIZE", 500),
+		RuntimeCleanupInterval: duration("IM_RUNTIME_CLEANUP_INTERVAL", time.Hour), SyncRetention: duration("IM_SYNC_RETENTION", 30*24*time.Hour), OutboxRetention: duration("IM_OUTBOX_RETENTION", 7*24*time.Hour),
+		HTTPLogSuccessSampleRate: floatValue("IM_HTTP_LOG_SUCCESS_SAMPLE_RATE", 0.01),
+		MediaMaxBytes:            int64Value("IM_MEDIA_MAX_BYTES", 100<<20),
+		AccessTTL:                duration("IM_ACCESS_TTL", 15*time.Minute), RefreshTTL: duration("IM_REFRESH_TTL", 30*24*time.Hour),
 		CallInviteTTL: duration("IM_CALL_INVITE_TTL", 30*time.Second),
 	}
 }
@@ -127,8 +138,64 @@ func (c Config) Validate() error {
 			return errors.New("development mode may bind publicly only for explicit full-mode development containers")
 		}
 	}
-	if c.WSMaxPerUser < 1 || c.WSMaxPerUser > 20 || c.WSMaxPerIP < 1 || c.WSMaxPerIP > 200 {
+	wsMaxConnections := c.WSMaxConnections
+	if wsMaxConnections == 0 {
+		wsMaxConnections = 10000
+	}
+	if c.WSMaxPerUser < 1 || c.WSMaxPerUser > 20 || c.WSMaxPerIP < 1 || c.WSMaxPerIP > 200 || wsMaxConnections < 1 || wsMaxConnections > 1000000 {
 		return errors.New("invalid WebSocket connection budget")
+	}
+	dbMaxConns, dbMinConns := c.DBMaxConns, c.DBMinConns
+	if dbMaxConns == 0 {
+		dbMaxConns, dbMinConns = 20, 2
+	}
+	if dbMaxConns < 4 || dbMaxConns > 500 || dbMinConns < 0 || dbMinConns >= dbMaxConns {
+		return errors.New("invalid PostgreSQL connection pool budget")
+	}
+	dbLifetime, dbIdle, dbHealth := c.DBMaxConnLifetime, c.DBMaxConnIdleTime, c.DBHealthCheckPeriod
+	if dbLifetime == 0 {
+		dbLifetime = time.Hour
+	}
+	if dbIdle == 0 {
+		dbIdle = 15 * time.Minute
+	}
+	if dbHealth == 0 {
+		dbHealth = time.Minute
+	}
+	if dbLifetime < time.Minute || dbIdle < time.Minute || dbHealth < 10*time.Second {
+		return errors.New("invalid PostgreSQL connection pool timing")
+	}
+	if c.DBStatementTimeout != 0 && (c.DBStatementTimeout < time.Second || c.DBStatementTimeout > time.Minute) {
+		return errors.New("IM_DB_STATEMENT_TIMEOUT must be between 1s and 1m")
+	}
+	pushWorkers, pushBatch, fanoutBatch := c.PushWorkers, c.PushBatchSize, c.MessageFanoutBatchSize
+	if pushWorkers == 0 {
+		pushWorkers = 16
+	}
+	if pushBatch == 0 {
+		pushBatch = 200
+	}
+	if fanoutBatch == 0 {
+		fanoutBatch = 500
+	}
+	if pushWorkers < 1 || pushWorkers > 128 || pushBatch < 1 || pushBatch > 1000 || fanoutBatch < 10 || fanoutBatch > 5000 {
+		return errors.New("invalid asynchronous worker configuration")
+	}
+	cleanupInterval, syncRetention, outboxRetention := c.RuntimeCleanupInterval, c.SyncRetention, c.OutboxRetention
+	if cleanupInterval == 0 {
+		cleanupInterval = time.Hour
+	}
+	if syncRetention == 0 {
+		syncRetention = 30 * 24 * time.Hour
+	}
+	if outboxRetention == 0 {
+		outboxRetention = 7 * 24 * time.Hour
+	}
+	if cleanupInterval < time.Minute || syncRetention < 24*time.Hour || outboxRetention < time.Hour {
+		return errors.New("invalid runtime data retention configuration")
+	}
+	if c.HTTPLogSuccessSampleRate < 0 || c.HTTPLogSuccessSampleRate > 1 {
+		return errors.New("IM_HTTP_LOG_SUCCESS_SAMPLE_RATE must be between 0 and 1")
 	}
 	if c.MediaMaxBytes < 1<<20 || c.MediaMaxBytes > 2<<30 {
 		return errors.New("IM_MEDIA_MAX_BYTES must be between 1 MiB and 2 GiB")
@@ -222,6 +289,14 @@ func intValue(k string, d int) int {
 func int64Value(k string, d int64) int64 {
 	if v := os.Getenv(k); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	return d
+}
+func floatValue(k string, d float64) float64 {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.ParseFloat(v, 64); err == nil {
 			return n
 		}
 	}

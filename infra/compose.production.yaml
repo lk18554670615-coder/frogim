@@ -11,6 +11,11 @@ x-logging: &production-logging
 x-service-defaults: &service-defaults
   restart: unless-stopped
   init: true
+  pids_limit: ${CONTAINER_PIDS_LIMIT:-256}
+  ulimits:
+    nofile:
+      soft: ${CONTAINER_NOFILE_SOFT:-65536}
+      hard: ${CONTAINER_NOFILE_HARD:-65536}
   logging: *production-logging
   security_opt:
     - no-new-privileges:true
@@ -108,7 +113,15 @@ services:
       IM_MODE: full
       IM_ENV: production
       IM_LOG_LEVEL: ${IM_LOG_LEVEL:-info}
+      GOMEMLIMIT: ${SERVER_GO_MEMORY_LIMIT:-768MiB}
+      GOMAXPROCS: ${SERVER_GO_MAX_PROCS:-2}
       IM_DATABASE_URL: ${IM_DATABASE_URL:?set IM_DATABASE_URL}
+      IM_DB_MAX_CONNS: ${IM_DB_MAX_CONNS:-20}
+      IM_DB_MIN_CONNS: ${IM_DB_MIN_CONNS:-2}
+      IM_DB_MAX_CONN_LIFETIME: ${IM_DB_MAX_CONN_LIFETIME:-1h}
+      IM_DB_MAX_CONN_IDLE_TIME: ${IM_DB_MAX_CONN_IDLE_TIME:-15m}
+      IM_DB_HEALTH_CHECK_PERIOD: ${IM_DB_HEALTH_CHECK_PERIOD:-1m}
+      IM_DB_STATEMENT_TIMEOUT: ${IM_DB_STATEMENT_TIMEOUT:-15s}
       IM_REDIS_URL: ${IM_REDIS_URL:?set IM_REDIS_URL}
       IM_JWT_SECRET: ${IM_JWT_SECRET:?set IM_JWT_SECRET}
       IM_ADMIN_EMAIL: ${IM_ADMIN_EMAIL:?set IM_ADMIN_EMAIL}
@@ -139,6 +152,16 @@ services:
       IM_S3_SECURE: "false"
       IM_S3_PUBLIC_SECURE: ${IM_S3_PUBLIC_SECURE:-true}
       IM_CALL_INVITE_TTL: ${IM_CALL_INVITE_TTL:-30s}
+      IM_WS_MAX_PER_USER: ${IM_WS_MAX_PER_USER:-5}
+      IM_WS_MAX_PER_IP: ${IM_WS_MAX_PER_IP:-20}
+      IM_WS_MAX_CONNECTIONS: ${IM_WS_MAX_CONNECTIONS:-10000}
+      IM_PUSH_WORKERS: ${IM_PUSH_WORKERS:-16}
+      IM_PUSH_BATCH_SIZE: ${IM_PUSH_BATCH_SIZE:-200}
+      IM_MESSAGE_FANOUT_BATCH_SIZE: ${IM_MESSAGE_FANOUT_BATCH_SIZE:-500}
+      IM_RUNTIME_CLEANUP_INTERVAL: ${IM_RUNTIME_CLEANUP_INTERVAL:-1h}
+      IM_SYNC_RETENTION: ${IM_SYNC_RETENTION:-720h}
+      IM_OUTBOX_RETENTION: ${IM_OUTBOX_RETENTION:-168h}
+      IM_HTTP_LOG_SUCCESS_SAMPLE_RATE: ${IM_HTTP_LOG_SUCCESS_SAMPLE_RATE:-0.01}
       IM_RTC_STUN_URLS: ${IM_RTC_STUN_URLS:?set IM_RTC_STUN_URLS}
       IM_RTC_TURN_URLS: ${IM_RTC_TURN_URLS:?set IM_RTC_TURN_URLS}
       IM_RTC_TURN_USERNAME: ${IM_RTC_TURN_USERNAME:?set IM_RTC_TURN_USERNAME}
@@ -169,6 +192,8 @@ services:
     cap_drop:
       - ALL
     stop_grace_period: 30s
+    cpus: ${SERVER_CPU_LIMIT:-2.0}
+    mem_limit: ${SERVER_MEMORY_LIMIT:-1g}
 
   # WebRTC 媒体中继服务。生产环境需要在云防火墙放行 3478 TCP/UDP 与 49160-49200 UDP。
   coturn:
@@ -212,6 +237,14 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_INITDB_ARGS: --data-checksums
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - track_io_timing=on
+      - -c
+      - log_min_duration_statement=${POSTGRES_LOG_MIN_DURATION_MS:-500}
     expose:
       - "5432"
     volumes:
@@ -225,13 +258,15 @@ services:
       timeout: 5s
       retries: 10
     shm_size: 256mb
+    cpus: ${POSTGRES_CPU_LIMIT:-2.0}
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-2g}
 
   redis:
     <<: *service-defaults
     image: redis:8-alpine
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
-    command: ["sh", "-c", "exec redis-server --appendonly yes --appendfsync everysec --requirepass \"$${REDIS_PASSWORD}\""]
+    command: ["sh", "-c", "exec redis-server --appendonly yes --appendfsync everysec --maxmemory \"${REDIS_MAXMEMORY:-384mb}\" --maxmemory-policy volatile-lru --requirepass \"$${REDIS_PASSWORD}\""]
     expose:
       - "6379"
     volumes:
@@ -243,6 +278,8 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
+    cpus: ${REDIS_CPU_LIMIT:-1.0}
+    mem_limit: ${REDIS_MEMORY_LIMIT:-512m}
 
   minio:
     <<: *service-defaults

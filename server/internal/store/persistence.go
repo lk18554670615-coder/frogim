@@ -39,6 +39,13 @@ type QueryStore interface {
 	ListConversationMembers(context.Context, string, string) ([]*model.ConversationMember, error)
 }
 
+// ConversationMemberPageStore keeps large group membership reads bounded.
+// The legacy list method remains available for internal compatibility, while
+// public APIs should use this cursor-based interface.
+type ConversationMemberPageStore interface {
+	ListConversationMembersPage(context.Context, string, string, string, int) ([]*model.ConversationMember, string, error)
+}
+
 // AdminQueryStore keeps potentially large moderation tables out of the legacy
 // whole-state snapshot. Cursor values are opaque to API clients.
 type AdminQueryStore interface {
@@ -628,6 +635,41 @@ type OutboxStore interface {
 	CompletePush(context.Context, int64, error) error
 }
 
+func (p *WithRedis) ListConversationMembersPage(ctx context.Context, uid, cid, cursor string, n int) ([]*model.ConversationMember, string, error) {
+	if s, ok := p.base.(ConversationMemberPageStore); ok {
+		return s.ListConversationMembersPage(ctx, uid, cid, cursor, n)
+	}
+	return nil, "", ErrUnsupported
+}
+
+// MessageFanoutStore expands one durable message into per-user sync and push
+// rows outside the latency-sensitive message transaction.
+type MessageFanoutStore interface {
+	ProcessMessageFanout(context.Context, int) (int, bool, error)
+}
+
+type RetentionPolicy struct {
+	SyncEvents time.Duration
+	Outbox     time.Duration
+}
+
+type RuntimeMaintenanceStore interface {
+	CleanupRuntimeData(context.Context, RetentionPolicy, int) (int64, error)
+}
+
+type RuntimeStats struct {
+	DBMaxConnections, DBTotalConnections, DBIdleConnections, DBAcquiredConnections int32
+	DBAcquireCount, DBEmptyAcquireCount, DBCanceledAcquireCount                    int64
+	DBAcquireDurationSeconds                                                       float64
+	RedisTotalConnections, RedisIdleConnections, RedisTimeouts                     uint32
+	PushPending, EventPending, FanoutPending                                       int64
+	OldestPushSeconds, OldestEventSeconds, OldestFanoutSeconds                     float64
+}
+
+type RuntimeStatsStore interface {
+	RuntimeStats(context.Context) (RuntimeStats, error)
+}
+
 // PushDeviceInvalidator 按设备 ID 停用推送服务商已确认失效的 token，避免后续持续投递。
 type PushDeviceInvalidator interface {
 	InvalidatePushDevices(context.Context, []string) error
@@ -1014,6 +1056,36 @@ func (p *WithRedis) InvalidatePushDevices(ctx context.Context, ids []string) err
 		return s.InvalidatePushDevices(ctx, ids)
 	}
 	return ErrUnsupported
+}
+
+func (p *WithRedis) ProcessMessageFanout(ctx context.Context, batch int) (int, bool, error) {
+	if s, ok := p.base.(MessageFanoutStore); ok {
+		return s.ProcessMessageFanout(ctx, batch)
+	}
+	return 0, false, ErrUnsupported
+}
+
+func (p *WithRedis) CleanupRuntimeData(ctx context.Context, policy RetentionPolicy, batch int) (int64, error) {
+	if s, ok := p.base.(RuntimeMaintenanceStore); ok {
+		return s.CleanupRuntimeData(ctx, policy, batch)
+	}
+	return 0, ErrUnsupported
+}
+
+func (p *WithRedis) RuntimeStats(ctx context.Context) (RuntimeStats, error) {
+	var stats RuntimeStats
+	if s, ok := p.base.(RuntimeStatsStore); ok {
+		var err error
+		stats, err = s.RuntimeStats(ctx)
+		if err != nil {
+			return stats, err
+		}
+	}
+	redisStats := p.redis.PoolStats()
+	stats.RedisTotalConnections = redisStats.TotalConns
+	stats.RedisIdleConnections = redisStats.IdleConns
+	stats.RedisTimeouts = redisStats.Timeouts
+	return stats, nil
 }
 func (p *WithRedis) RunEvents(ctx context.Context, deliver func([]string, string, map[string]any)) error {
 	if s, ok := p.base.(EventSubscriber); ok {

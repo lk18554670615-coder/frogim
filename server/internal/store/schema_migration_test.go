@@ -28,6 +28,25 @@ func TestDevicePreferenceColumnsAreUpgradedForExistingTables(t *testing.T) {
 	}
 }
 
+func TestMessageFanoutAndRetentionSchemaIsVersioned(t *testing.T) {
+	if schemaVersion < 25 {
+		t.Fatalf("performance schema requires version 25 or newer, got %d", schemaVersion)
+	}
+	for _, statement := range []string{
+		"CREATE TABLE IF NOT EXISTS im_message_fanout",
+		"im_message_fanout_pending_idx",
+		"im_push_outbox_retention_idx",
+		"im_event_outbox_retention_idx",
+		"CREATE EXTENSION IF NOT EXISTS pg_stat_statements",
+		"ALTER TABLE im_conversations ADD COLUMN IF NOT EXISTS member_count",
+		"CREATE TRIGGER im_members_count_insert",
+	} {
+		if !strings.Contains(normalizedSchema, statement) {
+			t.Fatalf("runtime schema is missing %q", statement)
+		}
+	}
+}
+
 func TestPostgresMigratesLegacyDevicePreferenceColumns(t *testing.T) {
 	databaseURL := os.Getenv("IM_TEST_DATABASE_URL")
 	if databaseURL == "" {

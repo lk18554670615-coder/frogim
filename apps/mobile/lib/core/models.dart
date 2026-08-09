@@ -512,7 +512,8 @@ class Conversation {
     this.lastReadSeq = 0,
     this.mentionUnreadCount,
     this.members = const [],
-  });
+    int? memberCount,
+  }) : memberCount = memberCount ?? members.length;
 
   final String id;
   final String title;
@@ -531,6 +532,7 @@ class Conversation {
   /// Null means the active server does not support this capability yet.
   final int? mentionUnreadCount;
   final List<AppUser> members;
+  final int memberCount;
 
   Conversation copyWith({
     String? title,
@@ -545,6 +547,7 @@ class Conversation {
     int? lastReadSeq,
     int? mentionUnreadCount,
     List<AppUser>? members,
+    int? memberCount,
   }) => Conversation(
     id: id,
     title: title ?? this.title,
@@ -560,6 +563,7 @@ class Conversation {
     lastReadSeq: lastReadSeq ?? this.lastReadSeq,
     mentionUnreadCount: mentionUnreadCount ?? this.mentionUnreadCount,
     members: members ?? this.members,
+    memberCount: memberCount ?? this.memberCount,
   );
 }
 

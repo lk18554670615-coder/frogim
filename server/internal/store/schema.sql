@@ -32,6 +32,7 @@ ALTER TABLE im_friendships ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT
 ALTER TABLE im_friendships ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
 CREATE TABLE IF NOT EXISTS im_blocks(user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,blocked_user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(user_id,blocked_user_id));
 CREATE TABLE IF NOT EXISTS im_conversations(id text PRIMARY KEY,kind text NOT NULL,title text NOT NULL DEFAULT '',avatar_url text NOT NULL DEFAULT '',current_seq bigint NOT NULL DEFAULT 0,last_message_seq bigint NOT NULL DEFAULT 0,created_at timestamptz NOT NULL,updated_at timestamptz NOT NULL);
+ALTER TABLE im_conversations ADD COLUMN IF NOT EXISTS member_count integer NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS im_direct_index(pair_key text PRIMARY KEY,conversation_id text UNIQUE NOT NULL REFERENCES im_conversations(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS im_members(conversation_id text NOT NULL REFERENCES im_conversations(id) ON DELETE CASCADE,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,role text NOT NULL,last_read_seq bigint NOT NULL DEFAULT 0,muted_until timestamptz,pinned boolean NOT NULL DEFAULT false,notifications_muted boolean NOT NULL DEFAULT false,manual_unread boolean NOT NULL DEFAULT false,hidden_until_seq bigint,joined_at timestamptz NOT NULL,PRIMARY KEY(conversation_id,user_id));
 ALTER TABLE im_members ADD COLUMN IF NOT EXISTS pinned boolean NOT NULL DEFAULT false;
@@ -42,6 +43,26 @@ ALTER TABLE im_members ADD COLUMN IF NOT EXISTS group_nickname text NOT NULL DEF
 ALTER TABLE im_members ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
 ALTER TABLE im_members ADD COLUMN IF NOT EXISTS last_delivered_seq bigint NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS im_members_user_idx ON im_members(user_id,joined_at DESC);
+CREATE INDEX IF NOT EXISTS im_members_conversation_joined_idx ON im_members(conversation_id,joined_at,user_id);
+UPDATE im_conversations c SET member_count=counts.total FROM (SELECT conversation_id,count(*)::integer AS total FROM im_members GROUP BY conversation_id) counts WHERE c.id=counts.conversation_id AND c.member_count<>counts.total;
+CREATE OR REPLACE FUNCTION im_members_increment_count() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE im_conversations c SET member_count=c.member_count+counts.total
+  FROM (SELECT conversation_id,count(*)::integer AS total FROM inserted_members GROUP BY conversation_id) counts
+  WHERE c.id=counts.conversation_id;
+  RETURN NULL;
+END $$;
+CREATE OR REPLACE FUNCTION im_members_decrement_count() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE im_conversations c SET member_count=GREATEST(0,c.member_count-counts.total)
+  FROM (SELECT conversation_id,count(*)::integer AS total FROM deleted_members GROUP BY conversation_id) counts
+  WHERE c.id=counts.conversation_id;
+  RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS im_members_count_insert ON im_members;
+CREATE TRIGGER im_members_count_insert AFTER INSERT ON im_members REFERENCING NEW TABLE AS inserted_members FOR EACH STATEMENT EXECUTE FUNCTION im_members_increment_count();
+DROP TRIGGER IF EXISTS im_members_count_delete ON im_members;
+CREATE TRIGGER im_members_count_delete AFTER DELETE ON im_members REFERENCING OLD TABLE AS deleted_members FOR EACH STATEMENT EXECUTE FUNCTION im_members_decrement_count();
 CREATE TABLE IF NOT EXISTS im_groups(conversation_id text PRIMARY KEY REFERENCES im_conversations(id) ON DELETE CASCADE,owner_id text NOT NULL REFERENCES im_users(id),announcement text NOT NULL DEFAULT '',announcement_version bigint NOT NULL DEFAULT 0,join_policy text NOT NULL DEFAULT 'invite',allow_member_add_friend boolean NOT NULL DEFAULT true,all_muted_until timestamptz,qr_token text UNIQUE,qr_expires_at timestamptz,dissolved_at timestamptz,updated_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS im_group_announcement_reads(conversation_id text NOT NULL REFERENCES im_groups(conversation_id) ON DELETE CASCADE,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,announcement_version bigint NOT NULL,read_at timestamptz NOT NULL,PRIMARY KEY(conversation_id,user_id,announcement_version));
 CREATE TABLE IF NOT EXISTS im_group_invites(id text PRIMARY KEY,conversation_id text NOT NULL REFERENCES im_groups(conversation_id) ON DELETE CASCADE,inviter_id text NOT NULL REFERENCES im_users(id),invitee_id text NOT NULL REFERENCES im_users(id),source text NOT NULL,status text NOT NULL,created_at timestamptz NOT NULL,expires_at timestamptz NOT NULL,updated_at timestamptz NOT NULL,resolved_at timestamptz);
@@ -63,6 +84,7 @@ CREATE TABLE IF NOT EXISTS im_group_message_pins(conversation_id text NOT NULL R
 CREATE INDEX IF NOT EXISTS im_group_message_pins_list_idx ON im_group_message_pins(conversation_id,pinned_at DESC,message_id);
 CREATE INDEX IF NOT EXISTS im_messages_history_idx ON im_messages(conversation_id,conversation_seq DESC);
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 CREATE INDEX IF NOT EXISTS im_messages_text_search_trgm_idx ON im_messages USING gin (lower(body->>'text') gin_trgm_ops) WHERE message_type='text' AND recalled_at IS NULL;
 CREATE TABLE IF NOT EXISTS im_scheduled_messages(
  id text PRIMARY KEY,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,
@@ -99,6 +121,7 @@ CREATE TABLE IF NOT EXISTS im_push_outbox(id bigserial PRIMARY KEY,user_id text 
 ALTER TABLE im_push_outbox ADD COLUMN IF NOT EXISTS locked_at timestamptz;
 ALTER TABLE im_push_outbox ADD COLUMN IF NOT EXISTS last_error text NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS im_push_outbox_pending_idx ON im_push_outbox(status,available_at) WHERE status='pending';
+CREATE INDEX IF NOT EXISTS im_push_outbox_retention_idx ON im_push_outbox(COALESCE(sent_at,available_at),id) WHERE status IN ('sent','failed');
 CREATE TABLE IF NOT EXISTS im_event_outbox(id bigserial PRIMARY KEY,event_type text NOT NULL,aggregate_id text NOT NULL,payload jsonb NOT NULL,status text NOT NULL DEFAULT 'pending',attempts integer NOT NULL DEFAULT 0,available_at timestamptz NOT NULL DEFAULT now(),locked_at timestamptz,last_error text,created_at timestamptz NOT NULL DEFAULT now(),published_at timestamptz);
 ALTER TABLE im_event_outbox ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 0;
 ALTER TABLE im_event_outbox ADD COLUMN IF NOT EXISTS available_at timestamptz NOT NULL DEFAULT now();
@@ -106,6 +129,24 @@ ALTER TABLE im_event_outbox ADD COLUMN IF NOT EXISTS locked_at timestamptz;
 ALTER TABLE im_event_outbox ADD COLUMN IF NOT EXISTS last_error text;
 DROP INDEX IF EXISTS im_event_outbox_pending_idx;
 CREATE INDEX im_event_outbox_pending_idx ON im_event_outbox(status,available_at,id) WHERE status IN ('pending','processing');
+CREATE INDEX IF NOT EXISTS im_event_outbox_retention_idx ON im_event_outbox(published_at,id) WHERE status='published';
+CREATE TABLE IF NOT EXISTS im_message_fanout(
+ id bigserial PRIMARY KEY,
+ conversation_id text NOT NULL REFERENCES im_conversations(id) ON DELETE CASCADE,
+ sender_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,
+ event_payload jsonb NOT NULL,
+ push_payload jsonb NOT NULL,
+ mention_all boolean NOT NULL DEFAULT false,
+ mentions text[] NOT NULL DEFAULT '{}',
+ last_user_id text NOT NULL DEFAULT '',
+ status text NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','completed')),
+ attempts integer NOT NULL DEFAULT 0,
+ created_at timestamptz NOT NULL,
+ locked_at timestamptz,
+ completed_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS im_message_fanout_pending_idx ON im_message_fanout(status,id) WHERE status IN ('pending','processing');
+CREATE INDEX IF NOT EXISTS im_message_fanout_retention_idx ON im_message_fanout(completed_at,id) WHERE status='completed';
 CREATE TABLE IF NOT EXISTS im_media(id text PRIMARY KEY,owner_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,object_key text UNIQUE NOT NULL,mime text NOT NULL,size bigint NOT NULL,status text NOT NULL,checksum text NOT NULL DEFAULT '',created_at timestamptz NOT NULL DEFAULT now(),completed_at timestamptz);
 ALTER TABLE im_media ADD COLUMN IF NOT EXISTS cleanup_status text NOT NULL DEFAULT '';
 ALTER TABLE im_media ADD COLUMN IF NOT EXISTS cleanup_locked_at timestamptz;

@@ -45,12 +45,22 @@
 | `IM_ALLOWED_ORIGINS` | WebSocket 允许来源 | 逗号分隔，需重启 |
 | `IM_WS_MAX_PER_USER` | 单用户 WS 上限 | 1–20，需重启 |
 | `IM_WS_MAX_PER_IP` | 单 IP WS 上限 | 1–200，需重启 |
+| `IM_WS_MAX_CONNECTIONS` | 单服务实例 WS 总上限 | 默认 10000，需按实例内存压测后调整 |
+| `IM_DB_MAX_CONNS` / `IM_DB_MIN_CONNS` | 单实例 PostgreSQL 连接池 | 默认 20/2；所有实例之和必须低于数据库连接预算 |
+| `IM_DB_MAX_CONN_LIFETIME` / `IM_DB_MAX_CONN_IDLE_TIME` | 数据库连接生命周期 | 默认 `1h`/`15m` |
+| `IM_DB_STATEMENT_TIMEOUT` | 单条数据库语句硬超时 | 默认 `15s`，防止异常查询长期占池 |
+| `IM_PUSH_WORKERS` / `IM_PUSH_BATCH_SIZE` | 推送并发与领取批次 | 默认 16/200，需结合提供商限流调整 |
+| `IM_MESSAGE_FANOUT_BATCH_SIZE` | 消息同步扇出批次 | 默认 500，范围 10–5000 |
+| `IM_SYNC_RETENTION` / `IM_OUTBOX_RETENTION` | 同步事件与 outbox 保留时间 | 默认 `720h`/`168h`；超期客户端收到全量刷新提示 |
+| `IM_HTTP_LOG_SUCCESS_SAMPLE_RATE` | 成功请求日志采样率 | 默认 0.01；慢请求与错误始终记录 |
 | `IM_ADMIN_EMAIL` | 管理员邮箱 | 生产必填 |
 | `IM_ADMIN_PASSWORD_HASH` | 管理员 bcrypt 哈希 | 禁止保存明文 |
 | `IM_ADMIN_TOTP_SECRET` | 管理员 TOTP 密钥 | 仅服务端，不回显 |
 | `IM_ADMIN_ROLE` | 管理员角色 | 默认 `platform_admin` |
 
 `IM_DEV_MODE` 与 `IM_DEV_OTP_CODE` 只允许本地开发。生产验证码使用 `IM_OTP_WEBHOOK_URL` 和 `IM_OTP_WEBHOOK_TOKEN`，URL 必须为 HTTPS，令牌不得进入日志或客户端。
+
+生产 Compose 还通过 `SERVER_CPU_LIMIT`、`SERVER_MEMORY_LIMIT`、`SERVER_GO_MEMORY_LIMIT`、`POSTGRES_CPU_LIMIT`、`POSTGRES_MEMORY_LIMIT`、`REDIS_CPU_LIMIT`、`REDIS_MEMORY_LIMIT`、`REDIS_MAXMEMORY` 和统一 PID/no-file 上限约束资源。修改这些值前必须同时检查宿主机容量、PostgreSQL `max_connections` 和实际压测结果。
 
 用户 REST 接口只从 `Authorization: Bearer <accessToken>` 读取访问令牌，不接受 query、请求体或 Cookie 回退。WebSocket 不接受 Access Token：客户端必须先用上述 REST 鉴权调用 `POST /v1/ws/ticket`，再以 30 秒、一次性 `ticket` 建连；生产 Redis 无法原子消费票据时连接失败关闭。
 

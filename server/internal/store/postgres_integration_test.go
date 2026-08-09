@@ -15,6 +15,20 @@ import (
 	"github.com/linli/im/server/internal/model"
 )
 
+func drainMessageFanout(t *testing.T, repository *Postgres, ctx context.Context) {
+	t.Helper()
+	for range 10000 {
+		_, worked, err := repository.ProcessMessageFanout(ctx, 500)
+		if err != nil {
+			t.Fatalf("process message fanout: %v", err)
+		}
+		if !worked {
+			return
+		}
+	}
+	t.Fatal("message fanout did not drain")
+}
+
 func TestPostgresConcurrentMessageSequenceAndIdempotency(t *testing.T) {
 	url := os.Getenv("IM_TEST_DATABASE_URL")
 	if url == "" {
@@ -406,9 +420,10 @@ func TestPostgresRuntimeModerationReceiptsAndOutboxRecovery(t *testing.T) {
 
 	msgID := "runtime_msg_" + suffix
 	msg, duplicate, events, err := p.SendMessage(ctx, MessageInput{UserID: u1, ConversationID: cid, ClientMsgID: "runtime-client", Type: "text", Body: map[string]any{"text": "moderate me"}, MessageID: msgID, CreatedAt: now.UnixMilli()})
-	if err != nil || duplicate || len(events) != 2 {
+	if err != nil || duplicate || len(events) != 1 {
 		t.Fatalf("send err=%v duplicate=%v events=%d", err, duplicate, len(events))
 	}
+	drainMessageFanout(t, p, ctx)
 	if err = p.SetFavorite(ctx, u2, msgID, true); err != nil {
 		t.Fatalf("favorite create: %v", err)
 	}
@@ -1282,6 +1297,7 @@ func TestPostgresMessageCollaborationLifecycle(t *testing.T) {
 	if err != nil || duplicate || message.ID != mid {
 		t.Fatalf("send=%+v duplicate=%v err=%v", message, duplicate, err)
 	}
+	drainMessageFanout(t, p, ctx)
 	var pushPayload []byte
 	if err = p.pool.QueryRow(ctx, `SELECT payload FROM im_push_outbox WHERE user_id=$1 AND event_type='message.created' ORDER BY id DESC LIMIT 1`, member).Scan(&pushPayload); err != nil {
 		t.Fatal(err)

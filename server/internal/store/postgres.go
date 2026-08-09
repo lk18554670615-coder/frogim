@@ -23,7 +23,16 @@ var normalizedSchema string
 
 type Postgres struct{ pool *pgxpool.Pool }
 
-const schemaVersion = 22
+const schemaVersion = 25
+
+type PostgresOptions struct {
+	MaxConns          int32
+	MinConns          int32
+	MaxConnLifetime   time.Duration
+	MaxConnIdleTime   time.Duration
+	HealthCheckPeriod time.Duration
+	StatementTimeout  time.Duration
+}
 
 func secureOpaqueToken(prefix string) (string, error) {
 	var raw [24]byte
@@ -34,13 +43,45 @@ func secureOpaqueToken(prefix string) (string, error) {
 }
 
 func NewPostgres(ctx context.Context, url string) (*Postgres, error) {
+	return NewPostgresWithOptions(ctx, url, PostgresOptions{})
+}
+
+func NewPostgresWithOptions(ctx context.Context, url string, options PostgresOptions) (*Postgres, error) {
 	config, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		return nil, err
 	}
-	config.MaxConns = 20
-	config.MinConns = 2
-	config.MaxConnLifetime = time.Hour
+	if options.MaxConns <= 0 {
+		options.MaxConns = 20
+	}
+	if options.MinConns < 0 {
+		options.MinConns = 0
+	}
+	if options.MinConns == 0 && options.MaxConns >= 4 {
+		options.MinConns = 2
+	}
+	if options.MaxConnLifetime <= 0 {
+		options.MaxConnLifetime = time.Hour
+	}
+	if options.MaxConnIdleTime <= 0 {
+		options.MaxConnIdleTime = 15 * time.Minute
+	}
+	if options.HealthCheckPeriod <= 0 {
+		options.HealthCheckPeriod = time.Minute
+	}
+	config.MaxConns = options.MaxConns
+	config.MinConns = options.MinConns
+	config.MaxConnLifetime = options.MaxConnLifetime
+	config.MaxConnLifetimeJitter = min(10*time.Minute, options.MaxConnLifetime/4)
+	config.MaxConnIdleTime = options.MaxConnIdleTime
+	config.HealthCheckPeriod = options.HealthCheckPeriod
+	if options.StatementTimeout <= 0 {
+		options.StatementTimeout = 15 * time.Second
+	}
+	config.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(options.StatementTimeout.Milliseconds(), 10)
+	config.ConnConfig.RuntimeParams["lock_timeout"] = "5000"
+	config.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = "15000"
+	config.ConnConfig.RuntimeParams["application_name"] = "nexachat-server"
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, err
@@ -965,7 +1006,7 @@ func (p *Postgres) ListConversations(ctx context.Context, uid string, limit int)
 	}
 	rows, err := p.pool.Query(ctx, `SELECT c.id,c.kind,c.title,c.avatar_url,c.current_seq,c.last_message_seq,c.created_at,c.updated_at,
 		m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.pinned,m.archived,m.notifications_muted,m.manual_unread,m.hidden_until_seq,m.joined_at,
-		COALESCE(mention_stats.unread_count,0),
+		COALESCE(mention_stats.unread_count,0),c.member_count,
 		lm.id,lm.conversation_id,lm.sender_id,lm.client_msg_id,lm.conversation_seq,lm.message_type,lm.body,lm.reply_to_id,lm.recalled_at,lm.expires_at,lm.expired_at,lm.edited_at,lm.edit_version,lm.created_at
 		FROM im_members m
 		JOIN im_conversations c ON c.id=m.conversation_id
@@ -998,9 +1039,10 @@ func (p *Postgres) ListConversations(ctx context.Context, uid string, limit int)
 		var lmRecalled, lmExpires, lmExpired, lmEdited, lmCreated *time.Time
 		var lmEditVersion *int
 		var mentionUnreadCount int64
+		var memberCount int64
 		if err = rows.Scan(&c.ID, &c.Type, &c.Title, &c.AvatarURL, &c.Seq, &c.LastMessageSeq, &c.CreatedAt, &c.UpdatedAt,
 			&m.Role, &m.MutedUntil, &m.LastReadSeq, &m.LastDeliveredSeq, &m.Pinned, &m.Archived, &m.NotificationsMuted, &m.ManualUnread, &m.HiddenUntilSeq, &m.JoinedAt,
-			&mentionUnreadCount,
+			&mentionUnreadCount, &memberCount,
 			&lmID, &lmCID, &lmSender, &lmClient, &lmSeq, &lmType, &lmBody, &lmReply, &lmRecalled, &lmExpires, &lmExpired, &lmEdited, &lmEditVersion, &lmCreated); err != nil {
 			return nil, err
 		}
@@ -1019,7 +1061,7 @@ func (p *Postgres) ListConversations(ctx context.Context, uid string, limit int)
 			last = lm
 			lastMessages = append(lastMessages, lm)
 		}
-		out = append(out, map[string]any{"conversation": c, "membership": m, "lastMessage": last, "unreadCount": max(int64(0), c.LastMessageSeq-m.LastReadSeq), "mentionUnreadCount": mentionUnreadCount})
+		out = append(out, map[string]any{"conversation": c, "membership": m, "lastMessage": last, "unreadCount": max(int64(0), c.LastMessageSeq-m.LastReadSeq), "mentionUnreadCount": mentionUnreadCount, "memberCount": memberCount})
 		conversationIDs = append(conversationIDs, c.ID)
 	}
 	if err = rows.Err(); err != nil {
@@ -1033,10 +1075,15 @@ func (p *Postgres) ListConversations(ctx context.Context, uid string, limit int)
 		return out, nil
 	}
 	membersByConversation := make(map[string][]*model.ConversationMember, len(conversationIDs))
-	memberRows, err := p.pool.Query(ctx, `SELECT m.conversation_id,m.user_id,u.name,COALESCE(u.handle,''),u.avatar_url,m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.group_nickname,m.joined_at
-		FROM im_members m JOIN im_users u ON u.id=m.user_id
-		WHERE m.conversation_id=ANY($1::text[])
-		ORDER BY m.conversation_id,m.joined_at,m.user_id`, conversationIDs)
+	memberRows, err := p.pool.Query(ctx, `SELECT preview.conversation_id,preview.user_id,preview.name,preview.handle,preview.avatar_url,preview.role,preview.muted_until,preview.last_read_seq,preview.last_delivered_seq,preview.group_nickname,preview.joined_at
+		FROM unnest($1::text[]) WITH ORDINALITY requested(conversation_id,position)
+		JOIN LATERAL (
+			SELECT m.conversation_id,m.user_id,u.name,COALESCE(u.handle,'') AS handle,u.avatar_url,m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.group_nickname,m.joined_at
+			FROM im_members m JOIN im_users u ON u.id=m.user_id
+			WHERE m.conversation_id=requested.conversation_id
+			ORDER BY CASE WHEN m.user_id=$2 THEN 0 WHEN m.role='owner' THEN 1 ELSE 2 END,m.joined_at,m.user_id LIMIT 8
+		) preview ON true
+		ORDER BY requested.position,CASE WHEN preview.user_id=$2 THEN 0 WHEN preview.role='owner' THEN 1 ELSE 2 END,preview.joined_at,preview.user_id`, conversationIDs, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -1066,7 +1113,7 @@ func (p *Postgres) CanAccessConversation(ctx context.Context, uid, cid string) (
 }
 
 func (p *Postgres) ConversationMemberIDs(ctx context.Context, cid string) ([]string, error) {
-	rows, err := p.pool.Query(ctx, `SELECT user_id FROM im_members WHERE conversation_id=$1 ORDER BY user_id LIMIT 100000`, cid)
+	rows, err := p.pool.Query(ctx, `SELECT user_id FROM im_members WHERE conversation_id=$1 ORDER BY user_id LIMIT 501`, cid)
 	if err != nil {
 		return nil, err
 	}
@@ -1083,28 +1130,54 @@ func (p *Postgres) ConversationMemberIDs(ctx context.Context, cid string) ([]str
 }
 
 func (p *Postgres) ListConversationMembers(ctx context.Context, uid, cid string) ([]*model.ConversationMember, error) {
+	var out []*model.ConversationMember
+	cursor := ""
+	for {
+		page, next, err := p.ListConversationMembersPage(ctx, uid, cid, cursor, 200)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, page...)
+		if next == "" || len(out) >= 5000 {
+			return out, nil
+		}
+		cursor = next
+	}
+}
+
+func (p *Postgres) ListConversationMembersPage(ctx context.Context, uid, cid, cursor string, limit int) ([]*model.ConversationMember, string, error) {
 	ok, err := p.CanAccessConversation(ctx, uid, cid)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if !ok {
-		return nil, ErrForbidden
+		return nil, "", ErrForbidden
 	}
-	rows, err := p.pool.Query(ctx, `SELECT m.conversation_id,m.user_id,u.name,COALESCE(u.handle,''),u.avatar_url,m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.group_nickname,m.joined_at FROM im_members m JOIN im_users u ON u.id=m.user_id WHERE m.conversation_id=$1 ORDER BY m.joined_at,m.user_id LIMIT 100000`, cid)
+	offset, limit := pageOffset(cursor, limit)
+	rows, err := p.pool.Query(ctx, `SELECT m.conversation_id,m.user_id,u.name,COALESCE(u.handle,''),u.avatar_url,m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.group_nickname,m.joined_at
+		FROM im_members m JOIN im_users u ON u.id=m.user_id WHERE m.conversation_id=$1 ORDER BY m.joined_at,m.user_id LIMIT $2 OFFSET $3`, cid, limit+1, offset)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer rows.Close()
 	var out []*model.ConversationMember
 	for rows.Next() {
 		m := &model.ConversationMember{}
 		if err = rows.Scan(&m.ConversationID, &m.UserID, &m.Name, &m.Handle, &m.AvatarURL, &m.Role, &m.MutedUntil, &m.LastReadSeq, &m.LastDeliveredSeq, &m.GroupNickname, &m.JoinedAt); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		m.ID = m.UserID
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err = rows.Err(); err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if len(out) > limit {
+		out = out[:limit]
+		next = strconv.Itoa(offset + limit)
+	}
+	return out, next, nil
 }
 
 func (p *Postgres) ListMessages(ctx context.Context, uid, cid string, before int64, limit int) ([]*model.Message, error) {
@@ -1185,12 +1258,26 @@ func (p *Postgres) ListSync(ctx context.Context, uid string, after int64, limit 
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	rows, err := p.pool.Query(ctx, `SELECT user_sync_seq,event_type,payload,created_at FROM im_sync_events WHERE user_id=$1 AND user_sync_seq>$2 ORDER BY user_sync_seq LIMIT $3`, uid, after, limit+1)
+	var current int64
+	var minimum *int64
+	if err := p.pool.QueryRow(ctx, `SELECT COALESCE((SELECT current_seq FROM im_user_cursors WHERE user_id=$1),0),(SELECT min(user_sync_seq) FROM im_sync_events WHERE user_id=$1)`, uid).Scan(&current, &minimum); err != nil {
+		return nil, 0, false, err
+	}
+	out := make([]*model.SyncEvent, 0, limit+1)
+	queryLimit := limit + 1
+	if after > 0 && current > after && (minimum == nil || *minimum > after+1) {
+		resetSeq := current
+		if minimum != nil {
+			resetSeq = *minimum - 1
+		}
+		out = append(out, &model.SyncEvent{UserID: uid, Seq: resetSeq, Type: "sync.reset_required", Payload: map[string]any{"reason": "retention", "currentSeq": current}, CreatedAt: time.Now()})
+		queryLimit = limit
+	}
+	rows, err := p.pool.Query(ctx, `SELECT user_sync_seq,event_type,payload,created_at FROM im_sync_events WHERE user_id=$1 AND user_sync_seq>$2 ORDER BY user_sync_seq LIMIT $3`, uid, after, queryLimit)
 	if err != nil {
 		return nil, 0, false, err
 	}
 	defer rows.Close()
-	var out []*model.SyncEvent
 	for rows.Next() {
 		e := &model.SyncEvent{UserID: uid}
 		var raw []byte
@@ -1335,42 +1422,31 @@ func (p *Postgres) SendMessage(ctx context.Context, in MessageInput) (*model.Mes
 	m := &model.Message{ID: in.MessageID, ConversationID: in.ConversationID, SenderID: in.UserID, ClientMsgID: in.ClientMsgID, Seq: seq, Type: in.Type, Body: in.Body, ReplyToID: in.ReplyToID, ExpiresAt: in.ExpiresAt, CreatedAt: created}
 	payload, _ := json.Marshal(map[string]any{"message": m})
 	pushPayload, _ := json.Marshal(map[string]any{"message": map[string]any{"id": m.ID, "conversationId": m.ConversationID, "type": m.Type}})
-	_, err = tx.Exec(ctx, `INSERT INTO im_user_cursors(user_id,current_seq)
-		SELECT user_id,0 FROM im_members WHERE conversation_id=$1 ON CONFLICT DO NOTHING`, in.ConversationID)
+	// Keep the sender's durable cursor in the acknowledgement transaction, but
+	// expand the other recipients asynchronously. This bounds send latency for
+	// large groups while retaining one durable sync event per user.
+	_, err = tx.Exec(ctx, `INSERT INTO im_user_cursors(user_id,current_seq) VALUES($1,0) ON CONFLICT DO NOTHING`, in.UserID)
 	if err != nil {
 		return nil, false, nil, err
 	}
-	rows, err := tx.Query(ctx, `WITH bumped AS (
-		UPDATE im_user_cursors c SET current_seq=c.current_seq+1
-		FROM im_members member WHERE member.conversation_id=$1 AND member.user_id=c.user_id
-		RETURNING c.user_id,c.current_seq
+	var senderSyncSeq int64
+	err = tx.QueryRow(ctx, `WITH bumped AS (
+		UPDATE im_user_cursors SET current_seq=current_seq+1 WHERE user_id=$1 RETURNING current_seq
 	), synced AS (
 		INSERT INTO im_sync_events(user_id,user_sync_seq,event_type,payload,created_at)
-		SELECT user_id,current_seq,'message.created',$2,$3 FROM bumped
-		RETURNING user_id,user_sync_seq
-	), pushed AS (
-		INSERT INTO im_push_outbox(user_id,event_type,payload)
-		SELECT user_id,'message.created',$4::jsonb||jsonb_build_object('mentioned',($6::boolean OR user_id=ANY($7::text[]))) FROM bumped WHERE user_id<>$5
-		RETURNING id
+		SELECT $1,current_seq,'message.created',$2,$3 FROM bumped RETURNING user_sync_seq
 	)
-	SELECT user_id,user_sync_seq FROM synced ORDER BY user_id`, in.ConversationID, payload, created, pushPayload, in.UserID, in.MentionAll, in.Mentions)
+	SELECT user_sync_seq FROM synced`, in.UserID, payload, created).Scan(&senderSyncSeq)
 	if err != nil {
 		return nil, false, nil, err
 	}
-	defer rows.Close()
-	events := make([]*model.SyncEvent, 0)
-	for rows.Next() {
-		var uid string
-		var us int64
-		if err = rows.Scan(&uid, &us); err != nil {
-			return nil, false, nil, err
-		}
-		events = append(events, &model.SyncEvent{UserID: uid, Seq: us, Type: "message.created", Payload: map[string]any{"message": m}, CreatedAt: created})
-	}
-	if err = rows.Err(); err != nil {
+	events := []*model.SyncEvent{{UserID: in.UserID, Seq: senderSyncSeq, Type: "message.created", Payload: map[string]any{"message": m}, CreatedAt: created}}
+	_, err = tx.Exec(ctx, `INSERT INTO im_message_fanout(conversation_id,sender_id,event_payload,push_payload,mention_all,mentions,created_at)
+		SELECT $1,$2,$3,$4,$5,COALESCE($6::text[],'{}'::text[]),clock_timestamp()
+		WHERE EXISTS(SELECT 1 FROM im_members WHERE conversation_id=$1 AND user_id<>$2 AND joined_at<=clock_timestamp())`, in.ConversationID, in.UserID, payload, pushPayload, in.MentionAll, in.Mentions)
+	if err != nil {
 		return nil, false, nil, err
 	}
-	rows.Close()
 	var eventID int64
 	err = tx.QueryRow(ctx, `INSERT INTO im_event_outbox(event_type,aggregate_id,payload) VALUES('message.created',$1,$2) RETURNING id`, in.ConversationID, payload).Scan(&eventID)
 	if err != nil {
@@ -1383,6 +1459,147 @@ func (p *Postgres) SendMessage(ctx context.Context, in MessageInput) (*model.Mes
 		return nil, false, nil, err
 	}
 	return m, false, events, nil
+}
+
+func (p *Postgres) ProcessMessageFanout(ctx context.Context, batch int) (int, bool, error) {
+	if batch <= 0 || batch > 5000 {
+		batch = 500
+	}
+	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return 0, false, err
+	}
+	defer tx.Rollback(ctx)
+	var locked bool
+	if err = tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(490739126)`).Scan(&locked); err != nil || !locked {
+		return 0, false, err
+	}
+	var id int64
+	var conversationID, senderID, lastUserID string
+	var eventPayload, pushPayload []byte
+	var mentionAll bool
+	var mentions []string
+	var createdAt time.Time
+	err = tx.QueryRow(ctx, `SELECT id,conversation_id,sender_id,event_payload,push_payload,mention_all,mentions,last_user_id,created_at
+		FROM im_message_fanout WHERE status IN ('pending','processing') ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(
+		&id, &conversationID, &senderID, &eventPayload, &pushPayload, &mentionAll, &mentions, &lastUserID, &createdAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, tx.Commit(ctx)
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE im_message_fanout SET status='processing',locked_at=now(),attempts=attempts+1 WHERE id=$1`, id); err != nil {
+		return 0, false, err
+	}
+	rows, err := tx.Query(ctx, `SELECT user_id FROM im_members
+		WHERE conversation_id=$1 AND user_id<>$2 AND user_id>$3 AND joined_at<=$4
+		ORDER BY user_id LIMIT $5`, conversationID, senderID, lastUserID, createdAt, batch+1)
+	if err != nil {
+		return 0, false, err
+	}
+	userIDs := make([]string, 0, batch+1)
+	for rows.Next() {
+		var userID string
+		if err = rows.Scan(&userID); err != nil {
+			rows.Close()
+			return 0, false, err
+		}
+		userIDs = append(userIDs, userID)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return 0, false, err
+	}
+	hasMore := len(userIDs) > batch
+	if hasMore {
+		userIDs = userIDs[:batch]
+	}
+	if len(userIDs) > 0 {
+		if _, err = tx.Exec(ctx, `INSERT INTO im_user_cursors(user_id,current_seq)
+			SELECT user_id,0 FROM unnest($1::text[]) AS user_id ON CONFLICT DO NOTHING`, userIDs); err != nil {
+			return 0, false, err
+		}
+		var synced int
+		err = tx.QueryRow(ctx, `WITH bumped AS (
+			UPDATE im_user_cursors SET current_seq=current_seq+1 WHERE user_id=ANY($1::text[]) RETURNING user_id,current_seq
+		), synced AS (
+			INSERT INTO im_sync_events(user_id,user_sync_seq,event_type,payload,created_at)
+			SELECT user_id,current_seq,'message.created',$2,$3 FROM bumped RETURNING user_id
+		), pushed AS (
+			INSERT INTO im_push_outbox(user_id,event_type,payload)
+			SELECT user_id,'message.created',$4::jsonb||jsonb_build_object('mentioned',($5::boolean OR user_id=ANY($6::text[]))) FROM bumped
+			RETURNING id
+		)
+		SELECT count(*) FROM synced`, userIDs, eventPayload, createdAt, pushPayload, mentionAll, mentions).Scan(&synced)
+		if err != nil {
+			return 0, false, err
+		}
+		lastUserID = userIDs[len(userIDs)-1]
+	}
+	if hasMore {
+		_, err = tx.Exec(ctx, `UPDATE im_message_fanout SET last_user_id=$2,locked_at=NULL WHERE id=$1`, id, lastUserID)
+	} else {
+		_, err = tx.Exec(ctx, `UPDATE im_message_fanout SET last_user_id=$2,status='completed',locked_at=NULL,completed_at=now() WHERE id=$1`, id, lastUserID)
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return 0, false, err
+	}
+	return len(userIDs), true, nil
+}
+
+func (p *Postgres) CleanupRuntimeData(ctx context.Context, policy RetentionPolicy, batch int) (int64, error) {
+	if batch <= 0 || batch > 10000 {
+		batch = 1000
+	}
+	if policy.SyncEvents <= 0 {
+		policy.SyncEvents = 30 * 24 * time.Hour
+	}
+	if policy.Outbox <= 0 {
+		policy.Outbox = 7 * 24 * time.Hour
+	}
+	type cleanup struct {
+		query  string
+		cutoff time.Time
+	}
+	now := time.Now()
+	jobs := []cleanup{
+		{`WITH expired AS (SELECT user_id,user_sync_seq FROM im_sync_events WHERE created_at<$1 ORDER BY created_at LIMIT $2) DELETE FROM im_sync_events e USING expired x WHERE e.user_id=x.user_id AND e.user_sync_seq=x.user_sync_seq`, now.Add(-policy.SyncEvents)},
+		{`WITH expired AS (SELECT id FROM im_push_outbox WHERE status IN ('sent','failed') AND COALESCE(sent_at,available_at)<$1 ORDER BY id LIMIT $2) DELETE FROM im_push_outbox o USING expired x WHERE o.id=x.id`, now.Add(-policy.Outbox)},
+		{`WITH expired AS (SELECT id FROM im_event_outbox WHERE status='published' AND published_at<$1 ORDER BY id LIMIT $2) DELETE FROM im_event_outbox o USING expired x WHERE o.id=x.id`, now.Add(-policy.Outbox)},
+		{`WITH expired AS (SELECT id FROM im_message_fanout WHERE status='completed' AND completed_at<$1 ORDER BY id LIMIT $2) DELETE FROM im_message_fanout f USING expired x WHERE f.id=x.id`, now.Add(-policy.Outbox)},
+	}
+	var removed int64
+	for _, job := range jobs {
+		result, err := p.pool.Exec(ctx, job.query, job.cutoff, batch)
+		if err != nil {
+			return removed, err
+		}
+		removed += result.RowsAffected()
+	}
+	return removed, nil
+}
+
+func (p *Postgres) RuntimeStats(ctx context.Context) (RuntimeStats, error) {
+	poolStats := p.pool.Stat()
+	stats := RuntimeStats{
+		DBMaxConnections: poolStats.MaxConns(), DBTotalConnections: poolStats.TotalConns(),
+		DBIdleConnections: poolStats.IdleConns(), DBAcquiredConnections: poolStats.AcquiredConns(),
+		DBAcquireCount: poolStats.AcquireCount(), DBEmptyAcquireCount: poolStats.EmptyAcquireCount(),
+		DBCanceledAcquireCount: poolStats.CanceledAcquireCount(), DBAcquireDurationSeconds: poolStats.AcquireDuration().Seconds(),
+	}
+	err := p.pool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM im_push_outbox WHERE status IN ('pending','processing')),
+		COALESCE((SELECT EXTRACT(EPOCH FROM now()-min(created_at)) FROM im_push_outbox WHERE status IN ('pending','processing')),0),
+		(SELECT count(*) FROM im_event_outbox WHERE status IN ('pending','processing')),
+		COALESCE((SELECT EXTRACT(EPOCH FROM now()-min(created_at)) FROM im_event_outbox WHERE status IN ('pending','processing')),0),
+		(SELECT count(*) FROM im_message_fanout WHERE status IN ('pending','processing')),
+		COALESCE((SELECT EXTRACT(EPOCH FROM now()-min(created_at)) FROM im_message_fanout WHERE status IN ('pending','processing')),0)`).Scan(
+		&stats.PushPending, &stats.OldestPushSeconds, &stats.EventPending, &stats.OldestEventSeconds, &stats.FanoutPending, &stats.OldestFanoutSeconds)
+	return stats, err
 }
 
 func (p *Postgres) RunEvents(ctx context.Context, deliver func([]string, string, map[string]any)) error {
@@ -1698,8 +1915,8 @@ func (p *Postgres) CreateFeedback(ctx context.Context, id, uid, category, conten
 	return err
 }
 func (p *Postgres) ClaimPush(ctx context.Context, n int) ([]OutboxItem, error) {
-	if n <= 0 || n > 100 {
-		n = 20
+	if n <= 0 || n > 1000 {
+		n = 200
 	}
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -1725,18 +1942,34 @@ func (p *Postgres) ClaimPush(ctx context.Context, n int) ([]OutboxItem, error) {
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
+	userIndexes := make(map[string][]int, len(out))
+	userIDs := make([]string, 0, len(out))
+	itemIDs := make([]int64, 0, len(out))
 	for i := range out {
-		deviceRows, queryErr := tx.Query(ctx, `SELECT id,platform,push_token,provider,notifications_enabled,preview_enabled,sound_enabled,vibration_enabled FROM im_devices WHERE user_id=$1 AND notifications_enabled=true ORDER BY id LIMIT 20`, out[i].UserID)
+		if len(userIndexes[out[i].UserID]) == 0 {
+			userIDs = append(userIDs, out[i].UserID)
+		}
+		userIndexes[out[i].UserID] = append(userIndexes[out[i].UserID], i)
+		itemIDs = append(itemIDs, out[i].ID)
+	}
+	if len(userIDs) > 0 {
+		deviceRows, queryErr := tx.Query(ctx, `SELECT user_id,id,platform,push_token,provider,notifications_enabled,preview_enabled,sound_enabled,vibration_enabled FROM (
+			SELECT d.*,row_number() OVER(PARTITION BY user_id ORDER BY id) AS device_rank FROM im_devices d
+			WHERE user_id=ANY($1::text[]) AND notifications_enabled=true
+		) ranked WHERE device_rank<=20 ORDER BY user_id,id`, userIDs)
 		if queryErr != nil {
 			return nil, queryErr
 		}
 		for deviceRows.Next() {
-			var d Device
-			if queryErr = deviceRows.Scan(&d.ID, &d.Platform, &d.PushToken, &d.Provider, &d.NotificationsEnabled, &d.PreviewEnabled, &d.SoundEnabled, &d.VibrationEnabled); queryErr != nil {
+			var userID string
+			var device Device
+			if queryErr = deviceRows.Scan(&userID, &device.ID, &device.Platform, &device.PushToken, &device.Provider, &device.NotificationsEnabled, &device.PreviewEnabled, &device.SoundEnabled, &device.VibrationEnabled); queryErr != nil {
 				deviceRows.Close()
 				return nil, queryErr
 			}
-			out[i].Devices = append(out[i].Devices, d)
+			for _, index := range userIndexes[userID] {
+				out[index].Devices = append(out[index].Devices, device)
+			}
 		}
 		queryErr = deviceRows.Err()
 		deviceRows.Close()
@@ -1744,8 +1977,8 @@ func (p *Postgres) ClaimPush(ctx context.Context, n int) ([]OutboxItem, error) {
 			return nil, queryErr
 		}
 	}
-	for _, x := range out {
-		if _, err = tx.Exec(ctx, `UPDATE im_push_outbox SET status='processing',locked_at=now(),attempts=attempts+1 WHERE id=$1`, x.ID); err != nil {
+	if len(itemIDs) > 0 {
+		if _, err = tx.Exec(ctx, `UPDATE im_push_outbox SET status='processing',locked_at=now(),attempts=attempts+1 WHERE id=ANY($1::bigint[])`, itemIDs); err != nil {
 			return nil, err
 		}
 	}
