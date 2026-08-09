@@ -35,6 +35,7 @@ required=(
   IM_DATABASE_URL IM_REDIS_URL IM_JWT_SECRET IM_ADMIN_EMAIL
   IM_ADMIN_PASSWORD_HASH IM_ADMIN_TOTP_SECRET IM_ADMIN_SHARED_KEY_ENABLED
   IM_PUSH_PROVIDER IM_OTP_WEBHOOK_URL IM_OTP_WEBHOOK_TOKEN
+  TERMS_URL PRIVACY_URL
   MINIO_ROOT_USER MINIO_ROOT_PASSWORD MINIO_APP_USER MINIO_APP_PASSWORD
 )
 
@@ -191,6 +192,17 @@ for key in IM_OTP_WEBHOOK_URL; do
   value="${!key:-}"
   if [[ ! "$value" =~ ^https:// ]]; then
     echo "$key must use HTTPS" >&2
+    failed=1
+  fi
+done
+
+for key in TERMS_URL PRIVACY_URL; do
+  value="${!key:-}"
+  if [[ ! "$value" =~ ^https:// ]]; then
+    echo "$key must use HTTPS" >&2
+    failed=1
+  elif [[ "$value" == *example.com* || "$value" == *203.0.113.* ]]; then
+    echo "$key must not use a documentation placeholder address" >&2
     failed=1
   fi
 done

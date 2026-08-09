@@ -62,6 +62,10 @@ services:
         WEB_API_BASE_URL: https://${SERVER_IP:?set SERVER_IP}
         WEB_WS_URL: wss://${SERVER_IP:?set SERVER_IP}/v1/ws
         WEB_BASE_HREF: /web/
+        APP_ENV: staging
+        ENABLE_DEMO: "false"
+        TERMS_URL: ${TERMS_URL:-}
+        PRIVACY_URL: ${PRIVACY_URL:-}
     expose:
       - "8080"
     networks:

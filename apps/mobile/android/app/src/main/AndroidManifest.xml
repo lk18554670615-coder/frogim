@@ -23,7 +23,10 @@
         android:label="邻里通讯"
         android:name=".LinliApplication"
         android:icon="@mipmap/ic_launcher"
-        tools:replace="android:label">
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:usesCleartextTraffic="false"
+        tools:replace="android:label,android:allowBackup,android:usesCleartextTraffic">
         <activity
             android:name=".MainActivity"
             android:exported="true"

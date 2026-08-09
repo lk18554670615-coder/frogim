@@ -535,6 +535,7 @@ func TestPostgresRuntimeModerationReceiptsAndOutboxRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	delivered := make(chan struct{}, 1)
 	runErr := make(chan error, 1)
 	go func() {
@@ -549,7 +550,6 @@ func TestPostgresRuntimeModerationReceiptsAndOutboxRecovery(t *testing.T) {
 	}()
 	select {
 	case <-delivered:
-		cancel()
 	case err = <-runErr:
 		cancel()
 		t.Fatalf("event subscriber stopped: %v", err)
@@ -558,9 +558,24 @@ func TestPostgresRuntimeModerationReceiptsAndOutboxRecovery(t *testing.T) {
 		t.Fatal("pending outbox event was not recovered")
 	}
 	var published string
-	if err = p.pool.QueryRow(ctx, `SELECT status FROM im_event_outbox WHERE id=$1`, outboxID).Scan(&published); err != nil || published != "published" {
-		t.Fatalf("outbox status=%q err=%v", published, err)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err = p.pool.QueryRow(ctx, `SELECT status FROM im_event_outbox WHERE id=$1`, outboxID).Scan(&published)
+		if err == nil && published == "published" {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("outbox status=%q err=%v", published, err)
+		}
+		select {
+		case err = <-runErr:
+			cancel()
+			t.Fatalf("event subscriber stopped before publishing: %v", err)
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
+	cancel()
 }
 
 func TestPostgresCallLifecycleTimeoutAndAdminMetadata(t *testing.T) {

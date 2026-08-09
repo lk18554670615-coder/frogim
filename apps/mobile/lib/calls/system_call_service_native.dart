@@ -70,7 +70,9 @@ class NativeSystemCallService implements SystemCallService {
         // 测试环境没有 Android 原生插件。
       } on PlatformException catch (error) {
         if (kDebugMode) {
-          debugPrint('Background call actions unavailable: ${error.code}');
+          if (kDebugMode) {
+            debugPrint('Background call actions unavailable: ${error.code}');
+          }
         }
       }
     }
@@ -81,7 +83,9 @@ class NativeSystemCallService implements SystemCallService {
       // 桌面与纯 Dart 测试没有原生通话插件。
     } on PlatformException catch (error) {
       if (kDebugMode) {
-        debugPrint('System call integration unavailable: ${error.code}');
+        if (kDebugMode) {
+          debugPrint('System call integration unavailable: ${error.code}');
+        }
       }
     }
   }
@@ -110,7 +114,9 @@ class NativeSystemCallService implements SystemCallService {
       // 纯 Dart 测试没有原生插件。
     } on PlatformException catch (error) {
       if (kDebugMode) {
-        debugPrint('System call permission deferred: ${error.code}');
+        if (kDebugMode) {
+          debugPrint('System call permission deferred: ${error.code}');
+        }
       }
     }
   }

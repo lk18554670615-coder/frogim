@@ -6,6 +6,36 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+val releaseStoreFile = providers.gradleProperty("RELEASE_STORE_FILE")
+    .orElse(providers.environmentVariable("RELEASE_STORE_FILE"))
+    .orNull
+    ?.trim()
+val releaseStorePassword = providers.gradleProperty("RELEASE_STORE_PASSWORD")
+    .orElse(providers.environmentVariable("RELEASE_STORE_PASSWORD"))
+    .orNull
+val releaseKeyAlias = providers.gradleProperty("RELEASE_KEY_ALIAS")
+    .orElse(providers.environmentVariable("RELEASE_KEY_ALIAS"))
+    .orNull
+    ?.trim()
+val releaseKeyPassword = providers.gradleProperty("RELEASE_KEY_PASSWORD")
+    .orElse(providers.environmentVariable("RELEASE_KEY_PASSWORD"))
+    .orNull
+val releaseSigningValues = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+)
+val hasAnyReleaseSigningValue = releaseSigningValues.any { !it.isNullOrEmpty() }
+val hasReleaseSigning = releaseSigningValues.all { !it.isNullOrEmpty() }
+
+if (hasAnyReleaseSigningValue && !hasReleaseSigning) {
+    throw GradleException(
+        "Incomplete release signing configuration. Provide RELEASE_STORE_FILE, " +
+            "RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS and RELEASE_KEY_PASSWORD.",
+    )
+}
+
 android {
     val localProperties = Properties().apply {
         val file = rootProject.file("local.properties")
@@ -33,15 +63,45 @@ android {
                 .get()
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = true
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // CI injects the production signing config. Never ship a debug key.
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
         }
     }
+}
+
+val releaseTaskRequested = gradle.startParameter.taskNames.any { taskName ->
+    taskName.contains("release", ignoreCase = true) &&
+        (taskName.contains("assemble", ignoreCase = true) ||
+            taskName.contains("bundle", ignoreCase = true) ||
+            taskName.contains("package", ignoreCase = true))
+}
+if (releaseTaskRequested && !hasReleaseSigning) {
+    throw GradleException(
+        "Release signing is required. Configure the four RELEASE_* signing values; " +
+            "debug keys must never be used for a formal release.",
+    )
 }
 
 dependencies {

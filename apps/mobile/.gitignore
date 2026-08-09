@@ -43,3 +43,11 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Android release signing material must stay outside version control.
+/android/*.jks
+/android/*.keystore
+/android/key.properties
+
+# FVM Version Cache
+.fvm/

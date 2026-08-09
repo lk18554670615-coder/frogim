@@ -65,7 +65,7 @@ class _LinliAppState extends State<LinliApp> {
     darkTheme: buildLinliTheme(Brightness.dark),
     themeMode: themeMode,
     locale: const Locale('zh', 'CN'),
-    supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
+    supportedLocales: const [Locale('zh', 'CN')],
     localizationsDelegates: const [
       GlobalMaterialLocalizations.delegate,
       GlobalCupertinoLocalizations.delegate,

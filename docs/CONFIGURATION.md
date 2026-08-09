@@ -24,6 +24,8 @@
 | `GETUI_APP_ID` | 个推应用编号 | 可进入客户端构建 |
 | `GETUI_APP_KEY` | 个推应用键 | SDK 初始化使用 |
 | `GETUI_APP_SECRET` | 个推客户端密钥 | 按官方客户端接入要求注入 |
+| `TERMS_URL` | 用户协议地址 | 生产必须是已经法务审核并公开可访问的 HTTPS URL |
+| `PRIVACY_URL` | 隐私政策地址 | 生产必须是已经法务审核并公开可访问的 HTTPS URL |
 
 本地调试参数放在已忽略的 `apps/mobile/dart_defines.local.json`，通过 `--dart-define-from-file` 注入。`IM_GETUI_MASTER_SECRET` 只能存在于服务端。
 

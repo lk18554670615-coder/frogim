@@ -31,15 +31,20 @@ ARG WEB_WS_URL
 ARG WEB_BASE_HREF=/web/
 ARG APP_ENV=production
 ARG ENABLE_DEMO=false
+ARG TERMS_URL
+ARG PRIVACY_URL
 
 RUN test -n "$WEB_API_BASE_URL" \
     && test -n "$WEB_WS_URL" \
+    && { [ "$APP_ENV" != "production" ] || { test -n "$TERMS_URL" && test -n "$PRIVACY_URL"; }; } \
     && flutter build web --release \
       --base-href "$WEB_BASE_HREF" \
       --dart-define=APP_ENV="$APP_ENV" \
       --dart-define=API_BASE_URL="$WEB_API_BASE_URL" \
       --dart-define=WS_URL="$WEB_WS_URL" \
-      --dart-define=ENABLE_DEMO="$ENABLE_DEMO"
+      --dart-define=ENABLE_DEMO="$ENABLE_DEMO" \
+      --dart-define=TERMS_URL="$TERMS_URL" \
+      --dart-define=PRIVACY_URL="$PRIVACY_URL"
 
 FROM nginxinc/nginx-unprivileged:1.29-alpine
 

@@ -1737,10 +1737,21 @@ class LiveImRepository implements ImRepository, CallRepository {
     }
     _pendingCallSignalRetries.clear();
     _receivedCallSignals.clear();
-    await _socketSubscription?.cancel();
+    final socketSubscription = _socketSubscription;
+    final channel = _channel;
     _socketSubscription = null;
-    await _channel?.sink.close();
     _channel = null;
+    try {
+      await socketSubscription?.cancel().timeout(const Duration(seconds: 2));
+    } catch (_) {
+      // A failed browser WebSocket handshake can leave cancellation pending.
+      // Session cleanup and logout must never wait on transport shutdown.
+    }
+    try {
+      await channel?.sink.close().timeout(const Duration(seconds: 2));
+    } catch (_) {
+      // The transport is already detached, so a late close is harmless.
+    }
     _connection.add(false);
   }
 
@@ -1891,23 +1902,33 @@ class LiveImRepository implements ImRepository, CallRepository {
 /// Chooses Live or Demo once, explicitly. It never turns a failed production
 /// request into a fake successful Demo request.
 class ResilientImRepository implements ImRepository, CallRepository {
-  ResilientImRepository({this.live, ImRepository? demo})
-    : _demo = demo ?? DemoImRepository();
+  ResilientImRepository({this.live, this._demo});
 
   factory ResilientImRepository.fromEnvironment() => ResilientImRepository(
     live: AppConfig.hasLiveBackend ? LiveImRepository() : null,
+    demo: AppConfig.allowsDemo ? DemoImRepository() : null,
   );
 
   final ImRepository? live;
-  final ImRepository _demo;
+  final ImRepository? _demo;
   bool _explicitDemo = false;
 
-  ImRepository get _active => _explicitDemo || live == null ? _demo : live!;
+  ImRepository get _active {
+    final demo = _demo;
+    if (_explicitDemo && demo != null) return demo;
+    if (live case final live?) return live;
+    if (demo != null) return demo;
+    throw const ImApiException(
+      statusCode: 503,
+      code: 'CLIENT_NOT_CONFIGURED',
+      message: '客户端尚未配置服务地址',
+    );
+  }
 
   @override
   bool get isDemo => _active.isDemo;
   @override
-  bool get supportsDemo => AppConfig.allowsDemo;
+  bool get supportsDemo => AppConfig.allowsDemo && _demo != null;
   @override
   AppUser? get currentUser => _active.currentUser;
   @override
@@ -1969,7 +1990,8 @@ class ResilientImRepository implements ImRepository, CallRepository {
 
   @override
   Future<void> enterDemo() async {
-    if (!supportsDemo) {
+    final demo = _demo;
+    if (!supportsDemo || demo == null) {
       throw const ImApiException(
         statusCode: 403,
         code: 'DEMO_DISABLED',
@@ -1977,7 +1999,7 @@ class ResilientImRepository implements ImRepository, CallRepository {
       );
     }
     _explicitDemo = true;
-    await _demo.enterDemo();
+    await demo.enterDemo();
   }
 
   @override
@@ -2333,6 +2355,6 @@ class ResilientImRepository implements ImRepository, CallRepository {
   @override
   Future<void> close() async {
     await live?.close();
-    await _demo.close();
+    await _demo?.close();
   }
 }

@@ -55,6 +55,10 @@ services:
         WEB_API_BASE_URL: https://${DOMAIN:?set DOMAIN}
         WEB_WS_URL: wss://${DOMAIN:?set DOMAIN}/v1/ws
         WEB_BASE_HREF: /web/
+        APP_ENV: production
+        ENABLE_DEMO: "false"
+        TERMS_URL: ${TERMS_URL:?set TERMS_URL}
+        PRIVACY_URL: ${PRIVACY_URL:?set PRIVACY_URL}
     expose:
       - "8080"
     networks:

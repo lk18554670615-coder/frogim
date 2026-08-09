@@ -27,6 +27,27 @@ flutter run \
 
 开发后端验证码由部署环境配置。`staging` 和 `production` 缺少服务地址或启用 Demo 时会直接启动失败；`production` 还强制要求 HTTPS/WSS。开发构建未配置服务地址时可显式进入 Demo，真实请求失败时不会自动伪装成 Demo 成功结果。
 
+正式构建还必须提供法务审核后的 `TERMS_URL` 和 `PRIVACY_URL` HTTPS 地址。Release 模式默认按 `production` 校验，即使遗漏 `APP_ENV` 也不会静默打出 Demo 包。
+
+Android 正式包只接受外部注入的上传密钥，缺少任一参数会直接终止 Release 构建：
+
+```bash
+export RELEASE_STORE_FILE=/secure/path/upload-key.jks
+export RELEASE_STORE_PASSWORD='replace-me'
+export RELEASE_KEY_ALIAS=upload
+export RELEASE_KEY_PASSWORD='replace-me'
+
+flutter build appbundle --release \
+  --dart-define=APP_ENV=production \
+  --dart-define=API_BASE_URL=https://chat.example.com \
+  --dart-define=WS_URL=wss://chat.example.com/v1/ws \
+  --dart-define=ENABLE_DEMO=false \
+  --dart-define=TERMS_URL=https://chat.example.com/legal/terms \
+  --dart-define=PRIVACY_URL=https://chat.example.com/legal/privacy
+```
+
+密钥文件和密码不得提交到仓库；商店发布前应将上传密钥纳入组织级密码库和离线备份。
+
 ## 分层
 
 - `lib/core`：环境配置、模型、主题与应用状态机。

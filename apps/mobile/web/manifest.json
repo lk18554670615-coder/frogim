@@ -5,7 +5,7 @@
     "display": "standalone",
     "background_color": "#0F172A",
     "theme_color": "#0F172A",
-    "description": "A new Flutter project.",
+    "description": "支持单聊、群聊、文件、语音与视频通话的即时通讯应用。",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

@@ -8,6 +8,8 @@
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
 	<string>邻里通讯</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>用于拍摄并发送聊天图片，以及在你主动发起或接听视频通话时显示画面。</string>
 	<key>NSPhotoLibraryUsageDescription</key>

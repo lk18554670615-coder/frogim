@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -27,12 +29,40 @@ func TestDevicePreferenceColumnsAreUpgradedForExistingTables(t *testing.T) {
 }
 
 func TestPostgresMigratesLegacyDevicePreferenceColumns(t *testing.T) {
-	url := os.Getenv("IM_TEST_DATABASE_URL")
-	if url == "" {
+	databaseURL := os.Getenv("IM_TEST_DATABASE_URL")
+	if databaseURL == "" {
 		t.Skip("IM_TEST_DATABASE_URL not set")
 	}
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, url)
+	adminConn, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := fmt.Sprintf("device_migration_%d", time.Now().UnixNano())
+	if _, err = adminConn.Exec(ctx, `CREATE SCHEMA `+pgx.Identifier{schema}.Sanitize()); err != nil {
+		adminConn.Close(ctx)
+		t.Fatal(err)
+	}
+	adminConn.Close(ctx)
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		cleanupConn, cleanupErr := pgx.Connect(cleanupCtx, databaseURL)
+		if cleanupErr != nil {
+			t.Errorf("connect for schema cleanup: %v", cleanupErr)
+			return
+		}
+		defer cleanupConn.Close(cleanupCtx)
+		if _, cleanupErr = cleanupConn.Exec(cleanupCtx, `DROP SCHEMA IF EXISTS `+pgx.Identifier{schema}.Sanitize()+` CASCADE`); cleanupErr != nil {
+			t.Errorf("drop migration test schema: %v", cleanupErr)
+		}
+	})
+	separator := "?"
+	if strings.Contains(databaseURL, "?") {
+		separator = "&"
+	}
+	isolatedURL := databaseURL + separator + "search_path=" + schema + ",public"
+	conn, err := pgx.Connect(ctx, isolatedURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +78,7 @@ func TestPostgresMigratesLegacyDevicePreferenceColumns(t *testing.T) {
 	}
 	conn.Close(ctx)
 
-	repo, err := NewPostgres(ctx, url)
+	repo, err := NewPostgres(ctx, isolatedURL)
 	if err != nil {
 		t.Fatal(err)
 	}

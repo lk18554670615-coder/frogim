@@ -1,5 +1,13 @@
 # Production-only override for the IP/certbot gateway. Always combine with compose.ip.yaml.
 services:
+  web:
+    build:
+      args:
+        APP_ENV: production
+        ENABLE_DEMO: "false"
+        TERMS_URL: ${TERMS_URL:?set TERMS_URL}
+        PRIVACY_URL: ${PRIVACY_URL:?set PRIVACY_URL}
+
   server:
     depends_on:
       minio-init:

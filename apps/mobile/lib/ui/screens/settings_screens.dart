@@ -2,6 +2,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../core/app_controller.dart';
@@ -9,6 +10,7 @@ import '../../core/app_theme.dart';
 import '../../core/browser_notification_permission.dart';
 import '../../core/media_opener.dart';
 import '../../core/models.dart';
+import '../legal_documents.dart';
 import '../widgets/linli_widgets.dart';
 import 'chat_screen.dart';
 import 'settings_preferences.dart';
@@ -1584,8 +1586,35 @@ class _HelpFeedbackScreenState extends State<HelpFeedbackScreen> {
   );
 }
 
-class AboutScreen extends StatelessWidget {
+class AboutScreen extends StatefulWidget {
   const AboutScreen({super.key});
+
+  @override
+  State<AboutScreen> createState() => _AboutScreenState();
+}
+
+class _AboutScreenState extends State<AboutScreen> {
+  PackageInfo? packageInfo;
+
+  String get versionLabel => switch (packageInfo) {
+    final info? => '${info.version} (${info.buildNumber})',
+    _ => '读取中…',
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPackageInfo();
+  }
+
+  Future<void> _loadPackageInfo() async {
+    try {
+      final loaded = await PackageInfo.fromPlatform();
+      if (mounted) setState(() => packageInfo = loaded);
+    } catch (_) {
+      // 测试宿主或不支持的平台可能没有原生插件；正式平台会读取安装包元数据。
+    }
+  }
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -1609,7 +1638,7 @@ class AboutScreen extends StatelessWidget {
               Text('邻里通讯', style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: 4),
               Text(
-                '版本 1.0.0 (1)',
+                '版本 $versionLabel',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
@@ -1621,21 +1650,12 @@ class AboutScreen extends StatelessWidget {
             _SettingsRow(
               icon: CupertinoIcons.doc_text,
               title: '用户协议',
-              onTap: () => _openLegal(
-                context,
-                title: '用户协议',
-                body:
-                    '正式上线前需由法务确认服务范围、用户行为规范、账号处置与争议解决条款。当前页面仅用于承载最终协议，不代表已完成法律审核。',
-              ),
+              onTap: () => showLegalDocument(context, LegalDocument.terms),
             ),
             _SettingsRow(
               icon: CupertinoIcons.hand_raised,
               title: '隐私政策',
-              onTap: () => _openLegal(
-                context,
-                title: '隐私政策',
-                body: '正式上线前需列明收集的数据类型、使用目的、保存期限、第三方共享、用户权利及注销流程，并由法务审核。',
-              ),
+              onTap: () => showLegalDocument(context, LegalDocument.privacy),
             ),
             _SettingsRow(
               key: const Key('open-source-licenses'),
@@ -1644,56 +1664,21 @@ class AboutScreen extends StatelessWidget {
               onTap: () => showLicensePage(
                 context: context,
                 applicationName: '邻里通讯',
-                applicationVersion: '1.0.0 (1)',
+                applicationVersion: versionLabel,
               ),
             ),
           ],
         ),
         const SectionHeader('服务状态'),
         SectionCard(
-          children: const [
+          children: [
             _SettingsRow(
               icon: CupertinoIcons.check_mark_circled,
               title: '客户端版本',
               subtitle: '与 pubspec.yaml 的当前发布版本一致',
-              status: '1.0.0',
+              status: packageInfo?.version ?? '读取中',
             ),
           ],
-        ),
-      ],
-    ),
-  );
-
-  void _openLegal(
-    BuildContext context, {
-    required String title,
-    required String body,
-  }) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => _LegalDocumentScreen(title: title, body: body),
-      ),
-    );
-  }
-}
-
-class _LegalDocumentScreen extends StatelessWidget {
-  const _LegalDocumentScreen({required this.title, required this.body});
-
-  final String title;
-  final String body;
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: GlassAppBar(title: Text(title)),
-    body: ListView(
-      padding: const EdgeInsets.all(24),
-      children: [
-        Text(body, style: Theme.of(context).textTheme.bodyLarge),
-        const SizedBox(height: 20),
-        Text(
-          '状态：待法务审核后替换为正式文本。',
-          style: Theme.of(context).textTheme.bodyMedium,
         ),
       ],
     ),

@@ -104,7 +104,9 @@ class _GetuiPushService implements PlatformPushService {
       await sync(controller);
     } on PlatformException catch (error) {
       if (kDebugMode) {
-        debugPrint('Getui initialization deferred: ${error.code}');
+        if (kDebugMode) {
+          debugPrint('Getui initialization deferred: ${error.code}');
+        }
       }
     }
   }

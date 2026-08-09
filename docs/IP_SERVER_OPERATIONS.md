@@ -120,6 +120,8 @@ flutter build apk --release \
   --dart-define=API_BASE_URL=https://203.0.113.10 \
   --dart-define=WS_URL=wss://203.0.113.10/v1/ws \
   --dart-define=ENABLE_DEMO=false \
+  --dart-define=TERMS_URL=https://203.0.113.10/legal/terms \
+  --dart-define=PRIVACY_URL=https://203.0.113.10/legal/privacy \
   --dart-define=MEDIA_MAX_BYTES=104857600
 ```
 
