@@ -39,6 +39,7 @@ RUN test -n "$WEB_API_BASE_URL" \
     && { [ "$APP_ENV" != "production" ] || { test -n "$TERMS_URL" && test -n "$PRIVACY_URL"; }; } \
     && flutter build web --release \
       --base-href "$WEB_BASE_HREF" \
+      --no-web-resources-cdn \
       --dart-define=APP_ENV="$APP_ENV" \
       --dart-define=API_BASE_URL="$WEB_API_BASE_URL" \
       --dart-define=WS_URL="$WEB_WS_URL" \
