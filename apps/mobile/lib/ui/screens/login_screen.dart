@@ -574,39 +574,65 @@ class _PolicyConsent extends StatelessWidget {
   final ValueChanged<bool> onChanged;
 
   @override
-  Widget build(BuildContext context) => Semantics(
-    checked: value,
-    label: '同意用户协议和隐私政策',
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Checkbox(
-          key: const Key('policy-consent-checkbox'),
-          value: value,
-          onChanged: (next) => onChanged(next ?? false),
-        ),
-        Expanded(
-          child: Wrap(
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              const Text('我已阅读并同意'),
-              TextButton(
-                onPressed: () =>
-                    showLegalDocument(context, LegalDocument.terms),
-                child: const Text('《用户协议》'),
-              ),
-              const Text('和'),
-              TextButton(
-                onPressed: () =>
-                    showLegalDocument(context, LegalDocument.privacy),
-                child: const Text('《隐私政策》'),
-              ),
-            ],
+  Widget build(BuildContext context) {
+    final policyTextStyle =
+        Theme.of(context).textTheme.bodySmall ??
+        DefaultTextStyle.of(context).style;
+    final linkStyle = TextButton.styleFrom(
+      minimumSize: Size.zero,
+      padding: const EdgeInsets.symmetric(horizontal: 1),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      visualDensity: VisualDensity.compact,
+      textStyle: policyTextStyle.copyWith(fontWeight: FontWeight.w600),
+    );
+
+    return Semantics(
+      checked: value,
+      label: '同意用户协议和隐私政策',
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Checkbox(
+            key: const Key('policy-consent-checkbox'),
+            value: value,
+            visualDensity: VisualDensity.compact,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            onChanged: (next) => onChanged(next ?? false),
           ),
-        ),
-      ],
-    ),
-  );
+          const SizedBox(width: 10),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: DefaultTextStyle(
+                style: policyTextStyle,
+                child: Wrap(
+                  spacing: 0,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    const Text('我已阅读并同意'),
+                    TextButton(
+                      style: linkStyle,
+                      onPressed: () =>
+                          showLegalDocument(context, LegalDocument.terms),
+                      child: const Text('用户协议'),
+                    ),
+                    const Text('和'),
+                    TextButton(
+                      style: linkStyle,
+                      onPressed: () =>
+                          showLegalDocument(context, LegalDocument.privacy),
+                      child: const Text('隐私政策'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class ResetPasswordScreen extends StatefulWidget {

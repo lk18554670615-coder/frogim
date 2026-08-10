@@ -63,6 +63,19 @@ void main() {
     expect(controller.authenticated, isTrue);
   });
 
+  testWidgets('小屏登录页协议说明与两个链接保持同一行', (tester) async {
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    addTearDown(controller.dispose);
+    await _pump(tester, LoginScreen(controller: controller));
+
+    final labelCenter = tester.getCenter(find.text('我已阅读并同意'));
+    final termsCenter = tester.getCenter(find.text('用户协议'));
+    final privacyCenter = tester.getCenter(find.text('隐私政策'));
+
+    expect((labelCenter.dy - termsCenter.dy).abs(), lessThan(2));
+    expect((termsCenter.dy - privacyCenter.dy).abs(), lessThan(2));
+  });
+
   testWidgets('注册与重置密码页面包含完整真实字段', (tester) async {
     final controller = AppController(DemoImRepository(latency: Duration.zero));
     addTearDown(controller.dispose);
