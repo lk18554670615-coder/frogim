@@ -139,7 +139,7 @@
           "lib/wkim.dart": "b3f0fe19b87ce2c37292d17a50b1aa25cc4dcab23e7f296a728d3fdccb7a9271"
         },
         "patchedFiles": {
-          "lib/manager/connect_manager.dart": "581ac2e75d2138422f3f367e957f6376d1e95513de5fbaf8e1fdbcd7f98db7d5",
+          "lib/manager/connect_manager.dart": "b0309e9172b925e1fbd79adab4aa42c73089d72c39c1c9c8771e70036699c0b9",
           "lib/manager/event_manager.dart": "824adf231e2c6ddef1b4cc1e883833bc491b28d8f7f252815bddc469018ea61e",
           "lib/proto/proto.dart": "060fa3db9c175f986f856c944fedfa958ab0eff0b5db9b0b712c89e7f63c74ca",
           "lib/proto/packet.dart": "fe79c11811b1a7414269af8d707fbec857f3b3f58c0dda735269eedce4444fc7",
@@ -149,6 +149,7 @@
         "scope": [
           "invoke the existing reconnect callback exactly once on Socket onError/onDone",
           "ignore stale transport callbacks by connection generation and keep only one delayed reconnect timer",
+          "replace the singleton socket wrapper on reconnect so the CONNECT frame is written to the newly opened socket",
           "decode and dispatch the pinned v2.2.5 EventPacket (frame type 12; 10/11 are SUB/SUBACK)",
           "correct SettingStream to bit 1 and decode the v4 legacy flag/no/uint64-id wire order",
           "expose legacy stream metadata already present on message frames"

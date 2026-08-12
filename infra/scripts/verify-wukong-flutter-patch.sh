@@ -5,7 +5,7 @@ root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 package_dir="$root_dir/third_party/wukongim/flutter-sdk-1.7.9-patched"
 lock_file="$root_dir/third_party/wukongim/versions.lock.json"
 patched_files=(
-  "lib/manager/connect_manager.dart:581ac2e75d2138422f3f367e957f6376d1e95513de5fbaf8e1fdbcd7f98db7d5"
+  "lib/manager/connect_manager.dart:b0309e9172b925e1fbd79adab4aa42c73089d72c39c1c9c8771e70036699c0b9"
   "lib/manager/event_manager.dart:824adf231e2c6ddef1b4cc1e883833bc491b28d8f7f252815bddc469018ea61e"
   "lib/proto/proto.dart:060fa3db9c175f986f856c944fedfa958ab0eff0b5db9b0b712c89e7f63c74ca"
   "lib/proto/packet.dart:fe79c11811b1a7414269af8d707fbec857f3b3f58c0dda735269eedce4444fc7"

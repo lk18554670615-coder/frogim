@@ -54,6 +54,7 @@ services:
       - "5200"
       - "5300"
     networks:
+      - edge
       - app
     healthcheck:
       test: ["CMD-SHELL", "wget -q --header='token: '$$WK_MANAGERTOKEN -O /dev/null http://127.0.0.1:5001/health"]
@@ -170,6 +171,7 @@ services:
       - "7880"
       - "6789"
     networks:
+      - edge
       - app
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:7880/"]

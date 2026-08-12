@@ -111,7 +111,7 @@ infra/scripts/smoke.sh .env.ip.production
 
 ## HTTPS IP 证书与 Flutter 真机包
 
-证书保存在 `CERTBOT_DIR`，ACME 校验目录由 `CERTBOT_WEBROOT` 指定。Let's Encrypt 的 IP 证书是约 6 天的短期证书，必须启用 `nexachat-cert-renew.timer` 每日续期；续期命令通过共享 webroot 完成验证并热加载 Caddy。不要手工移动 `live/` 下的软链接。公网仅暴露 80/443；数据库、Redis、MinIO 与监控端口保持私网。
+证书保存在 `CERTBOT_DIR`，ACME 校验目录由 `CERTBOT_WEBROOT` 指定。Let's Encrypt 的 IP 证书是约 6 天的短期证书，必须启用 `nexachat-cert-renew.timer` 每日续期；续期命令通过共享 webroot 完成验证并热加载 Caddy。不要手工移动 `live/` 下的软链接。公网暴露 Caddy `80/443`、WuKongIM 原生客户端 `5100/TCP`、LiveKit TCP 回退 `7881/TCP` 与媒体 `7882–7889/UDP`；WuKongIM API/Manager `5001/5200/5300`、LiveKit 管理面 `7880`、数据库、Redis、MinIO 与监控端口保持私网。生产云安全组和主机防火墙必须与此端口清单一致。
 
 正式 IP HTTPS 包示例：
 

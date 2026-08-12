@@ -74,3 +74,19 @@ if awk '/^  wukongim:/{in_service=1; next} in_service && /^  [A-Za-z0-9_-]+:/{ex
   echo "production WuKongIM must not be built on the target host" >&2
   exit 1
 fi
+
+# `app` is an internal Docker network in both production base files. Services
+# that publish native client/media ports must also join `edge`; otherwise
+# Docker accepts the Compose `ports` declaration but creates no host listener
+# or DNAT rule (NetworkSettings.Ports remains empty).
+for service in wukongim livekit; do
+  if ! awk -v target="$service" '
+    $0 == "  " target ":" { in_service=1; next }
+    in_service && /^  [A-Za-z0-9_-]+:/ { exit }
+    in_service && $0 == "      - edge" { found=1 }
+    END { exit found ? 0 : 1 }
+  ' "$ROOT_DIR/infra/compose.wukong.production.yaml"; then
+    echo "production $service must join edge so its published ports are reachable" >&2
+    exit 1
+  fi
+done

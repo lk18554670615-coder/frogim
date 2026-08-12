@@ -29,6 +29,13 @@ Socket that was intentionally replaced, a superseded asynchronous
 `Socket.connect`, or a completed disconnect are ignored. This prevents a stale
 `onDone` callback from repeatedly closing a newer master-device connection.
 
+The upstream singleton socket factory cleared the prior wrapper's inner
+socket, but then returned that same wrapper instead of storing the newly
+connected socket. Any reconnect therefore opened TCP successfully but sent no
+CONNECT frame; the server reset it at its five-second handshake timeout. The
+patch now destroys the old wrapper and replaces it with a wrapper around the
+new socket before listening or writing the first frame.
+
 Validation requires an Android/iOS target-device test that stops and restarts
 the pinned WuKongIM server, observes a new `ConnackPacket` within 10 seconds,
 obtains a successful message ACK after recovery, and then holds one stable

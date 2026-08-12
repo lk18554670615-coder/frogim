@@ -29,11 +29,11 @@ class _WKSocket {
   _WKSocket._internal(this._socket);
 
   factory _WKSocket.newSocket(Socket socket) {
-    if (_instance != null) {
-      // 销毁旧的 socket
-      _instance!._destroySocket();
-    }
-    _instance ??= _WKSocket._internal(socket);
+    // A reconnect must replace the wrapper itself. Reusing the old singleton
+    // after _destroySocket() left its inner socket null, so CONNECT was never
+    // written and the server closed every idle TCP connection after 5 seconds.
+    _instance?._destroySocket();
+    _instance = _WKSocket._internal(socket);
     return _instance!;
   }
 
