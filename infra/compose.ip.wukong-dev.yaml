@@ -15,12 +15,22 @@ services:
 
   wukong-policy-plugin-init:
     image: ${LINLI_WUKONG_POLICY_IMAGE:?set LINLI_WUKONG_POLICY_IMAGE}
+    read_only: false
+    cap_drop: []
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt: []
 
   wukong-probe:
     image: ${LINLI_WUKONG_PROBE_IMAGE:?set LINLI_WUKONG_PROBE_IMAGE}
 
   livekit:
     image: ${LINLI_LIVEKIT_IMAGE:?set LINLI_LIVEKIT_IMAGE}
+    command: ["--config", "/etc/livekit.yaml", "--node-ip", "${SERVER_IP:?set SERVER_IP}"]
+    volumes:
+      - ./livekit/livekit.public.yaml:/etc/livekit.yaml:ro
 
   prometheus:
     image: ${LINLI_PROMETHEUS_IMAGE:?set LINLI_PROMETHEUS_IMAGE}
@@ -32,6 +42,8 @@ services:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/nexachat.rules.yml:/etc/prometheus/nexachat.rules.yml:ro
       - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/monitoring/prometheus:/prometheus
+    user: "0:0"
+    read_only: false
     expose:
       - "9090"
     networks:

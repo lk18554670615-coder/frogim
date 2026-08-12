@@ -1,0 +1,25 @@
+port: 7880
+prometheus_port: 6789
+
+rtc:
+  tcp_port: 7881
+  udp_port: 7882-7889
+  # The public node address is supplied through --node-ip. Avoid a startup
+  # dependency on the default external STUN hostname in restricted DNS zones.
+  use_external_ip: false
+  allow_tcp_fallback: true
+
+room:
+  auto_create: false
+  empty_timeout: 60
+  departure_timeout: 20
+  max_participants: 9
+  enabled_codecs:
+    - mime: audio/opus
+    - mime: video/vp8
+    - mime: video/h264
+
+logging:
+  level: info
+  pion_level: error
+  json: true
