@@ -110,6 +110,11 @@ if grep -R -n -E --include='*.go' --exclude='*_test.go' --exclude-dir='teststore
   echo "production Go code must not contain an alternate in-memory runtime or IM_MODE branch" >&2
   exit 1
 fi
+
+if ! grep -Fq '.imSession.sdk == "wukongimfluttersdk"' "$ROOT_DIR/infra/scripts/remote-e2e.sh"; then
+  echo "remote E2E must validate the pinned Flutter SDK identifier" >&2
+  exit 1
+fi
 if find "$ROOT_DIR/server/migrations" -type f -print -quit 2>/dev/null | grep -q .; then
   echo "retired hand-applied SQL migration chain must remain removed; use the embedded schema" >&2
   exit 1

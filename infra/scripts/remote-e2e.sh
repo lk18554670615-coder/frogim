@@ -42,7 +42,7 @@ token_a="$(jq -er '.accessToken' <<<"$login_a")"
 token_b="$(jq -er '.accessToken' <<<"$login_b")"
 user_a="$(jq -er '.user.id' <<<"$login_a")"
 user_b="$(jq -er '.user.id' <<<"$login_b")"
-jq -e '.imSession.uid != "" and .imSession.token != "" and .imSession.tcpUrl != "" and .imSession.wsUrl != "" and (.imSession.sdk == "flutter" or .imSession.sdk == "javascript" or .imSession.sdk == "easy")' <<<"$login_a" >/dev/null
+jq -e '.imSession.uid != "" and .imSession.token != "" and .imSession.tcpUrl != "" and .imSession.wsUrl != "" and .imSession.sdk == "wukongimfluttersdk"' <<<"$login_a" >/dev/null
 jq -e '.imSession.uid != "" and .imSession.token != ""' <<<"$login_b" >/dev/null
 echo "PASS two-user OTP login and WuKongIM sessions"
 
