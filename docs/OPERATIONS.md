@@ -23,7 +23,7 @@ Prometheus 每 15 秒抓取内部 `/metrics`，规则文件目前保留兼容名
 - 长时间无 HTTP 流量：核对业务时段、入口和客户端。
 - `NexaChatHighHTTPP95Latency`：检查慢请求、数据库池等待和依赖延迟。
 - `NexaChatDatabasePoolSaturated`：检查实例连接总预算和慢 SQL。
-- `NexaChatPushBacklogOld` / `NexaChatMessageFanoutBacklog`：检查推送提供商、后台 worker 和数据库写入能力；旧 fanout 指标在最终数据清理后删除。
+- `NexaChatPushBacklogOld`：检查推送提供商、后台 worker 和数据库写入能力。消息投递和离线同步由 WuKongIM 指标覆盖，不再存在业务库 fanout 队列。
 - `NexaChatWukongChannelProposeFailures` / `NexaChatWukongChannelP95Latency`：检查 WuKong 节点、磁盘、网络和策略服务。
 - `NexaChatBackupMetricsMissing` / `NexaChatBackupFailed` / `NexaChatBackupStale` / `NexaChatBackupRunningTooLong` / `NexaChatIncompleteBackupGenerations` / `NexaChatBackupOffsiteDisabled`：检查systemd任务、完整三存储备份、异地复制和未发布代次；禁止把`.incomplete-*`或`.offsite-download-*`当作恢复点。
 - 主机磁盘、PostgreSQL 连接/WAL、Redis 内存、MinIO 容量和证书到期。

@@ -12,10 +12,11 @@ import (
 	"github.com/linli/im/server/internal/app"
 	"github.com/linli/im/server/internal/config"
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/teststore"
 )
 
 type datasourceSystemUserStore struct {
-	store.Memory
+	teststore.Memory
 	uids []string
 }
 
@@ -96,7 +97,7 @@ func TestWukongPolicyMatchesNativeSystemUserBypass(t *testing.T) {
 }
 
 func TestWukongServerDataSourceExactCommandEnvelope(t *testing.T) {
-	a, err := app.New(t.Context(), store.Memory{})
+	a, err := app.New(t.Context(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +145,7 @@ func TestWukongServerDataSourceExactCommandEnvelope(t *testing.T) {
 }
 
 func TestWukongServerDataSourceRejectsPublicPeer(t *testing.T) {
-	a, err := app.New(t.Context(), store.Memory{})
+	a, err := app.New(t.Context(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}

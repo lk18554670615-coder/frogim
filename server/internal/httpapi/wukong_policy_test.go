@@ -11,11 +11,12 @@ import (
 	"github.com/linli/im/server/internal/app"
 	"github.com/linli/im/server/internal/config"
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/teststore"
 	"github.com/linli/im/server/internal/wukong"
 )
 
 func TestWukongSendPolicyAuthenticatesAndAppliesGroupPolicy(t *testing.T) {
-	a, err := app.New(t.Context(), store.Memory{})
+	a, err := app.New(t.Context(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +60,7 @@ func TestWukongSendPolicyAuthenticatesAndAppliesGroupPolicy(t *testing.T) {
 }
 
 func TestWukongSendPolicyRejectsMalformedAndServerOwnedContent(t *testing.T) {
-	a, err := app.New(t.Context(), store.Memory{})
+	a, err := app.New(t.Context(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +130,7 @@ func TestWukongClientPolicyAcceptsOnlySupportedLiveEvents(t *testing.T) {
 }
 
 func TestWukongSendPolicyUsesStoredMIMEAsMediaAuthority(t *testing.T) {
-	a, err := app.New(t.Context(), store.Memory{})
+	a, err := app.New(t.Context(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +184,7 @@ func TestWukongSendPolicyUsesStoredMIMEAsMediaAuthority(t *testing.T) {
 }
 
 func TestWukongMediaMIMEClaimMustMatchStoredMetadata(t *testing.T) {
-	a, _ := app.New(t.Context(), store.Memory{})
+	a, _ := app.New(t.Context(), teststore.Memory{})
 	owner, _ := a.Login("13800007212", "Owner")
 	group, _ := a.CreateGroup(owner.ID, "MIME claim", nil)
 	if err := a.CreateMedia(store.Media{ID: "media-policy-claim", OwnerID: owner.ID, ObjectKey: "objects/claim", MIME: "image/jpeg", Size: 10, Status: "ready"}); err != nil {
@@ -203,7 +204,7 @@ func TestWukongMediaMIMEClaimMustMatchStoredMetadata(t *testing.T) {
 }
 
 func TestWukongSendPolicyFailsClosedWithoutConfiguredSecret(t *testing.T) {
-	a, _ := app.New(t.Context(), store.Memory{})
+	a, _ := app.New(t.Context(), teststore.Memory{})
 	api := New(config.Config{JWTSecret: "test-secret"}, a)
 	request := httptest.NewRequest(http.MethodPost, "/internal/wukong/policy/send", strings.NewReader(`{}`))
 	request.RemoteAddr = "127.0.0.1:1234"

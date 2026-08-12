@@ -14,6 +14,7 @@ import (
 
 	"github.com/linli/im/server/internal/app"
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/teststore"
 	"github.com/linli/im/server/internal/wukong"
 )
 
@@ -116,7 +117,7 @@ func TestWukongMessageMediaIDOnlyAcceptsMediaMessages(t *testing.T) {
 }
 
 func TestWukongMessageTransportDeduplicatesImmediateAndConcurrentRetries(t *testing.T) {
-	application, err := app.New(t.Context(), store.Memory{})
+	application, err := app.New(t.Context(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}

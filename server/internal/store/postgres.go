@@ -25,7 +25,7 @@ var normalizedSchema string
 
 type Postgres struct{ pool *pgxpool.Pool }
 
-const schemaVersion = 45
+const schemaVersion = 46
 
 type PostgresOptions struct {
 	MaxConns          int32
@@ -258,27 +258,6 @@ func (p *Postgres) Load(ctx context.Context) (*model.State, error) {
 			s.Members[m.ConversationID] = map[string]*model.ConversationMember{}
 		}
 		s.Members[m.ConversationID][m.UserID] = m
-	}
-	rows.Close()
-	rows, err = p.pool.Query(ctx, `SELECT id,conversation_id,sender_id,client_msg_id,conversation_seq,message_type,body,reply_to_id,recalled_at,expires_at,expired_at,edited_at,edit_version,created_at FROM im_messages ORDER BY conversation_id,conversation_seq`)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		m := &model.Message{}
-		var body []byte
-		var reply *string
-		if err = rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.ClientMsgID, &m.Seq, &m.Type, &body, &reply, &m.RecalledAt, &m.ExpiresAt, &m.ExpiredAt, &m.EditedAt, &m.EditVersion, &m.CreatedAt); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		_ = json.Unmarshal(body, &m.Body)
-		if reply != nil {
-			m.ReplyToID = *reply
-		}
-		s.Messages[m.ConversationID] = append(s.Messages[m.ConversationID], m)
-		s.MessageByID[m.ID] = m
-		s.MessageIdempotency[m.SenderID+":"+m.ClientMsgID] = m.ID
 	}
 	rows.Close()
 	rows, err = p.pool.Query(ctx, `SELECT id,reporter_id,target_type,target_id,reason,details,status,resolution,created_at,updated_at FROM im_reports`)
@@ -953,12 +932,6 @@ const adminMessageUnion = `
 	FROM im_wukong_message_index message_index
 	LEFT JOIN im_wukong_message_extensions message_extension ON message_extension.message_id=message_index.message_id
 		AND message_extension.channel_id=message_index.channel_id AND message_extension.channel_type=message_index.channel_type
-	UNION ALL
-	SELECT legacy.id,legacy.conversation_id,legacy.sender_id,legacy.client_msg_id,legacy.conversation_seq,
-		legacy.message_type,'{}'::jsonb,legacy.reply_to_id,legacy.recalled_at,legacy.expires_at,
-		legacy.expired_at,legacy.edited_at,legacy.edit_version,legacy.created_at
-	FROM im_messages legacy
-	WHERE NOT EXISTS(SELECT 1 FROM im_wukong_message_index message_index WHERE message_index.message_id::text=legacy.id)
 `
 
 func (p *Postgres) ListAdminMessages(ctx context.Context, q, messageType, cursor string, limit int) ([]*model.Message, int64, string, error) {
@@ -1039,8 +1012,7 @@ func (p *Postgres) ListConversations(ctx context.Context, uid string, limit int)
 		GREATEST(c.last_message_seq,COALESCE(wk.last_message_seq,0)),c.created_at,
 		GREATEST(c.updated_at,COALESCE(wk.last_message_at,c.updated_at)),
 		m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.pinned,m.archived,m.notifications_muted,m.manual_unread,m.hidden_until_seq,m.joined_at,
-		COALESCE(mention_stats.unread_count,0),c.member_count,
-		lm.id,lm.conversation_id,lm.sender_id,lm.client_msg_id,lm.conversation_seq,lm.message_type,lm.body,lm.reply_to_id,lm.recalled_at,lm.expires_at,lm.expired_at,lm.edited_at,lm.edit_version,lm.created_at
+		COALESCE(mention_stats.unread_count,0),c.member_count
 		FROM im_members m
 		JOIN im_conversations c ON c.id=m.conversation_id
 		LEFT JOIN LATERAL (
@@ -1048,22 +1020,9 @@ func (p *Postgres) ListConversations(ctx context.Context, uid string, limit int)
 			FROM im_wukong_message_index WHERE conversation_id=c.id
 		) wk ON true
 		LEFT JOIN LATERAL (
-			SELECT id,conversation_id,sender_id,client_msg_id,conversation_seq,message_type,body,reply_to_id,recalled_at,expires_at,expired_at,edited_at,edit_version,created_at
-			FROM im_messages WHERE conversation_id=c.id
-				AND NOT EXISTS(SELECT 1 FROM im_wukong_message_index WHERE conversation_id=c.id)
-			ORDER BY conversation_seq DESC LIMIT 1
-		) lm ON true
-		LEFT JOIN LATERAL (
-			SELECT CASE WHEN EXISTS(SELECT 1 FROM im_wukong_message_index WHERE conversation_id=c.id) THEN (
-				SELECT count(*)::bigint FROM im_wukong_reminders reminder
-				WHERE reminder.user_id=m.user_id AND reminder.conversation_id=c.id
-				  AND reminder.message_seq>m.last_read_seq AND reminder.done=false
-			) ELSE (
-				SELECT count(*)::bigint FROM im_messages mentioned
-				WHERE c.kind='group' AND mentioned.conversation_id=c.id AND mentioned.conversation_seq>m.last_read_seq
-					AND mentioned.sender_id<>m.user_id AND mentioned.message_type='text' AND mentioned.recalled_at IS NULL
-					AND (COALESCE((mentioned.body->>'mentionAll')::boolean,false) OR COALESCE(mentioned.body->'mentions','[]'::jsonb) ? m.user_id)
-			) END AS unread_count
+			SELECT count(*)::bigint AS unread_count FROM im_wukong_reminders reminder
+			WHERE reminder.user_id=m.user_id AND reminder.conversation_id=c.id
+			  AND reminder.message_seq>m.last_read_seq AND reminder.done=false
 		) mention_stats ON true
 		WHERE m.user_id=$1 AND (m.hidden_until_seq IS NULL OR GREATEST(c.last_message_seq,COALESCE(wk.last_message_seq,0))>m.hidden_until_seq)
 		ORDER BY m.pinned DESC,GREATEST(c.updated_at,COALESCE(wk.last_message_at,c.updated_at)) DESC,c.id LIMIT $2`, uid, limit)
@@ -1073,49 +1032,24 @@ func (p *Postgres) ListConversations(ctx context.Context, uid string, limit int)
 	defer rows.Close()
 	out := make([]map[string]any, 0, limit)
 	conversationIDs := make([]string, 0, limit)
-	lastMessages := make([]*model.Message, 0, limit)
 	for rows.Next() {
 		c := &model.Conversation{}
 		m := &model.ConversationMember{UserID: uid}
-		var last *model.Message
-		var lmID, lmCID, lmSender, lmClient, lmType, lmReply *string
-		var lmSeq *int64
-		var lmBody []byte
-		var lmRecalled, lmExpires, lmExpired, lmEdited, lmCreated *time.Time
-		var lmEditVersion *int
 		var mentionUnreadCount int64
 		var memberCount int64
 		if err = rows.Scan(&c.ID, &c.Type, &c.Title, &c.AvatarURL, &c.Seq, &c.LastMessageSeq, &c.CreatedAt, &c.UpdatedAt,
 			&m.Role, &m.MutedUntil, &m.LastReadSeq, &m.LastDeliveredSeq, &m.Pinned, &m.Archived, &m.NotificationsMuted, &m.ManualUnread, &m.HiddenUntilSeq, &m.JoinedAt,
-			&mentionUnreadCount, &memberCount,
-			&lmID, &lmCID, &lmSender, &lmClient, &lmSeq, &lmType, &lmBody, &lmReply, &lmRecalled, &lmExpires, &lmExpired, &lmEdited, &lmEditVersion, &lmCreated); err != nil {
+			&mentionUnreadCount, &memberCount); err != nil {
 			return nil, err
 		}
 		m.ConversationID = c.ID
-		if lmID != nil {
-			lm := &model.Message{ID: *lmID, ConversationID: *lmCID, SenderID: *lmSender, ClientMsgID: *lmClient, Seq: *lmSeq, Type: *lmType, RecalledAt: lmRecalled, ExpiresAt: lmExpires, ExpiredAt: lmExpired, EditedAt: lmEdited, CreatedAt: *lmCreated}
-			if lmEditVersion != nil {
-				lm.EditVersion = *lmEditVersion
-			}
-			if lmReply != nil {
-				lm.ReplyToID = *lmReply
-			}
-			if err = json.Unmarshal(lmBody, &lm.Body); err != nil {
-				return nil, err
-			}
-			last = lm
-			lastMessages = append(lastMessages, lm)
-		}
-		out = append(out, map[string]any{"conversation": c, "membership": m, "lastMessage": last, "unreadCount": max(int64(0), c.LastMessageSeq-m.LastReadSeq), "mentionUnreadCount": mentionUnreadCount, "memberCount": memberCount})
+		out = append(out, map[string]any{"conversation": c, "membership": m, "lastMessage": nil, "unreadCount": max(int64(0), c.LastMessageSeq-m.LastReadSeq), "mentionUnreadCount": mentionUnreadCount, "memberCount": memberCount})
 		conversationIDs = append(conversationIDs, c.ID)
 	}
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
 	rows.Close()
-	if err = p.attachMessageReactions(ctx, uid, lastMessages); err != nil {
-		return nil, err
-	}
 	if len(conversationIDs) == 0 {
 		return out, nil
 	}
@@ -1234,297 +1168,6 @@ func (p *Postgres) ListConversationMembersPage(ctx context.Context, uid, cid, cu
 	return out, next, nil
 }
 
-func (p *Postgres) ListMessages(ctx context.Context, uid, cid string, before int64, limit int) ([]*model.Message, error) {
-	ok, err := p.CanAccessConversation(ctx, uid, cid)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, ErrForbidden
-	}
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-	rows, err := p.pool.Query(ctx, `SELECT id,conversation_id,sender_id,client_msg_id,conversation_seq,message_type,body,COALESCE(reply_to_id,''),recalled_at,expires_at,expired_at,edited_at,edit_version,created_at FROM im_messages WHERE conversation_id=$1 AND ($2::bigint=0 OR conversation_seq<$2) ORDER BY conversation_seq DESC LIMIT $3`, cid, before, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*model.Message
-	for rows.Next() {
-		m := &model.Message{}
-		var raw []byte
-		if err = rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.ClientMsgID, &m.Seq, &m.Type, &raw, &m.ReplyToID, &m.RecalledAt, &m.ExpiresAt, &m.ExpiredAt, &m.EditedAt, &m.EditVersion, &m.CreatedAt); err != nil {
-			return nil, err
-		}
-		if err = json.Unmarshal(raw, &m.Body); err != nil {
-			return nil, err
-		}
-		out = append(out, m)
-	}
-	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
-		out[i], out[j] = out[j], out[i]
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-	if err = p.attachMessageReactions(ctx, uid, out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (p *Postgres) ListForwardMessages(ctx context.Context, uid string, ids []string) ([]*model.Message, error) {
-	rows, err := p.pool.Query(ctx, `SELECT m.id,m.conversation_id,m.sender_id,m.client_msg_id,m.conversation_seq,m.message_type,m.body,COALESCE(m.reply_to_id,''),m.recalled_at,m.expires_at,m.expired_at,m.edited_at,m.edit_version,m.created_at
-		FROM unnest($2::text[]) WITH ORDINALITY requested(id,position)
-		JOIN im_messages m ON m.id=requested.id
-		JOIN im_members member ON member.conversation_id=m.conversation_id AND member.user_id=$1
-		ORDER BY requested.position`, uid, ids)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := make([]*model.Message, 0, len(ids))
-	for rows.Next() {
-		m := &model.Message{}
-		var raw []byte
-		if err = rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.ClientMsgID, &m.Seq, &m.Type, &raw, &m.ReplyToID, &m.RecalledAt, &m.ExpiresAt, &m.ExpiredAt, &m.EditedAt, &m.EditVersion, &m.CreatedAt); err != nil {
-			return nil, err
-		}
-		if err = json.Unmarshal(raw, &m.Body); err != nil {
-			return nil, err
-		}
-		items = append(items, m)
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(items) != len(ids) {
-		return nil, ErrForbidden
-	}
-	if err = p.attachMessageReactions(ctx, uid, items); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-func (p *Postgres) SendMessage(ctx context.Context, in MessageInput) (*model.Message, bool, error) {
-	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
-	if err != nil {
-		return nil, false, err
-	}
-	defer tx.Rollback(ctx)
-	// Serialize retries for one sender/client key before checking the unique row.
-	// This turns simultaneous retries on different instances into one insert plus
-	// deterministic duplicate ACKs instead of a unique-constraint error.
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, in.UserID+":"+in.ClientMsgID); err != nil {
-		return nil, false, err
-	}
-	var existing model.Message
-	var body []byte
-	var reply *string
-	err = tx.QueryRow(ctx, `SELECT id,conversation_id,sender_id,client_msg_id,conversation_seq,message_type,body,reply_to_id,recalled_at,expires_at,expired_at,created_at FROM im_messages WHERE sender_id=$1 AND client_msg_id=$2`, in.UserID, in.ClientMsgID).Scan(&existing.ID, &existing.ConversationID, &existing.SenderID, &existing.ClientMsgID, &existing.Seq, &existing.Type, &body, &reply, &existing.RecalledAt, &existing.ExpiresAt, &existing.ExpiredAt, &existing.CreatedAt)
-	if err == nil {
-		_ = json.Unmarshal(body, &existing.Body)
-		if reply != nil {
-			existing.ReplyToID = *reply
-		}
-		return &existing, true, tx.Commit(ctx)
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, err
-	}
-	var muted *time.Time
-	var allMuted, dissolved *time.Time
-	var memberRole string
-	var banned bool
-	err = tx.QueryRow(ctx, `SELECT m.muted_until,u.banned,m.role,g.all_muted_until,g.dissolved_at FROM im_members m JOIN im_users u ON u.id=m.user_id LEFT JOIN im_groups g ON g.conversation_id=m.conversation_id WHERE m.conversation_id=$1 AND m.user_id=$2`, in.ConversationID, in.UserID).Scan(&muted, &banned, &memberRole, &allMuted, &dissolved)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, ErrForbidden
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	if banned || dissolved != nil || (muted != nil && muted.After(time.Now())) || (allMuted != nil && allMuted.After(time.Now()) && memberRole != "owner" && memberRole != "admin") {
-		return nil, false, ErrForbidden
-	}
-	var kind string
-	if err = tx.QueryRow(ctx, `SELECT kind FROM im_conversations WHERE id=$1`, in.ConversationID).Scan(&kind); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, false, ErrNotFound
-		}
-		return nil, false, err
-	}
-	if kind == "direct" {
-		var blocked bool
-		err = tx.QueryRow(ctx, `SELECT EXISTS(
-			SELECT 1 FROM im_blocks b JOIN im_members other ON other.conversation_id=$1 AND other.user_id<>$2
-			WHERE (b.user_id=$2 AND b.blocked_user_id=other.user_id) OR (b.user_id=other.user_id AND b.blocked_user_id=$2))`, in.ConversationID, in.UserID).Scan(&blocked)
-		if err != nil {
-			return nil, false, err
-		}
-		if blocked {
-			return nil, false, ErrForbidden
-		}
-	}
-	if len(in.Mentions) > 0 || in.MentionAll {
-		if in.Type != "text" || kind != "group" {
-			return nil, false, ErrForbidden
-		}
-		if in.MentionAll && memberRole != "owner" && memberRole != "admin" {
-			return nil, false, ErrForbidden
-		}
-		var mentionedMembers int
-		if err = tx.QueryRow(ctx, `SELECT count(*) FROM im_members WHERE conversation_id=$1 AND user_id=ANY($2::text[])`, in.ConversationID, in.Mentions).Scan(&mentionedMembers); err != nil {
-			return nil, false, err
-		}
-		if mentionedMembers != len(in.Mentions) {
-			return nil, false, ErrForbidden
-		}
-	}
-	if in.Type == "text" {
-		text, _ := in.Body["text"].(string)
-		var denied bool
-		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_sensitive_words WHERE split_part(value,'|',1)<>'' AND position(lower(split_part(value,'|',1)) in lower($1))>0)`, text).Scan(&denied)
-		if err != nil {
-			return nil, false, err
-		}
-		if denied {
-			return nil, false, ErrForbidden
-		}
-	}
-	if in.ReplyToID != "" {
-		var valid bool
-		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_messages WHERE id=$1 AND conversation_id=$2)`, in.ReplyToID, in.ConversationID).Scan(&valid)
-		if err != nil {
-			return nil, false, err
-		}
-		if !valid {
-			return nil, false, ErrConflict
-		}
-	}
-	var seq int64
-	err = tx.QueryRow(ctx, `UPDATE im_conversations SET current_seq=current_seq+1,last_message_seq=current_seq+1,updated_at=now() WHERE id=$1 RETURNING current_seq`, in.ConversationID).Scan(&seq)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, ErrNotFound
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	created := time.UnixMilli(in.CreatedAt)
-	if in.CreatedAt == 0 {
-		created = time.Now()
-	}
-	raw, _ := json.Marshal(in.Body)
-	var replyValue any
-	if in.ReplyToID != "" {
-		replyValue = in.ReplyToID
-	}
-	_, err = tx.Exec(ctx, `INSERT INTO im_messages(id,conversation_id,sender_id,client_msg_id,conversation_seq,message_type,body,reply_to_id,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, in.MessageID, in.ConversationID, in.UserID, in.ClientMsgID, seq, in.Type, raw, replyValue, in.ExpiresAt, created)
-	if err != nil {
-		return nil, false, err
-	}
-	m := &model.Message{ID: in.MessageID, ConversationID: in.ConversationID, SenderID: in.UserID, ClientMsgID: in.ClientMsgID, Seq: seq, Type: in.Type, Body: in.Body, ReplyToID: in.ReplyToID, ExpiresAt: in.ExpiresAt, CreatedAt: created}
-	pushPayload, _ := json.Marshal(map[string]any{"message": map[string]any{"id": m.ID, "conversationId": m.ConversationID, "type": m.Type}})
-	// This legacy writer is retained only for isolated domain tests. WuKongIM
-	// owns durable message delivery; this fanout only creates offline pushes.
-	_, err = tx.Exec(ctx, `INSERT INTO im_message_fanout(conversation_id,sender_id,event_payload,push_payload,mention_all,mentions,created_at)
-		SELECT $1,$2,'{}'::jsonb,$3,$4,COALESCE($5::text[],'{}'::text[]),clock_timestamp()
-		WHERE EXISTS(SELECT 1 FROM im_members WHERE conversation_id=$1 AND user_id<>$2 AND joined_at<=clock_timestamp())`, in.ConversationID, in.UserID, pushPayload, in.MentionAll, in.Mentions)
-	if err != nil {
-		return nil, false, err
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return nil, false, err
-	}
-	return m, false, nil
-}
-
-func (p *Postgres) ProcessMessageFanout(ctx context.Context, batch int) (int, bool, error) {
-	if batch <= 0 || batch > 5000 {
-		batch = 500
-	}
-	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
-	if err != nil {
-		return 0, false, err
-	}
-	defer tx.Rollback(ctx)
-	var locked bool
-	if err = tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(490739126)`).Scan(&locked); err != nil || !locked {
-		return 0, false, err
-	}
-	var id int64
-	var conversationID, senderID, lastUserID string
-	var pushPayload []byte
-	var mentionAll bool
-	var mentions []string
-	var createdAt time.Time
-	err = tx.QueryRow(ctx, `SELECT id,conversation_id,sender_id,push_payload,mention_all,mentions,last_user_id,created_at
-		FROM im_message_fanout WHERE status IN ('pending','processing') ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(
-		&id, &conversationID, &senderID, &pushPayload, &mentionAll, &mentions, &lastUserID, &createdAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, tx.Commit(ctx)
-	}
-	if err != nil {
-		return 0, false, err
-	}
-	if _, err = tx.Exec(ctx, `UPDATE im_message_fanout SET status='processing',locked_at=now(),attempts=attempts+1 WHERE id=$1`, id); err != nil {
-		return 0, false, err
-	}
-	rows, err := tx.Query(ctx, `SELECT user_id FROM im_members
-		WHERE conversation_id=$1 AND user_id<>$2 AND user_id>$3 AND joined_at<=$4
-		ORDER BY user_id LIMIT $5`, conversationID, senderID, lastUserID, createdAt, batch+1)
-	if err != nil {
-		return 0, false, err
-	}
-	userIDs := make([]string, 0, batch+1)
-	for rows.Next() {
-		var userID string
-		if err = rows.Scan(&userID); err != nil {
-			rows.Close()
-			return 0, false, err
-		}
-		userIDs = append(userIDs, userID)
-	}
-	rows.Close()
-	if err = rows.Err(); err != nil {
-		return 0, false, err
-	}
-	hasMore := len(userIDs) > batch
-	if hasMore {
-		userIDs = userIDs[:batch]
-	}
-	if len(userIDs) > 0 {
-		var pushed int
-		err = tx.QueryRow(ctx, `WITH pushed AS (
-			INSERT INTO im_push_outbox(user_id,event_type,payload)
-			SELECT user_id,'message.created',$2::jsonb||jsonb_build_object('mentioned',($3::boolean OR user_id=ANY($4::text[])))
-			FROM unnest($1::text[]) AS user_id
-			RETURNING id
-		)
-			SELECT count(*) FROM pushed`, userIDs, pushPayload, mentionAll, mentions).Scan(&pushed)
-		if err != nil {
-			return 0, false, err
-		}
-		if pushed != len(userIDs) {
-			return 0, false, fmt.Errorf("push fanout inserted %d of %d recipients", pushed, len(userIDs))
-		}
-		lastUserID = userIDs[len(userIDs)-1]
-	}
-	if hasMore {
-		_, err = tx.Exec(ctx, `UPDATE im_message_fanout SET last_user_id=$2,locked_at=NULL WHERE id=$1`, id, lastUserID)
-	} else {
-		_, err = tx.Exec(ctx, `UPDATE im_message_fanout SET last_user_id=$2,status='completed',locked_at=NULL,completed_at=now() WHERE id=$1`, id, lastUserID)
-	}
-	if err != nil {
-		return 0, false, err
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return 0, false, err
-	}
-	return len(userIDs), true, nil
-}
-
 func (p *Postgres) CleanupRuntimeData(ctx context.Context, policy RetentionPolicy, batch int) (int64, error) {
 	if batch <= 0 || batch > 10000 {
 		batch = 1000
@@ -1539,7 +1182,6 @@ func (p *Postgres) CleanupRuntimeData(ctx context.Context, policy RetentionPolic
 	now := time.Now()
 	jobs := []cleanup{
 		{`WITH expired AS (SELECT id FROM im_push_outbox WHERE status IN ('sent','failed') AND COALESCE(sent_at,available_at)<$1 ORDER BY id LIMIT $2) DELETE FROM im_push_outbox o USING expired x WHERE o.id=x.id`, now.Add(-policy.Outbox)},
-		{`WITH expired AS (SELECT id FROM im_message_fanout WHERE status='completed' AND completed_at<$1 ORDER BY id LIMIT $2) DELETE FROM im_message_fanout f USING expired x WHERE f.id=x.id`, now.Add(-policy.Outbox)},
 		{`WITH expired AS (SELECT id FROM im_wukong_outbox WHERE status IN ('completed','failed') AND completed_at<$1 ORDER BY id LIMIT $2) DELETE FROM im_wukong_outbox o USING expired x WHERE o.id=x.id`, now.Add(-policy.Outbox)},
 		{`WITH expired AS (SELECT id FROM im_wukong_webhook_events WHERE status IN ('completed','failed') AND completed_at<$1 ORDER BY id LIMIT $2) DELETE FROM im_wukong_webhook_events e USING expired x WHERE e.id=x.id`, now.Add(-policy.Outbox)},
 	}
@@ -1565,15 +1207,13 @@ func (p *Postgres) RuntimeStats(ctx context.Context) (RuntimeStats, error) {
 	err := p.pool.QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM im_push_outbox WHERE status IN ('pending','processing')),
 		COALESCE((SELECT EXTRACT(EPOCH FROM now()-min(created_at)) FROM im_push_outbox WHERE status IN ('pending','processing')),0),
-		(SELECT count(*) FROM im_message_fanout WHERE status IN ('pending','processing')),
-		COALESCE((SELECT EXTRACT(EPOCH FROM now()-min(created_at)) FROM im_message_fanout WHERE status IN ('pending','processing')),0),
 		(SELECT count(*) FROM im_wukong_outbox WHERE status IN ('pending','processing')),
 		COALESCE((SELECT EXTRACT(EPOCH FROM now()-min(created_at)) FROM im_wukong_outbox WHERE status IN ('pending','processing')),0),
 		(SELECT count(*) FROM im_wukong_outbox WHERE status='failed'),
 		(SELECT count(*) FROM im_wukong_webhook_events WHERE status IN ('pending','processing')),
 		COALESCE((SELECT EXTRACT(EPOCH FROM now()-min(received_at)) FROM im_wukong_webhook_events WHERE status IN ('pending','processing')),0),
 		(SELECT count(*) FROM im_wukong_webhook_events WHERE status='failed')`).Scan(
-		&stats.PushPending, &stats.OldestPushSeconds, &stats.FanoutPending, &stats.OldestFanoutSeconds,
+		&stats.PushPending, &stats.OldestPushSeconds,
 		&stats.WukongOutboxPending, &stats.OldestWukongOutboxSeconds, &stats.WukongOutboxFailed,
 		&stats.WukongWebhookPending, &stats.OldestWukongWebhookSeconds, &stats.WukongWebhookFailed)
 	return stats, err
@@ -1618,10 +1258,6 @@ func (p *Postgres) CanAccessMedia(ctx context.Context, uid, id string) (bool, er
 	err := p.pool.QueryRow(ctx, `SELECT EXISTS(
 		SELECT 1 FROM im_media media WHERE media.id=$2 AND (
 			media.owner_id=$1 OR EXISTS(
-				SELECT 1 FROM im_messages message
-				JOIN im_members member ON member.conversation_id=message.conversation_id AND member.user_id=$1
-				WHERE message.body->>'mediaId'=$2
-			) OR EXISTS(
 				SELECT 1 FROM im_wukong_media_channels binding
 				WHERE binding.media_id=$2 AND (
 					(binding.channel_type=1 AND (binding.sender_id=$1 OR binding.channel_id=$1)) OR
@@ -1764,60 +1400,15 @@ func (p *Postgres) ListUserDevices(ctx context.Context, uid string) ([]*model.De
 }
 
 func (p *Postgres) ListFavorites(ctx context.Context, uid string, limit int) ([]*model.Message, error) {
-	if handled, items, err := p.listWukongFavorites(ctx, uid, limit); handled {
-		return items, err
-	}
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-	rows, err := p.pool.Query(ctx, `SELECT m.id,m.conversation_id,m.sender_id,m.client_msg_id,m.conversation_seq,m.message_type,m.body,COALESCE(m.reply_to_id,''),m.recalled_at,m.expires_at,m.expired_at,m.edited_at,m.edit_version,m.created_at
-		FROM im_favorites f JOIN im_messages m ON m.id=f.message_id WHERE f.user_id=$1 ORDER BY f.created_at DESC LIMIT $2`, uid, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []*model.Message
-	for rows.Next() {
-		m := &model.Message{}
-		var raw []byte
-		if err = rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.ClientMsgID, &m.Seq, &m.Type, &raw, &m.ReplyToID, &m.RecalledAt, &m.ExpiresAt, &m.ExpiredAt, &m.EditedAt, &m.EditVersion, &m.CreatedAt); err != nil {
-			return nil, err
-		}
-		if err = json.Unmarshal(raw, &m.Body); err != nil {
-			return nil, err
-		}
-		items = append(items, m)
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-	if err = p.attachMessageReactions(ctx, uid, items); err != nil {
-		return nil, err
-	}
-	return items, nil
+	_, items, err := p.listWukongFavorites(ctx, uid, limit)
+	return items, err
 }
 
 func (p *Postgres) SetFavorite(ctx context.Context, uid, messageID string, enabled bool) error {
 	if handled, err := p.setWukongFavorite(ctx, uid, messageID, enabled); handled {
 		return err
 	}
-	if !enabled {
-		_, err := p.pool.Exec(ctx, `DELETE FROM im_favorites WHERE user_id=$1 AND message_id=$2`, uid, messageID)
-		return err
-	}
-	result, err := p.pool.Exec(ctx, `INSERT INTO im_favorites(user_id,message_id,created_at)
-		SELECT $1,m.id,now()
-		FROM im_messages m
-		JOIN im_members member ON member.conversation_id=m.conversation_id AND member.user_id=$1
-		WHERE m.id=$2
-		ON CONFLICT(user_id,message_id) DO UPDATE SET created_at=EXCLUDED.created_at`, uid, messageID)
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() == 0 {
-		return ErrForbidden
-	}
-	return nil
+	return ErrNotFound
 }
 
 func (p *Postgres) CreateFeedback(ctx context.Context, id, uid, category, content, contact string, created time.Time) error {
@@ -2032,11 +1623,7 @@ func (p *Postgres) UpdateRuntimeSettings(ctx context.Context, actor string, sett
 	return tx.Commit(ctx)
 }
 func (p *Postgres) RecallMessage(ctx context.Context, id string, at time.Time) error {
-	tag, err := p.pool.Exec(ctx, `UPDATE im_messages SET body='{}'::jsonb,recalled_at=$2 WHERE id=$1`, id, at)
-	if err == nil && tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return err
+	return ErrUnsupported
 }
 
 func appendMemberBusinessEvent(ctx context.Context, tx pgx.Tx, cid, typ string, payload []byte, _ time.Time) ([]string, error) {
@@ -2226,55 +1813,7 @@ func (p *Postgres) RecallAuthorized(ctx context.Context, uid, mid string, at tim
 	if handled, cid, seq, ids, err := p.recallWukongAuthorized(ctx, uid, mid, at, window); handled {
 		return cid, seq, ids, err
 	}
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return "", 0, nil, err
-	}
-	defer tx.Rollback(ctx)
-	var cid, sender, role string
-	var seq int64
-	var created time.Time
-	var recalled *time.Time
-	err = tx.QueryRow(ctx, `SELECT msg.conversation_id,msg.sender_id,msg.conversation_seq,msg.created_at,msg.recalled_at,COALESCE(mem.role,'') FROM im_messages msg LEFT JOIN im_members mem ON mem.conversation_id=msg.conversation_id AND mem.user_id=$1 WHERE msg.id=$2 FOR UPDATE OF msg`, uid, mid).Scan(&cid, &sender, &seq, &created, &recalled, &role)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", 0, nil, ErrNotFound
-	}
-	if err != nil {
-		return "", 0, nil, err
-	}
-	if sender != uid && role != "owner" && role != "admin" {
-		return "", 0, nil, ErrForbidden
-	}
-	if sender == uid && at.Sub(created) > window {
-		return "", 0, nil, ErrForbidden
-	}
-	if recalled != nil {
-		return cid, seq, nil, tx.Commit(ctx)
-	}
-	if _, err = tx.Exec(ctx, `UPDATE im_messages SET body='{}'::jsonb,recalled_at=$2 WHERE id=$1`, mid, at); err != nil {
-		return "", 0, nil, err
-	}
-	payload, _ := json.Marshal(map[string]any{"messageId": mid, "conversationId": cid, "conversationSeq": seq})
-	ids, err := appendMemberBusinessEvent(ctx, tx, cid, "message.recalled", payload, at)
-	if err != nil {
-		return "", 0, nil, err
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return "", 0, nil, err
-	}
-	return cid, seq, ids, nil
-}
-
-const collaborationMessageColumns = `msg.id,msg.conversation_id,msg.sender_id,msg.client_msg_id,msg.conversation_seq,msg.message_type,msg.body,COALESCE(msg.reply_to_id,''),msg.recalled_at,msg.expires_at,msg.expired_at,msg.edited_at,msg.edit_version,msg.created_at`
-
-func scanCollaborationMessage(row callRow) (*model.Message, error) {
-	message := &model.Message{}
-	var body []byte
-	err := row.Scan(&message.ID, &message.ConversationID, &message.SenderID, &message.ClientMsgID, &message.Seq, &message.Type, &body, &message.ReplyToID, &message.RecalledAt, &message.ExpiresAt, &message.ExpiredAt, &message.EditedAt, &message.EditVersion, &message.CreatedAt)
-	if err == nil {
-		err = json.Unmarshal(body, &message.Body)
-	}
-	return message, err
+	return "", 0, nil, ErrNotFound
 }
 
 func messageMentionFields(body map[string]any) ([]string, bool) {
@@ -2315,348 +1854,35 @@ func (p *Postgres) EditMessage(ctx context.Context, uid, mid, editID string, bod
 	if handled, message, duplicate, err := p.editWukongMessage(ctx, uid, mid, editID, body, originalBody, at, window); handled {
 		return message, duplicate, err
 	}
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return nil, false, err
-	}
-	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "message-edit:"+mid); err != nil {
-		return nil, false, err
-	}
-	var raw []byte
-	message := &model.Message{}
-	var kind, role string
-	err = tx.QueryRow(ctx, `SELECT `+collaborationMessageColumns+`,c.kind,COALESCE(member.role,'') FROM im_messages msg JOIN im_conversations c ON c.id=msg.conversation_id LEFT JOIN im_members member ON member.conversation_id=msg.conversation_id AND member.user_id=$2 WHERE msg.id=$1 FOR UPDATE OF msg`, mid, uid).Scan(&message.ID, &message.ConversationID, &message.SenderID, &message.ClientMsgID, &message.Seq, &message.Type, &raw, &message.ReplyToID, &message.RecalledAt, &message.ExpiresAt, &message.ExpiredAt, &message.EditedAt, &message.EditVersion, &message.CreatedAt, &kind, &role)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, ErrNotFound
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	if err = json.Unmarshal(raw, &message.Body); err != nil {
-		return nil, false, err
-	}
-	if role == "" || message.SenderID != uid || message.Type != "text" || message.RecalledAt != nil || message.ExpiredAt != nil {
-		return nil, false, ErrForbidden
-	}
-	newRaw, _ := json.Marshal(body)
-	currentCanonical, _ := json.Marshal(message.Body)
-	var existingVersion int
-	var sameRequest bool
-	if err = tx.QueryRow(ctx, `SELECT version,body=$3::jsonb FROM im_message_edit_requests WHERE message_id=$1 AND edit_id=$2`, mid, editID, newRaw).Scan(&existingVersion, &sameRequest); err == nil {
-		if !sameRequest {
-			return nil, false, ErrConflict
-		}
-		return message, true, tx.Commit(ctx)
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, err
-	}
-	if at.Sub(message.CreatedAt) > window {
-		return nil, false, ErrForbidden
-	}
-	text, _ := body["text"].(string)
-	var denied bool
-	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_sensitive_words WHERE split_part(value,'|',1)<>'' AND position(lower(split_part(value,'|',1)) in lower($1))>0)`, text).Scan(&denied); err != nil {
-		return nil, false, err
-	}
-	if denied {
-		return nil, false, ErrForbidden
-	}
-	if err = validateEditMentions(ctx, tx, message.ConversationID, uid, kind, role, body); err != nil {
-		return nil, false, err
-	}
-	if string(newRaw) == string(currentCanonical) {
-		if _, err = tx.Exec(ctx, `INSERT INTO im_message_edit_requests(message_id,edit_id,body,version,created_at) VALUES($1,$2,$3,$4,$5)`, mid, editID, newRaw, message.EditVersion, at); err != nil {
-			return nil, false, err
-		}
-		return message, true, tx.Commit(ctx)
-	}
-	if message.EditVersion == 0 {
-		if _, err = tx.Exec(ctx, `INSERT INTO im_message_edits(message_id,version,editor_id,body,created_at) VALUES($1,0,$2,$3,$4) ON CONFLICT DO NOTHING`, mid, uid, raw, message.CreatedAt); err != nil {
-			return nil, false, err
-		}
-	}
-	newVersion := message.EditVersion + 1
-	if _, err = tx.Exec(ctx, `INSERT INTO im_message_edits(message_id,version,edit_id,editor_id,body,created_at) VALUES($1,$2,$3,$4,$5,$6)`, mid, newVersion, editID, uid, newRaw, at); err != nil {
-		return nil, false, err
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO im_message_edit_requests(message_id,edit_id,body,version,created_at) VALUES($1,$2,$3,$4,$5)`, mid, editID, newRaw, newVersion, at); err != nil {
-		return nil, false, err
-	}
-	message.Body, message.EditedAt, message.EditVersion = body, &at, newVersion
-	if _, err = tx.Exec(ctx, `UPDATE im_messages SET body=$2,edited_at=$3,edit_version=$4 WHERE id=$1`, mid, newRaw, at, newVersion); err != nil {
-		return nil, false, err
-	}
-	payload, _ := json.Marshal(map[string]any{"message": message, "editId": editID})
-	if _, err = appendMemberBusinessEvent(ctx, tx, message.ConversationID, "message.edited", payload, at); err != nil {
-		return nil, false, err
-	}
-	metadata, _ := json.Marshal(map[string]any{"editId": editID, "version": newVersion})
-	if _, err = tx.Exec(ctx, `INSERT INTO im_audits(id,actor_id,action,target_type,target_id,metadata,created_at) VALUES($1,$2,'message.edited','message',$3,$4,$5)`, "aud_message_edit_"+strconv.FormatInt(at.UnixNano(), 36), uid, mid, metadata, at); err != nil {
-		return nil, false, err
-	}
-	return message, false, tx.Commit(ctx)
+	return nil, false, ErrNotFound
 }
 
 func (p *Postgres) ListMessageEdits(ctx context.Context, uid, mid string) ([]*model.MessageEdit, error) {
 	if handled, items, err := p.listWukongMessageEdits(ctx, uid, mid); handled {
 		return items, err
 	}
-	var allowed bool
-	var recalled *time.Time
-	if err := p.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_messages msg JOIN im_members member ON member.conversation_id=msg.conversation_id AND member.user_id=$2 WHERE msg.id=$1),recalled_at FROM im_messages WHERE id=$1`, mid, uid).Scan(&allowed, &recalled); errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
-	} else if err != nil {
-		return nil, err
-	}
-	if !allowed || recalled != nil {
-		return nil, ErrForbidden
-	}
-	rows, err := p.pool.Query(ctx, `SELECT message_id,version,editor_id,body,created_at FROM im_message_edits WHERE message_id=$1 ORDER BY version`, mid)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []*model.MessageEdit{}
-	for rows.Next() {
-		item := &model.MessageEdit{}
-		var body []byte
-		if err = rows.Scan(&item.MessageID, &item.Version, &item.EditorID, &body, &item.EditedAt); err != nil {
-			return nil, err
-		}
-		if err = json.Unmarshal(body, &item.Body); err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
+	return nil, ErrNotFound
 }
 
 func (p *Postgres) SetMessageReaction(ctx context.Context, uid, mid, emoji string, add bool, at time.Time) (model.MessageReactionSummary, bool, error) {
 	if handled, summary, duplicate, err := p.reactWukongMessage(ctx, uid, mid, emoji, add, at); handled {
 		return summary, duplicate, err
 	}
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return model.MessageReactionSummary{}, false, err
-	}
-	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "message-reaction:"+mid+":"+emoji); err != nil {
-		return model.MessageReactionSummary{}, false, err
-	}
-	var cid string
-	var recalled *time.Time
-	err = tx.QueryRow(ctx, `SELECT msg.conversation_id,msg.recalled_at FROM im_messages msg JOIN im_members member ON member.conversation_id=msg.conversation_id AND member.user_id=$2 WHERE msg.id=$1 AND msg.expired_at IS NULL`, mid, uid).Scan(&cid, &recalled)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return model.MessageReactionSummary{}, false, ErrNotFound
-	}
-	if err != nil {
-		return model.MessageReactionSummary{}, false, err
-	}
-	if recalled != nil {
-		return model.MessageReactionSummary{}, false, ErrForbidden
-	}
-	var changed bool
-	if add {
-		tag, execErr := tx.Exec(ctx, `INSERT INTO im_message_reactions(message_id,user_id,emoji,created_at) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, mid, uid, emoji, at)
-		if execErr != nil {
-			return model.MessageReactionSummary{}, false, execErr
-		}
-		changed = tag.RowsAffected() == 1
-	} else {
-		tag, execErr := tx.Exec(ctx, `DELETE FROM im_message_reactions WHERE message_id=$1 AND user_id=$2 AND emoji=$3`, mid, uid, emoji)
-		if execErr != nil {
-			return model.MessageReactionSummary{}, false, execErr
-		}
-		changed = tag.RowsAffected() == 1
-	}
-	summary := model.MessageReactionSummary{Emoji: emoji, ReactedByMe: add}
-	if err = tx.QueryRow(ctx, `SELECT count(*) FROM im_message_reactions WHERE message_id=$1 AND emoji=$2`, mid, emoji).Scan(&summary.Count); err != nil {
-		return model.MessageReactionSummary{}, false, err
-	}
-	if changed {
-		payload, _ := json.Marshal(map[string]any{"messageId": mid, "conversationId": cid, "emoji": emoji, "actorId": uid, "added": add, "count": summary.Count})
-		if _, err = appendMemberBusinessEvent(ctx, tx, cid, "message.reaction.updated", payload, at); err != nil {
-			return model.MessageReactionSummary{}, false, err
-		}
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return model.MessageReactionSummary{}, false, err
-	}
-	return summary, !changed, nil
+	return model.MessageReactionSummary{}, false, ErrNotFound
 }
 
 func (p *Postgres) SetGroupMessagePin(ctx context.Context, uid, cid, mid string, pin bool, at time.Time) (*model.MessagePin, bool, error) {
 	if handled, item, duplicate, err := p.setWukongGroupMessagePin(ctx, uid, cid, mid, pin, at); handled {
 		return item, duplicate, err
 	}
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return nil, false, err
-	}
-	defer tx.Rollback(ctx)
-	role, _, dissolved, err := groupActor(ctx, tx, cid, uid)
-	if err != nil {
-		return nil, false, err
-	}
-	if dissolved != nil || (role != "owner" && role != "admin") {
-		return nil, false, ErrForbidden
-	}
-	message, err := scanCollaborationMessage(tx.QueryRow(ctx, `SELECT `+collaborationMessageColumns+` FROM im_messages msg WHERE msg.id=$1 AND msg.conversation_id=$2 AND msg.recalled_at IS NULL AND msg.expired_at IS NULL`, mid, cid))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, ErrNotFound
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	changed := false
-	if pin {
-		tag, execErr := tx.Exec(ctx, `INSERT INTO im_group_message_pins(conversation_id,message_id,pinned_by,pinned_at) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, cid, mid, uid, at)
-		if execErr != nil {
-			return nil, false, execErr
-		}
-		changed = tag.RowsAffected() == 1
-	} else {
-		tag, execErr := tx.Exec(ctx, `DELETE FROM im_group_message_pins WHERE conversation_id=$1 AND message_id=$2`, cid, mid)
-		if execErr != nil {
-			return nil, false, execErr
-		}
-		changed = tag.RowsAffected() == 1
-	}
-	item := &model.MessagePin{ConversationID: cid, Message: message, PinnedBy: uid, PinnedAt: at}
-	if changed {
-		event := "group.message.pinned"
-		if !pin {
-			event = "group.message.unpinned"
-		}
-		payload, _ := json.Marshal(map[string]any{"conversationId": cid, "messageId": mid, "actorId": uid})
-		if _, err = appendMemberBusinessEvent(ctx, tx, cid, event, payload, at); err != nil {
-			return nil, false, err
-		}
-		if err = emitGroupSystem(ctx, tx, cid, uid, event, map[string]any{"messageId": mid}, at); err != nil {
-			return nil, false, err
-		}
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return nil, false, err
-	}
-	return item, !changed, nil
+	return nil, false, ErrNotFound
 }
 
 func (p *Postgres) ListGroupMessagePins(ctx context.Context, uid, cid string, before int64, limit int) ([]*model.MessagePin, error) {
 	if handled, items, err := p.listWukongGroupMessagePins(ctx, uid, cid, before, limit); handled {
 		return items, err
 	}
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-	allowed, err := p.CanAccessConversation(ctx, uid, cid)
-	if err != nil {
-		return nil, err
-	}
-	if !allowed {
-		return nil, ErrForbidden
-	}
-	rows, err := p.pool.Query(ctx, `SELECT `+collaborationMessageColumns+`,pin.pinned_by,pin.pinned_at FROM im_group_message_pins pin JOIN im_messages msg ON msg.id=pin.message_id WHERE pin.conversation_id=$1 AND msg.recalled_at IS NULL AND msg.expired_at IS NULL AND ($2::bigint=0 OR pin.pinned_at<to_timestamp($2::double precision/1000)) ORDER BY pin.pinned_at DESC,pin.message_id LIMIT $3`, cid, before, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []*model.MessagePin{}
-	messages := []*model.Message{}
-	for rows.Next() {
-		message := &model.Message{}
-		var body []byte
-		item := &model.MessagePin{ConversationID: cid, Message: message}
-		if err = rows.Scan(&message.ID, &message.ConversationID, &message.SenderID, &message.ClientMsgID, &message.Seq, &message.Type, &body, &message.ReplyToID, &message.RecalledAt, &message.ExpiresAt, &message.ExpiredAt, &message.EditedAt, &message.EditVersion, &message.CreatedAt, &item.PinnedBy, &item.PinnedAt); err != nil {
-			return nil, err
-		}
-		if err = json.Unmarshal(body, &message.Body); err != nil {
-			return nil, err
-		}
-		items, messages = append(items, item), append(messages, message)
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-	if err = p.attachMessageReactions(ctx, uid, messages); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-func (p *Postgres) SearchConversationMessages(ctx context.Context, uid, cid, query string, before int64, limit int) ([]*model.Message, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-	allowed, err := p.CanAccessConversation(ctx, uid, cid)
-	if err != nil {
-		return nil, err
-	}
-	if !allowed {
-		return nil, ErrForbidden
-	}
-	pattern := "%" + escapeLikePattern(strings.ToLower(query)) + "%"
-	rows, err := p.pool.Query(ctx, `SELECT `+collaborationMessageColumns+` FROM im_messages msg WHERE msg.conversation_id=$1 AND msg.message_type='text' AND msg.recalled_at IS NULL AND msg.expired_at IS NULL AND ($3::bigint=0 OR msg.conversation_seq<$3) AND lower(msg.body->>'text') LIKE $2 ESCAPE '\' ORDER BY msg.conversation_seq DESC LIMIT $4`, cid, pattern, before, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []*model.Message{}
-	for rows.Next() {
-		message, scanErr := scanCollaborationMessage(rows)
-		if scanErr != nil {
-			return nil, scanErr
-		}
-		items = append(items, message)
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-	if err = p.attachMessageReactions(ctx, uid, items); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-func escapeLikePattern(value string) string {
-	value = strings.ReplaceAll(value, `\`, `\\`)
-	value = strings.ReplaceAll(value, `%`, `\%`)
-	return strings.ReplaceAll(value, `_`, `\_`)
-}
-
-func (p *Postgres) attachMessageReactions(ctx context.Context, uid string, messages []*model.Message) error {
-	if len(messages) == 0 {
-		return nil
-	}
-	ids := make([]string, 0, len(messages))
-	byID := make(map[string]*model.Message, len(messages))
-	for _, message := range messages {
-		if message == nil || message.RecalledAt != nil {
-			continue
-		}
-		ids = append(ids, message.ID)
-		byID[message.ID] = message
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	rows, err := p.pool.Query(ctx, `SELECT message_id,emoji,count(*),bool_or(user_id=$2) FROM im_message_reactions WHERE message_id=ANY($1::text[]) GROUP BY message_id,emoji ORDER BY message_id,emoji`, ids, uid)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var messageID string
-		var summary model.MessageReactionSummary
-		if err = rows.Scan(&messageID, &summary.Emoji, &summary.Count, &summary.ReactedByMe); err != nil {
-			return err
-		}
-		if message := byID[messageID]; message != nil {
-			message.Reactions = append(message.Reactions, summary)
-		}
-	}
-	return rows.Err()
+	return []*model.MessagePin{}, nil
 }
 
 func (p *Postgres) CreateReportRecord(ctx context.Context, r *model.Report, a *model.AuditEntry) error {
@@ -2674,10 +1900,6 @@ func (p *Postgres) CreateReportRecord(ctx context.Context, r *model.Report, a *m
 			SELECT 1 FROM im_wukong_message_index message_index
 			JOIN im_members member ON member.conversation_id=message_index.conversation_id AND member.user_id=$2
 			WHERE message_index.message_id::text=$1
-			UNION ALL
-			SELECT 1 FROM im_messages message
-			JOIN im_members member ON member.conversation_id=message.conversation_id AND member.user_id=$2
-			WHERE message.id=$1
 		)`, r.TargetID, r.ReporterID).Scan(&targetExists)
 	case "group":
 		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_conversations c JOIN im_members member ON member.conversation_id=c.id AND member.user_id=$2 WHERE c.id=$1 AND c.kind='group')`, r.TargetID, r.ReporterID).Scan(&targetExists)
@@ -2824,13 +2046,7 @@ func (p *Postgres) ResolveReportRecord(ctx context.Context, actor, rid, action, 
 				}
 			}
 		} else if errors.Is(err, pgx.ErrNoRows) {
-			err = tx.QueryRow(ctx, `UPDATE im_messages SET body='{}'::jsonb,recalled_at=$2 WHERE id=$1 RETURNING conversation_id,conversation_seq`, targetID, at).Scan(&meta.ConversationID, &meta.MessageSeq)
-			if errors.Is(err, pgx.ErrNoRows) {
-				return "", ErrNotFound
-			}
-			if err != nil {
-				return "", err
-			}
+			return "", ErrNotFound
 		} else {
 			return "", err
 		}
@@ -2841,10 +2057,7 @@ func (p *Postgres) ResolveReportRecord(ctx context.Context, actor, rid, action, 
 	case "ban_user":
 		userID := targetID
 		if targetType == "message" {
-			if err = tx.QueryRow(ctx, `
-				SELECT sender_id FROM im_wukong_message_index WHERE message_id::text=$1
-				UNION ALL SELECT sender_id FROM im_messages WHERE id=$1 LIMIT 1
-			`, targetID).Scan(&userID); err != nil {
+			if err = tx.QueryRow(ctx, `SELECT sender_id FROM im_wukong_message_index WHERE message_id::text=$1`, targetID).Scan(&userID); err != nil {
 				return "", ErrNotFound
 			}
 		} else if targetType != "user" {

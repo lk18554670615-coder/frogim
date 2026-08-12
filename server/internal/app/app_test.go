@@ -2,19 +2,64 @@ package app
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/linli/im/server/internal/model"
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/teststore"
 )
 
+type testWukongRuntime struct {
+	mu       sync.Mutex
+	seq      map[string]int64
+	byClient map[string]*model.Message
+	byID     map[string]*model.Message
+}
+
+func installTestWukongRuntime(a *App) *testWukongRuntime {
+	runtime := &testWukongRuntime{seq: map[string]int64{}, byClient: map[string]*model.Message{}, byID: map[string]*model.Message{}}
+	a.SetMessageTransport(func(_ context.Context, request MessageTransportRequest) (MessageTransportResult, error) {
+		runtime.mu.Lock()
+		defer runtime.mu.Unlock()
+		key := request.UserID + ":" + request.ClientMsgID
+		if existing := runtime.byClient[key]; existing != nil {
+			return MessageTransportResult{MessageID: existing.ID, ClientMsgID: existing.ClientMsgID, MessageSeq: existing.Seq, CreatedAt: existing.CreatedAt, Duplicate: true}, nil
+		}
+		runtime.seq[request.ConversationID]++
+		created := time.Now().UTC()
+		message := &model.Message{ID: fmt.Sprintf("%d", len(runtime.byID)+1001), ClientMsgID: request.ClientMsgID, ConversationID: request.ConversationID, SenderID: request.UserID, Seq: runtime.seq[request.ConversationID], Type: request.Type, Body: request.Body, ReplyToID: request.ReplyToID, CreatedAt: created}
+		runtime.byClient[key], runtime.byID[message.ID] = message, message
+		return MessageTransportResult{MessageID: message.ID, ClientMsgID: message.ClientMsgID, MessageSeq: message.Seq, CreatedAt: created}, nil
+	})
+	a.SetMessageSourceLoader(func(_ context.Context, _ string, ids []string) ([]*model.Message, error) {
+		runtime.mu.Lock()
+		defer runtime.mu.Unlock()
+		items := make([]*model.Message, 0, len(ids))
+		for _, id := range ids {
+			message := runtime.byID[id]
+			if message == nil {
+				return nil, store.ErrForbidden
+			}
+			copy := *message
+			items = append(items, &copy)
+		}
+		return items, nil
+	})
+	return runtime
+}
+
 func TestMessageIdempotencyAndConversationSequence(t *testing.T) {
-	a, err := New(context.Background(), store.Memory{})
+	a, err := New(context.Background(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := a.SeedDemo(); err != nil {
 		t.Fatal(err)
 	}
+	installTestWukongRuntime(a)
 	c, err := a.DirectConversation("usr_alice", "usr_bob")
 	if err != nil {
 		t.Fatal(err)
@@ -37,7 +82,7 @@ func TestMessageIdempotencyAndConversationSequence(t *testing.T) {
 }
 
 func TestMessageTransportOwnsPersistentMessageWhenInstalled(t *testing.T) {
-	a, err := New(context.Background(), store.Memory{})
+	a, err := New(context.Background(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,17 +105,13 @@ func TestMessageTransportOwnsPersistentMessageWhenInstalled(t *testing.T) {
 	if message.ID != "987654321" || message.Seq != 7 || received.Body["text"] != "hello" || len(received.Mentions) != 1 {
 		t.Fatalf("unexpected transport result=%+v request=%+v", message, received)
 	}
-	history, err := a.History("usr_alice", conversation.ID, 0, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(history) != 0 {
-		t.Fatalf("transport message leaked into legacy message store: %+v", history)
+	if _, err := a.History("usr_alice", conversation.ID, 0, 10); err != ErrUnavailable {
+		t.Fatalf("history without canonical WuKong loader error=%v", err)
 	}
 }
 
 func TestBindMediaChannelAllowsAuthorizedForwardButRejectsOutsider(t *testing.T) {
-	a, err := New(context.Background(), store.Memory{})
+	a, err := New(context.Background(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,49 +136,34 @@ func TestBindMediaChannelAllowsAuthorizedForwardButRejectsOutsider(t *testing.T)
 	}
 }
 
-func TestGroupMentionUnreadCountIsExactAndClearsOnRead(t *testing.T) {
-	a, err := New(context.Background(), store.Memory{})
+func TestGroupMentionMetadataIsPassedToWukongTransport(t *testing.T) {
+	a, err := New(context.Background(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = a.SeedDemo(); err != nil {
 		t.Fatal(err)
 	}
+	var received MessageTransportRequest
+	a.SetMessageTransport(func(_ context.Context, request MessageTransportRequest) (MessageTransportResult, error) {
+		received = request
+		return MessageTransportResult{MessageID: "2001", ClientMsgID: request.ClientMsgID, MessageSeq: 1}, nil
+	})
 	group, err := a.CreateGroup("usr_alice", "mention count", []string{"usr_bob"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	message, _, err := a.SendMessage("usr_alice", group.ID, "mention-one", "text", map[string]any{"text": "@Bob", "mentions": []string{"usr_bob"}}, "")
+	_, _, err = a.SendMessage("usr_alice", group.ID, "mention-one", "text", map[string]any{"text": "@Bob", "mentions": []string{"usr_bob"}}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = a.SendMessage("usr_alice", group.ID, "ordinary-one", "text", map[string]any{"text": "ordinary"}, ""); err != nil {
-		t.Fatal(err)
-	}
-	items := a.Conversations("usr_bob")
-	var mentionCount int64
-	for _, item := range items {
-		if conversation := item["conversation"]; conversation != nil && item["mentionUnreadCount"] != nil {
-			if candidate, ok := item["mentionUnreadCount"].(int64); ok && candidate > mentionCount {
-				mentionCount = candidate
-			}
-		}
-	}
-	if mentionCount != 1 {
-		t.Fatalf("mentionUnreadCount=%d", mentionCount)
-	}
-	if err = a.Read("usr_bob", group.ID, message.Seq); err != nil {
-		t.Fatal(err)
-	}
-	for _, item := range a.Conversations("usr_bob") {
-		if count, _ := item["mentionUnreadCount"].(int64); count != 0 {
-			t.Fatalf("mention count after read=%d", count)
-		}
+	if len(received.Mentions) != 1 || received.Mentions[0] != "usr_bob" || received.MentionAll {
+		t.Fatalf("transport mention metadata=%+v", received)
 	}
 }
 
 func TestUserCannotSendSystemMessage(t *testing.T) {
-	a, err := New(context.Background(), store.Memory{})
+	a, err := New(context.Background(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,24 +179,19 @@ func TestUserCannotSendSystemMessage(t *testing.T) {
 	}
 }
 
-func TestGroupRoleMuteAndRecallRules(t *testing.T) {
-	a, _ := New(context.Background(), store.Memory{})
+func TestMessageMutationDoesNotFallBackToMemory(t *testing.T) {
+	a, _ := New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	g, err := a.CreateGroup("usr_alice", "Project", []string{"usr_bob"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.SetGroupRole("usr_alice", g.ID, "usr_bob", "admin"); err != nil {
-		t.Fatal(err)
-	}
+	installTestWukongRuntime(a)
 	m, _, err := a.SendMessage("usr_bob", g.ID, "group-1", "text", map[string]any{"text": "status"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Recall("usr_alice", m.ID); err != nil {
-		t.Fatalf("owner recall: %v", err)
-	}
-	if m.RecalledAt == nil || len(m.Body) != 0 {
-		t.Fatalf("message was not redacted: %+v", m)
+	if err := a.Recall("usr_alice", m.ID); err != ErrUnavailable {
+		t.Fatalf("memory mutation fallback error=%v", err)
 	}
 }

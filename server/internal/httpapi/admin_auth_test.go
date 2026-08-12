@@ -11,7 +11,7 @@ import (
 
 	"github.com/linli/im/server/internal/app"
 	"github.com/linli/im/server/internal/config"
-	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/teststore"
 )
 
 func TestAdminRolePermissionsAreServerEnforced(t *testing.T) {
@@ -46,7 +46,7 @@ func TestAdminRolePermissionsAreServerEnforced(t *testing.T) {
 }
 
 func TestEveryRegisteredAdminJSONWriteRequiresConfirmationAndReason(t *testing.T) {
-	a, err := app.New(context.Background(), store.Memory{})
+	a, err := app.New(context.Background(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}

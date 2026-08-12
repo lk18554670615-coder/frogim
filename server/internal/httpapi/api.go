@@ -183,6 +183,15 @@ func New(cfg config.Config, a *app.App) *API {
 	x.routes()
 	return x
 }
+func (x *API) SetupError() error {
+	if x.cfg.WukongEnabled && x.wukongSetupErr != nil {
+		return fmt.Errorf("WuKongIM setup: %w", x.wukongSetupErr)
+	}
+	if !x.cfg.WukongEnabled || x.wukongClient == nil || x.imSessions == nil {
+		return errors.New("WuKongIM message transport is required")
+	}
+	return nil
+}
 func (x *API) Handler() http.Handler { return x.middleware(x.mux) }
 func (x *API) RunMediaCleanup(ctx context.Context) {
 	if x.cleaner == nil {
@@ -681,8 +690,8 @@ func (x *API) allow(parent context.Context, key string, max int, window time.Dur
 	if allowed, err := x.app.AllowRate(ctx, key, max, window); err == nil {
 		return allowed
 	}
-	// 内存模式以及 Redis 短时不可用时保留单节点保护；生产 readiness
-	// 会同时报告 Redis 故障，恢复后自动回到全局原子限流。
+	// Redis 短时不可用时保留单节点保护；生产 readiness 会同时报告
+	// Redis 故障，恢复后自动回到全局原子限流。
 	return x.limits.allow(key, max, window)
 }
 func (x *API) originAllowed(origin string) bool {
@@ -835,6 +844,8 @@ func handleErr(w http.ResponseWriter, err error) {
 		writeError(w, 404, "NOT_FOUND", err.Error())
 	case errors.Is(err, app.ErrConflict), errors.Is(err, store.ErrConflict):
 		writeError(w, 409, "CONFLICT", err.Error())
+	case errors.Is(err, app.ErrUnavailable), errors.Is(err, store.ErrUnsupported):
+		writeError(w, 503, "IM_UNAVAILABLE", "instant messaging service is temporarily unavailable")
 	default:
 		slog.Error("HTTP handler failed", "event", "http.handler.error", "error", err)
 		writeError(w, 500, "INTERNAL", "internal server error")
@@ -845,6 +856,10 @@ func (x *API) health(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, map[string]any{"status": "ok", "service": "linli-im", "uptimeSeconds": int(time.Since(x.started).Seconds())})
 }
 func (x *API) ready(w http.ResponseWriter, r *http.Request) {
+	if err := x.SetupError(); err != nil {
+		writeError(w, 503, "NOT_READY", err.Error())
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	if err := x.app.Ready(ctx); err != nil {
@@ -856,8 +871,8 @@ func (x *API) ready(w http.ResponseWriter, r *http.Request) {
 func (x *API) metrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	metrics := &x.app.Metrics
-	fmt.Fprintf(w, "im_http_requests_total %d\nim_http_requests_in_flight %d\nim_messages_sent_total %d\nim_errors_total %d\nim_message_fanout_recipients_total %d\nim_runtime_retention_deleted_total %d\n",
-		metrics.Requests.Load(), metrics.HTTPInFlight.Load(), metrics.Messages.Load(), metrics.Errors.Load(), metrics.FanoutRecipients.Load(), metrics.RetentionDeleted.Load())
+	fmt.Fprintf(w, "im_http_requests_total %d\nim_http_requests_in_flight %d\nim_messages_sent_total %d\nim_errors_total %d\nim_runtime_retention_deleted_total %d\n",
+		metrics.Requests.Load(), metrics.HTTPInFlight.Load(), metrics.Messages.Load(), metrics.Errors.Load(), metrics.RetentionDeleted.Load())
 	for index, boundary := range app.HTTPDurationBuckets() {
 		fmt.Fprintf(w, "im_http_request_duration_seconds_bucket{le=\"%g\"} %d\n", boundary.Seconds(), metrics.HTTPDurationBuckets[index].Load())
 	}
@@ -878,8 +893,8 @@ func (x *API) metrics(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Fprintf(w, "im_store_metrics_up 1\nim_db_pool_max_connections %d\nim_db_pool_total_connections %d\nim_db_pool_idle_connections %d\nim_db_pool_acquired_connections %d\nim_db_pool_acquires_total %d\nim_db_pool_empty_acquires_total %d\nim_db_pool_canceled_acquires_total %d\nim_db_pool_acquire_duration_seconds_total %g\n",
 		stats.DBMaxConnections, stats.DBTotalConnections, stats.DBIdleConnections, stats.DBAcquiredConnections, stats.DBAcquireCount, stats.DBEmptyAcquireCount, stats.DBCanceledAcquireCount, stats.DBAcquireDurationSeconds)
-	fmt.Fprintf(w, "im_redis_pool_total_connections %d\nim_redis_pool_idle_connections %d\nim_redis_pool_timeouts_total %d\nim_push_outbox_pending %d\nim_push_outbox_oldest_seconds %g\nim_message_fanout_pending %d\nim_message_fanout_oldest_seconds %g\n",
-		stats.RedisTotalConnections, stats.RedisIdleConnections, stats.RedisTimeouts, stats.PushPending, stats.OldestPushSeconds, stats.FanoutPending, stats.OldestFanoutSeconds)
+	fmt.Fprintf(w, "im_redis_pool_total_connections %d\nim_redis_pool_idle_connections %d\nim_redis_pool_timeouts_total %d\nim_push_outbox_pending %d\nim_push_outbox_oldest_seconds %g\n",
+		stats.RedisTotalConnections, stats.RedisIdleConnections, stats.RedisTimeouts, stats.PushPending, stats.OldestPushSeconds)
 	fmt.Fprintf(w, "im_wukong_outbox_pending %d\nim_wukong_outbox_oldest_seconds %g\nim_wukong_outbox_failed %d\nim_wukong_webhook_pending %d\nim_wukong_webhook_oldest_seconds %g\nim_wukong_webhook_failed %d\n",
 		stats.WukongOutboxPending, stats.OldestWukongOutboxSeconds, stats.WukongOutboxFailed, stats.WukongWebhookPending, stats.OldestWukongWebhookSeconds, stats.WukongWebhookFailed)
 }
@@ -2724,7 +2739,7 @@ func (x *API) settingsPayload() map[string]any {
 		(x.cfg.PushProvider == "getui_apns_voip" && getuiConfigured && apnsVoIPConfigured) ||
 		(x.cfg.PushProvider == "webhook" && x.cfg.PushWebhookURL != "" && x.cfg.PushWebhookToken != "")
 	values["configurationStatus"] = map[string]any{
-		"database":      x.cfg.Mode == "full" && x.cfg.DatabaseURL != "",
+		"database":      x.cfg.DatabaseURL != "",
 		"redis":         x.cfg.RedisURL != "",
 		"objectStorage": x.cfg.S3Endpoint != "" && x.cfg.S3AccessKey != "" && x.cfg.S3SecretKey != "",
 		"otpProvider":   x.cfg.DevMode || (x.cfg.OTPWebhookURL != "" && x.cfg.OTPWebhookToken != ""),

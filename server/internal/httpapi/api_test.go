@@ -30,6 +30,7 @@ import (
 	"github.com/linli/im/server/internal/media"
 	"github.com/linli/im/server/internal/model"
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/teststore"
 	"github.com/linli/im/server/internal/wukong"
 	"github.com/linli/im/server/internal/wukongplugin"
 	"golang.org/x/crypto/bcrypt"
@@ -37,8 +38,68 @@ import (
 
 type signedMediaService struct{}
 
+type httpTestWukongRuntime struct {
+	mu       sync.Mutex
+	seq      map[string]int64
+	byClient map[string]*model.Message
+	byID     map[string]*model.Message
+}
+
+func installHTTPTestWukongRuntime(a *app.App) *httpTestWukongRuntime {
+	runtime := &httpTestWukongRuntime{seq: map[string]int64{}, byClient: map[string]*model.Message{}, byID: map[string]*model.Message{}}
+	a.SetMessageTransport(func(_ context.Context, request app.MessageTransportRequest) (app.MessageTransportResult, error) {
+		runtime.mu.Lock()
+		defer runtime.mu.Unlock()
+		key := request.UserID + ":" + request.ClientMsgID
+		if existing := runtime.byClient[key]; existing != nil {
+			return app.MessageTransportResult{MessageID: existing.ID, ClientMsgID: existing.ClientMsgID, MessageSeq: existing.Seq, CreatedAt: existing.CreatedAt, Duplicate: true}, nil
+		}
+		runtime.seq[request.ConversationID]++
+		created := time.Now().UTC()
+		message := &model.Message{ID: fmt.Sprintf("%d", len(runtime.byID)+5001), ClientMsgID: request.ClientMsgID, ConversationID: request.ConversationID, SenderID: request.UserID, Seq: runtime.seq[request.ConversationID], Type: request.Type, Body: request.Body, ReplyToID: request.ReplyToID, CreatedAt: created}
+		runtime.byClient[key], runtime.byID[message.ID] = message, message
+		if mediaID, _ := request.Body["mediaId"].(string); mediaID != "" {
+			if route, err := a.ResolveWukongChannel(context.Background(), request.UserID, request.ConversationID); err == nil {
+				_ = a.BindMediaChannel(store.MediaChannelBinding{MediaID: mediaID, ChannelID: route.ChannelID, ChannelType: route.ChannelType, SenderID: request.UserID})
+			}
+		}
+		return app.MessageTransportResult{MessageID: message.ID, ClientMsgID: message.ClientMsgID, MessageSeq: message.Seq, CreatedAt: created}, nil
+	})
+	a.SetMessageSourceLoader(func(_ context.Context, _ string, ids []string) ([]*model.Message, error) {
+		runtime.mu.Lock()
+		defer runtime.mu.Unlock()
+		items := make([]*model.Message, 0, len(ids))
+		for _, id := range ids {
+			message := runtime.byID[id]
+			if message == nil {
+				return nil, store.ErrForbidden
+			}
+			copy := *message
+			items = append(items, &copy)
+		}
+		return items, nil
+	})
+	a.SetMessageHistoryLoader(func(_ context.Context, _ string, conversationID string, before int64, limit int) ([]*model.Message, error) {
+		runtime.mu.Lock()
+		defer runtime.mu.Unlock()
+		items := []*model.Message{}
+		for _, message := range runtime.byID {
+			if message.ConversationID == conversationID && (before == 0 || message.Seq < before) {
+				copy := *message
+				items = append(items, &copy)
+			}
+		}
+		slices.SortFunc(items, func(left, right *model.Message) int { return int(left.Seq - right.Seq) })
+		if limit > 0 && len(items) > limit {
+			items = items[len(items)-limit:]
+		}
+		return items, nil
+	})
+	return runtime
+}
+
 type pluginLifecycleTestStore struct {
-	store.Memory
+	teststore.Memory
 	mu       sync.Mutex
 	releases map[string]*store.WukongPluginRelease
 	events   []*store.WukongPluginEvent
@@ -155,7 +216,7 @@ func (signedMediaService) DownloadURL(_ context.Context, id string) (string, err
 }
 
 func TestLegacyWebSocketRoutesAreRemoved(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	cfg := config.Config{JWTSecret: "test-secret", AdminKey: "admin", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
 	ts := httptest.NewServer(New(cfg, a).Handler())
@@ -178,7 +239,7 @@ func TestLegacyWebSocketRoutesAreRemoved(t *testing.T) {
 }
 
 type clientVersionAPIStore struct {
-	store.Memory
+	teststore.Memory
 	policies map[string]store.ClientVersionPolicy
 }
 
@@ -310,7 +371,7 @@ func TestWukongAdminProxyUsesPinnedRoutesAndRequiresAuditedWrites(t *testing.T) 
 		}
 	}))
 	defer upstream.Close()
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	adminKey := strings.Repeat("a", 24)
 	cfg := config.Config{
 		JWTSecret: strings.Repeat("j", 32), AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour,
@@ -421,7 +482,7 @@ func TestUserCanListAndQuitOwnWukongPlatformSession(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	if err := a.SeedDemo(); err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +562,7 @@ func TestAuthenticatedStreamMessageLifecycleUsesPinnedWuKongEvents(t *testing.T)
 		}
 	}))
 	defer upstream.Close()
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	friendRequest, err := a.RequestFriend("usr_alice", "usr_bob", "stream test")
 	if err != nil {
@@ -701,7 +762,7 @@ func pluginUploadRequest(t *testing.T, method, target, adminKey string, manifest
 }
 
 func TestLiveKitAdminRoomsParticipantsAndConfirmedRemoval(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	adminKey := strings.Repeat("a", 24)
 	cfg := config.Config{JWTSecret: strings.Repeat("j", 32), AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour, AdminSharedKeyEnabled: true, AdminKey: adminKey, LiveKitEnabled: true}
 	api := New(cfg, a)
@@ -758,7 +819,7 @@ func containsRequest(items []string, expected string) bool {
 }
 
 func TestCORSPreflightAllowsV2ClientPlatformHeader(t *testing.T) {
-	a, err := app.New(context.Background(), store.Memory{})
+	a, err := app.New(context.Background(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -786,7 +847,7 @@ func TestCORSPreflightAllowsV2ClientPlatformHeader(t *testing.T) {
 }
 
 func TestHealthProbeBypassesApplicationRateLimit(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	cfg := config.Config{JWTSecret: "test-secret", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
 	h := New(cfg, a).Handler()
 	for i := 0; i < 350; i++ {
@@ -800,7 +861,7 @@ func TestHealthProbeBypassesApplicationRateLimit(t *testing.T) {
 }
 
 func TestWukongInternalEndpointHasCapacityIndependentOfPublicRateLimit(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	cfg := config.Config{
 		JWTSecret:          "test-secret",
 		WukongPolicySecret: strings.Repeat("p", 32),
@@ -824,7 +885,7 @@ func TestWukongInternalEndpointHasCapacityIndependentOfPublicRateLimit(t *testin
 }
 
 func TestMaintenanceModeBlocksUsersButKeepsOperationsReachable(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	if err := a.UpdateSettings("admin", map[string]any{
 		"maintenanceMode": true,
@@ -870,7 +931,7 @@ func TestMaintenanceModeBlocksUsersButKeepsOperationsReachable(t *testing.T) {
 }
 
 func TestCallLifecycleRESTPermissionsAndIdempotency(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	cfg := config.Config{JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour, CallInviteTTL: 30 * time.Second}
 	ts := httptest.NewServer(New(cfg, a).Handler())
@@ -942,7 +1003,7 @@ func TestCallLifecycleRESTPermissionsAndIdempotency(t *testing.T) {
 }
 
 func TestLiveKitV2CallTokenRequiresAcceptedParticipantAndCleansRoom(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	cfg := config.Config{
 		JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321",
@@ -1014,7 +1075,7 @@ func TestLiveKitV2CallTokenRequiresAcceptedParticipantAndCleansRoom(t *testing.T
 }
 
 func TestLiveKitGroupCallTracksNinePartyMembershipIndependently(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	group, err := a.CreateGroup("usr_alice", "RTC group", []string{"usr_bob", "usr_admin"})
 	if err != nil {
@@ -1092,7 +1153,7 @@ func TestLiveKitGroupCallTracksNinePartyMembershipIndependently(t *testing.T) {
 }
 
 func TestFriendRequestLifecycleMetadataDeleteAndBlock(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	cfg := config.Config{JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
 	ts := httptest.NewServer(New(cfg, a).Handler())
@@ -1202,8 +1263,8 @@ func TestFriendRequestLifecycleMetadataDeleteAndBlock(t *testing.T) {
 	res.Body.Close()
 }
 
-func TestConversationPreferencesHideAndReappear(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+func TestConversationPreferencesAndHide(t *testing.T) {
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	cfg := config.Config{JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
 	ts := httptest.NewServer(New(cfg, a).Handler())
@@ -1240,17 +1301,10 @@ func TestConversationPreferencesHideAndReappear(t *testing.T) {
 	if list = listConversations(t, ts.URL, aliceToken); len(list) != 0 {
 		t.Fatalf("hidden conversation remains visible: %+v", list)
 	}
-	if _, _, err := a.SendMessage("usr_bob", cid, "reappear-1", "text", map[string]any{"text": "new message"}, ""); err != nil {
-		t.Fatal(err)
-	}
-	list = listConversations(t, ts.URL, aliceToken)
-	if len(list) != 1 || list[0].Conversation.ID != cid || list[0].Membership.Pinned {
-		t.Fatalf("conversation did not reappear cleanly: %+v", list)
-	}
 }
 
 func TestUserProfilePhoneDevicesFavoritesAndFeedback(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	_ = a.CreateMedia(store.Media{ID: "avatar-alice", OwnerID: "usr_alice", ObjectKey: "a", MIME: "image/png", Status: "ready", Size: 12})
 	_ = a.CreateMedia(store.Media{ID: "avatar-bob", OwnerID: "usr_bob", ObjectKey: "b", MIME: "image/png", Status: "ready", Size: 12})
@@ -1352,8 +1406,9 @@ func TestUserProfilePhoneDevicesFavoritesAndFeedback(t *testing.T) {
 }
 
 func TestForwardMessagesSeparateMergedAndIdempotent(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
+	installHTTPTestWukongRuntime(a)
 	cid, err := a.DirectConversation("usr_alice", "usr_bob")
 	if err != nil {
 		t.Fatal(err)
@@ -1407,7 +1462,7 @@ func TestForwardMessagesSeparateMergedAndIdempotent(t *testing.T) {
 }
 
 func TestPasswordRegistrationLoginAndReset(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	cfg := config.Config{JWTSecret: "test-secret-password-auth-32-bytes", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
@@ -1464,7 +1519,7 @@ func TestPasswordRegistrationLoginAndReset(t *testing.T) {
 }
 
 func TestAnnouncementLifecycleTargetingAndReadReceipt(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	hash, _ := bcrypt.GenerateFromPassword([]byte("announcement-admin-password"), 12)
 	cfg := config.Config{JWTSecret: strings.Repeat("a", 32), DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour, AdminID: "admin", AdminEmail: "admin@example.com", AdminPasswordHash: string(hash), AdminRole: "platform_admin"}
@@ -1538,7 +1593,7 @@ func TestAnnouncementLifecycleTargetingAndReadReceipt(t *testing.T) {
 }
 
 func TestAdminRuntimeSettingsValidateAuditAndNeverExposeSecrets(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	hash, _ := bcrypt.GenerateFromPassword([]byte("settings-admin-password"), 12)
 	cfg := config.Config{JWTSecret: strings.Repeat("s", 32), DevMode: true, DevOTPCode: "654321", MediaMaxBytes: 25 << 20, AccessTTL: 15 * time.Minute, RefreshTTL: 24 * time.Hour, CallInviteTTL: 45 * time.Second, AdminID: "admin", AdminEmail: "admin@example.com", AdminPasswordHash: string(hash), AdminRole: "platform_admin", DatabaseURL: "postgres://secret-database", RedisURL: "redis://secret-redis", S3Endpoint: "storage", S3AccessKey: "secret-access", S3SecretKey: "secret-storage", GetuiAppID: "app", GetuiAppKey: "key", GetuiMasterSecret: "secret-getui-master", PushProvider: "getui", LiveKitEnabled: true, LiveKitURL: "wss://livekit.example.test", LiveKitAPIURL: "https://livekit-api.example.test", LiveKitAPIKey: "livekit-key", LiveKitAPISecret: "secret-livekit-credential-at-least-32-bytes", LiveKitTokenTTL: 5 * time.Minute, AdminTOTPSecret: ""}
@@ -1648,7 +1703,7 @@ func adminKeyRequest(t *testing.T, method, url, key, body string) *http.Response
 }
 
 func TestRefreshRotationLogoutAndAdminRBAC(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	hash, _ := bcrypt.GenerateFromPassword([]byte("correct horse battery staple"), bcrypt.MinCost)
 	cfg := config.Config{JWTSecret: strings.Repeat("s", 32), DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour, AdminID: "root-admin", AdminEmail: "admin@example.com", AdminPasswordHash: string(hash), AdminRole: "platform_admin"}
@@ -1717,7 +1772,7 @@ func TestRefreshRotationLogoutAndAdminRBAC(t *testing.T) {
 }
 
 func TestAuthenticationDoesNotFallbackAndBanBlocksRefreshAndAPI(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	cfg := config.Config{JWTSecret: strings.Repeat("s", 32), AdminKey: strings.Repeat("a", 24), DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
 	ts := httptest.NewServer(New(cfg, a).Handler())
@@ -1765,7 +1820,7 @@ func TestAuthenticationDoesNotFallbackAndBanBlocksRefreshAndAPI(t *testing.T) {
 }
 
 func TestAccessTokensAreRejectedFromURLsAndLegacyWebSocketIsAbsent(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	cfg := config.Config{JWTSecret: strings.Repeat("s", 32), DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
 	ts := httptest.NewServer(New(cfg, a).Handler())
@@ -1824,7 +1879,7 @@ func loginToken(t *testing.T, base, phone string) string {
 }
 
 func TestProfileHandleSearchCapabilitiesAndGroupMemberContract(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	adminKey := strings.Repeat("m", 24)
 	cfg := config.Config{JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour, AdminSharedKeyEnabled: true, AdminKey: adminKey}
@@ -1928,8 +1983,9 @@ func TestProfileHandleSearchCapabilitiesAndGroupMemberContract(t *testing.T) {
 }
 
 func TestMediaAuthorizationAndResponseOnlySignedURLs(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
+	installHTTPTestWukongRuntime(a)
 	mediaID := "med_secure"
 	if err := a.CreateMedia(store.Media{ID: mediaID, OwnerID: "usr_alice", ObjectKey: "users/alice/media.jpg", MIME: "image/jpeg", Size: 10, Status: "pending"}); err != nil {
 		t.Fatal(err)
@@ -1997,7 +2053,7 @@ func TestMediaAuthorizationAndResponseOnlySignedURLs(t *testing.T) {
 }
 
 func TestAccountDeletionRequiresOTPAndResolvedGroupOwnership(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
 	cfg := config.Config{JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
 	ts := httptest.NewServer(New(cfg, a).Handler())
@@ -2049,8 +2105,9 @@ func TestAccountDeletionRequiresOTPAndResolvedGroupOwnership(t *testing.T) {
 }
 
 func TestContactAndLocationMessageContracts(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
+	installHTTPTestWukongRuntime(a)
 	cfg := config.Config{JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
@@ -2864,9 +2921,10 @@ func directConversation(t *testing.T, base, token, other string) string {
 	return out.ID
 }
 
-func TestMessageCollaborationRESTContracts(t *testing.T) {
-	a, _ := app.New(context.Background(), store.Memory{})
+func TestMessageCollaborationRequiresCanonicalStore(t *testing.T) {
+	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
+	installHTTPTestWukongRuntime(a)
 	cfg := config.Config{JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
@@ -2893,65 +2951,44 @@ func TestMessageCollaborationRESTContracts(t *testing.T) {
 		t.Fatalf("send status=%d message=%+v", res.StatusCode, sent.Message)
 	}
 	res = authenticatedRequest(t, http.MethodPatch, ts.URL+"/v2/messages/"+sent.Message.ID, alice, `{"text":"final searchable","mentions":["usr_bob"]}`)
-	var edited struct {
-		Message   model.Message `json:"message"`
-		Duplicate bool          `json:"duplicate"`
-	}
-	_ = json.NewDecoder(res.Body).Decode(&edited)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || edited.Duplicate || edited.Message.EditVersion != 1 {
-		t.Fatalf("edit status=%d value=%+v", res.StatusCode, edited)
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("edit without canonical extension store status=%d", res.StatusCode)
 	}
 	res = authenticatedRequest(t, http.MethodPatch, ts.URL+"/v2/messages/"+sent.Message.ID, bob, `{"editId":"hijack","text":"bad"}`)
-	if res.StatusCode != http.StatusForbidden {
+	if res.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("non-author edit status=%d", res.StatusCode)
 	}
 	res.Body.Close()
 	res = authenticatedRequest(t, http.MethodPut, ts.URL+"/v2/messages/"+sent.Message.ID+"/reactions/%F0%9F%91%8D", bob, "")
-	var reacted struct {
-		Message model.Message `json:"message"`
-	}
-	_ = json.NewDecoder(res.Body).Decode(&reacted)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || len(reacted.Message.Reactions) != 1 || reacted.Message.Reactions[0].Count != 1 || !reacted.Message.Reactions[0].ReactedByMe {
-		t.Fatalf("reaction status=%d value=%+v", res.StatusCode, reacted)
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("reaction without canonical extension store status=%d", res.StatusCode)
 	}
 	res = authenticatedRequest(t, http.MethodPut, ts.URL+"/v2/messages/pins/"+sent.Message.ID+"?conversationId="+url.QueryEscape(group.ID), bob, "")
-	if res.StatusCode != http.StatusForbidden {
+	if res.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("member pin status=%d", res.StatusCode)
 	}
 	res.Body.Close()
 	res = authenticatedRequest(t, http.MethodPut, ts.URL+"/v2/messages/pins/"+sent.Message.ID+"?conversationId="+url.QueryEscape(group.ID), alice, "")
-	if res.StatusCode != http.StatusOK {
+	if res.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("owner pin status=%d", res.StatusCode)
 	}
 	res.Body.Close()
 	res = authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/messages/pins?conversationId="+url.QueryEscape(group.ID), bob, "")
-	var pins struct {
-		Items []model.MessagePin `json:"items"`
-	}
-	_ = json.NewDecoder(res.Body).Decode(&pins)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || len(pins.Items) != 1 || pins.Items[0].Message.ID != sent.Message.ID {
-		t.Fatalf("pins status=%d items=%+v", res.StatusCode, pins.Items)
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("pin list without canonical extension store status=%d", res.StatusCode)
 	}
 	res = authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/messages/search?conversationId="+url.QueryEscape(group.ID)+"&q=SEARCHABLE&limit=10", bob, "")
-	var search struct {
-		Items []model.Message `json:"items"`
-	}
-	_ = json.NewDecoder(res.Body).Decode(&search)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || len(search.Items) != 1 || search.Items[0].ID != sent.Message.ID {
-		t.Fatalf("search status=%d items=%+v", res.StatusCode, search.Items)
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("search without canonical WuKong loader status=%d", res.StatusCode)
 	}
 	res = authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/messages/"+sent.Message.ID+"/edits", bob, "")
-	var edits struct {
-		Items []model.MessageEdit `json:"items"`
-	}
-	_ = json.NewDecoder(res.Body).Decode(&edits)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || len(edits.Items) != 2 {
-		t.Fatalf("edits status=%d items=%+v", res.StatusCode, edits.Items)
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("edits without canonical extension store status=%d", res.StatusCode)
 	}
 	res = authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/messages/conversations/"+group.ID+"/send", alice, `{"clientMsgId":"collab-invalid","type":"text","body":{"text":"bad mention","mentions":[{"userId":"usr_bob","name":"Bob"}]}}`)
 	if res.StatusCode != http.StatusBadRequest {

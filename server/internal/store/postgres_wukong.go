@@ -614,16 +614,6 @@ func (p *Postgres) listWukongFavorites(ctx context.Context, uid string, limit in
 	if err = rows.Err(); err != nil {
 		return true, nil, err
 	}
-	if len(items) > 0 {
-		return true, items, nil
-	}
-	var hasLegacy bool
-	if err = p.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_favorites favorite JOIN im_messages message ON message.id=favorite.message_id WHERE favorite.user_id=$1)`, uid).Scan(&hasLegacy); err != nil {
-		return true, nil, err
-	}
-	if hasLegacy {
-		return false, nil, nil
-	}
 	return true, items, nil
 }
 
@@ -1025,8 +1015,6 @@ func (p *Postgres) AuthorizeWukongMessage(ctx context.Context, input WukongMessa
 		var valid bool
 		if err = p.pool.QueryRow(ctx, `SELECT EXISTS(
 			SELECT 1 FROM im_wukong_message_index WHERE message_id::text=$1 AND conversation_id=$2
-			UNION ALL
-			SELECT 1 FROM im_messages WHERE id=$1 AND conversation_id=$2
 		)`, input.ReplyToID, input.ConversationID).Scan(&valid); err != nil {
 			return WukongMessageRoute{}, err
 		}

@@ -92,6 +92,9 @@ func (p *Postgres) SetWukongSystemUser(ctx context.Context, userID string, enabl
 	defer tx.Rollback(ctx)
 	var name string
 	if err = tx.QueryRow(ctx, `SELECT name FROM im_users WHERE id=$1 AND banned=false`, userID).Scan(&name); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	if _, err = tx.Exec(ctx, `

@@ -28,20 +28,17 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	var persistence store.Persistence = store.Memory{}
-	if cfg.Mode == "full" {
-		pg, err := store.NewPostgresWithOptions(ctx, cfg.DatabaseURL, store.PostgresOptions{
-			MaxConns: int32(cfg.DBMaxConns), MinConns: int32(cfg.DBMinConns),
-			MaxConnLifetime: cfg.DBMaxConnLifetime, MaxConnIdleTime: cfg.DBMaxConnIdleTime,
-			HealthCheckPeriod: cfg.DBHealthCheckPeriod, StatementTimeout: cfg.DBStatementTimeout,
-		})
-		if err != nil {
-			slog.Error("postgres unavailable", "error", err)
-			os.Exit(1)
-		}
-		persistence = pg
+	pg, err := store.NewPostgresWithOptions(ctx, cfg.DatabaseURL, store.PostgresOptions{
+		MaxConns: int32(cfg.DBMaxConns), MinConns: int32(cfg.DBMinConns),
+		MaxConnLifetime: cfg.DBMaxConnLifetime, MaxConnIdleTime: cfg.DBMaxConnIdleTime,
+		HealthCheckPeriod: cfg.DBHealthCheckPeriod, StatementTimeout: cfg.DBStatementTimeout,
+	})
+	if err != nil {
+		slog.Error("postgres unavailable", "error", err)
+		os.Exit(1)
 	}
-	if cfg.RedisURL != "" && cfg.Mode == "full" {
+	var persistence store.Persistence = pg
+	if cfg.RedisURL != "" {
 		wrapped, err := store.NewWithRedis(persistence, cfg.RedisURL)
 		if err != nil {
 			slog.Error("invalid redis URL", "error", err)
@@ -72,77 +69,69 @@ func main() {
 		}
 	}
 	api := httpapi.New(cfg, application)
-	var webhookServer *wukong.WebhookGRPCServer
-	if cfg.WukongEnabled {
-		webhookStore, ok := persistence.(wukong.WebhookEventStore)
-		if !ok {
-			if cfg.Mode == "full" {
-				slog.Error("persistent WuKongIM webhook store is unavailable")
-				os.Exit(1)
-			}
-			webhookStore = wukong.NewMemoryWebhookStore()
-		}
-		webhookServer, err = wukong.ListenWebhookGRPC(cfg.WukongGRPCAddr, webhookStore)
-		if err != nil {
-			slog.Error("WuKongIM webhook listener unavailable", "error", err)
+	if err = api.SetupError(); err != nil {
+		slog.Error("IM transport unavailable", "error", err)
+		os.Exit(1)
+	}
+	webhookStore, ok := persistence.(wukong.WebhookEventStore)
+	if !ok {
+		slog.Error("persistent WuKongIM webhook store is unavailable")
+		os.Exit(1)
+	}
+	webhookServer, err := wukong.ListenWebhookGRPC(cfg.WukongGRPCAddr, webhookStore)
+	if err != nil {
+		slog.Error("WuKongIM webhook listener unavailable", "error", err)
+		os.Exit(1)
+	}
+	go func() {
+		slog.Info("WuKongIM gRPC webhook started", "event", "wukong.webhook.started", "addr", cfg.WukongGRPCAddr)
+		if serveErr := webhookServer.Serve(); serveErr != nil {
+			slog.Error("WuKongIM webhook server failed", "error", serveErr)
 			os.Exit(1)
 		}
-		go func() {
-			slog.Info("WuKongIM gRPC webhook started", "event", "wukong.webhook.started", "addr", cfg.WukongGRPCAddr)
-			if serveErr := webhookServer.Serve(); serveErr != nil {
-				slog.Error("WuKongIM webhook server failed", "error", serveErr)
-				os.Exit(1)
-			}
-		}()
-		outboxStore, ok := persistence.(wukong.OutboxStore)
-		if !ok {
-			if cfg.Mode == "full" {
-				slog.Error("persistent WuKongIM outbox store is unavailable")
-				os.Exit(1)
-			}
-		} else {
-			wukongClient, clientErr := wukong.NewClient(wukong.Config{
-				APIURL: cfg.WukongAPIURL, ManagerURL: cfg.WukongManagerURL,
-				ManagerToken: cfg.WukongManagerToken, Timeout: 5 * time.Second, MaxRetries: 2,
-			})
-			if clientErr != nil {
-				slog.Error("WuKongIM outbox client unavailable", "error", clientErr)
-				os.Exit(1)
-			}
-			worker, workerErr := wukong.NewOutboxWorker(outboxStore, wukongClient)
-			if workerErr != nil {
-				slog.Error("WuKongIM outbox worker unavailable", "error", workerErr)
-				os.Exit(1)
-			}
-			go worker.Run(workerCtx)
-			reconcileStore, reconcileOK := persistence.(wukong.ReconcileStore)
-			if !reconcileOK {
-				slog.Error("persistent WuKongIM reconcile store is unavailable")
-				os.Exit(1)
-			}
-			reconciler, reconcileErr := wukong.NewReconciler(reconcileStore, wukongClient)
-			if reconcileErr != nil {
-				slog.Error("WuKongIM reconciler unavailable", "error", reconcileErr)
-				os.Exit(1)
-			}
-			go reconciler.Run(workerCtx)
-		}
+	}()
+	outboxStore, ok := persistence.(wukong.OutboxStore)
+	if !ok {
+		slog.Error("persistent WuKongIM outbox store is unavailable")
+		os.Exit(1)
 	}
+	wukongClient, clientErr := wukong.NewClient(wukong.Config{
+		APIURL: cfg.WukongAPIURL, ManagerURL: cfg.WukongManagerURL,
+		ManagerToken: cfg.WukongManagerToken, Timeout: 5 * time.Second, MaxRetries: 2,
+	})
+	if clientErr != nil {
+		slog.Error("WuKongIM outbox client unavailable", "error", clientErr)
+		os.Exit(1)
+	}
+	worker, workerErr := wukong.NewOutboxWorker(outboxStore, wukongClient)
+	if workerErr != nil {
+		slog.Error("WuKongIM outbox worker unavailable", "error", workerErr)
+		os.Exit(1)
+	}
+	go worker.Run(workerCtx)
+	reconcileStore, reconcileOK := persistence.(wukong.ReconcileStore)
+	if !reconcileOK {
+		slog.Error("persistent WuKongIM reconcile store is unavailable")
+		os.Exit(1)
+	}
+	reconciler, reconcileErr := wukong.NewReconciler(reconcileStore, wukongClient)
+	if reconcileErr != nil {
+		slog.Error("WuKongIM reconciler unavailable", "error", reconcileErr)
+		os.Exit(1)
+	}
+	go reconciler.Run(workerCtx)
 	go api.RunMediaCleanup(workerCtx)
 	go application.RunCallTimeouts(workerCtx)
 	go application.RunFriendRequestTimeouts(workerCtx)
 	go application.RunAnnouncementScheduler(workerCtx)
 	go application.RunScheduledMessages(workerCtx)
 	go application.RunMessageExpirations(workerCtx)
-	if cfg.Mode == "memory" && !cfg.WukongEnabled {
-		go application.RunMessageFanout(workerCtx, cfg.MessageFanoutBatchSize)
-	}
 	go application.RunRuntimeCleanup(workerCtx, cfg.RuntimeCleanupInterval, store.RetentionPolicy{Outbox: cfg.OutboxRetention})
 	go application.RunBusinessMembershipExpirations(workerCtx)
 	go application.RunBanExpirations(workerCtx)
 	server := &http.Server{Addr: cfg.Addr, Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 75 * time.Second, MaxHeaderBytes: 1 << 20}
 	go func() {
-		slog.Info("IM 服务已启动", "event", "server.started", "addr", cfg.Addr, "mode", cfg.Mode)
+		slog.Info("IM 服务已启动", "event", "server.started", "addr", cfg.Addr, "messageTransport", "wukongim")
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("server failed", "error", err)
 			os.Exit(1)

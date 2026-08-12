@@ -2,14 +2,40 @@ package wukong
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	hookpb "github.com/linli/im/server/internal/wukong/hookpb"
 )
 
+type memoryWebhookStore struct {
+	mu     sync.Mutex
+	events map[string]WebhookEvent
+}
+
+func newMemoryWebhookStore() *memoryWebhookStore {
+	return &memoryWebhookStore{events: map[string]WebhookEvent{}}
+}
+
+func (s *memoryWebhookStore) PutWukongWebhookEvent(_ context.Context, event WebhookEvent) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.events[event.ID]; exists {
+		return false, nil
+	}
+	s.events[event.ID] = event
+	return true, nil
+}
+
+func (s *memoryWebhookStore) Count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.events)
+}
+
 func TestWebhookHandlerDeduplicatesRetry(t *testing.T) {
-	store := NewMemoryWebhookStore()
+	store := newMemoryWebhookStore()
 	handler, err := NewWebhookHandler(store)
 	if err != nil {
 		t.Fatal(err)
@@ -31,7 +57,7 @@ func TestWebhookHandlerDeduplicatesRetry(t *testing.T) {
 }
 
 func TestWebhookRejectsUnknownEvent(t *testing.T) {
-	store := NewMemoryWebhookStore()
+	store := newMemoryWebhookStore()
 	handler, _ := NewWebhookHandler(store)
 	response, err := handler.SendWebhook(context.Background(), &hookpb.EventReq{Event: "unknown", Data: []byte(`{}`)})
 	if err != nil {

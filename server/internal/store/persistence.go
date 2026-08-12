@@ -29,8 +29,6 @@ type QueryStore interface {
 	ListFriendRequests(context.Context, string) ([]*model.FriendRequest, error)
 	ListGroupInvites(context.Context, string, string, int) ([]map[string]any, error)
 	ListConversations(context.Context, string, int) ([]map[string]any, error)
-	ListMessages(context.Context, string, string, int64, int) ([]*model.Message, error)
-	ListForwardMessages(context.Context, string, []string) ([]*model.Message, error)
 	CanAccessConversation(context.Context, string, string) (bool, error)
 	ConversationMemberIDs(context.Context, string) ([]string, error)
 	ListConversationMembers(context.Context, string, string) ([]*model.ConversationMember, error)
@@ -94,13 +92,6 @@ type AccountStore interface {
 	AccountDeleted(context.Context, string) (bool, error)
 	DeleteAccount(context.Context, string, time.Time) (bool, error)
 }
-
-type Memory struct{}
-
-func (Memory) Load(context.Context) (*model.State, error) { return model.NewState(), nil }
-func (Memory) Save(context.Context, *model.State) error   { return nil }
-func (Memory) Ping(context.Context) error                 { return nil }
-func (Memory) Close()                                     {}
 
 type WithRedis struct {
 	base  Persistence
@@ -170,18 +161,6 @@ func (p *WithRedis) ListGroupInvites(ctx context.Context, uid, status string, n 
 func (p *WithRedis) ListConversations(ctx context.Context, uid string, n int) ([]map[string]any, error) {
 	if s, ok := p.base.(QueryStore); ok {
 		return s.ListConversations(ctx, uid, n)
-	}
-	return nil, ErrUnsupported
-}
-func (p *WithRedis) ListMessages(ctx context.Context, uid, cid string, before int64, n int) ([]*model.Message, error) {
-	if s, ok := p.base.(QueryStore); ok {
-		return s.ListMessages(ctx, uid, cid, before, n)
-	}
-	return nil, ErrUnsupported
-}
-func (p *WithRedis) ListForwardMessages(ctx context.Context, uid string, ids []string) ([]*model.Message, error) {
-	if s, ok := p.base.(QueryStore); ok {
-		return s.ListForwardMessages(ctx, uid, ids)
 	}
 	return nil, ErrUnsupported
 }
@@ -354,27 +333,12 @@ func (p *WithRedis) DeleteAccount(ctx context.Context, uid string, at time.Time)
 	return false, ErrUnsupported
 }
 
-// MessageStore is retained for isolated domain tests. Production message
-// delivery goes through WuKongIM and never uses this writer.
-type MessageStore interface {
-	SendMessage(context.Context, MessageInput) (*model.Message, bool, error)
-}
 type MessageCollaborationStore interface {
 	EditMessage(context.Context, string, string, string, map[string]any, map[string]any, time.Time, time.Duration) (*model.Message, bool, error)
 	ListMessageEdits(context.Context, string, string) ([]*model.MessageEdit, error)
 	SetMessageReaction(context.Context, string, string, string, bool, time.Time) (model.MessageReactionSummary, bool, error)
 	SetGroupMessagePin(context.Context, string, string, string, bool, time.Time) (*model.MessagePin, bool, error)
 	ListGroupMessagePins(context.Context, string, string, int64, int) ([]*model.MessagePin, error)
-	SearchConversationMessages(context.Context, string, string, string, int64, int) ([]*model.Message, error)
-}
-type MessageInput struct {
-	UserID, ConversationID, ClientMsgID, Type, ReplyToID string
-	Body                                                 map[string]any
-	Mentions                                             []string
-	MentionAll                                           bool
-	MessageID                                            string
-	CreatedAt                                            int64
-	ExpiresAt                                            *time.Time
 }
 
 // WukongMessageRouteInput contains only the business-policy fields needed to
@@ -1091,12 +1055,6 @@ func (p *WithRedis) ListConversationMembersPage(ctx context.Context, uid, cid, c
 	return nil, "", ErrUnsupported
 }
 
-// MessageFanoutStore expands a legacy test message into per-user push rows
-// outside the latency-sensitive message transaction.
-type MessageFanoutStore interface {
-	ProcessMessageFanout(context.Context, int) (int, bool, error)
-}
-
 type RetentionPolicy struct {
 	Outbox time.Duration
 }
@@ -1110,9 +1068,9 @@ type RuntimeStats struct {
 	DBAcquireCount, DBEmptyAcquireCount, DBCanceledAcquireCount                    int64
 	DBAcquireDurationSeconds                                                       float64
 	RedisTotalConnections, RedisIdleConnections, RedisTimeouts                     uint32
-	PushPending, FanoutPending, WukongOutboxPending, WukongWebhookPending          int64
+	PushPending, WukongOutboxPending, WukongWebhookPending                         int64
 	WukongOutboxFailed, WukongWebhookFailed                                        int64
-	OldestPushSeconds, OldestFanoutSeconds, OldestWukongOutboxSeconds              float64
+	OldestPushSeconds, OldestWukongOutboxSeconds                                   float64
 	OldestWukongWebhookSeconds                                                     float64
 }
 
@@ -1259,14 +1217,6 @@ type ConversationPreferences struct {
 	ManualUnread       *bool `json:"manualUnread,omitempty"`
 }
 
-type WithRedisMessage struct{ *WithRedis }
-
-func (p *WithRedis) SendMessage(ctx context.Context, in MessageInput) (*model.Message, bool, error) {
-	if m, ok := p.base.(MessageStore); ok {
-		return m.SendMessage(ctx, in)
-	}
-	return nil, false, ErrUnsupported
-}
 func (p *WithRedis) EditMessage(ctx context.Context, uid, mid, editID string, body, originalBody map[string]any, at time.Time, window time.Duration) (*model.Message, bool, error) {
 	if s, ok := p.base.(MessageCollaborationStore); ok {
 		return s.EditMessage(ctx, uid, mid, editID, body, originalBody, at, window)
@@ -1294,12 +1244,6 @@ func (p *WithRedis) SetGroupMessagePin(ctx context.Context, uid, cid, mid string
 func (p *WithRedis) ListGroupMessagePins(ctx context.Context, uid, cid string, before int64, limit int) ([]*model.MessagePin, error) {
 	if s, ok := p.base.(MessageCollaborationStore); ok {
 		return s.ListGroupMessagePins(ctx, uid, cid, before, limit)
-	}
-	return nil, ErrUnsupported
-}
-func (p *WithRedis) SearchConversationMessages(ctx context.Context, uid, cid, query string, before int64, limit int) ([]*model.Message, error) {
-	if s, ok := p.base.(MessageCollaborationStore); ok {
-		return s.SearchConversationMessages(ctx, uid, cid, query, before, limit)
 	}
 	return nil, ErrUnsupported
 }
@@ -1524,13 +1468,6 @@ func (p *WithRedis) InvalidatePushDevices(ctx context.Context, ids []string) err
 		return s.InvalidatePushDevices(ctx, ids)
 	}
 	return ErrUnsupported
-}
-
-func (p *WithRedis) ProcessMessageFanout(ctx context.Context, batch int) (int, bool, error) {
-	if s, ok := p.base.(MessageFanoutStore); ok {
-		return s.ProcessMessageFanout(ctx, batch)
-	}
-	return 0, false, ErrUnsupported
 }
 
 func (p *WithRedis) CleanupRuntimeData(ctx context.Context, policy RetentionPolicy, batch int) (int64, error) {

@@ -10,7 +10,7 @@ import (
 	"github.com/linli/im/server/internal/model"
 )
 
-func TestPostgresConversationProjectionAndFanoutAreBounded(t *testing.T) {
+func TestPostgresConversationProjectionAndMemberPagingAreBounded(t *testing.T) {
 	databaseURL := os.Getenv("IM_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("IM_TEST_DATABASE_URL not set")
@@ -65,25 +65,4 @@ func TestPostgresConversationProjectionAndFanoutAreBounded(t *testing.T) {
 		t.Fatalf("second page=%d next=%q err=%v", len(secondPage), next, err)
 	}
 
-	messageID := "perf_message_" + suffix
-	_, duplicate, err := repository.SendMessage(ctx, MessageInput{UserID: userIDs[0], ConversationID: conversationID, ClientMsgID: "perf-client-" + suffix, Type: "text", Body: map[string]any{"text": "bounded fanout"}, MessageID: messageID, CreatedAt: time.Now().UnixMilli()})
-	if err != nil || duplicate {
-		t.Fatalf("send duplicate=%v err=%v", duplicate, err)
-	}
-	for {
-		_, worked, processErr := repository.ProcessMessageFanout(ctx, 3)
-		if processErr != nil {
-			t.Fatal(processErr)
-		}
-		if !worked {
-			break
-		}
-	}
-	var pushRows int
-	if err = repository.pool.QueryRow(ctx, `SELECT count(*) FROM im_push_outbox WHERE event_type='message.created' AND payload->'message'->>'id'=$1`, messageID).Scan(&pushRows); err != nil {
-		t.Fatal(err)
-	}
-	if pushRows != 11 {
-		t.Fatalf("push rows=%d", pushRows)
-	}
 }

@@ -160,10 +160,7 @@ func (p *Postgres) AdminTaskStatus(ctx context.Context) (map[string]any, error) 
 	if err := p.pool.QueryRow(ctx, `SELECT count(*) FILTER(WHERE status='pending'),count(*) FILTER(WHERE status='processing'),count(*) FILTER(WHERE status='failed') FROM im_scheduled_messages`).Scan(&scheduledPending, &scheduledProcessing, &scheduledFailed); err != nil {
 		return nil, err
 	}
-	if err := p.pool.QueryRow(ctx, `SELECT
-		(SELECT count(*) FROM im_messages WHERE expires_at IS NOT NULL AND expired_at IS NULL) +
-		(SELECT count(*) FROM im_wukong_message_index WHERE expires_at>now() AND expired_at IS NULL)
-	`).Scan(&expiring); err != nil {
+	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_wukong_message_index WHERE expires_at>now() AND expired_at IS NULL`).Scan(&expiring); err != nil {
 		return nil, err
 	}
 	result["scheduledMessages"] = map[string]any{"pending": scheduledPending, "processing": scheduledProcessing, "failed": scheduledFailed}

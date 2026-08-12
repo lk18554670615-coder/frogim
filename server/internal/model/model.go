@@ -242,36 +242,28 @@ type Media struct {
 }
 
 type State struct {
-	Revision            int64                                     `json:"revision"`
-	Users               map[string]*User                          `json:"users"`
-	PhoneToUser         map[string]string                         `json:"phoneToUser"`
-	FriendRequests      map[string]*FriendRequest                 `json:"friendRequests"`
-	Friends             map[string]map[string]bool                `json:"friends"`
-	Blocks              map[string]map[string]bool                `json:"blocks"`
-	Conversations       map[string]*Conversation                  `json:"conversations"`
-	Members             map[string]map[string]*ConversationMember `json:"members"`
-	DirectIndex         map[string]string                         `json:"directIndex"`
-	Messages            map[string][]*Message                     `json:"messages"`
-	MessageByID         map[string]*Message                       `json:"messageById"`
-	MessageIdempotency  map[string]string                         `json:"messageIdempotency"`
-	MessageEdits        map[string][]*MessageEdit                 `json:"messageEdits"`
-	MessageEditRequests map[string]map[string]string              `json:"messageEditRequests"`
-	MessageReactions    map[string]map[string]map[string]bool     `json:"messageReactions"`
-	GroupMessagePins    map[string]map[string]*MessagePin         `json:"groupMessagePins"`
-	Reports             map[string]*Report                        `json:"reports"`
-	Audits              []*AuditEntry                             `json:"audits"`
-	SensitiveWords      map[string]string                         `json:"sensitiveWords"`
-	Settings            map[string]any                            `json:"settings"`
-	Devices             map[string]*Device                        `json:"devices"`
-	Media               map[string]*Media                         `json:"media"`
+	Revision       int64                                     `json:"revision"`
+	Users          map[string]*User                          `json:"users"`
+	PhoneToUser    map[string]string                         `json:"phoneToUser"`
+	FriendRequests map[string]*FriendRequest                 `json:"friendRequests"`
+	Friends        map[string]map[string]bool                `json:"friends"`
+	Blocks         map[string]map[string]bool                `json:"blocks"`
+	Conversations  map[string]*Conversation                  `json:"conversations"`
+	Members        map[string]map[string]*ConversationMember `json:"members"`
+	DirectIndex    map[string]string                         `json:"directIndex"`
+	Reports        map[string]*Report                        `json:"reports"`
+	Audits         []*AuditEntry                             `json:"audits"`
+	SensitiveWords map[string]string                         `json:"sensitiveWords"`
+	Settings       map[string]any                            `json:"settings"`
+	Devices        map[string]*Device                        `json:"devices"`
+	Media          map[string]*Media                         `json:"media"`
 }
 
 func NewState() *State {
 	return &State{
 		Users: map[string]*User{}, PhoneToUser: map[string]string{}, FriendRequests: map[string]*FriendRequest{},
 		Friends: map[string]map[string]bool{}, Blocks: map[string]map[string]bool{}, Conversations: map[string]*Conversation{},
-		Members: map[string]map[string]*ConversationMember{}, DirectIndex: map[string]string{}, Messages: map[string][]*Message{},
-		MessageByID: map[string]*Message{}, MessageIdempotency: map[string]string{}, MessageEdits: map[string][]*MessageEdit{}, MessageEditRequests: map[string]map[string]string{}, MessageReactions: map[string]map[string]map[string]bool{}, GroupMessagePins: map[string]map[string]*MessagePin{},
+		Members: map[string]map[string]*ConversationMember{}, DirectIndex: map[string]string{},
 		Reports: map[string]*Report{}, Audits: []*AuditEntry{},
 		SensitiveWords: map[string]string{}, Settings: map[string]any{
 			"registrationEnabled": true, "allowRegistration": true, "passwordMinLength": 8,

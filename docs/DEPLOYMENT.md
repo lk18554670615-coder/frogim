@@ -69,7 +69,7 @@ make production-deploy PROD_ENV=.env.production
 ## 升级
 
 1. 按 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) 完成测试和备份。
-2. 阅读全部新增迁移，确认旧应用与新 schema 的兼容窗口；数据库需允许 `pg_trgm`，并验证 `im_messages_text_search_trgm_idx` 已建立。
+2. 验证服务启动已将嵌入式业务 schema 升级到当前版本，并确认 `im_messages`、`im_message_fanout` 不存在；消息正文和搜索只由 WuKongIM 提供。
 3. 执行受控部署，观察迁移、健康、错误率和队列。
 4. 完成双用户消息、后台、媒体、公告和推送冒烟。媒体完成接口必须验证 size、SHA-256 和 magic MIME；通用文件恶意扫描仍需外部扫描服务上线后才能开放。
 5. 保留旧镜像与配置，直到观察窗口结束。

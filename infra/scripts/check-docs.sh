@@ -97,3 +97,20 @@ for caddyfile in infra/Caddyfile infra/Caddyfile.ip; do
     exit 1
   fi
 done
+
+# The development reset deliberately removed the self-built message runtime.
+# Keep the destructive upgrade DROP statements and regression assertions, but
+# reject any production Go dependency on the retired payload/fanout tables or
+# v1 transport handlers.
+if grep -R -n -E --include='*.go' --exclude='*_test.go' '(^|[^[:alnum:]_])im_messages([^[:alnum:]_]|$)|im_message_fanout|ProcessMessageFanout|/v1/(sync|ws)' "$ROOT_DIR/server/internal" "$ROOT_DIR/server/cmd" >/dev/null; then
+  echo "retired self-built IM runtime was reintroduced in production Go code" >&2
+  exit 1
+fi
+if grep -R -n -E --include='*.go' --exclude='*_test.go' --exclude-dir='teststore' 'type (Memory|MemoryWebhookStore) struct|NewMemoryWebhookStore|IM_MODE' "$ROOT_DIR/server/internal" "$ROOT_DIR/server/cmd" >/dev/null; then
+  echo "production Go code must not contain an alternate in-memory runtime or IM_MODE branch" >&2
+  exit 1
+fi
+if find "$ROOT_DIR/server/migrations" -type f -print -quit 2>/dev/null | grep -q .; then
+  echo "retired hand-applied SQL migration chain must remain removed; use the embedded schema" >&2
+  exit 1
+fi

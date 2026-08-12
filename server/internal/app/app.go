@@ -23,10 +23,11 @@ import (
 )
 
 var (
-	ErrNotFound  = errors.New("not found")
-	ErrForbidden = errors.New("forbidden")
-	ErrConflict  = errors.New("conflict")
-	ErrInvalid   = errors.New("invalid input")
+	ErrNotFound    = errors.New("not found")
+	ErrForbidden   = errors.New("forbidden")
+	ErrConflict    = errors.New("conflict")
+	ErrInvalid     = errors.New("invalid input")
+	ErrUnavailable = errors.New("service unavailable")
 )
 
 var handlePattern = regexp.MustCompile(`^[a-z0-9_]{6,24}$`)
@@ -60,7 +61,7 @@ var httpDurationBuckets = [...]time.Duration{5 * time.Millisecond, 10 * time.Mil
 type Metrics struct {
 	Requests, Messages, Errors                 atomic.Int64
 	HTTPInFlight                               atomic.Int64
-	FanoutRecipients, RetentionDeleted         atomic.Int64
+	RetentionDeleted                           atomic.Int64
 	HTTPDurationNanoseconds, HTTPDurationCount atomic.Int64
 	HTTPDurationBuckets                        [len(httpDurationBuckets)]atomic.Int64
 	HTTPStatusClasses                          [5]atomic.Int64
@@ -173,9 +174,8 @@ func (a *App) SetEventSink(s EventSink) {
 	a.emitMu.Unlock()
 }
 
-// SetMessageTransport replaces the legacy PostgreSQL message writer for
-// server-originated sends. It is installed only when WuKongIM is enabled, so
-// the in-memory implementation remains usable by isolated domain tests.
+// SetMessageTransport installs the sole message transport. Production wires
+// WuKongIM here; tests must install an explicit protocol fixture.
 func (a *App) SetMessageTransport(transport MessageTransport) {
 	a.messageTransportMu.Lock()
 	a.messageTransport = transport
@@ -311,7 +311,7 @@ func (a *App) SetWukongSystemUser(ctx context.Context, userID string, enabled bo
 
 // AuthorizeWukongMessage resolves the business conversation to the canonical
 // WuKongIM channel while applying the same membership, mute, block, mention,
-// sensitive-word and reply policy used by the legacy normalized writer.
+// sensitive-word and reply policy used by the business service.
 func (a *App) AuthorizeWukongMessage(ctx context.Context, request MessageTransportRequest) (store.WukongMessageRoute, error) {
 	text, _ := request.Body["text"].(string)
 	input := store.WukongMessageRouteInput{
@@ -344,11 +344,11 @@ func (a *App) AuthorizeWukongMessage(ctx context.Context, request MessageTranspo
 			}
 		}
 	}
+	// Reply ownership is resolved from the canonical WuKong message index by
+	// WukongMessageRouteStore. The in-memory business fixture has no message
+	// source and must never pretend that it can authorize replies.
 	if input.ReplyToID != "" {
-		replied := a.state.MessageByID[input.ReplyToID]
-		if replied == nil || replied.ConversationID != input.ConversationID {
-			return store.WukongMessageRoute{}, store.ErrConflict
-		}
+		return store.WukongMessageRoute{}, store.ErrUnsupported
 	}
 	if conversation.Type == "group" {
 		return store.WukongMessageRoute{ChannelID: conversation.ID, ChannelType: wukong.ChannelGroup}, nil
@@ -473,35 +473,7 @@ func (a *App) WukongForwardMessageRefs(ctx context.Context, userID string, messa
 	if sources, ok := a.persistence.(store.WukongForwardSourceStore); ok {
 		return sources.ListWukongForwardMessageRefs(ctx, userID, messageIDs)
 	}
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	refs := make([]store.WukongMessageRef, 0, len(messageIDs))
-	for _, messageID := range messageIDs {
-		message := a.state.MessageByID[messageID]
-		if message == nil || a.state.Members[message.ConversationID][userID] == nil {
-			return nil, store.ErrForbidden
-		}
-		conversation := a.state.Conversations[message.ConversationID]
-		if conversation == nil {
-			return nil, store.ErrForbidden
-		}
-		ref := store.WukongMessageRef{MessageID: messageID, ConversationID: message.ConversationID, ChannelID: conversation.ID, ChannelType: wukong.ChannelGroup}
-		if conversation.Type == "direct" {
-			ref.ChannelType = wukong.ChannelPerson
-			ref.ChannelID = ""
-			for memberID := range a.state.Members[conversation.ID] {
-				if memberID != userID {
-					ref.ChannelID = memberID
-					break
-				}
-			}
-		}
-		if ref.ChannelID == "" {
-			return nil, store.ErrForbidden
-		}
-		refs = append(refs, ref)
-	}
-	return refs, nil
+	return nil, store.ErrUnsupported
 }
 
 func (a *App) WukongMessageExtensions(ctx context.Context, userID string, messageIDs []string) (map[string]map[string]any, error) {
@@ -752,27 +724,6 @@ func (a *App) ensureMaps() {
 	}
 	if a.state.DirectIndex == nil {
 		a.state.DirectIndex = fresh.DirectIndex
-	}
-	if a.state.Messages == nil {
-		a.state.Messages = fresh.Messages
-	}
-	if a.state.MessageByID == nil {
-		a.state.MessageByID = fresh.MessageByID
-	}
-	if a.state.MessageIdempotency == nil {
-		a.state.MessageIdempotency = fresh.MessageIdempotency
-	}
-	if a.state.MessageEdits == nil {
-		a.state.MessageEdits = fresh.MessageEdits
-	}
-	if a.state.MessageEditRequests == nil {
-		a.state.MessageEditRequests = fresh.MessageEditRequests
-	}
-	if a.state.MessageReactions == nil {
-		a.state.MessageReactions = fresh.MessageReactions
-	}
-	if a.state.GroupMessagePins == nil {
-		a.state.GroupMessagePins = fresh.GroupMessagePins
 	}
 	if a.state.Reports == nil {
 		a.state.Reports = fresh.Reports
@@ -1406,19 +1357,7 @@ func (a *App) SetFavorite(uid, messageID string, enabled bool) error {
 	if !enabled {
 		return nil
 	}
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	for _, messages := range a.state.Messages {
-		for _, message := range messages {
-			if message.ID == messageID {
-				if a.state.Members[message.ConversationID][uid] == nil {
-					return ErrForbidden
-				}
-				return nil
-			}
-		}
-	}
-	return ErrNotFound
+	return ErrUnavailable
 }
 
 func (a *App) CreateFeedback(uid, category, content, contact string) (string, error) {
@@ -2365,10 +2304,6 @@ func (a *App) ConversationsContext(parent context.Context, uid string) ([]map[st
 		if m.HiddenUntilSeq != nil && c.LastMessageSeq <= *m.HiddenUntilSeq {
 			continue
 		}
-		var last *model.Message
-		if xs := a.state.Messages[cid]; len(xs) > 0 {
-			last = xs[len(xs)-1]
-		}
 		safeMembers := make([]*model.ConversationMember, 0, len(members))
 		for memberID, membership := range members {
 			memberCopy := *membership
@@ -2399,15 +2334,7 @@ func (a *App) ConversationsContext(parent context.Context, uid string) ([]map[st
 			safeMembers = safeMembers[:8]
 		}
 		conversationCopy := *c
-		mentionUnreadCount := int64(0)
-		if c.Type == "group" {
-			for _, message := range a.state.Messages[c.ID] {
-				if message.Seq > m.LastReadSeq && message.SenderID != uid && message.RecalledAt == nil && messageMentionsUser(message, uid) {
-					mentionUnreadCount++
-				}
-			}
-		}
-		out = append(out, map[string]any{"conversation": &conversationCopy, "membership": m, "lastMessage": last, "unreadCount": max(int64(0), c.LastMessageSeq-m.LastReadSeq), "mentionUnreadCount": mentionUnreadCount, "members": safeMembers, "memberCount": memberCount})
+		out = append(out, map[string]any{"conversation": &conversationCopy, "membership": m, "lastMessage": nil, "unreadCount": max(int64(0), c.LastMessageSeq-m.LastReadSeq), "mentionUnreadCount": int64(0), "members": safeMembers, "memberCount": memberCount})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		left := out[i]["membership"].(*model.ConversationMember)
@@ -2418,30 +2345,6 @@ func (a *App) ConversationsContext(parent context.Context, uid string) ([]map[st
 		return out[i]["conversation"].(*model.Conversation).UpdatedAt.After(out[j]["conversation"].(*model.Conversation).UpdatedAt)
 	})
 	return out, nil
-}
-
-func messageMentionsUser(message *model.Message, uid string) bool {
-	if message == nil || message.Type != "text" || uid == "" {
-		return false
-	}
-	if mentionAll, _ := message.Body["mentionAll"].(bool); mentionAll {
-		return true
-	}
-	switch mentions := message.Body["mentions"].(type) {
-	case []string:
-		for _, mentionedID := range mentions {
-			if mentionedID == uid {
-				return true
-			}
-		}
-	case []any:
-		for _, value := range mentions {
-			if mentionedID, _ := value.(string); mentionedID == uid {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (a *App) SendMessage(uid, cid, clientID, typ string, body map[string]any, reply string) (*model.Message, bool, error) {
@@ -2585,35 +2488,6 @@ func (a *App) RunMessageExpirations(ctx context.Context) {
 					break
 				}
 			}
-		}
-	}
-}
-
-func (a *App) RunMessageFanout(ctx context.Context, batch int) {
-	worker, ok := a.persistence.(store.MessageFanoutStore)
-	if !ok {
-		return
-	}
-	idleTicker := time.NewTicker(100 * time.Millisecond)
-	defer idleTicker.Stop()
-	for ctx.Err() == nil {
-		processed, worked, err := worker.ProcessMessageFanout(ctx, batch)
-		if err != nil {
-			if ctx.Err() == nil {
-				time.Sleep(time.Second)
-			}
-			continue
-		}
-		if processed > 0 {
-			a.Metrics.FanoutRecipients.Add(int64(processed))
-		}
-		if worked {
-			continue
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-idleTicker.C:
 		}
 	}
 }
@@ -2850,105 +2724,7 @@ func (a *App) sendMessage(parent context.Context, uid, cid, clientID, typ string
 		}
 		return message, result.Duplicate, nil
 	}
-	if db, ok := a.persistence.(store.MessageStore); ok {
-		ctx, cancel := context.WithTimeout(parent, 10*time.Second)
-		defer cancel()
-		m, duplicate, err := db.SendMessage(ctx, store.MessageInput{UserID: uid, ConversationID: cid, ClientMsgID: clientID, Type: typ, Body: body, Mentions: mentions, MentionAll: mentionAll, ReplyToID: reply, MessageID: id("msg"), CreatedAt: now.UnixMilli(), ExpiresAt: expiresAt})
-		if err != nil {
-			switch err {
-			case store.ErrForbidden:
-				return nil, false, ErrForbidden
-			case store.ErrNotFound:
-				return nil, false, ErrNotFound
-			case store.ErrConflict:
-				return nil, false, ErrConflict
-			}
-			return nil, false, err
-		}
-		if !duplicate {
-			a.mu.Lock()
-			if c := a.state.Conversations[cid]; c != nil {
-				c.Seq = m.Seq
-				c.LastMessageSeq = m.Seq
-				c.UpdatedAt = m.CreatedAt
-			}
-			a.state.Messages[cid] = append(a.state.Messages[cid], m)
-			a.state.MessageByID[m.ID] = m
-			a.state.MessageIdempotency[uid+":"+clientID] = m.ID
-			a.mu.Unlock()
-			a.Metrics.Messages.Add(1)
-		}
-		return m, duplicate, nil
-	}
-	a.mu.Lock()
-	memb := a.state.Members[cid][uid]
-	if memb == nil {
-		a.mu.Unlock()
-		return nil, false, ErrForbidden
-	}
-	u := a.state.Users[uid]
-	if u == nil || u.Banned {
-		a.mu.Unlock()
-		return nil, false, ErrForbidden
-	}
-	if memb.MutedUntil != nil && memb.MutedUntil.After(time.Now()) {
-		a.mu.Unlock()
-		return nil, false, ErrForbidden
-	}
-	key := uid + ":" + clientID
-	if mid := a.state.MessageIdempotency[key]; mid != "" {
-		m := a.state.MessageByID[mid]
-		a.mu.Unlock()
-		return m, true, nil
-	}
-	c := a.state.Conversations[cid]
-	if c == nil {
-		a.mu.Unlock()
-		return nil, false, ErrNotFound
-	}
-	if c.Type == "direct" {
-		for other := range a.state.Members[cid] {
-			if other != uid && a.blockedLocked(uid, other) {
-				a.mu.Unlock()
-				return nil, false, ErrForbidden
-			}
-		}
-	}
-	if len(mentions) > 0 || mentionAll {
-		if typ != "text" || c.Type != "group" || (mentionAll && memb.Role != "owner" && memb.Role != "admin") {
-			a.mu.Unlock()
-			return nil, false, ErrForbidden
-		}
-		for _, mentionedID := range mentions {
-			if a.state.Members[cid][mentionedID] == nil {
-				a.mu.Unlock()
-				return nil, false, ErrForbidden
-			}
-		}
-	}
-	c.Seq++
-	c.LastMessageSeq = c.Seq
-	c.UpdatedAt = time.Now()
-	m := &model.Message{ID: id("msg"), ClientMsgID: clientID, ConversationID: cid, SenderID: uid, Seq: c.Seq, Type: typ, Body: body, ReplyToID: reply, ExpiresAt: expiresAt, CreatedAt: now}
-	a.state.Messages[cid] = append(a.state.Messages[cid], m)
-	a.state.MessageByID[m.ID] = m
-	a.state.MessageIdempotency[key] = m.ID
-	ids := memberIDs(a.state.Members[cid])
-	events := make([]*businessEvent, 0, len(ids))
-	for _, recipient := range ids {
-		events = append(events, a.businessEventLocked(recipient, "message.created", map[string]any{"message": m}))
-	}
-	err := a.saveLocked()
-	a.mu.Unlock()
-	if err != nil {
-		return nil, false, err
-	}
-	a.Metrics.Messages.Add(1)
-	for i, recipient := range ids {
-		e := events[i]
-		go a.publish([]string{recipient}, e.Type, e.Payload)
-	}
-	return m, false, nil
+	return nil, false, ErrUnavailable
 }
 
 func onlyBodyKeys(body map[string]any, allowed ...string) bool {
@@ -3066,32 +2842,8 @@ func (a *App) ForwardMessages(uid, targetID string, sourceIDs []string, mode, cl
 			}
 		}
 		sources = items
-	} else if q, ok := a.persistence.(store.QueryStore); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		items, err := q.ListForwardMessages(ctx, uid, sourceIDs)
-		if err == store.ErrForbidden {
-			return nil, false, ErrForbidden
-		}
-		if err == store.ErrConflict {
-			return nil, false, ErrConflict
-		}
-		if err != nil {
-			return nil, false, err
-		}
-		sources = items
 	} else {
-		a.mu.RLock()
-		for _, sourceID := range sourceIDs {
-			message := a.state.MessageByID[sourceID]
-			if message == nil || a.state.Members[message.ConversationID][uid] == nil {
-				a.mu.RUnlock()
-				return nil, false, ErrForbidden
-			}
-			copy := *message
-			sources = append(sources, &copy)
-		}
-		a.mu.RUnlock()
+		return nil, false, ErrUnavailable
 	}
 	totalSize := 0
 	for _, source := range sources {
@@ -3155,34 +2907,7 @@ func (a *App) History(uid, cid string, before int64, limit int) ([]*model.Messag
 		items, err := loader(ctx, uid, cid, before, limit)
 		return items, mapStoreError(err)
 	}
-	if q, ok := a.persistence.(store.QueryStore); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		defer cancel()
-		out, err := q.ListMessages(ctx, uid, cid, before, limit)
-		if err == store.ErrForbidden {
-			return nil, ErrForbidden
-		}
-		return out, err
-	}
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if a.state.Members[cid][uid] == nil {
-		return nil, ErrForbidden
-	}
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-	xs := a.state.Messages[cid]
-	out := make([]*model.Message, 0, limit)
-	for i := len(xs) - 1; i >= 0 && len(out) < limit; i-- {
-		if before == 0 || xs[i].Seq < before {
-			out = append(out, a.messageWithMemoryReactionsLocked(uid, xs[i]))
-		}
-	}
-	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
-		out[i], out[j] = out[j], out[i]
-	}
-	return out, nil
+	return nil, ErrUnavailable
 }
 func (a *App) Recall(uid, mid string) error {
 	window := time.Duration(a.settingInt("messageRecallMinutes", 2)) * time.Minute
@@ -3198,49 +2923,7 @@ func (a *App) Recall(uid, mid string) error {
 		}
 		return err
 	}
-	if err := a.refresh(); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	m := a.state.MessageByID[mid]
-	if m == nil {
-		return ErrNotFound
-	}
-	membership := a.state.Members[m.ConversationID][uid]
-	if m.SenderID != uid && (membership == nil || (membership.Role != "owner" && membership.Role != "admin")) {
-		return ErrForbidden
-	}
-	if m.SenderID == uid && time.Since(m.CreatedAt) > window {
-		return ErrForbidden
-	}
-	if m.RecalledAt != nil {
-		return nil
-	}
-	now := time.Now()
-	m.RecalledAt = &now
-	m.Body = map[string]any{}
-	if ms, ok := a.persistence.(store.MutationStore); ok {
-		if err := ms.RecallMessage(context.Background(), mid, now); err != nil {
-			if err == store.ErrNotFound {
-				return ErrNotFound
-			}
-			return err
-		}
-	}
-	ids := memberIDs(a.state.Members[m.ConversationID])
-	events := make([]*businessEvent, 0, len(ids))
-	for _, x := range ids {
-		events = append(events, a.businessEventLocked(x, "message.recalled", map[string]any{"messageId": mid, "conversationId": m.ConversationID, "conversationSeq": m.Seq}))
-	}
-	if err := a.saveLocked(); err != nil {
-		return err
-	}
-	for i, x := range ids {
-		e := events[i]
-		go a.publish([]string{x}, e.Type, e)
-	}
-	return nil
+	return ErrUnavailable
 }
 
 func (a *App) EditMessage(uid, mid, editID string, body map[string]any) (*model.Message, bool, error) {
@@ -3260,7 +2943,6 @@ func (a *App) EditMessage(uid, mid, editID string, body map[string]any) (*model.
 		return nil, false, err
 	}
 	window := time.Duration(a.settingInt("messageRecallMinutes", 2)) * time.Minute
-	sensitiveEnabled := a.settingBool("sensitiveWordEnabled", true)
 	if s, ok := a.persistence.(store.MessageCollaborationStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -3296,101 +2978,7 @@ func (a *App) EditMessage(uid, mid, editID string, body map[string]any) (*model.
 		}
 		return message, duplicate, nil
 	}
-	if err = a.refresh(); err != nil {
-		return nil, false, err
-	}
-	a.mu.Lock()
-	message := a.state.MessageByID[mid]
-	if message == nil {
-		a.mu.Unlock()
-		return nil, false, ErrNotFound
-	}
-	membership := a.state.Members[message.ConversationID][uid]
-	if membership == nil || message.SenderID != uid || message.Type != "text" || message.RecalledAt != nil || time.Since(message.CreatedAt) > window {
-		a.mu.Unlock()
-		return nil, false, ErrForbidden
-	}
-	if a.state.MessageEditRequests[mid] == nil {
-		a.state.MessageEditRequests[mid] = map[string]string{}
-	}
-	currentRaw, _ := json.Marshal(message.Body)
-	newRaw, _ := json.Marshal(canonical)
-	if previousBody, duplicate := a.state.MessageEditRequests[mid][editID]; duplicate {
-		if previousBody != string(newRaw) {
-			a.mu.Unlock()
-			return nil, false, ErrConflict
-		}
-		copy := *message
-		a.mu.Unlock()
-		return &copy, true, nil
-	}
-	if err = a.validateMemoryMentionsLocked(uid, message.ConversationID, canonical); err != nil {
-		a.mu.Unlock()
-		return nil, false, err
-	}
-	if sensitiveEnabled {
-		for _, entry := range a.state.SensitiveWords {
-			word := strings.SplitN(entry, "|", 2)[0]
-			if word != "" && strings.Contains(strings.ToLower(text), strings.ToLower(word)) {
-				a.mu.Unlock()
-				return nil, false, ErrForbidden
-			}
-		}
-	}
-	a.state.MessageEditRequests[mid][editID] = string(newRaw)
-	if string(currentRaw) == string(newRaw) {
-		_ = a.saveLocked()
-		copy := *message
-		a.mu.Unlock()
-		return &copy, true, nil
-	}
-	if message.EditVersion == 0 {
-		original := map[string]any{}
-		_ = json.Unmarshal(currentRaw, &original)
-		a.state.MessageEdits[mid] = append(a.state.MessageEdits[mid], &model.MessageEdit{MessageID: mid, Version: 0, EditorID: uid, Body: original, EditedAt: message.CreatedAt})
-	}
-	now := time.Now()
-	message.EditVersion++
-	message.EditedAt = &now
-	message.Body = canonical
-	a.state.MessageEdits[mid] = append(a.state.MessageEdits[mid], &model.MessageEdit{MessageID: mid, Version: message.EditVersion, EditID: editID, EditorID: uid, Body: canonical, EditedAt: now})
-	ids := memberIDs(a.state.Members[message.ConversationID])
-	events := make([]*businessEvent, 0, len(ids))
-	payload := map[string]any{"message": message, "editId": editID}
-	for _, memberID := range ids {
-		events = append(events, a.businessEventLocked(memberID, "message.edited", payload))
-	}
-	a.auditLocked(uid, "message.edited", "message", mid, map[string]any{"editId": editID, "version": message.EditVersion})
-	if err = a.saveLocked(); err != nil {
-		a.mu.Unlock()
-		return nil, false, err
-	}
-	copy := *message
-	a.mu.Unlock()
-	for i, memberID := range ids {
-		event := events[i]
-		go a.publish([]string{memberID}, event.Type, event.Payload)
-	}
-	return &copy, false, nil
-}
-
-func (a *App) validateMemoryMentionsLocked(uid, cid string, body map[string]any) error {
-	mentions, _ := body["mentions"].([]string)
-	mentionAll, _ := body["mentionAll"].(bool)
-	if len(mentions) == 0 && !mentionAll {
-		return nil
-	}
-	conversation := a.state.Conversations[cid]
-	membership := a.state.Members[cid][uid]
-	if conversation == nil || conversation.Type != "group" || membership == nil || (mentionAll && membership.Role != "owner" && membership.Role != "admin") {
-		return ErrForbidden
-	}
-	for _, mentionedID := range mentions {
-		if a.state.Members[cid][mentionedID] == nil {
-			return ErrForbidden
-		}
-	}
-	return nil
+	return nil, false, ErrUnavailable
 }
 
 func (a *App) MessageEdits(uid, mid string) ([]*model.MessageEdit, error) {
@@ -3406,16 +2994,7 @@ func (a *App) MessageEdits(uid, mid string) ([]*model.MessageEdit, error) {
 		}
 		return items, err
 	}
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	message := a.state.MessageByID[mid]
-	if message == nil {
-		return nil, ErrNotFound
-	}
-	if a.state.Members[message.ConversationID][uid] == nil || message.RecalledAt != nil {
-		return nil, ErrForbidden
-	}
-	return append([]*model.MessageEdit(nil), a.state.MessageEdits[mid]...), nil
+	return nil, ErrUnavailable
 }
 
 func (a *App) SetMessageReaction(uid, mid, emoji string, add bool) (model.MessageReactionSummary, bool, error) {
@@ -3434,47 +3013,7 @@ func (a *App) SetMessageReaction(uid, mid, emoji string, add bool) (model.Messag
 		}
 		return summary, duplicate, err
 	}
-	a.mu.Lock()
-	message := a.state.MessageByID[mid]
-	if message == nil {
-		a.mu.Unlock()
-		return model.MessageReactionSummary{}, false, ErrNotFound
-	}
-	if a.state.Members[message.ConversationID][uid] == nil || message.RecalledAt != nil {
-		a.mu.Unlock()
-		return model.MessageReactionSummary{}, false, ErrForbidden
-	}
-	if a.state.MessageReactions[mid] == nil {
-		a.state.MessageReactions[mid] = map[string]map[string]bool{}
-	}
-	if a.state.MessageReactions[mid][emoji] == nil {
-		a.state.MessageReactions[mid][emoji] = map[string]bool{}
-	}
-	wasSet := a.state.MessageReactions[mid][emoji][uid]
-	changed := wasSet != add
-	if add {
-		a.state.MessageReactions[mid][emoji][uid] = true
-	} else {
-		delete(a.state.MessageReactions[mid][emoji], uid)
-	}
-	summary := model.MessageReactionSummary{Emoji: emoji, Count: len(a.state.MessageReactions[mid][emoji]), ReactedByMe: add}
-	ids := memberIDs(a.state.Members[message.ConversationID])
-	events := []*businessEvent{}
-	if changed {
-		payload := map[string]any{"messageId": mid, "conversationId": message.ConversationID, "emoji": emoji, "actorId": uid, "added": add, "count": summary.Count}
-		for _, memberID := range ids {
-			events = append(events, a.businessEventLocked(memberID, "message.reaction.updated", payload))
-		}
-	}
-	if err := a.saveLocked(); err != nil {
-		a.mu.Unlock()
-		return summary, false, err
-	}
-	a.mu.Unlock()
-	for i, event := range events {
-		go a.publish([]string{ids[i]}, event.Type, event.Payload)
-	}
-	return summary, !changed, nil
+	return model.MessageReactionSummary{}, false, ErrUnavailable
 }
 
 func (a *App) CollaborationMessage(uid, mid string) (*model.Message, error) {
@@ -3495,31 +3034,7 @@ func (a *App) CollaborationMessage(uid, mid string) (*model.Message, error) {
 		applyModelMessageExtension(items[0], extensions[mid])
 		return items[0], nil
 	}
-	if q, ok := a.persistence.(store.QueryStore); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		defer cancel()
-		items, err := q.ListForwardMessages(ctx, uid, []string{mid})
-		if err == store.ErrForbidden {
-			return nil, ErrForbidden
-		}
-		if err != nil {
-			return nil, err
-		}
-		if len(items) != 1 {
-			return nil, ErrNotFound
-		}
-		return items[0], nil
-	}
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	message := a.state.MessageByID[mid]
-	if message == nil {
-		return nil, ErrNotFound
-	}
-	if a.state.Members[message.ConversationID][uid] == nil {
-		return nil, ErrForbidden
-	}
-	return a.messageWithMemoryReactionsLocked(uid, message), nil
+	return nil, ErrUnavailable
 }
 
 func applyModelMessageExtension(message *model.Message, extension map[string]any) {
@@ -3596,59 +3111,7 @@ func (a *App) SetGroupMessagePin(uid, cid, mid string, pin bool) (*model.Message
 		}
 		return item, duplicate, err
 	}
-	a.mu.Lock()
-	conversation, membership, message := a.state.Conversations[cid], a.state.Members[cid][uid], a.state.MessageByID[mid]
-	if conversation == nil || message == nil || message.ConversationID != cid || message.RecalledAt != nil {
-		a.mu.Unlock()
-		return nil, false, ErrNotFound
-	}
-	if conversation.Type != "group" || membership == nil || (membership.Role != "owner" && membership.Role != "admin") {
-		a.mu.Unlock()
-		return nil, false, ErrForbidden
-	}
-	if a.state.GroupMessagePins[cid] == nil {
-		a.state.GroupMessagePins[cid] = map[string]*model.MessagePin{}
-	}
-	_, exists := a.state.GroupMessagePins[cid][mid]
-	changed := exists != pin
-	now := time.Now()
-	item := &model.MessagePin{ConversationID: cid, Message: message, PinnedBy: uid, PinnedAt: now}
-	if pin {
-		a.state.GroupMessagePins[cid][mid] = item
-	} else {
-		delete(a.state.GroupMessagePins[cid], mid)
-	}
-	ids := memberIDs(a.state.Members[cid])
-	events := []*businessEvent{}
-	if changed {
-		eventType := "group.message.pinned"
-		if !pin {
-			eventType = "group.message.unpinned"
-		}
-		payload := map[string]any{"conversationId": cid, "messageId": mid, "actorId": uid}
-		for _, memberID := range ids {
-			events = append(events, a.businessEventLocked(memberID, eventType, payload))
-		}
-		conversation.Seq++
-		conversation.LastMessageSeq = conversation.Seq
-		conversation.UpdatedAt = now
-		system := &model.Message{ID: id("msg"), ConversationID: cid, SenderID: uid, ClientMsgID: id("system"), Seq: conversation.Seq, Type: "system", Body: map[string]any{"event": eventType, "messageId": mid, "actorId": uid}, CreatedAt: now}
-		a.state.Messages[cid] = append(a.state.Messages[cid], system)
-		a.state.MessageByID[system.ID] = system
-		for _, memberID := range ids {
-			events = append(events, a.businessEventLocked(memberID, "message.created", map[string]any{"message": system}))
-		}
-		a.auditLocked(uid, eventType, "message", mid, map[string]any{"conversationId": cid})
-	}
-	if err := a.saveLocked(); err != nil {
-		a.mu.Unlock()
-		return nil, false, err
-	}
-	a.mu.Unlock()
-	for _, event := range events {
-		go a.publish([]string{event.UserID}, event.Type, event.Payload)
-	}
-	return item, !changed, nil
+	return nil, false, ErrUnavailable
 }
 
 func (a *App) GroupMessagePins(uid, cid string, before int64, limit int) ([]*model.MessagePin, error) {
@@ -3666,27 +3129,7 @@ func (a *App) GroupMessagePins(uid, cid string, before int64, limit int) ([]*mod
 		}
 		return items, err
 	}
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if a.state.Members[cid][uid] == nil {
-		return nil, ErrForbidden
-	}
-	items := []*model.MessagePin{}
-	for _, item := range a.state.GroupMessagePins[cid] {
-		if before == 0 || item.PinnedAt.UnixMilli() < before {
-			copy := *item
-			copy.Message = a.messageWithMemoryReactionsLocked(uid, item.Message)
-			items = append(items, &copy)
-		}
-	}
-	sort.Slice(items, func(i, j int) bool { return items[i].PinnedAt.After(items[j].PinnedAt) })
-	if len(items) > limit {
-		items = items[:limit]
-	}
-	return items, nil
+	return nil, ErrUnavailable
 }
 
 func (a *App) hydrateWukongMessagePins(ctx context.Context, uid string, items []*model.MessagePin) error {
@@ -3766,43 +3209,7 @@ func (a *App) SearchConversationMessages(uid, cid, query string, before int64, l
 		items, err := loader(ctx, uid, cid, query, before, limit)
 		return items, mapStoreError(err)
 	}
-	if s, ok := a.persistence.(store.MessageCollaborationStore); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		defer cancel()
-		items, err := s.SearchConversationMessages(ctx, uid, cid, query, before, limit)
-		if err == store.ErrForbidden {
-			return nil, ErrForbidden
-		}
-		return items, err
-	}
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if a.state.Members[cid][uid] == nil {
-		return nil, ErrForbidden
-	}
-	lower := strings.ToLower(query)
-	items := []*model.Message{}
-	for i := len(a.state.Messages[cid]) - 1; i >= 0 && len(items) < limit; i-- {
-		message := a.state.Messages[cid][i]
-		text, _ := message.Body["text"].(string)
-		if message.Type == "text" && message.RecalledAt == nil && (before == 0 || message.Seq < before) && strings.Contains(strings.ToLower(text), lower) {
-			items = append(items, a.messageWithMemoryReactionsLocked(uid, message))
-		}
-	}
-	return items, nil
-}
-
-func (a *App) messageWithMemoryReactionsLocked(uid string, message *model.Message) *model.Message {
-	copy := *message
-	copy.Reactions = nil
-	for emoji, users := range a.state.MessageReactions[message.ID] {
-		copy.Reactions = append(copy.Reactions, model.MessageReactionSummary{Emoji: emoji, Count: len(users), ReactedByMe: users[uid]})
-	}
-	sort.Slice(copy.Reactions, func(i, j int) bool { return copy.Reactions[i].Emoji < copy.Reactions[j].Emoji })
-	return &copy
+	return nil, ErrUnavailable
 }
 
 func (a *App) Read(uid, cid string, seq int64) error {
@@ -4158,6 +3565,8 @@ func mapStoreError(err error) error {
 		return ErrForbidden
 	case store.ErrConflict:
 		return ErrConflict
+	case store.ErrUnsupported:
+		return ErrUnavailable
 	default:
 		return err
 	}
@@ -4473,7 +3882,7 @@ func (a *App) AdminStats() map[string]any {
 			banned++
 		}
 	}
-	return map[string]any{"users": len(a.state.Users), "bannedUsers": banned, "conversations": len(a.state.Conversations), "messages": len(a.state.MessageByID), "pendingReports": pending}
+	return map[string]any{"users": len(a.state.Users), "bannedUsers": banned, "conversations": len(a.state.Conversations), "messages": 0, "pendingReports": pending}
 }
 func (a *App) AdminUsers(q string) []*model.User { return a.SearchUsers(q) }
 func (a *App) AdminUsersPage(q, status, cursor string, limit int) ([]*model.User, int64, string, error) {
@@ -4759,22 +4168,12 @@ func (a *App) ResolveReport(actor, rid, action, resolution string) (string, erro
 		return "", ErrNotFound
 	}
 	if action == "delete_message" {
-		m := a.state.MessageByID[r.TargetID]
-		if r.TargetType != "message" || m == nil {
-			return "", ErrConflict
-		}
-		now := time.Now()
-		m.Body = map[string]any{}
-		m.RecalledAt = &now
+		return "", ErrUnavailable
 	}
 	if action == "ban_user" {
 		target := r.TargetID
 		if r.TargetType == "message" {
-			m := a.state.MessageByID[target]
-			if m == nil {
-				return "", ErrNotFound
-			}
-			target = m.SenderID
+			return "", ErrUnavailable
 		} else if r.TargetType != "user" {
 			return "", ErrConflict
 		}
@@ -4826,21 +4225,7 @@ func (a *App) AdminMessagesPage(q, messageType, cursor string, limit int) ([]*mo
 		defer cancel()
 		return s.ListAdminMessages(ctx, q, messageType, cursor, limit)
 	}
-	q = strings.ToLower(strings.TrimSpace(q))
-	a.mu.RLock()
-	items := make([]*model.Message, 0, len(a.state.MessageByID))
-	for _, message := range a.state.MessageByID {
-		raw, _ := json.Marshal(message.Body)
-		haystack := strings.ToLower(strings.Join([]string{message.ID, message.ConversationID, message.SenderID, message.ClientMsgID, string(raw)}, " "))
-		if (q == "" || strings.Contains(haystack, q)) && (messageType == "" || message.Type == messageType) {
-			copy := *message
-			items = append(items, &copy)
-		}
-	}
-	a.mu.RUnlock()
-	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
-	start, end, next := pageBounds(cursor, limit, len(items))
-	return items[start:end], int64(len(items)), next, nil
+	return nil, 0, "", store.ErrUnsupported
 }
 
 func (a *App) AdminMediaPage(q, status, cursor string, limit int) ([]*model.Media, int64, string, error) {
@@ -5219,7 +4604,6 @@ func (a *App) DisbandGroup(actor, cid, reason string) error {
 	ids := memberIDs(a.state.Members[cid])
 	delete(a.state.Conversations, cid)
 	delete(a.state.Members, cid)
-	delete(a.state.Messages, cid)
 	a.auditLocked(actor, "group.disbanded", "group", cid, map[string]any{"reason": reason})
 	for _, uid := range ids {
 		a.businessEventLocked(uid, "group.disbanded", map[string]any{"conversationId": cid})
@@ -5547,16 +4931,6 @@ func (a *App) CanAccessMedia(uid, id string) (bool, error) {
 	}
 	if m.OwnerID == uid {
 		return true, nil
-	}
-	for cid, messages := range a.state.Messages {
-		if a.state.Members[cid][uid] == nil {
-			continue
-		}
-		for _, message := range messages {
-			if mediaID, _ := message.Body["mediaId"].(string); mediaID == id {
-				return true, nil
-			}
-		}
 	}
 	for _, binding := range a.mediaBindings[id] {
 		switch binding.ChannelType {

@@ -13,6 +13,7 @@ import (
 	"github.com/linli/im/server/internal/auth"
 	"github.com/linli/im/server/internal/config"
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/teststore"
 )
 
 func TestWukongClientDatasourceForcesAuthenticatedUID(t *testing.T) {
@@ -29,7 +30,7 @@ func TestWukongClientDatasourceForcesAuthenticatedUID(t *testing.T) {
 		_, _ = w.Write([]byte(`[]`))
 	}))
 	defer wukongServer.Close()
-	a, err := app.New(t.Context(), store.Memory{})
+	a, err := app.New(t.Context(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +73,7 @@ func TestWukongClientDatasourceForcesAuthenticatedUID(t *testing.T) {
 }
 
 func TestWukongMessageExtensionDatasourceValidatesBatch(t *testing.T) {
-	a, err := app.New(t.Context(), store.Memory{})
+	a, err := app.New(t.Context(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +114,7 @@ func TestWukongMessageDatasourceEnrichesBoundMediaWithFreshSignedURL(t *testing.
 	}))
 	defer wukongServer.Close()
 
-	a, _ := app.New(t.Context(), store.Memory{})
+	a, _ := app.New(t.Context(), teststore.Memory{})
 	owner, _ := a.Login("13800002011", "Owner")
 	recipient, _ := a.Login("13800002012", "Recipient")
 	friendRequest, _ := a.RequestFriendWithSource(owner.ID, recipient.ID, "hello", "search")
@@ -169,7 +170,7 @@ func TestWukongMessageDatasourceProjectsPinnedStreamSnapshot(t *testing.T) {
 	}))
 	defer wukongServer.Close()
 
-	a, _ := app.New(t.Context(), store.Memory{})
+	a, _ := app.New(t.Context(), teststore.Memory{})
 	owner, _ := a.Login("13800002021", "Owner")
 	recipient, _ := a.Login("13800002022", "Recipient")
 	friendRequest, _ := a.RequestFriendWithSource(owner.ID, recipient.ID, "hello", "search")

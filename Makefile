@@ -43,7 +43,7 @@ admin:
 	cd apps/admin && npm run dev
 
 server:
-	cd server && IM_ENV=development IM_ADDR=127.0.0.1:8080 IM_MODE=memory IM_DEV_MODE=true IM_DEV_OTP_CODE=123456 IM_JWT_SECRET=local-development-jwt-secret-change-me IM_ADMIN_EMAIL=admin@nexachat.local IM_ADMIN_PASSWORD_HASH='$$2a$$12$$rAyv6obDffJSqZ1aaqOCR.ER2UXp8ZPsEl2bJCTovnsJJrFshtxNW' IM_ADMIN_TOTP_SECRET=JBSWY3DPEHPK3PXP IM_ADMIN_SHARED_KEY_ENABLED=false IM_PUSH_PROVIDER=log go run ./cmd/server
+	docker compose -f infra/compose.yaml -f infra/compose.wukong.yaml up -d --build server wukongim livekit
 
 test:
 	cd server && go test ./...

@@ -28,15 +28,6 @@ groups:
           summary: NexaChat push delivery backlog is delayed
           description: The oldest pending push has waited more than one minute.
 
-      - alert: NexaChatMessageFanoutBacklog
-        expr: im_message_fanout_oldest_seconds > 10 or im_message_fanout_pending > 100
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: NexaChat durable message fanout is falling behind
-          description: Per-user sync expansion cannot keep up with incoming messages.
-
       - alert: NexaChatWukongOutboxBacklog
         expr: im_wukong_outbox_oldest_seconds > 60 or im_wukong_outbox_pending > 100
         for: 5m

@@ -12,7 +12,7 @@ import (
 
 	"github.com/linli/im/server/internal/app"
 	"github.com/linli/im/server/internal/config"
-	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/teststore"
 )
 
 func TestWukongLoadFixtureIsDevOnlyAndReturnsBusinessPairs(t *testing.T) {
@@ -31,7 +31,7 @@ func TestWukongLoadFixtureIsDevOnlyAndReturnsBusinessPairs(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
-	application, err := app.New(t.Context(), store.Memory{})
+	application, err := app.New(t.Context(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}

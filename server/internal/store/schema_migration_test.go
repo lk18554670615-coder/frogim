@@ -28,13 +28,11 @@ func TestDevicePreferenceColumnsAreUpgradedForExistingTables(t *testing.T) {
 	}
 }
 
-func TestMessageFanoutAndRetentionSchemaIsVersioned(t *testing.T) {
+func TestRetentionSchemaIsVersioned(t *testing.T) {
 	if schemaVersion < 25 {
 		t.Fatalf("performance schema requires version 25 or newer, got %d", schemaVersion)
 	}
 	for _, statement := range []string{
-		"CREATE TABLE IF NOT EXISTS im_message_fanout",
-		"im_message_fanout_pending_idx",
 		"im_push_outbox_retention_idx",
 		"CREATE EXTENSION IF NOT EXISTS pg_stat_statements",
 		"ALTER TABLE im_conversations ADD COLUMN IF NOT EXISTS member_count",
@@ -115,6 +113,31 @@ func TestWukongSystemAccountsSchemaIsVersioned(t *testing.T) {
 	} {
 		if !strings.Contains(normalizedSchema, fragment) {
 			t.Fatalf("WuKong system account schema is missing %q", fragment)
+		}
+	}
+}
+
+func TestLegacyMessagePayloadTableIsRemovedAtSchemaVersion46(t *testing.T) {
+	if schemaVersion < 46 {
+		t.Fatalf("legacy message payload removal requires schema version 46 or newer, got %d", schemaVersion)
+	}
+	if !strings.Contains(normalizedSchema, "DROP TABLE IF EXISTS im_messages") {
+		t.Fatal("legacy im_messages cleanup is missing")
+	}
+	if strings.Contains(normalizedSchema, "CREATE TABLE IF NOT EXISTS im_messages") {
+		t.Fatal("legacy im_messages payload table is recreated by normalized schema")
+	}
+	if !strings.Contains(normalizedSchema, "DROP TABLE IF EXISTS im_message_fanout") || strings.Contains(normalizedSchema, "CREATE TABLE IF NOT EXISTS im_message_fanout") {
+		t.Fatal("legacy message fanout table is not fully retired")
+	}
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS im_message_edits(message_id text NOT NULL,",
+		"CREATE TABLE IF NOT EXISTS im_message_reactions(message_id text NOT NULL,",
+		"CREATE TABLE IF NOT EXISTS im_group_message_pins(conversation_id text NOT NULL REFERENCES im_groups(conversation_id) ON DELETE CASCADE,message_id text NOT NULL,",
+		"CREATE TABLE IF NOT EXISTS im_favorites(user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,message_id text NOT NULL,",
+	} {
+		if !strings.Contains(normalizedSchema, fragment) {
+			t.Fatalf("WuKong business extension is not independent of the retired payload table: %q", fragment)
 		}
 	}
 }
@@ -323,7 +346,7 @@ func TestPostgresSchema44ScrubsLegacyWebhookPayloads(t *testing.T) {
 	}
 	defer repository.Close()
 	var version int
-	if err = repository.pool.QueryRow(ctx, `SELECT max(version) FROM im_schema_migrations`).Scan(&version); err != nil || version != 44 {
+	if err = repository.pool.QueryRow(ctx, `SELECT max(version) FROM im_schema_migrations`).Scan(&version); err != nil || version != schemaVersion {
 		t.Fatalf("schema version=%d err=%v", version, err)
 	}
 	rows, err := repository.pool.Query(ctx, `SELECT id,status,payload::text FROM im_wukong_webhook_events ORDER BY id`)

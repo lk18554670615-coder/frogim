@@ -8,7 +8,14 @@ import (
 )
 
 func validConfig() Config {
-	return Config{Addr: "127.0.0.1:8080", Mode: "memory", JWTSecret: strings.Repeat("j", 32), AdminKey: strings.Repeat("a", 24), AccessTTL: 15 * time.Minute, RefreshTTL: 24 * time.Hour, MediaMaxBytes: 100 << 20}
+	c := Config{
+		Addr: "127.0.0.1:8080", DatabaseURL: "postgres://db",
+		JWTSecret: strings.Repeat("j", 32), AdminKey: strings.Repeat("a", 24),
+		AccessTTL: 15 * time.Minute, RefreshTTL: 24 * time.Hour, MediaMaxBytes: 100 << 20,
+		DevMode: true, DevOTPCode: "654321",
+	}
+	configureWukong(&c)
+	return c
 }
 
 func configureLiveKit(c *Config) {
@@ -48,18 +55,17 @@ func TestValidateFailsClosed(t *testing.T) {
 	}{
 		{"missing jwt", func(c *Config) { c.JWTSecret = "" }},
 		{"bootstrap missing admin key", func(c *Config) { c.AdminSharedKeyEnabled = true; c.AdminKey = "" }},
-		{"shared admin key outside development", func(c *Config) { c.AdminSharedKeyEnabled = true }},
-		{"demo seed outside development", func(c *Config) { c.SeedDemo = true }},
-		{"full without database", func(c *Config) { c.Mode = "full" }},
-		{"dev without otp", func(c *Config) { c.DevMode = true }},
-		{"dev public bind", func(c *Config) { c.DevMode = true; c.DevOTPCode = "654321"; c.Addr = ":8080" }},
-		{"production rejects dev", func(c *Config) { c.DevMode = true; c.DevOTPCode = "654321"; c.Environment = "production" }},
+		{"shared admin key outside development", func(c *Config) { c.AdminSharedKeyEnabled = true; c.DevMode = false }},
+		{"demo seed outside development", func(c *Config) { c.SeedDemo = true; c.DevMode = false }},
+		{"full without database", func(c *Config) { c.DatabaseURL = "" }},
+		{"dev without otp", func(c *Config) { c.DevOTPCode = "" }},
+		{"dev public bind", func(c *Config) { c.Addr = ":8080" }},
+		{"production rejects dev", func(c *Config) { c.Environment = "production" }},
 		{"media limit too small", func(c *Config) { c.MediaMaxBytes = 1024 }},
-		{"android media endpoint outside development", func(c *Config) { c.S3AndroidPublicEndpoint = "10.0.2.2:9000" }},
+		{"android media endpoint outside development", func(c *Config) { c.S3AndroidPublicEndpoint = "10.0.2.2:9000"; c.DevMode = false }},
 		{"wukong internal rate limit too small", func(c *Config) { c.WukongInternalRateLimitPerMinute = 59999 }},
 		{"wukong internal rate limit too large", func(c *Config) { c.WukongInternalRateLimitPerMinute = 600001 }},
 		{"container flag needs development env", func(c *Config) {
-			c.Mode = "full"
 			c.DatabaseURL = "postgres://db"
 			c.DevMode = true
 			c.DevOTPCode = "654321"
@@ -89,7 +95,6 @@ func TestValidateFailsClosed(t *testing.T) {
 		t.Fatalf("development Android media endpoint: %v", err)
 	}
 	container := validConfig()
-	container.Mode = "full"
 	container.DatabaseURL = "postgres://db"
 	container.DevMode = true
 	container.DevOTPCode = "654321"
@@ -122,7 +127,7 @@ func TestEnvironmentProductionWinsAcrossAliases(t *testing.T) {
 
 func TestProductionAllowsCompleteGetuiConfiguration(t *testing.T) {
 	c := validConfig()
-	c.Mode = "full"
+	c.DevMode = false
 	c.Environment = "production"
 	c.DatabaseURL = "postgres://db"
 	c.AdminEmail = "ops@example.com"
@@ -151,7 +156,7 @@ func TestProductionAllowsCompleteGetuiConfiguration(t *testing.T) {
 
 func TestFullModeRequiresWukongAndProductionRequiresLiveKit(t *testing.T) {
 	c := validConfig()
-	c.Mode = "full"
+	c.DevMode = false
 	c.DatabaseURL = "postgres://db"
 	c.AdminEmail = "admin@example.com"
 	c.AdminPasswordHash = "$2a$12$example"
@@ -161,7 +166,8 @@ func TestFullModeRequiresWukongAndProductionRequiresLiveKit(t *testing.T) {
 	c.PushProvider = "webhook"
 	c.PushWebhookURL = "https://push.example.com"
 	c.PushWebhookToken = strings.Repeat("p", 24)
-	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "requires WuKongIM") {
+	c.WukongEnabled = false
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "WuKongIM is required") {
 		t.Fatalf("missing WuKongIM config err=%v", err)
 	}
 	configureWukong(&c)
@@ -177,7 +183,7 @@ func TestFullModeRequiresWukongAndProductionRequiresLiveKit(t *testing.T) {
 
 func TestProductionLiveKitValidatesTokenTTL(t *testing.T) {
 	c := validConfig()
-	c.Mode = "full"
+	c.DevMode = false
 	c.DatabaseURL = "postgres://db"
 	c.AdminEmail = "admin@example.com"
 	c.AdminPasswordHash = "$2a$12$example"
@@ -199,7 +205,7 @@ func TestProductionLiveKitValidatesTokenTTL(t *testing.T) {
 
 func TestProductionCombinedPushRequiresCompleteAPNSVoIPConfiguration(t *testing.T) {
 	c := validConfig()
-	c.Mode = "full"
+	c.DevMode = false
 	c.Environment = "production"
 	c.DatabaseURL = "postgres://db"
 	c.AdminEmail = "ops@example.com"
@@ -235,6 +241,7 @@ func TestWukongRequiresIndependentPolicySecret(t *testing.T) {
 	c.WukongManagerURL = "http://wukongim:5300"
 	c.WukongManagerToken = strings.Repeat("m", 24)
 	c.WukongTokenSecret = strings.Repeat("t", 32)
+	c.WukongPolicySecret = ""
 	c.WukongGRPCAddr = ":6970"
 	c.WukongTCPURL = "tcp://im.example.com:5100"
 	c.WukongWSURL = "wss://im.example.com/ws"
@@ -249,6 +256,9 @@ func TestWukongRequiresIndependentPolicySecret(t *testing.T) {
 
 func TestWukongSignedPluginLifecycleRejectsPartialOrInvalidTrust(t *testing.T) {
 	c := validConfig()
+	c.WukongPluginDir = ""
+	c.WukongPluginTrustedKeys = ""
+	c.WukongPluginAllowlist = ""
 	c.WukongEnabled = true
 	c.WukongAPIURL = "http://wukongim:5001"
 	c.WukongManagerURL = "http://wukongim:5300"

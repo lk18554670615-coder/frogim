@@ -6,10 +6,11 @@ import (
 	"time"
 
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/teststore"
 )
 
 type clientVersionTestStore struct {
-	store.Memory
+	teststore.Memory
 	policies map[string]store.ClientVersionPolicy
 }
 

@@ -2,7 +2,6 @@ package config
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"os"
 	"strconv"
@@ -13,50 +12,50 @@ import (
 )
 
 type Config struct {
-	Addr, Mode, JWTSecret, AdminKey, DatabaseURL, RedisURL, PushProvider string
-	Environment                                                          string
-	PushWebhookURL, PushWebhookToken                                     string
-	GetuiAppID, GetuiAppKey, GetuiMasterSecret                           string
-	APNSVoIPKeyID, APNSVoIPTeamID, APNSVoIPBundleID, APNSVoIPKeyFile     string
-	APNSVoIPSandbox                                                      bool
-	OTPWebhookURL, OTPWebhookToken                                       string
-	AdminEmail, AdminPasswordHash, AdminTOTPSecret, AdminID, AdminRole   string
-	S3Endpoint, S3PublicEndpoint, S3AndroidPublicEndpoint                string
-	S3AccessKey, S3SecretKey, S3Bucket                                   string
-	S3Region                                                             string
-	DevOTPCode                                                           string
-	AllowedOrigins                                                       []string
-	S3Secure, S3PublicSecure                                             bool
-	DevMode                                                              bool
-	SeedDemo                                                             bool
-	TrustProxy                                                           bool
-	AdminSharedKeyEnabled                                                bool
-	DevAllowContainerBind                                                bool
-	DevIPTestOnly                                                        bool
-	DBMaxConns, DBMinConns                                               int
-	WukongInternalRateLimitPerMinute                                     int
-	PushWorkers, PushBatchSize, MessageFanoutBatchSize                   int
-	MediaMaxBytes                                                        int64
-	AccessTTL, RefreshTTL                                                time.Duration
-	CallInviteTTL                                                        time.Duration
-	LiveKitTokenTTL                                                      time.Duration
-	DBMaxConnLifetime, DBMaxConnIdleTime, DBHealthCheckPeriod            time.Duration
-	DBStatementTimeout                                                   time.Duration
-	RuntimeCleanupInterval, OutboxRetention                              time.Duration
-	HTTPLogSuccessSampleRate                                             float64
-	WukongEnabled                                                        bool
-	WukongAPIURL, WukongManagerURL, WukongManagerToken                   string
-	WukongTokenSecret, WukongPolicySecret, WukongGRPCAddr                string
-	WukongTCPURL, WukongWSURL                                            string
-	WukongPluginDir, WukongPluginTrustedKeys, WukongPluginAllowlist      string
-	WukongPluginMaxBytes                                                 int64
-	LiveKitEnabled                                                       bool
-	LiveKitURL, LiveKitAPIURL, LiveKitAPIKey, LiveKitAPISecret           string
+	Addr, JWTSecret, AdminKey, DatabaseURL, RedisURL, PushProvider     string
+	Environment                                                        string
+	PushWebhookURL, PushWebhookToken                                   string
+	GetuiAppID, GetuiAppKey, GetuiMasterSecret                         string
+	APNSVoIPKeyID, APNSVoIPTeamID, APNSVoIPBundleID, APNSVoIPKeyFile   string
+	APNSVoIPSandbox                                                    bool
+	OTPWebhookURL, OTPWebhookToken                                     string
+	AdminEmail, AdminPasswordHash, AdminTOTPSecret, AdminID, AdminRole string
+	S3Endpoint, S3PublicEndpoint, S3AndroidPublicEndpoint              string
+	S3AccessKey, S3SecretKey, S3Bucket                                 string
+	S3Region                                                           string
+	DevOTPCode                                                         string
+	AllowedOrigins                                                     []string
+	S3Secure, S3PublicSecure                                           bool
+	DevMode                                                            bool
+	SeedDemo                                                           bool
+	TrustProxy                                                         bool
+	AdminSharedKeyEnabled                                              bool
+	DevAllowContainerBind                                              bool
+	DevIPTestOnly                                                      bool
+	DBMaxConns, DBMinConns                                             int
+	WukongInternalRateLimitPerMinute                                   int
+	PushWorkers, PushBatchSize                                         int
+	MediaMaxBytes                                                      int64
+	AccessTTL, RefreshTTL                                              time.Duration
+	CallInviteTTL                                                      time.Duration
+	LiveKitTokenTTL                                                    time.Duration
+	DBMaxConnLifetime, DBMaxConnIdleTime, DBHealthCheckPeriod          time.Duration
+	DBStatementTimeout                                                 time.Duration
+	RuntimeCleanupInterval, OutboxRetention                            time.Duration
+	HTTPLogSuccessSampleRate                                           float64
+	WukongEnabled                                                      bool
+	WukongAPIURL, WukongManagerURL, WukongManagerToken                 string
+	WukongTokenSecret, WukongPolicySecret, WukongGRPCAddr              string
+	WukongTCPURL, WukongWSURL                                          string
+	WukongPluginDir, WukongPluginTrustedKeys, WukongPluginAllowlist    string
+	WukongPluginMaxBytes                                               int64
+	LiveKitEnabled                                                     bool
+	LiveKitURL, LiveKitAPIURL, LiveKitAPIKey, LiveKitAPISecret         string
 }
 
 func Load() Config {
 	return Config{
-		Addr: value("IM_ADDR", ":8080"), Mode: value("IM_MODE", "memory"), Environment: environment(), JWTSecret: os.Getenv("IM_JWT_SECRET"),
+		Addr: value("IM_ADDR", ":8080"), Environment: environment(), JWTSecret: os.Getenv("IM_JWT_SECRET"),
 		AdminKey: os.Getenv("IM_ADMIN_KEY"), DatabaseURL: os.Getenv("IM_DATABASE_URL"), RedisURL: os.Getenv("IM_REDIS_URL"),
 		AdminEmail: os.Getenv("IM_ADMIN_EMAIL"), AdminPasswordHash: os.Getenv("IM_ADMIN_PASSWORD_HASH"), AdminTOTPSecret: os.Getenv("IM_ADMIN_TOTP_SECRET"), AdminID: value("IM_ADMIN_ID", "platform-admin"), AdminRole: value("IM_ADMIN_ROLE", "platform_admin"), AdminSharedKeyEnabled: boolValue("IM_ADMIN_SHARED_KEY_ENABLED", false),
 		PushProvider:   value("IM_PUSH_PROVIDER", "noop"),
@@ -69,7 +68,7 @@ func Load() Config {
 		DBMaxConns: intValue("IM_DB_MAX_CONNS", 20), DBMinConns: intValue("IM_DB_MIN_CONNS", 2),
 		WukongInternalRateLimitPerMinute: intValue("IM_WUKONG_INTERNAL_RATE_LIMIT_PER_MINUTE", 120000),
 		DBMaxConnLifetime:                duration("IM_DB_MAX_CONN_LIFETIME", time.Hour), DBMaxConnIdleTime: duration("IM_DB_MAX_CONN_IDLE_TIME", 15*time.Minute), DBHealthCheckPeriod: duration("IM_DB_HEALTH_CHECK_PERIOD", time.Minute), DBStatementTimeout: duration("IM_DB_STATEMENT_TIMEOUT", 15*time.Second),
-		PushWorkers: intValue("IM_PUSH_WORKERS", 16), PushBatchSize: intValue("IM_PUSH_BATCH_SIZE", 200), MessageFanoutBatchSize: intValue("IM_MESSAGE_FANOUT_BATCH_SIZE", 500),
+		PushWorkers: intValue("IM_PUSH_WORKERS", 16), PushBatchSize: intValue("IM_PUSH_BATCH_SIZE", 200),
 		RuntimeCleanupInterval: duration("IM_RUNTIME_CLEANUP_INTERVAL", time.Hour), OutboxRetention: duration("IM_OUTBOX_RETENTION", 7*24*time.Hour),
 		HTTPLogSuccessSampleRate: floatValue("IM_HTTP_LOG_SUCCESS_SAMPLE_RATE", 0.01),
 		MediaMaxBytes:            int64Value("IM_MEDIA_MAX_BYTES", 100<<20),
@@ -83,9 +82,6 @@ func Load() Config {
 }
 
 func (c Config) Validate() error {
-	if c.Mode != "memory" && c.Mode != "full" {
-		return fmt.Errorf("unsupported IM_MODE %q", c.Mode)
-	}
 	if len(c.JWTSecret) < 32 {
 		return errors.New("IM_JWT_SECRET must contain at least 32 bytes")
 	}
@@ -104,18 +100,18 @@ func (c Config) Validate() error {
 	if c.RefreshTTL < time.Hour || c.RefreshTTL > 90*24*time.Hour {
 		return errors.New("IM_REFRESH_TTL must be between 1h and 2160h")
 	}
-	if c.Mode == "full" && c.DatabaseURL == "" {
-		return errors.New("IM_DATABASE_URL is required in full mode")
+	if c.DatabaseURL == "" {
+		return errors.New("IM_DATABASE_URL is required")
 	}
-	if c.Mode == "full" && !c.DevMode {
+	if !c.DevMode {
 		if c.DevAllowContainerBind || c.DevIPTestOnly {
-			return errors.New("development container and IP-test flags are forbidden in production full mode")
+			return errors.New("development container and IP-test flags are forbidden in production")
 		}
 		if c.AdminEmail == "" || !strings.HasPrefix(c.AdminPasswordHash, "$2") || c.AdminTOTPSecret == "" {
-			return errors.New("production full mode requires admin email, bcrypt hash, and TOTP secret")
+			return errors.New("production requires admin email, bcrypt hash, and TOTP secret")
 		}
 		if !strings.HasPrefix(c.OTPWebhookURL, "https://") || len(c.OTPWebhookToken) < 24 {
-			return errors.New("production full mode requires an HTTPS OTP webhook and high-entropy token")
+			return errors.New("production requires an HTTPS OTP webhook and high-entropy token")
 		}
 		switch c.PushProvider {
 		case "webhook":
@@ -138,7 +134,7 @@ func (c Config) Validate() error {
 				return err
 			}
 		default:
-			return errors.New("production full mode requires webhook, getui, apns_voip, or getui_apns_voip push")
+			return errors.New("production requires webhook, getui, apns_voip, or getui_apns_voip push")
 		}
 	}
 	if c.DevMode {
@@ -150,7 +146,7 @@ func (c Config) Validate() error {
 		}
 		host, _, err := net.SplitHostPort(c.Addr)
 		loopback := err == nil && (host == "127.0.0.1" || host == "localhost" || host == "::1")
-		containerDevelopment := err == nil && c.Mode == "full" && c.DevAllowContainerBind && c.DevIPTestOnly && strings.EqualFold(c.Environment, "development") && (host == "" || host == "0.0.0.0" || host == "::")
+		containerDevelopment := err == nil && c.DevAllowContainerBind && c.DevIPTestOnly && strings.EqualFold(c.Environment, "development") && (host == "" || host == "0.0.0.0" || host == "::")
 		if !loopback && !containerDevelopment {
 			return errors.New("development mode may bind publicly only for explicit full-mode development containers")
 		}
@@ -178,17 +174,14 @@ func (c Config) Validate() error {
 	if c.DBStatementTimeout != 0 && (c.DBStatementTimeout < time.Second || c.DBStatementTimeout > time.Minute) {
 		return errors.New("IM_DB_STATEMENT_TIMEOUT must be between 1s and 1m")
 	}
-	pushWorkers, pushBatch, fanoutBatch := c.PushWorkers, c.PushBatchSize, c.MessageFanoutBatchSize
+	pushWorkers, pushBatch := c.PushWorkers, c.PushBatchSize
 	if pushWorkers == 0 {
 		pushWorkers = 16
 	}
 	if pushBatch == 0 {
 		pushBatch = 200
 	}
-	if fanoutBatch == 0 {
-		fanoutBatch = 500
-	}
-	if pushWorkers < 1 || pushWorkers > 128 || pushBatch < 1 || pushBatch > 1000 || fanoutBatch < 10 || fanoutBatch > 5000 {
+	if pushWorkers < 1 || pushWorkers > 128 || pushBatch < 1 || pushBatch > 1000 {
 		return errors.New("invalid asynchronous worker configuration")
 	}
 	cleanupInterval, outboxRetention := c.RuntimeCleanupInterval, c.OutboxRetention
@@ -216,8 +209,8 @@ func (c Config) Validate() error {
 	if c.CallInviteTTL != 0 && (c.CallInviteTTL < 15*time.Second || c.CallInviteTTL > 2*time.Minute) {
 		return errors.New("IM_CALL_INVITE_TTL must be between 15s and 2m")
 	}
-	if c.Mode == "full" && !c.WukongEnabled {
-		return errors.New("IM_MODE=full requires WuKongIM; the legacy message transport is not deployable")
+	if !c.WukongEnabled {
+		return errors.New("WuKongIM is required; no alternate message transport exists")
 	}
 	if c.WukongEnabled {
 		if !isHTTPURL(c.WukongAPIURL) || !isHTTPURL(c.WukongManagerURL) {
@@ -252,7 +245,7 @@ func (c Config) Validate() error {
 		if pluginMaxBytes < 1<<20 || pluginMaxBytes > 512<<20 {
 			return errors.New("IM_WUKONG_PLUGIN_MAX_BYTES must be between 1 MiB and 512 MiB")
 		}
-		if c.Mode == "full" && !c.DevMode && pluginConfigCount != 3 {
+		if !c.DevMode && pluginConfigCount != 3 {
 			return errors.New("production WuKongIM requires the signed plugin lifecycle configuration")
 		}
 	}
@@ -264,8 +257,8 @@ func (c Config) Validate() error {
 			return errors.New("IM_LIVEKIT_TOKEN_TTL must be between 1m and 15m")
 		}
 	}
-	if c.Mode == "full" && !c.DevMode && !c.LiveKitEnabled {
-		return errors.New("production full mode requires LiveKit")
+	if !c.DevMode && !c.LiveKitEnabled {
+		return errors.New("production requires LiveKit")
 	}
 	return nil
 }

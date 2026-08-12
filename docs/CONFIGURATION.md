@@ -34,7 +34,6 @@
 | 参数 | 中文说明 | 要求 |
 |---|---|---|
 | `IM_ENV` | 服务环境 | 生产设为 `production`，需重启 |
-| `IM_MODE` | `memory` 或 `full` | 部署必须为 `full`，且强制要求 `IM_WUKONG_ENABLED=true`；`memory` 仅用于单元/本地无持久化测试 |
 | `IM_ADDR` | 业务 HTTP 监听地址 | 由网关和容器网络决定 |
 | `IM_DATABASE_URL` | PostgreSQL 连接串 | 密钥项，需重启 |
 | `IM_REDIS_URL` | Redis 连接串 | 密钥项，需重启 |
@@ -47,7 +46,6 @@
 | `IM_DB_MAX_CONN_LIFETIME` / `IM_DB_MAX_CONN_IDLE_TIME` | 数据库连接生命周期 | 默认 `1h`/`15m` |
 | `IM_DB_STATEMENT_TIMEOUT` | 单条数据库语句硬超时 | 默认 `15s`，防止异常查询长期占池 |
 | `IM_PUSH_WORKERS` / `IM_PUSH_BATCH_SIZE` | 推送并发与领取批次 | 默认 16/200，需结合提供商限流调整 |
-| `IM_MESSAGE_FANOUT_BATCH_SIZE` | 消息同步扇出批次 | 默认 500，范围 10–5000 |
 | `IM_OUTBOX_RETENTION` | 推送与任务 outbox 保留时间 | 默认 `168h`；WuKongIM 负责消息和会话同步 |
 | `IM_HTTP_LOG_SUCCESS_SAMPLE_RATE` | 成功请求日志采样率 | 默认 0.01；慢请求与错误始终记录 |
 | `IM_WUKONG_INTERNAL_RATE_LIMIT_PER_MINUTE` | WuKongIM 内部 DataSource/策略接口每来源 IP 的独立分钟配额 | 默认 120000，允许 60000–600000；与公网 300 次/分钟配额隔离，正式 1000 消息/秒门槛不得低于 60000 |

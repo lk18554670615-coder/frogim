@@ -237,29 +237,10 @@ func (p *Postgres) ExpireMessages(ctx context.Context, at time.Time, limit int) 
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `WITH picked AS (
-		SELECT id FROM im_messages WHERE expires_at<=$1 AND expired_at IS NULL ORDER BY expires_at,id FOR UPDATE SKIP LOCKED LIMIT $2
-	) UPDATE im_messages m SET body='{}'::jsonb,expired_at=$1 FROM picked WHERE m.id=picked.id RETURNING m.id,m.conversation_id,m.conversation_seq`, at, limit)
-	if err != nil {
-		return nil, err
-	}
 	items := make([]ExpiredMessage, 0)
 	ids := make([]string, 0)
-	for rows.Next() {
-		item := ExpiredMessage{ExpiredAt: at}
-		if err = rows.Scan(&item.MessageID, &item.ConversationID, &item.ConversationSeq); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		items, ids = append(items, item), append(ids, item.MessageID)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return nil, err
-	}
 	wukongIDs := make([]int64, 0)
-	rows, err = tx.Query(ctx, `WITH picked AS (
+	rows, err := tx.Query(ctx, `WITH picked AS (
 		SELECT message_id FROM im_wukong_message_index
 		WHERE expires_at IS NOT NULL AND expired_at IS NULL AND expires_at<=$1
 		  AND conversation_id IS NOT NULL
@@ -346,7 +327,6 @@ func (p *Postgres) LeaseMediaCleanup(ctx context.Context, now time.Time, pending
 		SELECT media.id FROM im_media media WHERE (
 			(media.status='pending' AND media.created_at<$2) OR
 			(media.status='ready' AND COALESCE(media.completed_at,media.created_at)<$3 AND
-			 NOT EXISTS(SELECT 1 FROM im_messages message WHERE message.body->>'mediaId'=media.id AND message.recalled_at IS NULL AND message.expired_at IS NULL) AND
 			 NOT EXISTS(SELECT 1 FROM im_wukong_media_channels binding WHERE binding.media_id=media.id) AND
 			 NOT EXISTS(SELECT 1 FROM im_moments moment WHERE media.id=ANY(moment.media_ids) AND moment.status<>'deleted') AND
 			 NOT EXISTS(SELECT 1 FROM im_sticker_packs pack WHERE pack.cover_media_id=media.id) AND
@@ -394,7 +374,6 @@ func (p *Postgres) MediaCleanupStatus(ctx context.Context, now time.Time, pendin
 	err := p.pool.QueryRow(ctx, `SELECT
 		count(*) FILTER(WHERE status='pending' AND created_at<$1),
 		count(*) FILTER(WHERE status='ready' AND COALESCE(completed_at,created_at)<$2 AND
-		 NOT EXISTS(SELECT 1 FROM im_messages message WHERE message.body->>'mediaId'=im_media.id AND message.recalled_at IS NULL AND message.expired_at IS NULL) AND
 		 NOT EXISTS(SELECT 1 FROM im_wukong_media_channels binding WHERE binding.media_id=im_media.id) AND
 		 NOT EXISTS(SELECT 1 FROM im_users user_row WHERE user_row.avatar_media_id=im_media.id)),
 		count(*) FILTER(WHERE cleanup_status='processing'),

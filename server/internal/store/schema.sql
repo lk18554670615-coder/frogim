@@ -307,28 +307,22 @@ CREATE TABLE IF NOT EXISTS im_group_announcement_reads(conversation_id text NOT 
 CREATE TABLE IF NOT EXISTS im_group_invites(id text PRIMARY KEY,conversation_id text NOT NULL REFERENCES im_groups(conversation_id) ON DELETE CASCADE,inviter_id text NOT NULL REFERENCES im_users(id),invitee_id text NOT NULL REFERENCES im_users(id),source text NOT NULL,status text NOT NULL,created_at timestamptz NOT NULL,expires_at timestamptz NOT NULL,updated_at timestamptz NOT NULL,resolved_at timestamptz);
 CREATE UNIQUE INDEX IF NOT EXISTS im_group_invites_pending_idx ON im_group_invites(conversation_id,invitee_id) WHERE status='pending';
 CREATE INDEX IF NOT EXISTS im_group_invites_expiry_idx ON im_group_invites(expires_at,id) WHERE status='pending';
-CREATE TABLE IF NOT EXISTS im_messages(id text PRIMARY KEY,conversation_id text NOT NULL REFERENCES im_conversations(id) ON DELETE CASCADE,sender_id text NOT NULL REFERENCES im_users(id),client_msg_id text NOT NULL,conversation_seq bigint NOT NULL,message_type text NOT NULL,body jsonb NOT NULL,reply_to_id text,recalled_at timestamptz,created_at timestamptz NOT NULL,UNIQUE(sender_id,client_msg_id),UNIQUE(conversation_id,conversation_seq));
-ALTER TABLE im_messages ADD COLUMN IF NOT EXISTS edited_at timestamptz;
-ALTER TABLE im_messages ADD COLUMN IF NOT EXISTS edit_version integer NOT NULL DEFAULT 0 CHECK(edit_version>=0);
-ALTER TABLE im_messages ADD COLUMN IF NOT EXISTS expires_at timestamptz;
-ALTER TABLE im_messages ADD COLUMN IF NOT EXISTS expired_at timestamptz;
-CREATE INDEX IF NOT EXISTS im_messages_expiry_idx ON im_messages(expires_at,id) WHERE expires_at IS NOT NULL AND expired_at IS NULL AND recalled_at IS NULL;
-CREATE INDEX IF NOT EXISTS im_messages_media_id_idx ON im_messages((body->>'mediaId')) WHERE message_type IN ('image','audio','video','file');
-CREATE TABLE IF NOT EXISTS im_message_edits(message_id text NOT NULL REFERENCES im_messages(id) ON DELETE CASCADE,version integer NOT NULL CHECK(version>=0),edit_id text,editor_id text NOT NULL REFERENCES im_users(id),body jsonb NOT NULL,created_at timestamptz NOT NULL,PRIMARY KEY(message_id,version));
+-- Message payloads, ordering and idempotency are owned exclusively by
+-- WuKongIM. PostgreSQL stores only business extensions keyed by the WuKong
+-- message id; these tables intentionally have no payload-table foreign key.
+CREATE TABLE IF NOT EXISTS im_message_edits(message_id text NOT NULL,version integer NOT NULL CHECK(version>=0),edit_id text,editor_id text NOT NULL REFERENCES im_users(id),body jsonb NOT NULL,created_at timestamptz NOT NULL,PRIMARY KEY(message_id,version));
 CREATE UNIQUE INDEX IF NOT EXISTS im_message_edits_idempotency_idx ON im_message_edits(message_id,edit_id) WHERE edit_id IS NOT NULL;
-CREATE TABLE IF NOT EXISTS im_message_edit_requests(message_id text NOT NULL REFERENCES im_messages(id) ON DELETE CASCADE,edit_id text NOT NULL,body jsonb NOT NULL,version integer NOT NULL CHECK(version>=0),created_at timestamptz NOT NULL,PRIMARY KEY(message_id,edit_id));
+CREATE TABLE IF NOT EXISTS im_message_edit_requests(message_id text NOT NULL,edit_id text NOT NULL,body jsonb NOT NULL,version integer NOT NULL CHECK(version>=0),created_at timestamptz NOT NULL,PRIMARY KEY(message_id,edit_id));
 ALTER TABLE im_message_edits DROP CONSTRAINT IF EXISTS im_message_edits_message_id_fkey;
 ALTER TABLE im_message_edit_requests DROP CONSTRAINT IF EXISTS im_message_edit_requests_message_id_fkey;
-CREATE TABLE IF NOT EXISTS im_message_reactions(message_id text NOT NULL REFERENCES im_messages(id) ON DELETE CASCADE,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,emoji text NOT NULL,created_at timestamptz NOT NULL,PRIMARY KEY(message_id,user_id,emoji));
+CREATE TABLE IF NOT EXISTS im_message_reactions(message_id text NOT NULL,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,emoji text NOT NULL,created_at timestamptz NOT NULL,PRIMARY KEY(message_id,user_id,emoji));
 ALTER TABLE im_message_reactions DROP CONSTRAINT IF EXISTS im_message_reactions_message_id_fkey;
 CREATE INDEX IF NOT EXISTS im_message_reactions_aggregate_idx ON im_message_reactions(message_id,emoji);
-CREATE TABLE IF NOT EXISTS im_group_message_pins(conversation_id text NOT NULL REFERENCES im_groups(conversation_id) ON DELETE CASCADE,message_id text NOT NULL REFERENCES im_messages(id) ON DELETE CASCADE,pinned_by text NOT NULL REFERENCES im_users(id),pinned_at timestamptz NOT NULL,PRIMARY KEY(conversation_id,message_id));
+CREATE TABLE IF NOT EXISTS im_group_message_pins(conversation_id text NOT NULL REFERENCES im_groups(conversation_id) ON DELETE CASCADE,message_id text NOT NULL,pinned_by text NOT NULL REFERENCES im_users(id),pinned_at timestamptz NOT NULL,PRIMARY KEY(conversation_id,message_id));
 ALTER TABLE im_group_message_pins DROP CONSTRAINT IF EXISTS im_group_message_pins_message_id_fkey;
 CREATE INDEX IF NOT EXISTS im_group_message_pins_list_idx ON im_group_message_pins(conversation_id,pinned_at DESC,message_id);
-CREATE INDEX IF NOT EXISTS im_messages_history_idx ON im_messages(conversation_id,conversation_seq DESC);
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
-CREATE INDEX IF NOT EXISTS im_messages_text_search_trgm_idx ON im_messages USING gin (lower(body->>'text') gin_trgm_ops) WHERE message_type='text' AND recalled_at IS NULL;
 CREATE TABLE IF NOT EXISTS im_scheduled_messages(
  id text PRIMARY KEY,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,
  conversation_id text NOT NULL REFERENCES im_conversations(id) ON DELETE CASCADE,
@@ -363,23 +357,6 @@ ALTER TABLE im_push_outbox ADD COLUMN IF NOT EXISTS locked_at timestamptz;
 ALTER TABLE im_push_outbox ADD COLUMN IF NOT EXISTS last_error text NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS im_push_outbox_pending_idx ON im_push_outbox(status,available_at) WHERE status='pending';
 CREATE INDEX IF NOT EXISTS im_push_outbox_retention_idx ON im_push_outbox(COALESCE(sent_at,available_at),id) WHERE status IN ('sent','failed');
-CREATE TABLE IF NOT EXISTS im_message_fanout(
- id bigserial PRIMARY KEY,
- conversation_id text NOT NULL REFERENCES im_conversations(id) ON DELETE CASCADE,
- sender_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,
- event_payload jsonb NOT NULL,
- push_payload jsonb NOT NULL,
- mention_all boolean NOT NULL DEFAULT false,
- mentions text[] NOT NULL DEFAULT '{}',
- last_user_id text NOT NULL DEFAULT '',
- status text NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','completed')),
- attempts integer NOT NULL DEFAULT 0,
- created_at timestamptz NOT NULL,
- locked_at timestamptz,
- completed_at timestamptz
-);
-CREATE INDEX IF NOT EXISTS im_message_fanout_pending_idx ON im_message_fanout(status,id) WHERE status IN ('pending','processing');
-CREATE INDEX IF NOT EXISTS im_message_fanout_retention_idx ON im_message_fanout(completed_at,id) WHERE status='completed';
 ALTER TABLE im_media ADD COLUMN IF NOT EXISTS cleanup_status text NOT NULL DEFAULT '';
 ALTER TABLE im_media ADD COLUMN IF NOT EXISTS cleanup_locked_at timestamptz;
 ALTER TABLE im_media ADD COLUMN IF NOT EXISTS cleanup_attempts integer NOT NULL DEFAULT 0;
@@ -457,7 +434,7 @@ CREATE TABLE IF NOT EXISTS im_announcements(
 );
 CREATE INDEX IF NOT EXISTS im_announcements_status_idx ON im_announcements(status,scheduled_at,pinned DESC,created_at DESC);
 CREATE TABLE IF NOT EXISTS im_announcement_reads(announcement_id text NOT NULL REFERENCES im_announcements(id) ON DELETE CASCADE,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,read_at timestamptz NOT NULL,PRIMARY KEY(announcement_id,user_id));
-CREATE TABLE IF NOT EXISTS im_favorites(user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,message_id text NOT NULL REFERENCES im_messages(id) ON DELETE CASCADE,created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(user_id,message_id));
+CREATE TABLE IF NOT EXISTS im_favorites(user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,message_id text NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(user_id,message_id));
 ALTER TABLE im_favorites DROP CONSTRAINT IF EXISTS im_favorites_message_id_fkey;
 CREATE INDEX IF NOT EXISTS im_favorites_user_idx ON im_favorites(user_id,created_at DESC);
 CREATE TABLE IF NOT EXISTS im_feedback(id text PRIMARY KEY,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,category text NOT NULL DEFAULT 'other',content text NOT NULL,contact text NOT NULL DEFAULT '',created_at timestamptz NOT NULL DEFAULT now());
@@ -713,3 +690,5 @@ CREATE INDEX IF NOT EXISTS im_client_version_policies_updated_idx
 -- legacy per-user cursor tables must not receive writes or survive upgrades.
 DROP TABLE IF EXISTS im_sync_events;
 DROP TABLE IF EXISTS im_user_cursors;
+DROP TABLE IF EXISTS im_messages;
+DROP TABLE IF EXISTS im_message_fanout;

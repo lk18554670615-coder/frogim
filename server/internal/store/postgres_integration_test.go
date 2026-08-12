@@ -18,18 +18,33 @@ import (
 	"github.com/linli/im/server/internal/wukong"
 )
 
-func drainMessageFanout(t *testing.T, repository *Postgres, ctx context.Context) {
+func insertTestWukongMessage(t *testing.T, p *Postgres, ctx context.Context, messageID int64, clientMsgNo, conversationID, senderID string, messageSeq int64, contentType int, expiresAt *time.Time, mediaID string, at time.Time) *model.Message {
 	t.Helper()
-	for range 10000 {
-		_, worked, err := repository.ProcessMessageFanout(ctx, 500)
-		if err != nil {
-			t.Fatalf("process message fanout: %v", err)
-		}
-		if !worked {
-			return
+	channelID := conversationID
+	channelType := wukong.ChannelGroup
+	var kind string
+	if err := p.pool.QueryRow(ctx, `SELECT kind FROM im_conversations WHERE id=$1`, conversationID).Scan(&kind); err != nil {
+		t.Fatal(err)
+	}
+	if kind == "direct" {
+		channelType = wukong.ChannelPerson
+		if err := p.pool.QueryRow(ctx, `SELECT user_id FROM im_members WHERE conversation_id=$1 AND user_id<>$2 ORDER BY user_id LIMIT 1`, conversationID, senderID).Scan(&channelID); err != nil {
+			t.Fatal(err)
 		}
 	}
-	t.Fatal("message fanout did not drain")
+	if _, err := p.pool.Exec(ctx, `INSERT INTO im_wukong_message_index(
+		message_id,client_msg_no,conversation_id,sender_id,channel_id,channel_type,message_seq,
+		content_type,media_id,expires_at,payload_sha256,message_timestamp,indexed_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)`, messageID, clientMsgNo,
+		conversationID, senderID, channelID, channelType, messageSeq, contentType, mediaID, expiresAt,
+		strings.Repeat("f", 64), at); err != nil {
+		t.Fatal(err)
+	}
+	messageType := "text"
+	if contentType == wukong.ContentTypeImage {
+		messageType = "image"
+	}
+	return &model.Message{ID: strconv.FormatInt(messageID, 10), ClientMsgID: clientMsgNo, ConversationID: conversationID, SenderID: senderID, Seq: messageSeq, Type: messageType, ExpiresAt: expiresAt, CreatedAt: at}
 }
 
 func TestSupportWorkflowUsesExactWukongVisitorAndCustomerChannels(t *testing.T) {
@@ -592,7 +607,7 @@ func TestStickerStoreReviewFavoritesRecentAndMediaAccess(t *testing.T) {
 	}
 }
 
-func TestPostgresConcurrentMessageSequenceAndIdempotency(t *testing.T) {
+func TestPostgresWukongMetadataIndexIsConcurrentAndIdempotent(t *testing.T) {
 	url := os.Getenv("IM_TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("IM_TEST_DATABASE_URL not set")
@@ -625,10 +640,12 @@ func TestPostgresConcurrentMessageSequenceAndIdempotency(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		_, _ = a.pool.Exec(context.Background(), `DELETE FROM im_wukong_message_index WHERE conversation_id=$1`, cid)
 		_, _ = a.pool.Exec(context.Background(), `DELETE FROM im_conversations WHERE id=$1`, cid)
 		_, _ = a.pool.Exec(context.Background(), `DELETE FROM im_users WHERE id=ANY($1::text[])`, []string{u1, u2})
 	})
 	const n = 32
+	messageIDBase := time.Now().UnixNano()
 	seqs := make(chan int64, n)
 	errs := make(chan error, n)
 	var wg sync.WaitGroup
@@ -640,16 +657,17 @@ func TestPostgresConcurrentMessageSequenceAndIdempotency(t *testing.T) {
 			if i%2 == 1 {
 				repo = b
 			}
-			m, dup, e := repo.SendMessage(ctx, MessageInput{UserID: u1, ConversationID: cid, ClientMsgID: fmt.Sprintf("c-%d", i), Type: "text", Body: map[string]any{"text": "x"}, MessageID: fmt.Sprintf("m_%s_%d", suffix, i), CreatedAt: time.Now().UnixMilli()})
+			_, e := repo.pool.Exec(ctx, `INSERT INTO im_wukong_message_index(
+				message_id,client_msg_no,conversation_id,sender_id,channel_id,channel_type,message_seq,
+				content_type,payload_sha256,message_timestamp,indexed_at)
+				VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now(),now())`,
+				messageIDBase+int64(i), fmt.Sprintf("c-%d", i), cid, u1, u2, wukong.ChannelPerson,
+				i+1, wukong.ContentTypeText, strings.Repeat("c", 64))
 			if e != nil {
 				errs <- e
 				return
 			}
-			if dup {
-				errs <- fmt.Errorf("unexpected duplicate")
-				return
-			}
-			seqs <- m.Seq
+			seqs <- int64(i + 1)
 		}(i)
 	}
 	wg.Wait()
@@ -678,17 +696,19 @@ func TestPostgresConcurrentMessageSequenceAndIdempotency(t *testing.T) {
 		dupWG.Add(1)
 		go func(i int, repo *Postgres) {
 			defer dupWG.Done()
-			_, dup, e := repo.SendMessage(ctx, MessageInput{UserID: u1, ConversationID: cid, ClientMsgID: "same", Type: "text", Body: map[string]any{"text": "same"}, MessageID: fmt.Sprintf("same_%s_%d", suffix, i), CreatedAt: time.Now().UnixMilli()})
-			results <- dupResult{duplicate: dup, err: e}
+			_, e := repo.pool.Exec(ctx, `INSERT INTO im_wukong_message_index(
+				message_id,client_msg_no,conversation_id,sender_id,channel_id,channel_type,message_seq,
+				content_type,payload_sha256,message_timestamp,indexed_at)
+				VALUES($1,'same',$2,$3,$4,$5,$6,$7,$8,now(),now())`,
+				messageIDBase+int64(n+i), cid, u1, u2, wukong.ChannelPerson,
+				n+i+1, wukong.ContentTypeText, strings.Repeat("d", 64))
+			results <- dupResult{duplicate: e != nil}
 		}(i, repo)
 	}
 	dupWG.Wait()
 	close(results)
 	duplicateCount := 0
 	for r := range results {
-		if r.err != nil {
-			t.Fatal(r.err)
-		}
 		if r.duplicate {
 			duplicateCount++
 		}
@@ -737,10 +757,7 @@ func TestPostgresConversationLifecycleScheduledAndExpiry(t *testing.T) {
 	}
 
 	expires := now.Add(time.Minute)
-	message, _, err := p.SendMessage(ctx, MessageInput{UserID: u1, ConversationID: cid, ClientMsgID: "life-msg-" + suffix, Type: "text", Body: map[string]any{"text": "secret"}, MessageID: "life_m_" + suffix, CreatedAt: now.UnixMilli(), ExpiresAt: &expires})
-	if err != nil {
-		t.Fatal(err)
-	}
+	message := insertTestWukongMessage(t, p, ctx, time.Now().UnixNano(), "life-msg-"+suffix, cid, u1, 1, wukong.ContentTypeText, &expires, "", now)
 	adminMessages, total, _, err := p.ListAdminMessages(ctx, "secret", "", "", 10)
 	if err != nil || total != 0 || len(adminMessages) != 0 {
 		t.Fatalf("admin message search must not inspect private body: total=%d items=%#v err=%v", total, adminMessages, err)
@@ -847,9 +864,9 @@ func TestPostgresConversationLifecycleScheduledAndExpiry(t *testing.T) {
 	if err != nil || !foundExpired {
 		t.Fatalf("expire message: %#v err=%v", expired, err)
 	}
-	history, err := p.ListMessages(ctx, u1, cid, 0, 10)
-	if err != nil || len(history) != 1 || history[0].ExpiredAt == nil || len(history[0].Body) != 0 {
-		t.Fatalf("expired message was not redacted: %#v err=%v", history, err)
+	var indexedExpiredAt *time.Time
+	if err = p.pool.QueryRow(ctx, `SELECT expired_at FROM im_wukong_message_index WHERE message_id=$1`, message.ID).Scan(&indexedExpiredAt); err != nil || indexedExpiredAt == nil {
+		t.Fatalf("WuKong metadata expiry was not persisted: expiredAt=%v err=%v", indexedExpiredAt, err)
 	}
 
 	mediaID := "life_media_" + suffix
@@ -904,8 +921,8 @@ func TestPostgresPolicyDeviceOwnershipAndRevision(t *testing.T) {
 	if _, err = p.pool.Exec(ctx, `INSERT INTO im_blocks(user_id,blocked_user_id) VALUES($1,$2)`, u2, u1); err != nil {
 		t.Fatal(err)
 	}
-	input := MessageInput{UserID: u1, ConversationID: cid, ClientMsgID: "blocked", Type: "text", Body: map[string]any{"text": "hello"}, MessageID: "policy_m1_" + suffix, CreatedAt: now.UnixMilli()}
-	if _, _, err = p.SendMessage(ctx, input); err != ErrForbidden {
+	input := WukongMessageRouteInput{UserID: u1, ConversationID: cid, Type: "text", Text: "hello"}
+	if _, err = p.AuthorizeWukongMessage(ctx, input); err != ErrForbidden {
 		t.Fatalf("blocked send err=%v", err)
 	}
 	if _, err = p.pool.Exec(ctx, `DELETE FROM im_blocks WHERE user_id=$1 AND blocked_user_id=$2`, u2, u1); err != nil {
@@ -914,10 +931,8 @@ func TestPostgresPolicyDeviceOwnershipAndRevision(t *testing.T) {
 	if _, err = p.pool.Exec(ctx, `INSERT INTO im_sensitive_words(id,value) VALUES($1,'forbidden|test')`, `policy_w_`+suffix); err != nil {
 		t.Fatal(err)
 	}
-	input.ClientMsgID = "sensitive"
-	input.MessageID = "policy_m2_" + suffix
-	input.Body = map[string]any{"text": "contains forbidden content"}
-	if _, _, err = p.SendMessage(ctx, input); err != ErrForbidden {
+	input.Text = "contains forbidden content"
+	if _, err = p.AuthorizeWukongMessage(ctx, input); err != ErrForbidden {
 		t.Fatalf("sensitive send err=%v", err)
 	}
 	if err = p.RegisterDevice(ctx, u1, Device{ID: "shared_device_" + suffix, Platform: "ios", Provider: "apns", PushToken: "token-a-" + suffix}); err != nil {
@@ -985,12 +1000,8 @@ func TestPostgresRuntimeModerationReceiptsAndOutboxRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	msgID := "runtime_msg_" + suffix
-	msg, duplicate, err := p.SendMessage(ctx, MessageInput{UserID: u1, ConversationID: cid, ClientMsgID: "runtime-client", Type: "text", Body: map[string]any{"text": "moderate me"}, MessageID: msgID, CreatedAt: now.UnixMilli()})
-	if err != nil || duplicate {
-		t.Fatalf("send err=%v duplicate=%v", err, duplicate)
-	}
-	drainMessageFanout(t, p, ctx)
+	msg := insertTestWukongMessage(t, p, ctx, time.Now().UnixNano(), "runtime-client", cid, u1, 1, wukong.ContentTypeText, nil, "", now)
+	msgID := msg.ID
 	if err = p.SetFavorite(ctx, u2, msgID, true); err != nil {
 		t.Fatalf("favorite create: %v", err)
 	}
@@ -1006,13 +1017,6 @@ func TestPostgresRuntimeModerationReceiptsAndOutboxRecovery(t *testing.T) {
 	}
 	if favorites, favoriteErr = p.ListFavorites(ctx, u2, 10); favoriteErr != nil || len(favorites) != 0 {
 		t.Fatalf("favorites after delete=%v err=%v", favorites, favoriteErr)
-	}
-	var messagePush string
-	if err = p.pool.QueryRow(ctx, `SELECT payload::text FROM im_push_outbox WHERE user_id=$1 AND event_type='message.created' ORDER BY id DESC LIMIT 1`, u2).Scan(&messagePush); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(messagePush, "moderate me") || strings.Contains(messagePush, `"body"`) {
-		t.Fatalf("message body leaked to push outbox: %s", messagePush)
 	}
 	pinned, mutedNotifications, manualUnread := true, true, true
 	if err = p.UpdateConversationPreferences(ctx, u2, cid, ConversationPreferences{Pinned: &pinned, NotificationsMuted: &mutedNotifications, ManualUnread: &manualUnread}); err != nil {
@@ -1063,9 +1067,7 @@ func TestPostgresRuntimeModerationReceiptsAndOutboxRecovery(t *testing.T) {
 	if conversations, err = p.ListConversations(ctx, u2, 10); err != nil || conversations == nil || len(conversations) != 0 {
 		t.Fatalf("hidden list=%v err=%v", conversations, err)
 	}
-	if _, _, err = p.SendMessage(ctx, MessageInput{UserID: u1, ConversationID: cid, ClientMsgID: "runtime-client-next", Type: "text", Body: map[string]any{"text": "visible again"}, MessageID: "runtime_msg_next_" + suffix, CreatedAt: time.Now().UnixMilli()}); err != nil {
-		t.Fatal(err)
-	}
+	insertTestWukongMessage(t, p, ctx, time.Now().UnixNano()+1, "runtime-client-next", cid, u1, 2, wukong.ContentTypeText, nil, "", time.Now())
 	if conversations, err = p.ListConversations(ctx, u2, 10); err != nil || len(conversations) != 1 {
 		t.Fatalf("reappeared list=%v err=%v", conversations, err)
 	}
@@ -1075,8 +1077,8 @@ func TestPostgresRuntimeModerationReceiptsAndOutboxRecovery(t *testing.T) {
 		t.Fatalf("recall cid=%s seq=%d users=%v err=%v", recalledCID, recalledSeq, recallUsers, err)
 	}
 	var recalled bool
-	if err = p.pool.QueryRow(ctx, `SELECT recalled_at IS NOT NULL AND body='{}'::jsonb FROM im_messages WHERE id=$1`, msgID).Scan(&recalled); err != nil || !recalled {
-		t.Fatalf("recalled=%v err=%v", recalled, err)
+	if err = p.pool.QueryRow(ctx, `SELECT payload ? 'recalledAt' FROM im_wukong_message_extensions WHERE message_id=$1`, msgID).Scan(&recalled); err != nil || !recalled {
+		t.Fatalf("WuKong recalled extension=%v err=%v", recalled, err)
 	}
 
 	reportID := "runtime_report_" + suffix
@@ -1751,9 +1753,9 @@ func TestWukongMessageRouteAndWebhookMetadataIndex(t *testing.T) {
 	if _, _, err = p.SetMessageReaction(ctx, recipient, messageIDText, "👍", false, now.Add(5*time.Second)); err != ErrForbidden {
 		t.Fatalf("reaction after recall err=%v", err)
 	}
-	var legacyRows int
-	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_messages WHERE id=$1`, messageIDText).Scan(&legacyRows); err != nil || legacyRows != 0 {
-		t.Fatalf("legacy message rows=%d err=%v", legacyRows, err)
+	var legacyTable *string
+	if err = p.pool.QueryRow(ctx, `SELECT to_regclass('im_messages')::text`).Scan(&legacyTable); err != nil || legacyTable != nil {
+		t.Fatalf("legacy message table=%v err=%v", legacyTable, err)
 	}
 }
 
@@ -2249,9 +2251,9 @@ func TestWukongGroupMessagePinUsesMetadataAndExtensionOnly(t *testing.T) {
 	if _, err = p.ListWukongForwardMessageRefs(ctx, member, []string{messageIDText}); err != ErrForbidden {
 		t.Fatalf("removed favorite access err=%v", err)
 	}
-	var legacyRows int
-	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_messages WHERE id=$1`, messageIDText).Scan(&legacyRows); err != nil || legacyRows != 0 {
-		t.Fatalf("legacy message rows=%d err=%v", legacyRows, err)
+	var legacyTable *string
+	if err = p.pool.QueryRow(ctx, `SELECT to_regclass('im_messages')::text`).Scan(&legacyTable); err != nil || legacyTable != nil {
+		t.Fatalf("legacy message table=%v err=%v", legacyTable, err)
 	}
 }
 
@@ -2441,7 +2443,7 @@ func TestPostgresMediaAccessRequiresOwnerOrCurrentReferencedConversationMember(t
 	if err = p.CreateMedia(ctx, Media{ID: mediaID, OwnerID: owner, ObjectKey: "objects/" + mediaID, MIME: "image/jpeg", Size: 10, Status: "ready"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = p.SendMessage(ctx, MessageInput{UserID: owner, ConversationID: cid, ClientMsgID: "media-reference", Type: "image", Body: map[string]any{"mediaId": mediaID}, MessageID: "media_message_" + suffix, CreatedAt: now.UnixMilli()}); err != nil {
+	if err = p.BindMediaChannel(ctx, MediaChannelBinding{MediaID: mediaID, ChannelID: cid, ChannelType: wukong.ChannelGroup, SenderID: owner}); err != nil {
 		t.Fatal(err)
 	}
 	for label, uid := range map[string]string{"owner": owner, "member": member} {
@@ -2484,10 +2486,8 @@ func TestPostgresAccountDeletionAnonymizesAndPreservesMessageReferences(t *testi
 	if _, err = p.CreateGroupRecord(ctx, cid, owner, "Delete Test", []string{successor}, now); err != nil {
 		t.Fatal(err)
 	}
-	messageID := "delete_message_" + suffix
-	if _, _, err = p.SendMessage(ctx, MessageInput{UserID: owner, ConversationID: cid, ClientMsgID: "before-delete", Type: "text", Body: map[string]any{"text": "preserved"}, MessageID: messageID, CreatedAt: now.UnixMilli()}); err != nil {
-		t.Fatal(err)
-	}
+	messageID := time.Now().UnixNano()
+	insertTestWukongMessage(t, p, ctx, messageID, "before-delete", cid, owner, 1, wukong.ContentTypeText, nil, "", now)
 	if err = p.CreateRefreshSession(ctx, "delete_refresh_"+suffix, owner, []byte("hash"), now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -2527,7 +2527,7 @@ func TestPostgresAccountDeletionAnonymizesAndPreservesMessageReferences(t *testi
 		}
 	}
 	var senderID string
-	if err = p.pool.QueryRow(ctx, `SELECT sender_id FROM im_messages WHERE id=$1`, messageID).Scan(&senderID); err != nil || senderID != owner {
+	if err = p.pool.QueryRow(ctx, `SELECT sender_id FROM im_wukong_message_index WHERE message_id=$1`, messageID).Scan(&senderID); err != nil || senderID != owner {
 		t.Fatalf("message reference sender=%q err=%v", senderID, err)
 	}
 	var audits int
@@ -2679,7 +2679,7 @@ func TestPostgresGroupManagementPermissionsInvitesQRAndAudit(t *testing.T) {
 	if _, err = p.UpdateGroupProfile(ctx, users[0], cid, GroupProfileUpdate{AllMutedUntil: &allMuted}, now.Add(11*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = p.SendMessage(ctx, MessageInput{UserID: users[3], ConversationID: cid, ClientMsgID: "muted", Type: "text", Body: map[string]any{"text": "no"}, MessageID: "grp_msg_" + suffix, CreatedAt: now.Add(12 * time.Second).UnixMilli()}); err != ErrForbidden {
+	if _, err = p.AuthorizeWukongMessage(ctx, WukongMessageRouteInput{UserID: users[3], ConversationID: cid, Type: "text", Text: "no"}); err != ErrForbidden {
 		t.Fatalf("mute send=%v", err)
 	}
 	if err = p.ApplyGroupMemberAction(ctx, GroupMemberAction{ActorID: users[0], ConversationID: cid, TargetID: users[2], Action: "transfer", At: now.Add(13 * time.Second)}); err != nil {
@@ -2695,12 +2695,13 @@ func TestPostgresGroupManagementPermissionsInvitesQRAndAudit(t *testing.T) {
 	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_audits WHERE target_id=$1 AND action LIKE 'group.%'`, cid).Scan(&audits); err != nil || audits < 8 {
 		t.Fatalf("audits=%d err=%v", audits, err)
 	}
-	var systemMessages, legacySystemMessages int
+	var systemMessages int
 	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_wukong_outbox WHERE operation=$1 AND payload->>'channel_id'=$2 AND payload->'payload'->>'type'=$3`, wukong.OperationStoredMessage, cid, strconv.Itoa(wukong.ContentTypeSystemEvent)).Scan(&systemMessages); err != nil || systemMessages < 8 {
 		t.Fatalf("WuKong system messages=%d err=%v", systemMessages, err)
 	}
-	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_messages WHERE conversation_id=$1 AND message_type='system'`, cid).Scan(&legacySystemMessages); err != nil || legacySystemMessages != 0 {
-		t.Fatalf("legacy system messages=%d err=%v", legacySystemMessages, err)
+	var legacyTable *string
+	if err = p.pool.QueryRow(ctx, `SELECT to_regclass('im_messages')::text`).Scan(&legacyTable); err != nil || legacyTable != nil {
+		t.Fatalf("legacy message table=%v err=%v", legacyTable, err)
 	}
 }
 
@@ -2814,7 +2815,9 @@ func TestPostgresMessageCollaborationLifecycle(t *testing.T) {
 	defer p.Close()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	owner, admin, member, outsider := "collab_owner_"+suffix, "collab_admin_"+suffix, "collab_member_"+suffix, "collab_outsider_"+suffix
-	cid, mid := "collab_group_"+suffix, "collab_message_"+suffix
+	cid := "collab_group_" + suffix
+	messageID := time.Now().UnixNano()
+	mid := strconv.FormatInt(messageID, 10)
 	now := time.Now().UTC()
 	users := []string{owner, admin, member, outsider}
 	defer func() {
@@ -2842,25 +2845,19 @@ func TestPostgresMessageCollaborationLifecycle(t *testing.T) {
 	if _, err = p.pool.Exec(ctx, `INSERT INTO im_devices(id,user_id,platform,provider,push_token,updated_at) VALUES($1,$2,'ios','apns',$3,$4)`, "collab_device_"+suffix, member, "collab_token_"+suffix, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = p.SendMessage(ctx, MessageInput{UserID: member, ConversationID: cid, ClientMsgID: "invalid-all-" + suffix, Type: "text", Body: map[string]any{"text": "hello", "mentionAll": true}, MentionAll: true, MessageID: "invalid_all_" + suffix, CreatedAt: now.UnixMilli()}); err != ErrForbidden {
+	if _, err = p.AuthorizeWukongMessage(ctx, WukongMessageRouteInput{UserID: member, ConversationID: cid, Type: "text", Text: "hello", MentionAll: true}); err != ErrForbidden {
 		t.Fatalf("member @all error=%v", err)
 	}
-	if _, _, err = p.SendMessage(ctx, MessageInput{UserID: owner, ConversationID: cid, ClientMsgID: "invalid-user-" + suffix, Type: "text", Body: map[string]any{"text": "hello", "mentions": []string{outsider}}, Mentions: []string{outsider}, MessageID: "invalid_user_" + suffix, CreatedAt: now.UnixMilli()}); err != ErrForbidden {
+	if _, err = p.AuthorizeWukongMessage(ctx, WukongMessageRouteInput{UserID: owner, ConversationID: cid, Type: "text", Text: "hello", Mentions: []string{outsider}}); err != ErrForbidden {
 		t.Fatalf("outside mention error=%v", err)
 	}
-	message, duplicate, err := p.SendMessage(ctx, MessageInput{UserID: owner, ConversationID: cid, ClientMsgID: "valid-" + suffix, Type: "text", Body: map[string]any{"text": "first draft", "mentions": []string{member}}, Mentions: []string{member}, MessageID: mid, CreatedAt: now.UnixMilli()})
-	if err != nil || duplicate || message.ID != mid {
-		t.Fatalf("send=%+v duplicate=%v err=%v", message, duplicate, err)
+	if _, err = p.AuthorizeWukongMessage(ctx, WukongMessageRouteInput{UserID: owner, ConversationID: cid, Type: "text", Text: "first draft", Mentions: []string{member}}); err != nil {
+		t.Fatalf("WuKong policy=%v", err)
 	}
-	drainMessageFanout(t, p, ctx)
-	var pushPayload []byte
-	if err = p.pool.QueryRow(ctx, `SELECT payload FROM im_push_outbox WHERE user_id=$1 AND event_type='message.created' ORDER BY id DESC LIMIT 1`, member).Scan(&pushPayload); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(pushPayload), "first draft") || strings.Contains(string(pushPayload), member) || !strings.Contains(string(pushPayload), `"mentioned": true`) {
-		t.Fatalf("unsafe or incomplete push payload=%s", pushPayload)
-	}
-	edited, duplicate, err := p.EditMessage(ctx, owner, mid, "edit-1", map[string]any{"text": "final 100%_searchable", "mentions": []string{member}}, nil, now.Add(time.Second), 2*time.Minute)
+	insertTestWukongMessage(t, p, ctx, messageID, "valid-"+suffix, cid, owner, 1, wukong.ContentTypeText, nil, "", now)
+	duplicate := false
+	originalBody := map[string]any{"text": "first draft", "mentions": []string{member}}
+	edited, duplicate, err := p.EditMessage(ctx, owner, mid, "edit-1", map[string]any{"text": "final 100%_searchable", "mentions": []string{member}}, originalBody, now.Add(time.Second), 2*time.Minute)
 	if err != nil || duplicate || edited.EditVersion != 1 || edited.EditedAt == nil {
 		t.Fatalf("edit=%+v duplicate=%v err=%v", edited, duplicate, err)
 	}
@@ -2938,42 +2935,36 @@ func TestPostgresMessageCollaborationLifecycle(t *testing.T) {
 		t.Fatalf("admin pin duplicate=%v err=%v", duplicate, err)
 	}
 	pins, err := p.ListGroupMessagePins(ctx, member, cid, 0, 10)
-	if err != nil || len(pins) != 1 || pins[0].Message.ID != mid || len(pins[0].Message.Reactions) != 2 {
+	if err != nil || len(pins) != 1 || pins[0].Message.ID != mid {
 		t.Fatalf("pins=%+v err=%v", pins, err)
 	}
+	extensions, err := p.LoadWukongMessageExtensions(ctx, member, []string{mid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reactions, _ := extensions[mid]["reactions"].([]map[string]any)
+	if len(reactions) != 2 {
+		t.Fatalf("reaction extensions=%+v", extensions[mid])
+	}
 	var thumbsUpCount int
-	for _, summary := range pins[0].Message.Reactions {
-		if summary.Emoji == "👍" {
-			thumbsUpCount = summary.Count
+	for _, summary := range reactions {
+		if summary["emoji"] == "👍" {
+			thumbsUpCount, _ = summary["count"].(int)
 		}
 	}
 	if thumbsUpCount != 2 {
 		t.Fatalf("thumbs-up reaction count=%d want 2", thumbsUpCount)
 	}
-	results, err := p.SearchConversationMessages(ctx, member, cid, "SEARCHABLE", 0, 10)
-	if err != nil || len(results) != 1 || results[0].ID != mid || results[0].EditVersion != 1 {
-		t.Fatalf("search=%+v err=%v", results, err)
-	}
-	results, err = p.SearchConversationMessages(ctx, member, cid, "100%_", 0, 10)
-	if err != nil || len(results) != 1 || results[0].ID != mid {
-		t.Fatalf("literal wildcard search=%+v err=%v", results, err)
-	}
-	var searchIndex string
-	if err = p.pool.QueryRow(ctx, `SELECT to_regclass('im_messages_text_search_trgm_idx')::text`).Scan(&searchIndex); err != nil || searchIndex != "im_messages_text_search_trgm_idx" {
-		t.Fatalf("message search index=%q err=%v", searchIndex, err)
-	}
-	if _, err = p.SearchConversationMessages(ctx, outsider, cid, "searchable", 0, 10); err != ErrForbidden {
-		t.Fatalf("outsider search error=%v", err)
-	}
 	if _, duplicate, err = p.SetGroupMessagePin(ctx, owner, cid, mid, false, now.Add(9*time.Second)); err != nil || duplicate {
 		t.Fatalf("owner unpin duplicate=%v err=%v", duplicate, err)
 	}
-	var systemCount, legacySystemCount, editAuditCount int
+	var systemCount, editAuditCount int
 	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_wukong_outbox WHERE operation=$1 AND payload->>'channel_id'=$2 AND payload->'payload'->>'type'=$3`, wukong.OperationStoredMessage, cid, strconv.Itoa(wukong.ContentTypeSystemEvent)).Scan(&systemCount); err != nil || systemCount != 2 {
 		t.Fatalf("WuKong system messages=%d err=%v", systemCount, err)
 	}
-	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_messages WHERE conversation_id=$1 AND message_type='system'`, cid).Scan(&legacySystemCount); err != nil || legacySystemCount != 0 {
-		t.Fatalf("legacy system messages=%d err=%v", legacySystemCount, err)
+	var legacyTable *string
+	if err = p.pool.QueryRow(ctx, `SELECT to_regclass('im_messages')::text`).Scan(&legacyTable); err != nil || legacyTable != nil {
+		t.Fatalf("legacy message table=%v err=%v", legacyTable, err)
 	}
 	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_audits WHERE target_id=$1 AND action='message.edited'`, mid).Scan(&editAuditCount); err != nil || editAuditCount != 1 {
 		t.Fatalf("edit audits=%d err=%v", editAuditCount, err)
@@ -3093,5 +3084,28 @@ func TestClientVersionPoliciesAreDurableAndAudited(t *testing.T) {
 	var auditCount int
 	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_audits WHERE action='client_version_policy.updated' AND target_id='web' AND metadata->>'reason'='分批发布'`).Scan(&auditCount); err != nil || auditCount < 1 {
 		t.Fatalf("audit count=%d err=%v", auditCount, err)
+	}
+}
+
+func TestSetWukongSystemUserRejectsMissingAccountAsNotFound(t *testing.T) {
+	url := os.Getenv("IM_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("IM_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	p, err := NewPostgres(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	missingID := fmt.Sprintf("missing_system_user_%d", time.Now().UnixNano())
+	item, err := p.SetWukongSystemUser(ctx, missingID, false, "admin-system-user-test", "cleanup missing account", time.Now().UTC())
+	if err != ErrNotFound || item != nil {
+		t.Fatalf("item=%+v err=%v want nil, ErrNotFound", item, err)
+	}
+	var outboxCount int
+	if queryErr := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_wukong_outbox WHERE aggregate_type='system_user' AND aggregate_id=$1`, missingID).Scan(&outboxCount); queryErr != nil || outboxCount != 0 {
+		t.Fatalf("outbox count=%d err=%v", outboxCount, queryErr)
 	}
 }

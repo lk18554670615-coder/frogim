@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net"
 	"strings"
-	"sync"
 	"time"
 
 	hookpb "github.com/linli/im/server/internal/wukong/hookpb"
@@ -120,28 +119,3 @@ func (s *WebhookGRPCServer) Serve() error {
 	return err
 }
 func (s *WebhookGRPCServer) Stop() { s.server.GracefulStop() }
-
-type MemoryWebhookStore struct {
-	mu     sync.Mutex
-	events map[string]WebhookEvent
-}
-
-func NewMemoryWebhookStore() *MemoryWebhookStore {
-	return &MemoryWebhookStore{events: map[string]WebhookEvent{}}
-}
-
-func (s *MemoryWebhookStore) PutWukongWebhookEvent(_ context.Context, event WebhookEvent) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.events[event.ID]; exists {
-		return false, nil
-	}
-	s.events[event.ID] = event
-	return true, nil
-}
-
-func (s *MemoryWebhookStore) Count() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.events)
-}

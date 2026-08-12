@@ -12,10 +12,11 @@ import (
 	"github.com/linli/im/server/internal/auth"
 	"github.com/linli/im/server/internal/config"
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/teststore"
 )
 
 func TestWukongMediaBindingGrantsOnlyChannelMembersSignedURL(t *testing.T) {
-	a, err := app.New(t.Context(), store.Memory{})
+	a, err := app.New(t.Context(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
 	}

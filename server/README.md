@@ -4,23 +4,21 @@
 
 ## Run
 
-The service now starts fail-closed. Generate explicit local-only secrets and a
-development OTP; development mode is accepted only on a loopback bind:
+The service starts fail-closed and has no standalone memory mode. Start the
+complete PostgreSQL, Redis, MinIO, WuKongIM, LiveKit and Go development stack
+from the repository root:
 
 ```bash
-export IM_ADDR=127.0.0.1:8080
-export IM_ENV=development
-export IM_MODE=memory
-export IM_JWT_SECRET="$(openssl rand -hex 32)"
-export IM_ADMIN_KEY="$(openssl rand -hex 24)"
-export IM_DEV_MODE=true
-export IM_SEED_DEMO=true
-export IM_DEV_OTP_CODE="$(printf '%06d' $((RANDOM % 1000000)))"
-go run ./cmd/server
+make infra-up
 ```
 
-Docker-only development may bind the service to the container interface by
-setting all of `IM_MODE=full`, `IM_DEV_MODE=true`, `IM_ENV=development`, and
+Use `make infra-up-android-emulator` when an Android Studio emulator must reach
+the host through `10.0.2.2`. `go run ./cmd/server` is supported only after all
+runtime dependencies and WuKongIM/LiveKit settings are explicitly provided;
+it never falls back to a second message runtime.
+
+Docker development may bind the service to the container interface by
+setting all of `IM_DEV_MODE=true`, `IM_ENV=development`, and
 `IM_DEV_ALLOW_CONTAINER_BIND=true`. The escape hatch defaults to false and is
 always rejected when either `IM_ENV` or `APP_ENV` resolves to `production`.
 
@@ -30,10 +28,9 @@ Demo accounts are opt-in. Set `IM_SEED_DEMO=true` together with
 Request a code with `POST /v2/auth/code`; the server never returns the
 configured development code.
 
-Full mode uses normalized PostgreSQL tables, automatically applies its idempotent schema, and checks Redis when configured:
+The service uses normalized PostgreSQL tables, automatically applies its idempotent schema, and checks Redis when configured:
 
 ```bash
-export IM_MODE=full
 export IM_DATABASE_URL='postgres://nexachat:nexachat@localhost:5432/nexachat?sslmode=disable'
 export IM_REDIS_URL='redis://localhost:6379/0'
 export IM_JWT_SECRET='replace-with-a-long-random-secret'
@@ -62,13 +59,11 @@ The server can also deliver directly through Getui RestAPI V2. Set `IM_PUSH_PROV
 
 For production iOS killed-process calls, use `IM_PUSH_PROVIDER=getui_apns_voip`. Configure `IM_APNS_VOIP_KEY_ID`, `IM_APNS_VOIP_TEAM_ID`, `IM_APNS_VOIP_BUNDLE_ID=com.linlitong.imapp`, `IM_APNS_VOIP_PRIVATE_KEY_FILE`, and the correct sandbox flag. The `.p8` key is parsed at startup and the process fails closed when it is absent or invalid. The host key must be owned by container uid or gid `10001` and have mode `0400` or `0440`. `infra/scripts/deploy.sh` automatically adds `infra/compose.apns-voip.yaml` for `apns_voip` and `getui_apns_voip`; the overlay mounts the key read-only without copying it into the image. The APNs sender uses a cached ES256 provider JWT, HTTP/2, the `.voip` topic, a zero expiry, privacy-safe call routing fields, retry classification, and automatic invalid-token disabling. See `../docs/CONFIGURATION.md` for the Chinese deployment procedure.
 
-`internal/store/schema.sql` is embedded into the binary and is the full-mode business schema. WuKongIM owns message body, message ID, channel sequence, ACK, recent conversations and offline history. PostgreSQL transactions own accounts, relationships, channel policy, extensions, message indexes, push rows and WuKong Outbox; sender/client and aggregate idempotency keys serialize retries across instances.
+`internal/store/schema.sql` is embedded into the binary and is the business schema. WuKongIM owns message body, message ID, channel sequence, ACK, recent conversations and offline history. PostgreSQL transactions own accounts, relationships, channel policy, extensions, message indexes, push rows and WuKong Outbox; sender/client and aggregate idempotency keys serialize retries across instances.
 
-To inspect or apply the same schema manually with `psql`:
-
-```bash
-psql "$IM_DATABASE_URL" -f migrations/000003_normalized_runtime.up.sql
-```
+The server applies the embedded, versioned `internal/store/schema.sql` at
+startup. There is no second hand-applied migration chain; startup either
+advances the complete business schema atomically or fails before serving.
 
 ## HTTP contract
 
@@ -156,7 +151,7 @@ The tests cover memory/PostgreSQL business invariants, Outbox/reconciliation, gr
 - `IM_DEV_MODE` defaults to false and development mode can bind only to loopback. Startup rejects missing/weak JWT and admin secrets.
 - Refresh tokens are one-time rotating sessions persisted in PostgreSQL; reuse, logout, and account bans revoke them.
 - WuKongIM provides message long connections and CMD delivery; LiveKit provides media signaling and transport. Redis remains a business cache/task coordination dependency, never the unique copy of a message.
-- Production full mode requires HTTPS OTP and push webhooks with high-entropy bearer tokens. OTP gateway endpoints are `POST <base>/request` and `POST <base>/verify`; the push gateway receives a bounded outbox item with up to 20 registered devices.
+- Production requires HTTPS OTP and push webhooks with high-entropy bearer tokens. OTP gateway endpoints are `POST <base>/request` and `POST <base>/verify`; the push gateway receives a bounded outbox item with up to 20 registered devices.
 - Production requires valid WuKongIM TCP/WSS endpoints and a LiveKit deployment with externally reachable media ports. The example hostnames are placeholders.
 - Terminate business HTTP and WSS at a trusted reverse proxy; expose only the explicitly documented HTTPS/TCP/WSS/UDP ports.
 - Restrict CORS and admin ingress at the edge; rotate `IM_ADMIN_KEY`.
