@@ -14,12 +14,17 @@ const defaults = {
   timeout: 30_000,
   output: '',
   browser: process.env.WUKONG_WEB_BROWSER || '',
+  allowRemote: false,
 };
 
 function parseArgs(argv) {
   const result = { ...defaults };
   for (let index = 0; index < argv.length; index += 1) {
     const key = argv[index];
+    if (key === '--allow-remote') {
+      result.allowRemote = true;
+      continue;
+    }
     if (key === '--help' || key === '-h') {
       console.log(`Usage: node tools/wukong-web-probe.mjs [options]
 
@@ -28,6 +33,7 @@ Options:
   --web URL       built Flutter Web origin (default ${defaults.web})
   --otp CODE      development OTP (default ${defaults.otp})
   --browser PATH  Chrome/Edge executable (or WUKONG_WEB_BROWSER)
+  --allow-remote  explicitly permit a non-loopback acceptance target
   --timeout MS    overall timeout (default ${defaults.timeout})
   --output FILE   optional JSON evidence file
 `);
@@ -45,11 +51,13 @@ Options:
     throw new Error('--timeout must be an integer between 10000 and 180000');
   }
   result.api = new URL(result.api).origin;
-  result.web = new URL(result.web).origin;
+  const webUrl = new URL(result.web);
+  if (webUrl.search || webUrl.hash) throw new Error('--web must not contain a query or fragment');
+  result.web = `${webUrl.origin}${webUrl.pathname.replace(/\/+$/, '')}`;
   for (const [name, value] of [['--api', result.api], ['--web', result.web]]) {
     const hostname = new URL(value).hostname;
-    if (!['127.0.0.1', 'localhost', '[::1]'].includes(hostname)) {
-      throw new Error(`${name} must use a loopback host; this probe must never target production`);
+    if (!result.allowRemote && !['127.0.0.1', 'localhost', '[::1]'].includes(hostname)) {
+      throw new Error(`${name} must use a loopback host unless --allow-remote is explicitly provided`);
     }
   }
   return result;
