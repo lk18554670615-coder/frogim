@@ -128,6 +128,7 @@ services:
       IM_GETUI_APP_KEY: ${IM_GETUI_APP_KEY:-}
       IM_GETUI_MASTER_SECRET: ${IM_GETUI_MASTER_SECRET:-}
       IM_DEV_MODE: "true"
+      IM_SEED_DEMO: "false"
       IM_DEV_ALLOW_CONTAINER_BIND: "true"
       IM_IP_TEST_ONLY: "true"
       IM_DEV_OTP_CODE: ${IM_DEV_OTP_CODE:-}

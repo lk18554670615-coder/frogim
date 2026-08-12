@@ -85,7 +85,17 @@ zero.
 
 These are same-host development results, not the formal 10,000/1,000 release proof. The local database also retains intentionally generated historical permanent-failure rows from negative Outbox tests, now visible through `im_wukong_outbox_failed`; a formal run must use a fresh disposable database and retain zero failed gauges throughout. The target production server currently has only a 200 GB root disk, below the explicit 1 TB gate, and no independent load-generator host has been assigned.
 
-The target was audited read-only again on 2026-08-12: `/dev/vda1` remained 200 GB total with 184 GB available. The active Compose project was still `nexachat-ip` from `/opt/nexachat/current/infra/compose.ip.yaml` and still ran the legacy Coturn service, with no WuKongIM or LiveKit container. No production load or cutover was attempted because both the storage gate and the independent-generator requirement remain unmet.
+The target was replaced on 2026-08-12 after explicit development-stage cutover
+authorization. Its `nexachat-ip` Compose project now runs only the WuKongIM
+stack: WuKongIM, LiveKit, the Go business service, Flutter Web, React admin,
+PostgreSQL, Redis, MinIO, Prometheus and Caddy. Legacy Coturn, containers,
+images, releases and mounted runtime data were removed. Public TCP (`5100`),
+WSS, HTTPS API/Web/admin and LiveKit TCP/UDP passed reachability and protocol
+probes. A post-cutover backup restored in isolation with 63 tables, 7 critical
+tables, schema 45, 342 constraints and 155 WuKong files. The host still has a
+200 GB root disk and there is no independent load-generator host, so this is a
+development acceptance deployment, not the deferred formal 1 TB production
+capacity gate.
 
 ## LiveKit 9-person media gate
 

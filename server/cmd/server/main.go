@@ -65,7 +65,7 @@ func main() {
 		}
 		go push.NewDispatcherWithOptions(outbox, provider, push.DispatcherOptions{Workers: cfg.PushWorkers, BatchSize: cfg.PushBatchSize, Interval: 100 * time.Millisecond}).Run(workerCtx)
 	}
-	if cfg.DevMode {
+	if cfg.SeedDemo {
 		if err := application.SeedDemo(); err != nil {
 			slog.Error("seed demo", "error", err)
 			os.Exit(1)

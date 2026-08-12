@@ -28,6 +28,7 @@ type Config struct {
 	AllowedOrigins                                                       []string
 	S3Secure, S3PublicSecure                                             bool
 	DevMode                                                              bool
+	SeedDemo                                                             bool
 	TrustProxy                                                           bool
 	AdminSharedKeyEnabled                                                bool
 	DevAllowContainerBind                                                bool
@@ -64,7 +65,7 @@ func Load() Config {
 		APNSVoIPKeyID: os.Getenv("IM_APNS_VOIP_KEY_ID"), APNSVoIPTeamID: os.Getenv("IM_APNS_VOIP_TEAM_ID"), APNSVoIPBundleID: os.Getenv("IM_APNS_VOIP_BUNDLE_ID"), APNSVoIPKeyFile: os.Getenv("IM_APNS_VOIP_PRIVATE_KEY_FILE"), APNSVoIPSandbox: boolValue("IM_APNS_VOIP_SANDBOX", false),
 		OTPWebhookURL: os.Getenv("IM_OTP_WEBHOOK_URL"), OTPWebhookToken: os.Getenv("IM_OTP_WEBHOOK_TOKEN"),
 		S3Endpoint: os.Getenv("IM_S3_ENDPOINT"), S3PublicEndpoint: os.Getenv("IM_S3_PUBLIC_ENDPOINT"), S3AndroidPublicEndpoint: os.Getenv("IM_S3_ANDROID_PUBLIC_ENDPOINT"), S3AccessKey: os.Getenv("IM_S3_ACCESS_KEY"), S3SecretKey: os.Getenv("IM_S3_SECRET_KEY"), S3Bucket: value("IM_S3_BUCKET", "nexachat-media"), S3Region: value("IM_S3_REGION", "us-east-1"), S3Secure: boolValue("IM_S3_SECURE", false), S3PublicSecure: boolValue("IM_S3_PUBLIC_SECURE", false),
-		DevMode: boolValue("IM_DEV_MODE", false), TrustProxy: boolValue("IM_TRUST_PROXY", false), DevAllowContainerBind: boolValue("IM_DEV_ALLOW_CONTAINER_BIND", false), DevIPTestOnly: boolValue("IM_IP_TEST_ONLY", false), DevOTPCode: os.Getenv("IM_DEV_OTP_CODE"), AllowedOrigins: csv("IM_ALLOWED_ORIGINS"),
+		DevMode: boolValue("IM_DEV_MODE", false), SeedDemo: boolValue("IM_SEED_DEMO", false), TrustProxy: boolValue("IM_TRUST_PROXY", false), DevAllowContainerBind: boolValue("IM_DEV_ALLOW_CONTAINER_BIND", false), DevIPTestOnly: boolValue("IM_IP_TEST_ONLY", false), DevOTPCode: os.Getenv("IM_DEV_OTP_CODE"), AllowedOrigins: csv("IM_ALLOWED_ORIGINS"),
 		DBMaxConns: intValue("IM_DB_MAX_CONNS", 20), DBMinConns: intValue("IM_DB_MIN_CONNS", 2),
 		WukongInternalRateLimitPerMinute: intValue("IM_WUKONG_INTERNAL_RATE_LIMIT_PER_MINUTE", 120000),
 		DBMaxConnLifetime:                duration("IM_DB_MAX_CONN_LIFETIME", time.Hour), DBMaxConnIdleTime: duration("IM_DB_MAX_CONN_IDLE_TIME", 15*time.Minute), DBHealthCheckPeriod: duration("IM_DB_HEALTH_CHECK_PERIOD", time.Minute), DBStatementTimeout: duration("IM_DB_STATEMENT_TIMEOUT", 15*time.Second),
@@ -93,6 +94,9 @@ func (c Config) Validate() error {
 	}
 	if c.AdminSharedKeyEnabled && !c.DevMode {
 		return errors.New("IM_ADMIN_SHARED_KEY_ENABLED is permitted only in development mode")
+	}
+	if c.SeedDemo && !c.DevMode {
+		return errors.New("IM_SEED_DEMO is permitted only in development mode")
 	}
 	if c.AccessTTL < time.Minute || c.AccessTTL > time.Hour {
 		return errors.New("IM_ACCESS_TTL must be between 1m and 1h")

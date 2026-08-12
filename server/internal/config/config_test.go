@@ -49,6 +49,7 @@ func TestValidateFailsClosed(t *testing.T) {
 		{"missing jwt", func(c *Config) { c.JWTSecret = "" }},
 		{"bootstrap missing admin key", func(c *Config) { c.AdminSharedKeyEnabled = true; c.AdminKey = "" }},
 		{"shared admin key outside development", func(c *Config) { c.AdminSharedKeyEnabled = true }},
+		{"demo seed outside development", func(c *Config) { c.SeedDemo = true }},
 		{"full without database", func(c *Config) { c.Mode = "full" }},
 		{"dev without otp", func(c *Config) { c.DevMode = true }},
 		{"dev public bind", func(c *Config) { c.DevMode = true; c.DevOTPCode = "654321"; c.Addr = ":8080" }},
@@ -83,6 +84,7 @@ func TestValidateFailsClosed(t *testing.T) {
 	developmentMedia.DevMode = true
 	developmentMedia.DevOTPCode = "654321"
 	developmentMedia.S3AndroidPublicEndpoint = "10.0.2.2:9000"
+	developmentMedia.SeedDemo = true
 	if err := developmentMedia.Validate(); err != nil {
 		t.Fatalf("development Android media endpoint: %v", err)
 	}

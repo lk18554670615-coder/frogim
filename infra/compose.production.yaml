@@ -133,6 +133,7 @@ services:
       IM_GETUI_APP_KEY: ${IM_GETUI_APP_KEY:-}
       IM_GETUI_MASTER_SECRET: ${IM_GETUI_MASTER_SECRET:-}
       IM_DEV_MODE: "false"
+      IM_SEED_DEMO: "false"
       IM_DEV_ALLOW_CONTAINER_BIND: "false"
       IM_TRUST_PROXY: "true"
       IM_ACCESS_TTL: ${IM_ACCESS_TTL:-15m}

@@ -14,6 +14,7 @@ export IM_MODE=memory
 export IM_JWT_SECRET="$(openssl rand -hex 32)"
 export IM_ADMIN_KEY="$(openssl rand -hex 24)"
 export IM_DEV_MODE=true
+export IM_SEED_DEMO=true
 export IM_DEV_OTP_CODE="$(printf '%06d' $((RANDOM % 1000000)))"
 go run ./cmd/server
 ```
@@ -23,7 +24,11 @@ setting all of `IM_MODE=full`, `IM_DEV_MODE=true`, `IM_ENV=development`, and
 `IM_DEV_ALLOW_CONTAINER_BIND=true`. The escape hatch defaults to false and is
 always rejected when either `IM_ENV` or `APP_ENV` resolves to `production`.
 
-Demo phones are `13800000001` (Alice), `13800000002` (Bob), and `13800000000` (Admin). Request a code with `POST /v2/auth/code`; the server never returns the configured development code.
+Demo accounts are opt-in. Set `IM_SEED_DEMO=true` together with
+`IM_DEV_MODE=true` to create `13800000001` (Alice), `13800000002` (Bob), and
+`13800000000` (Admin). Public development deployments keep this disabled.
+Request a code with `POST /v2/auth/code`; the server never returns the
+configured development code.
 
 Full mode uses normalized PostgreSQL tables, automatically applies its idempotent schema, and checks Redis when configured:
 
