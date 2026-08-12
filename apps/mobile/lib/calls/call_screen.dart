@@ -60,7 +60,9 @@ class CallScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final video = controller.isVideo;
+    // An audio call can gain a video surface later when a participant starts
+    // screen sharing. Drive the stage from the actual subscribed tracks too.
+    final video = controller.isVideo || controller.remoteVideos.isNotEmpty;
     return Material(
       key: const Key('call-screen'),
       color: const Color(0xFF07101F),

@@ -44,6 +44,50 @@ void main() {
     },
   );
 
+  test(
+    'Android process restore reconciles a still-ringing system call',
+    () async {
+      final fixture = _Fixture(incoming: true);
+      addTearDown(fixture.dispose);
+
+      fixture.systemCalls.emit(
+        SystemCallAction(
+          type: SystemCallActionType.restore,
+          serverCallId: fixture.repository.session.id,
+          systemCallId: 'restored-system-call-id',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(fixture.controller.phase, CallPhase.incoming);
+      expect(fixture.systemCalls.incomingCount, 0);
+      expect(fixture.repository.acceptCount, 0);
+      expect(fixture.repository.joinCount, 0);
+      expect(fixture.systemCalls.endedCallIds, isEmpty);
+    },
+  );
+
+  test('Android process restore clears a terminal stale system call', () async {
+    final fixture = _Fixture(incoming: true);
+    addTearDown(fixture.dispose);
+    fixture.repository.markMissed();
+
+    fixture.systemCalls.emit(
+      SystemCallAction(
+        type: SystemCallActionType.restore,
+        serverCallId: fixture.repository.session.id,
+        systemCallId: 'stale-system-call-id',
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(fixture.controller.phase, CallPhase.idle);
+    expect(
+      fixture.systemCalls.endedCallIds,
+      contains(fixture.repository.session.id),
+    );
+  });
+
   test('主叫在对方接受后获取短期凭证并加入 LiveKit', () async {
     final fixture = _Fixture();
     addTearDown(fixture.dispose);
@@ -375,6 +419,7 @@ class _FakeSystemCallService implements SystemCallService {
   final actionController = StreamController<SystemCallAction>.broadcast();
   int incomingCount = 0;
   int outgoingCount = 0;
+  final endedCallIds = <String>[];
 
   @override
   Stream<SystemCallAction> get actions => actionController.stream;
@@ -409,7 +454,7 @@ class _FakeSystemCallService implements SystemCallService {
   @override
   Future<void> setMuted(String serverCallId, bool muted) async {}
   @override
-  Future<void> end(String serverCallId) async {}
+  Future<void> end(String serverCallId) async => endedCallIds.add(serverCallId);
   @override
   Future<String?> voipPushToken() async => null;
   @override
@@ -453,6 +498,27 @@ class _FakeCallRepository implements CallRepository {
   void acceptRemotely() {
     session = _accepted(session);
     emit('call.accepted', {'call': sessionJson, 'callId': session.id});
+  }
+
+  void markMissed() {
+    final source = session;
+    session = CallSession(
+      id: source.id,
+      conversationId: source.conversationId,
+      kind: source.kind,
+      callerId: source.callerId,
+      calleeId: source.calleeId,
+      participantIds: source.participantIds,
+      joinedUserIds: source.joinedUserIds,
+      declinedUserIds: source.declinedUserIds,
+      leftUserIds: source.leftUserIds,
+      mediaType: source.mediaType,
+      status: 'missed',
+      invitedAt: source.invitedAt,
+      expiresAt: source.expiresAt,
+      endReason: 'timeout',
+      endedAt: DateTime.now(),
+    );
   }
 
   @override

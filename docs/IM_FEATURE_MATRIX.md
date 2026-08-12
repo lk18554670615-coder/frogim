@@ -75,9 +75,9 @@
 | ICE/SDP 与媒体协商 | 完成 | 由 LiveKit 管理，不经过 Go WebSocket，不写入普通日志 |
 | STUN/TURN | 完成 | LiveKit 统一提供；生产验证 TCP/UDP 入口和跨网络连通 |
 | 通话记录 | 完成 | 服务端保存未接、拒绝、时长和结束原因元数据 |
-| 系统来电 UI | 完成 | iOS PushKit/CallKit、Android 原生全屏来电与进程恢复；仍须真机锁屏验收 |
+| 系统来电 UI | 完成 | iOS PushKit/CallKit、Android 原生全屏来电与进程恢复；Android 15模拟器已通过后台息屏及安全PIN锁屏全屏来电/接听，仍须Android/iOS实体真机验收 |
 | 推送唤醒来电 | 外部依赖 | APNs VoIP/FCM 高优先级与真机验收 |
-| 群音视频/屏幕共享 | 进行中 | LiveKit SFU 最多9人、短期Token和成员控制已实现；固定容器已通过10房间×9人、每房8路360p/20fps发布和8/8订阅、零丢包媒体负载；待真机跨公网屏幕共享、后台/锁屏验收 |
+| 群音视频/屏幕共享 | 进行中 | LiveKit SFU 最多9人、短期Token和成员控制已实现；固定容器已通过10房间×9人、每房8路360p/20fps发布和8/8订阅、零丢包媒体负载；Android 15双模拟器已通过公网语音、整屏共享、短时断网恢复及安全锁屏接听，待Android/iOS实体真机与iOS屏幕共享验收 |
 
 ## 联系人与群组
 
@@ -118,7 +118,7 @@
 | 桌面拖放和粘贴文件 | 完成 | 拖放/剪贴板读取、最多 10 个、大小与类型校验、真实分块上传进度和失败重试 |
 | 网页打开期间浏览器通知和多标签同步 | 完成 | Notification 权限、BroadcastChannel 标签同步、竞选与 24 小时重复通知抑制 |
 | 浏览器关闭后的后台 Web Push | 外部依赖 | 需要 VAPID、Push Subscription、服务端推送和专用 Service Worker；当前不伪装支持 |
-| 音视频 LiveKit | 进行中 | Flutter LiveKit SDK 负责采集、音视频、屏幕共享、活动发言人和重连；真实房间创建、双方短期 Token 与清理探针已通过，仍需 Android/iOS 真机权限、后台恢复和跨公网媒体验收 |
+| 音视频 LiveKit | 进行中 | Flutter LiveKit SDK 负责采集、音视频、屏幕共享、活动发言人和重连；真实房间、双方短期Token和清理探针已通过，Android 15双模拟器进一步通过公网UDP媒体、MediaProjection整屏共享、9秒断网后恢复及后台/安全锁屏接听，仍需Android/iOS实体真机权限、推送杀进程和iOS媒体回归 |
 
 ## 管理端
 

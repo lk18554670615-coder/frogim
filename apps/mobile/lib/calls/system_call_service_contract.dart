@@ -1,6 +1,6 @@
 import 'call_models.dart';
 
-enum SystemCallActionType { accept, decline, end, timeout, mute }
+enum SystemCallActionType { restore, accept, decline, end, timeout, mute }
 
 class SystemCallAction {
   const SystemCallAction({

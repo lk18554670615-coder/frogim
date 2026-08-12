@@ -13,8 +13,10 @@ import org.json.JSONObject
 class MainActivity : FlutterActivity() {
     private val screenshotChannelName = "com.linlitong.imapp/screenshot"
     private val systemCallChannelName = "com.linlitong.imapp/system_calls"
+    private val screenShareChannelName = "com.linlitong.imapp/screen_share"
     private var screenshotChannel: MethodChannel? = null
     private var systemCallChannel: MethodChannel? = null
+    private var screenShareChannel: MethodChannel? = null
     private var screenshotRequested = false
     private var activityStarted = false
     private var screenshotCallbackRegistered = false
@@ -50,6 +52,28 @@ class MainActivity : FlutterActivity() {
             channel.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "drainLaunchActions" -> result.success(drainSystemCallActions())
+                    else -> result.notImplemented()
+                }
+            }
+        }
+        screenShareChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            screenShareChannelName,
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "startForegroundService" -> runCatching {
+                        LinliScreenShareService.start(this)
+                    }.fold(
+                        onSuccess = { result.success(null) },
+                        onFailure = { error ->
+                            result.error("screen_share_service_start_failed", error.message, null)
+                        },
+                    )
+                    "stopForegroundService" -> {
+                        LinliScreenShareService.stop(this)
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -100,6 +124,8 @@ class MainActivity : FlutterActivity() {
         screenshotChannel = null
         systemCallChannel?.setMethodCallHandler(null)
         systemCallChannel = null
+        screenShareChannel?.setMethodCallHandler(null)
+        screenShareChannel = null
         super.onDestroy()
     }
 

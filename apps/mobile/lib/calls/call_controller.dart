@@ -289,8 +289,18 @@ class CallController extends ChangeNotifier {
         return;
       }
     }
-    if (session?.id != action.serverCallId) return;
+    if (session?.id != action.serverCallId) {
+      // Android Telecom can retain a ringing self-managed call while the app
+      // process is frozen. If the business call has since expired or ended,
+      // remove that stale native call before it blocks the next invitation.
+      await _systemCalls.end(action.serverCallId);
+      return;
+    }
     switch (action.type) {
+      case SystemCallActionType.restore:
+        // `_showIncoming` above has restored the in-app deadline and state.
+        // The existing native call remains responsible for ringing/UI.
+        return;
       case SystemCallActionType.accept:
         await accept();
       case SystemCallActionType.decline:

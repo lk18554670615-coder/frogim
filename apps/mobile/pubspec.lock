@@ -362,10 +362,10 @@ packages:
     dependency: "direct main"
     description:
       name: flutter_callkit_incoming
-      sha256: "0e418f2c7fdbddeebc0288ce0e10c17fd01c1a886731d5cb1048d86b72443b92"
+      sha256: a7ca78008056e2e5031f728ad9707eb6c691c5058c3fa2d8488cbcaa93a96341
       url: "https://pub.flutter-io.cn"
     source: hosted
-    version: "3.1.3"
+    version: "3.1.5"
   flutter_launcher_icons:
     dependency: "direct dev"
     description:

@@ -40,7 +40,7 @@ class LinliCallIntentService : FlutterIntentService() {
             "conversationId" to conversationId,
             "mediaType" to mediaType,
         )
-        // flutter_callkit_incoming 3.1.3 publishes this Bundle/broadcast
+        // flutter_callkit_incoming 3.1.5 publishes this Bundle/broadcast
         // protocol in its Android manifest. Avoid importing plugin-internal
         // Kotlin classes, which AGP 9 does not expose to the app module.
         val data = Bundle().apply {

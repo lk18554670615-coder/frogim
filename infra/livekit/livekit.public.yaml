@@ -5,6 +5,14 @@ prometheus:
 rtc:
   tcp_port: 7881
   udp_port: 7882-7889
+  # The public Compose topology attaches LiveKit to both the internal app
+  # network (eth0) and the public edge network (eth1). Restrict ICE sockets to
+  # the edge interface so replies keep the same path as the published ports.
+  # Without this filter, Pion may bind an ICE socket to eth0 and Docker cannot
+  # SNAT the reply associated with traffic DNATed to eth1.
+  interfaces:
+    includes:
+      - eth1
   # The public node address is supplied through --node-ip. Avoid a startup
   # dependency on the default external STUN hostname in restricted DNS zones.
   use_external_ip: false

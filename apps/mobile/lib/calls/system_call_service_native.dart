@@ -326,15 +326,15 @@ class NativeSystemCallService implements SystemCallService {
       if (serverId == null) continue;
       _systemToServer[params.id] = serverId;
       _serverToSystem[serverId] = params.id;
-      if (params.isAccepted) {
-        _emitAction(
-          SystemCallAction(
-            type: SystemCallActionType.accept,
-            serverCallId: serverId,
-            systemCallId: params.id,
-          ),
-        );
-      }
+      _emitAction(
+        SystemCallAction(
+          type: params.isAccepted
+              ? SystemCallActionType.accept
+              : SystemCallActionType.restore,
+          serverCallId: serverId,
+          systemCallId: params.id,
+        ),
+      );
     }
   }
 

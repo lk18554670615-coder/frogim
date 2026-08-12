@@ -40,7 +40,9 @@ dependencies:
   cryptography: ^2.9.0
   file_picker: ^10.3.7
   flutter_slidable: ^4.0.3
-  flutter_callkit_incoming: 3.1.3
+  # 3.1.5 guards Android 14+ foreground microphone/camera service types until
+  # the matching runtime permission exists and always posts the FGS placeholder.
+  flutter_callkit_incoming: 3.1.5
   # LiveKit 2.7.0 pins this exact WebRTC build to avoid native SDK conflicts.
   flutter_webrtc: 1.4.0
   flutter_secure_storage: ^10.0.0

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:livekit_client/livekit_client.dart';
 
@@ -52,6 +53,9 @@ abstract interface class CallMediaEngine {
 }
 
 class LiveKitCallMediaEngine implements CallMediaEngine {
+  static const _screenShareChannel = MethodChannel(
+    'com.linlitong.imapp/screen_share',
+  );
   final _connections = StreamController<CallConnectionState>.broadcast();
   final _media = StreamController<void>.broadcast();
   Room? _room;
@@ -269,13 +273,33 @@ class LiveKitCallMediaEngine implements CallMediaEngine {
     if (!_connected || participant == null) {
       throw StateError('加入通话后才能共享屏幕');
     }
-    if (value && !kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+    final isAndroid =
+        !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+    if (value && isAndroid) {
       final allowed = await rtc.Helper.requestCapturePermission();
       if (!allowed) throw StateError('未获得屏幕录制权限');
+      // Android 14+ requires this after the user grants capture consent but
+      // before WebRTC obtains the MediaProjection instance.
+      await _screenShareChannel.invokeMethod<void>('startForegroundService');
     }
-    await participant.setScreenShareEnabled(value, captureScreenAudio: true);
-    _screenShareEnabled = value;
-    _emitMedia();
+    try {
+      await participant.setScreenShareEnabled(value, captureScreenAudio: true);
+      _screenShareEnabled = value;
+      _emitMedia();
+    } catch (_) {
+      if (value && isAndroid) await _stopAndroidScreenShareService();
+      rethrow;
+    } finally {
+      if (!value && isAndroid) await _stopAndroidScreenShareService();
+    }
+  }
+
+  Future<void> _stopAndroidScreenShareService() async {
+    try {
+      await _screenShareChannel.invokeMethod<void>('stopForegroundService');
+    } on MissingPluginException {
+      // Tests and non-Android embedders do not register this channel.
+    }
   }
 
   @override
@@ -299,6 +323,9 @@ class LiveKitCallMediaEngine implements CallMediaEngine {
   Future<void> dispose() async {
     if (_disposing) return;
     _disposing = true;
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      await _stopAndroidScreenShareService();
+    }
     final room = _room;
     _room = null;
     await _listener?.dispose();
