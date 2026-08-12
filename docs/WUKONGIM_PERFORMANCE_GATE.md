@@ -97,6 +97,27 @@ tables, schema 45, 342 constraints and 155 WuKong files. The host still has a
 development acceptance deployment, not the deferred formal 1 TB production
 capacity gate.
 
+Later on 2026-08-12 the numerical target was also exercised on the target
+server without writing load identities into the public development database.
+An isolated `linli-load-20260812` Compose project used separate PostgreSQL,
+Redis, MinIO and WuKongIM storage, fixed production images and the real policy
+plugin. It passed the 1,000/100, 5,000/500 and 10,000/1,000 ramps. The final
+stage established 10,000/10,000 authenticated connections (three transient
+handshake retries), then produced 30,000/30,000 ACKs and peer deliveries over
+30 seconds at exactly 1,000 ACK/s, with zero rejected or unacknowledged
+messages. ACK P95/P99 were 5.18/7.67 ms. Outbox and Webhook pending/failed
+gauges were all zero. On the eight-core host the peak Docker CPU samples
+normalize to 18.91% for WuKongIM, 10.71% for the Go service and 16.91% for
+PostgreSQL; WuKongIM used 305.8 MiB at its CPU peak. The public stack remained
+healthy and sampled only 3.76% WuKongIM and 0.71% Go CPU. The isolated
+containers, networks and data were deleted after the run; evidence and a full
+SHA-256 manifest remain at
+`/data/linli-im/load-evidence/20260812-server-ramp`.
+
+This closes the target-server engineering-capacity number. It still does not
+claim the deferred formal gate because the user explicitly deferred the 1 TiB
+disk and independent load-generator requirements.
+
 ## LiveKit 9-person media gate
 
 `infra/scripts/livekit-load-test.sh` uses the official `livekit-cli` image v2.18.2 at source commit `6eec7324a8f7b24f62569a758878e762fed9f886` and the locked Linux/amd64 image digest. It first creates rooms explicitly because the fixed server intentionally has `auto_create: false`, then starts synthetic WebRTC publishers/subscribers concurrently. The gate requires every active room snapshot to report `maxParticipants=9`, all participants present, all expected video tracks subscribed, zero subscriber errors and zero packet loss. It always deletes its rooms and stores the room snapshot, per-room reports, Prometheus snapshot and container resource sample under `build/qa/`.

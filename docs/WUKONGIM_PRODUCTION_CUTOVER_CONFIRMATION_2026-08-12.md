@@ -1,6 +1,6 @@
 # WuKongIM 正式切换确认单（2026-08-12）
 
-> 执行状态（2026-08-12 16:01 CST）：用户已明确授权开发阶段完全替换旧项目，本确认单中的旧栈清理与新栈部署已经执行。当前发布为提交 `36ec6b5`，Compose 项目仍名为 `nexachat-ip`（仅为兼容既有运维路径），但运行内容已经全部替换为 WuKongIM、LiveKit、Go 业务服务、Flutter Web、React 后台、PostgreSQL、Redis、MinIO、Prometheus 和网关。旧 Coturn、旧容器、旧镜像、旧发布目录和旧运行数据目录均已删除，不再存在双栈或回退流量。
+> 执行状态（2026-08-12 18:30 CST）：用户已明确授权开发阶段完全替换旧项目，本确认单中的旧栈清理与新栈部署已经执行。服务器源码发布目录已更新到提交 `908f5d6`，运行时另已应用并验证 `30e8b0d` 的旧 `/v1/*` 边缘404规则；Compose 项目仍名为 `nexachat-ip`（仅为兼容既有运维路径），但运行内容已经全部替换为 WuKongIM、LiveKit、Go 业务服务、Flutter Web、React 后台、PostgreSQL、Redis、MinIO、Prometheus 和网关。旧 Coturn、旧容器、旧镜像、旧发布目录和旧运行数据目录均已删除，不再存在双栈或回退流量。
 >
 > 最终旧栈备份位于 `/data/linli-im/backups/pre-wukong-cutover-20260812T072345Z`，SHA-256 全量校验通过，隔离恢复与源数据计数一致。新栈备份位于 `/data/linli-im/backups/20260812T080118Z`，隔离恢复得到 63 张表、7 张关键表、schema 45、342 项约束和 155 个 WuKong 文件。以下“切换前事实”与操作清单保留作审计记录，不再描述当前运行状态。
 
@@ -11,8 +11,8 @@
 - 服务器：`119.28.190.45`（主机名 `VM-0-16-tencentos`）
 - SSH：已验证 `root` 免密连接可用
 - 当前 Compose 项目：`nexachat-ip`
-- 当前发布目录：`/opt/nexachat/releases/20260810T005210Z`
-- 当前链接：`/opt/nexachat/current` → 上述发布目录
+- 当前发布目录：`/opt/nexachat-next-908f5d6f2ad5275c489e66a689cc1ed1b2a98fa2`
+- 当前链接：`/opt/nexachat/current` → 上述发布目录；该目录已同步 `30e8b0d` 的网关规则，下一次原子发布会以完整提交目录替换该运行时热修
 - 当前 Compose 配置：`/opt/nexachat/current/infra/compose.ip.yaml`
 - 当前环境文件：`/data/linli-im/shared/config.env`
 
