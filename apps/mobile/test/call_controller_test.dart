@@ -18,6 +18,32 @@ import 'package:livekit_client/livekit_client.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test(
+    'Android cold-start accept restores media without presenting incoming UI again',
+    () async {
+      final fixture = _Fixture(incoming: true);
+      addTearDown(fixture.dispose);
+
+      fixture.systemCalls.emit(
+        SystemCallAction(
+          type: SystemCallActionType.accept,
+          serverCallId: fixture.repository.session.id,
+          systemCallId: 'cold-start-system-call-id',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(fixture.systemCalls.incomingCount, 0);
+      expect(fixture.repository.acceptCount, 1);
+      expect(fixture.repository.joinCount, 1);
+      expect(fixture.engine.connectCount, 1);
+      expect(fixture.controller.phase, CallPhase.connecting);
+      fixture.engine.connections.add(CallConnectionState.connected);
+      await Future<void>.delayed(Duration.zero);
+      expect(fixture.controller.phase, CallPhase.active);
+    },
+  );
+
   test('主叫在对方接受后获取短期凭证并加入 LiveKit', () async {
     final fixture = _Fixture();
     addTearDown(fixture.dispose);

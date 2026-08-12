@@ -280,7 +280,10 @@ class CallController extends ChangeNotifier {
       }
       if (currentUser() == null) return;
       try {
-        await _showIncoming(await repository.getCall(action.serverCallId));
+        await _showIncoming(
+          await repository.getCall(action.serverCallId),
+          presentSystemUi: false,
+        );
       } catch (_) {
         await _systemCalls.end(action.serverCallId);
         return;
@@ -353,7 +356,10 @@ class CallController extends ChangeNotifier {
     }
   }
 
-  Future<void> _showIncoming(CallSession incoming) async {
+  Future<void> _showIncoming(
+    CallSession incoming, {
+    bool presentSystemUi = true,
+  }) async {
     final currentUserId = currentUser()?.id;
     if (incoming.isTerminal ||
         currentUserId == null ||
@@ -372,6 +378,10 @@ class CallController extends ChangeNotifier {
     phase = CallPhase.incoming;
     errorMessage = null;
     _startInviteDeadline(incoming.expiresAt);
+    if (!presentSystemUi) {
+      notifyListeners();
+      return;
+    }
     final managedBySystem = await _systemCalls.showIncoming(
       session: incoming,
       callerName: peer?.name ?? conversation?.title ?? '联系人',

@@ -144,6 +144,29 @@ if ! grep -Fq '/v2/admin/client-versions/$platform' "$ROOT_DIR/infra/scripts/pub
   echo "client version publication must use the audited admin API and verify the public decision" >&2
   exit 1
 fi
+
+for caddyfile in "$ROOT_DIR/infra/Caddyfile" "$ROOT_DIR/infra/Caddyfile.ip"; do
+  if ! grep -Fq 'uri strip_prefix /rtc' "$caddyfile"; then
+    echo "documentation check failed: LiveKit proxy must strip the configured /rtc base path in $caddyfile" >&2
+    exit 1
+  fi
+done
+if ! grep -Fq 'net.core.rmem_max' "$ROOT_DIR/infra/scripts/configure-livekit-host.sh" ||
+   ! grep -Fq '5000000' "$ROOT_DIR/infra/scripts/configure-livekit-host.sh"; then
+  echo "LiveKit host setup must persist the minimum production UDP receive buffer" >&2
+  exit 1
+fi
+for livekit_config in infra/livekit/livekit.yaml infra/livekit/livekit.public.yaml; do
+  if grep -Fq 'prometheus_port:' "$ROOT_DIR/$livekit_config" ||
+     ! grep -A1 '^prometheus:$' "$ROOT_DIR/$livekit_config" | grep -Fq 'port: 6789'; then
+    echo "$livekit_config must use the LiveKit v1.13 prometheus.port setting" >&2
+    exit 1
+  fi
+done
+if ! grep -Fq 'android:launchMode="singleTask"' "$ROOT_DIR/apps/mobile/android/app/src/main/AndroidManifest.xml"; then
+  echo "Android MainActivity must remain singleTask so CallKit acceptance cannot start a duplicate Flutter/RTC engine" >&2
+  exit 1
+fi
 for required_port in 5100/tcp 7881/tcp 7882-7889/udp; do
   if ! grep -Fq "$required_port" "$ROOT_DIR/infra/scripts/configure-ip-firewall.sh"; then
     echo "IP firewall script is missing required port $required_port" >&2

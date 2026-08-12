@@ -19,6 +19,7 @@ import 'system_call_service_contract.dart';
 
 const _pendingActionsKey = 'calls.pending_system_actions.v1';
 const _permissionPromptedKey = 'calls.system_permission_prompted.v1';
+const _systemCallChannel = MethodChannel('com.linlitong.imapp/system_calls');
 
 SystemCallService createSystemCallService() => NativeSystemCallService();
 
@@ -47,6 +48,7 @@ class NativeSystemCallService implements SystemCallService {
   StreamSubscription<CallEvent?>? _subscription;
   Future<void>? _initialization;
   bool _disposed = false;
+  final Set<String> _emittedActionKeys = {};
 
   @override
   Stream<SystemCallAction> get actions => _actions.stream;
@@ -77,6 +79,7 @@ class NativeSystemCallService implements SystemCallService {
       }
     }
     try {
+      await _drainAndroidLaunchActions();
       await _restoreActiveCalls();
       await _drainBackgroundActions();
     } on MissingPluginException {
@@ -298,7 +301,22 @@ class NativeSystemCallService implements SystemCallService {
   void _handleEvent(CallEvent? event) {
     if (event == null || _disposed) return;
     final action = _actionFromEvent(event, _systemToServer);
-    if (action != null) _actions.add(action);
+    if (action != null) _emitAction(action);
+  }
+
+  Future<void> _drainAndroidLaunchActions() async {
+    if (!Platform.isAndroid) return;
+    final pending = await _systemCallChannel.invokeListMethod<Object?>(
+      'drainLaunchActions',
+    );
+    for (final raw in pending ?? const <Object?>[]) {
+      if (raw is! Map) continue;
+      final action = systemCallActionFromMap(raw);
+      if (action == null) continue;
+      _systemToServer[action.systemCallId] = action.serverCallId;
+      _serverToSystem[action.serverCallId] = action.systemCallId;
+      _emitAction(action);
+    }
   }
 
   Future<void> _restoreActiveCalls() async {
@@ -309,7 +327,7 @@ class NativeSystemCallService implements SystemCallService {
       _systemToServer[params.id] = serverId;
       _serverToSystem[serverId] = params.id;
       if (params.isAccepted) {
-        _actions.add(
+        _emitAction(
           SystemCallAction(
             type: SystemCallActionType.accept,
             serverCallId: serverId,
@@ -335,7 +353,7 @@ class NativeSystemCallService implements SystemCallService {
         final systemId = json['systemCallId']! as String;
         _systemToServer[systemId] = serverId;
         _serverToSystem[serverId] = systemId;
-        _actions.add(
+        _emitAction(
           SystemCallAction(
             type: type,
             serverCallId: serverId,
@@ -347,6 +365,18 @@ class NativeSystemCallService implements SystemCallService {
         // 损坏或旧版本动作直接丢弃，避免误操作其他通话。
       }
     }
+  }
+
+  void _emitAction(SystemCallAction action) {
+    if (_disposed) return;
+    final key =
+        '${action.type.name}|${action.serverCallId}|'
+        '${action.systemCallId}|${action.muted}';
+    if (!_emittedActionKeys.add(key)) return;
+    if (_emittedActionKeys.length > 64) {
+      _emittedActionKeys.remove(_emittedActionKeys.first);
+    }
+    _actions.add(action);
   }
 
   @override
@@ -420,4 +450,27 @@ Map<String, Object?>? _serializedAction(CallEvent event) {
     'systemCallId': action.systemCallId,
     if (action.muted != null) 'muted': action.muted,
   };
+}
+
+SystemCallAction? systemCallActionFromMap(Map<Object?, Object?> json) {
+  final typeName = json['type']?.toString();
+  final serverCallId = json['serverCallId']?.toString();
+  final systemCallId = json['systemCallId']?.toString();
+  if (typeName == null ||
+      serverCallId == null ||
+      serverCallId.isEmpty ||
+      systemCallId == null ||
+      systemCallId.isEmpty) {
+    return null;
+  }
+  final type = SystemCallActionType.values
+      .where((value) => value.name == typeName)
+      .firstOrNull;
+  if (type == null) return null;
+  return SystemCallAction(
+    type: type,
+    serverCallId: serverCallId,
+    systemCallId: systemCallId,
+    muted: json['muted'] as bool?,
+  );
 }

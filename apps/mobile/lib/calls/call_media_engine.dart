@@ -304,8 +304,17 @@ class LiveKitCallMediaEngine implements CallMediaEngine {
     await _listener?.dispose();
     _listener = null;
     if (room != null) {
-      await room.disconnect();
-      await room.dispose();
+      try {
+        await room.disconnect().timeout(const Duration(seconds: 3));
+      } catch (_) {
+        // A failed signal handshake has no remote session to disconnect. Media
+        // cleanup must still finish and preserve the original connection error.
+      }
+      try {
+        await room.dispose();
+      } catch (_) {
+        // Native WebRTC resources are best-effort after a failed handshake.
+      }
     } else {
       await _localAudio?.stop();
       await _localAudio?.dispose();

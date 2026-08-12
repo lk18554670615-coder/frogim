@@ -48,6 +48,13 @@ make production-config PROD_ENV=.env.production
 
 ## 首次部署
 
+首次启动 LiveKit 前，以 root 身份配置宿主机 UDP 接收缓冲区；脚本会持久化
+`net.core.rmem_max=5000000` 并立即校验生效值：
+
+```bash
+sudo bash infra/scripts/configure-livekit-host.sh
+```
+
 ```bash
 make production-deploy PROD_ENV=.env.production
 ```
@@ -84,7 +91,7 @@ Caddy 使用 `DOMAIN` 和 `TLS_EMAIL` 自动签发、续期证书，并设置 HS
 
 - `/v2/*`、`/api/*`、`/health` → `server:8080`
 - `/im/*` → `wukongim:5200`（WSS）
-- `/rtc/*` → `livekit:7880`（信令）；LiveKit 媒体端口按部署清单开放
+- `/rtc/*` → 去掉外层 `/rtc` 前缀后转发 `livekit:7880`（SDK 会在配置的基地址后再追加 `/rtc`）；LiveKit 媒体端口按部署清单开放
 - 其余管理站点路径 → `admin:8080`
 - `/metrics`、`/ready`、Grafana、Prometheus、MinIO 控制台和数据服务不对公网路由
 

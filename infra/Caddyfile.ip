@@ -45,6 +45,7 @@
 
 	@livekit_signal path /rtc /rtc/*
 	handle @livekit_signal {
+		uri strip_prefix /rtc
 		reverse_proxy livekit:7880
 	}
 
