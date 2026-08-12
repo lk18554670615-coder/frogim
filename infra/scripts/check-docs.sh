@@ -167,6 +167,11 @@ if ! grep -Fq 'android:launchMode="singleTask"' "$ROOT_DIR/apps/mobile/android/a
   echo "Android MainActivity must remain singleTask so CallKit acceptance cannot start a duplicate Flutter/RTC engine" >&2
   exit 1
 fi
+if ! grep -Fq 'probe_websocket_upgrade "$BASE_URL/im"' "$ROOT_DIR/infra/scripts/smoke.sh" ||
+   ! grep -Fq '"$BASE_URL/rtc/rtc/validate"' "$ROOT_DIR/infra/scripts/smoke.sh"; then
+  echo "production smoke must gate both WuKongIM and LiveKit public WebSocket routes" >&2
+  exit 1
+fi
 for required_port in 5100/tcp 7881/tcp 7882-7889/udp; do
   if ! grep -Fq "$required_port" "$ROOT_DIR/infra/scripts/configure-ip-firewall.sh"; then
     echo "IP firewall script is missing required port $required_port" >&2

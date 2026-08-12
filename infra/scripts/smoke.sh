@@ -22,7 +22,30 @@ if [[ "${WUKONG_DEV_PUBLIC_REPLACEMENT:-false}" != "true" ]]; then
   compose+=(-f "$ROOT_DIR/infra/compose.wukong.production.yaml")
 fi
 HEADERS_FILE="$(mktemp)"
-trap 'rm -f "$HEADERS_FILE"' EXIT
+WS_HEADERS_FILE="$(mktemp)"
+trap 'rm -f "$HEADERS_FILE" "$WS_HEADERS_FILE"' EXIT
+
+probe_websocket_upgrade() {
+  local url="$1"
+  : > "$WS_HEADERS_FILE"
+
+  # A successful WebSocket remains open until either peer closes it, so curl
+  # may finish with its timeout status after already receiving the 101. The
+  # response status is the release gate; a bare TCP connect is insufficient.
+  curl --silent --show-error --http1.1 --max-time 8 \
+    -D "$WS_HEADERS_FILE" -o /dev/null \
+    -H 'Connection: Upgrade' \
+    -H 'Upgrade: websocket' \
+    -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+    -H 'Sec-WebSocket-Version: 13' \
+    "$url" || true
+
+  if ! grep -Eq '^HTTP/1\.[01] 101([[:space:]]|$)' "$WS_HEADERS_FILE"; then
+    echo "expected WebSocket upgrade at $url, received:" >&2
+    sed -n '1,12p' "$WS_HEADERS_FILE" >&2
+    exit 1
+  fi
+}
 
 curl --fail --silent --show-error --retry 12 --retry-delay 5 "$BASE_URL/healthz" >/dev/null
 curl --fail --silent --show-error --retry 12 --retry-delay 5 "$BASE_URL/health" >/dev/null
@@ -31,6 +54,19 @@ curl --fail --silent --show-error --retry 12 --retry-delay 5 -D "$HEADERS_FILE" 
 grep -qi '^strict-transport-security:' "$HEADERS_FILE"
 grep -qi '^content-security-policy:' "$HEADERS_FILE"
 grep -qi '^x-content-type-options: nosniff' "$HEADERS_FILE"
+
+probe_websocket_upgrade "$BASE_URL/im"
+
+livekit_status="$(curl --silent --output /dev/null --write-out '%{http_code}' --http1.1 \
+  -H 'Connection: Upgrade' \
+  -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  -H 'Sec-WebSocket-Version: 13' \
+  "$BASE_URL/rtc/rtc/validate")"
+if [[ "$livekit_status" != "401" ]]; then
+  echo "expected unauthenticated LiveKit WebSocket route to return 401, got $livekit_status" >&2
+  exit 1
+fi
 
 status="$(curl --silent --output /dev/null --write-out '%{http_code}' "$BASE_URL/api/v2/admin/dashboard")"
 if [[ "$status" != "401" ]]; then

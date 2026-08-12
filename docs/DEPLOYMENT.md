@@ -59,7 +59,7 @@ sudo bash infra/scripts/configure-livekit-host.sh
 make production-deploy PROD_ENV=.env.production
 ```
 
-部署脚本依次校验配置、渲染 Compose、构建应用镜像、拉取基础镜像、启动服务并执行 HTTPS 冒烟；不会删除 volume。
+部署脚本依次校验配置、渲染 Compose、构建应用镜像、拉取基础镜像、启动服务并执行 HTTPS 冒烟；不会删除 volume。冒烟会实际要求公网 WuKongIM `/im` 返回 WebSocket `101`，并要求 LiveKit `/rtc/rtc/validate` 在无 Token 时返回 `401`，不能用单纯端口可连接或内部 HTTP 健康代替实时信令门禁。
 
 认证冒烟必须确认：普通 REST 仅接受 `Authorization: Bearer`，URL query 中的 Access Token 被拒绝；登录返回独立 `ImSession`，业务 Access Token 不能用于 WuKong 握手，错误 WuKong Token/设备标识必须被拒绝。
 

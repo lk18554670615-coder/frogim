@@ -72,7 +72,7 @@ sudo install -o 10001 -g 10001 -m 0400 \
 infra/scripts/deploy-ip-production.sh .env.ip.production
 ```
 
-脚本会校验生产环境、叠加 production overlay，按推送模式自动叠加 APNs overlay，构建/拉取镜像、启动服务、等待 MinIO 初始化并执行 HTTPS 冒烟。
+脚本会校验生产环境、叠加 production overlay，按推送模式自动叠加 APNs overlay，构建/拉取镜像、启动服务、等待 MinIO 初始化并执行 HTTPS 冒烟。公网冒烟必须同时取得 WuKongIM `/im` 的 WebSocket `101`，以及 LiveKit `/rtc/rtc/validate` 无 Token 请求的 `401`；任一实时路由失败都会阻止发布完成。
 
 只读检查可以使用完整生产组合：
 
