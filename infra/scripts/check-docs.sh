@@ -139,6 +139,11 @@ if ! grep -Fq 'apksigner verify --verbose --print-certs' "$android_release_scrip
   echo "Android release script must verify both APK and AAB signatures" >&2
   exit 1
 fi
+if ! grep -Fq '/v2/admin/client-versions/$platform' "$ROOT_DIR/infra/scripts/publish-client-version.sh" ||
+   ! grep -Fq 'release-verification' "$ROOT_DIR/infra/scripts/publish-client-version.sh"; then
+  echo "client version publication must use the audited admin API and verify the public decision" >&2
+  exit 1
+fi
 if find "$ROOT_DIR/server/migrations" -type f -print -quit 2>/dev/null | grep -q .; then
   echo "retired hand-applied SQL migration chain must remain removed; use the embedded schema" >&2
   exit 1

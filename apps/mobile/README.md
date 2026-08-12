@@ -81,6 +81,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 APK v2 签名和 AAB JAR 签名，并在仓库根目录 `build/releases/android/` 生成
 带目标服务器、Git 提交及 SHA-256 的发布清单。
 
+把审核通过的包复制到服务器下载目录后，通过后台 API 发布版本策略：
+
+```bash
+bash infra/scripts/publish-client-version.sh android 1.0.0 1.0.0 \
+  https://119.28.190.45/downloads/linli-im-android-latest.apk \
+  '首个 WuKongIM 开发验收版本'
+```
+
+脚本从服务器配置读取管理员凭据与 TOTP，经带理由和二次确认的后台接口写入，
+随后用低版本客户端调用公开配置接口验证强制升级决策；它不会输出管理员凭据。
+
 密钥文件和密码不得提交到仓库；商店发布前应将上传密钥纳入组织级密码库和离线备份。
 
 ## 分层
