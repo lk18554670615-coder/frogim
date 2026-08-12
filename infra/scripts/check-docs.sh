@@ -144,6 +144,18 @@ if ! grep -Fq '/v2/admin/client-versions/$platform' "$ROOT_DIR/infra/scripts/pub
   echo "client version publication must use the audited admin API and verify the public decision" >&2
   exit 1
 fi
+for required_port in 5100/tcp 7881/tcp 7882-7889/udp; do
+  if ! grep -Fq "$required_port" "$ROOT_DIR/infra/scripts/configure-ip-firewall.sh"; then
+    echo "IP firewall script is missing required port $required_port" >&2
+    exit 1
+  fi
+done
+for retired_port in 3478/tcp 3478/udp 49160-49200/udp; do
+  if ! grep -Fq "$retired_port" "$ROOT_DIR/infra/scripts/configure-ip-firewall.sh"; then
+    echo "IP firewall script does not remove retired port $retired_port" >&2
+    exit 1
+  fi
+done
 if find "$ROOT_DIR/server/migrations" -type f -print -quit 2>/dev/null | grep -q .; then
   echo "retired hand-applied SQL migration chain must remain removed; use the embedded schema" >&2
   exit 1

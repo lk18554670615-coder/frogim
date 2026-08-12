@@ -113,6 +113,16 @@ infra/scripts/smoke.sh .env.ip.production
 
 证书保存在 `CERTBOT_DIR`，ACME 校验目录由 `CERTBOT_WEBROOT` 指定。Let's Encrypt 的 IP 证书是约 6 天的短期证书，必须启用 `nexachat-cert-renew.timer` 每日续期；续期命令通过共享 webroot 完成验证并热加载 Caddy。不要手工移动 `live/` 下的软链接。公网暴露 Caddy `80/443`、WuKongIM 原生客户端 `5100/TCP`、LiveKit TCP 回退 `7881/TCP` 与媒体 `7882–7889/UDP`；WuKongIM API/Manager `5001/5200/5300`、LiveKit 管理面 `7880`、数据库、Redis、MinIO 与监控端口保持私网。生产云安全组和主机防火墙必须与此端口清单一致。
 
+TencentOS/firewalld 主机使用仓库脚本幂等校准规则：
+
+```bash
+sudo bash infra/scripts/configure-ip-firewall.sh
+```
+
+脚本仅补充 `80/443/5100/7881/TCP` 与 `7882–7889/UDP`，并移除本项目已经
+弃用的 Coturn `3478/TCP+UDP`、`49160–49200/UDP`；不会改动 SSH、宝塔、
+FTP 或其他非本项目规则。云安全组仍需在云平台单独保持同一入口清单。
+
 正式 IP HTTPS 包示例：
 
 ```bash
