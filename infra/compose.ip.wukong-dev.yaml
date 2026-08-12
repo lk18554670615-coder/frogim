@@ -19,8 +19,11 @@ services:
   wukong-probe:
     image: ${LINLI_WUKONG_PROBE_IMAGE:?set LINLI_WUKONG_PROBE_IMAGE}
 
+  livekit:
+    image: ${LINLI_LIVEKIT_IMAGE:?set LINLI_LIVEKIT_IMAGE}
+
   prometheus:
-    image: docker.io/prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
+    image: ${LINLI_PROMETHEUS_IMAGE:?set LINLI_PROMETHEUS_IMAGE}
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -41,7 +44,7 @@ services:
     restart: unless-stopped
 
   backup-metrics:
-    image: docker.io/prom/node-exporter@sha256:863b62ff9f392b6f472e22b4b670ad1cabb66b3042502ebd4b2cd192733e1bce
+    image: ${LINLI_NODE_EXPORTER_IMAGE:?set LINLI_NODE_EXPORTER_IMAGE}
     command:
       - --collector.disable-defaults
       - --collector.textfile
