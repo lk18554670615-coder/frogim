@@ -102,8 +102,12 @@ services:
       - tcp://wukongim:5100
       - -manager-token
       - ${IM_WUKONG_MANAGER_TOKEN:?set IM_WUKONG_MANAGER_TOKEN}
+      - -business-api
+      - http://server:8080
+      - -otp
+      - ${WUKONG_PROBE_OTP:-}
       - -timeout
-      - 90s
+      - 120s
     networks:
       - app
     restart: "no"

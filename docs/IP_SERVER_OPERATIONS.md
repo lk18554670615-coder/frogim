@@ -94,7 +94,7 @@ infra/scripts/smoke.sh .env.ip.production
 
 - REST Access Token 只允许 `Authorization: Bearer <token>`；query、请求体或 Cookie 中的 token 应返回未认证。
 - `/v2/auth/im-session` 返回独立、短期的 WuKongIM Token；REST Access Token 不得进入 WSS/TCP URL。
-- 使用 `tools/wukong-probe` 验证真实 TCP 握手、ACK、互发、离线/历史同步、DataSource、CMD 和策略插件；仅做 HTTP 101 升级不算消息链路验收。
+- 使用 `tools/wukong-probe` 验证真实 TCP 握手、ACK、互发、离线/历史同步、DataSource、CMD 和策略插件；生产 Compose 探针必须设置短期 `WUKONG_PROBE_OTP` 并通过业务 API 创建真实好友/频道，仅做 HTTP 101 升级或绕过业务策略创建 WuKong 原生临时频道都不算消息链路验收。
 - LiveKit 通话必须真机验证房间鉴权、2–9 人音视频、屏幕共享、成员离开和网络重连；业务服务与 PostgreSQL 不接收 SDP/ICE。
 
 ## MinIO 与媒体

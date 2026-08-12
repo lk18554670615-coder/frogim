@@ -21,6 +21,11 @@ go run ./tools/wukong-probe -api http://127.0.0.1:5001 -manager-api http://127.0
   -business-api http://127.0.0.1:8080 -manager-token $env:IM_WUKONG_MANAGER_TOKEN -timeout 120s
 ```
 
+Production Compose intentionally requires the probe to use the business API so
+that every TCP send is checked against a real PostgreSQL-backed friendship or
+channel. Supply a short-lived `WUKONG_PROBE_OTP` when running the opt-in probe;
+the value is not stored in the image or Compose file.
+
 宿主机命令将 Manager 校验复用到同样注册了集群/插件路由的 5001；正式 Compose 的 `probe` profile 明确使用内部 `http://wukongim:5300`，5300 不映射到宿主机或公网。
 
 探针不使用自制协议编码器；所有 TCP frame 均由固定版本官方客户端或官方 `WKProto` 编解码。WSS 仍由 Web JS SDK 与 macOS Easy SDK目标端探针覆盖。
