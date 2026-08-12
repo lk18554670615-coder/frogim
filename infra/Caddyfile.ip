@@ -46,6 +46,11 @@
 		file_server
 	}
 
+	handle_path /legal/* {
+		root * /srv/legal
+		file_server
+	}
+
 	@storage path /nexachat-media/*
 	handle @storage {
 		reverse_proxy minio:9000

@@ -1,4 +1,4 @@
-.PHONY: help mobile mobile-remote admin server test quality docs-check verify-wukong-server-patch infra-test infra-up infra-up-android-emulator infra-down infra-status acceptance-local wukong-web-probe livekit-media-load remote-test-validate remote-test-up remote-test-down remote-test-status remote-test-logs production-validate production-config production-deploy production-smoke production-cutover-preflight ip-production-validate ip-production-config ip-production-cert ip-production-deploy backup restore-drill
+.PHONY: help mobile mobile-remote admin server test quality docs-check verify-wukong-server-patch infra-test infra-up infra-up-android-emulator infra-down infra-status acceptance-local wukong-web-probe wukong-message-load livekit-media-load remote-test-validate remote-test-up remote-test-down remote-test-status remote-test-logs production-validate production-config production-deploy production-smoke production-cutover-preflight ip-production-validate ip-production-config ip-production-cert ip-production-deploy backup restore-drill
 
 PROD_ENV ?= .env.production
 PROD_COMPOSE = docker compose --env-file $(PROD_ENV) -f infra/compose.production.yaml -f infra/compose.wukong.production.yaml
@@ -20,6 +20,7 @@ help:
 	@echo "infra-status           Show local container health"
 	@echo "acceptance-local       Exercise full product journeys on local Docker"
 	@echo "wukong-web-probe      Verify real JS SDK WSS events and browser reconnect"
+	@echo "wukong-message-load   Run the opt-in 10k connection / 1k msg/s local gate"
 	@echo "livekit-media-load     Run the opt-in 10-room/9-participant WebRTC media gate"
 	@echo "remote-test-up         Run only local Web/Admin against remote resources"
 	@echo "remote-test-status     Show remote-test frontend container status"
@@ -83,6 +84,9 @@ acceptance-local:
 
 wukong-web-probe:
 	node tools/wukong-web-probe.mjs $(WEB_PROBE_ARGS)
+
+wukong-message-load:
+	infra/scripts/wukong-load-test.sh
 
 livekit-media-load:
 	infra/scripts/livekit-load-test.sh

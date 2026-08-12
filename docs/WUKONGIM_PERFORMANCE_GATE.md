@@ -65,6 +65,24 @@ The corrected local ramp produced these results:
 | 1,000 connections / 1,000 msg/s / 20s | pass | 20,000/20,000 ACK, 20,000/20,000 delivered, zero rejected/unacknowledged | P95 63.60 ms, P99 76.89 ms | after-run WuKongIM 396 MiB, Go service 31 MiB; queues zero |
 | 5,000 connections / 500 msg/s / 20s | pass | 10,000/10,000 ACK, 10,000/10,000 delivered, zero rejected/unacknowledged | P95 33.72 ms, P99 51.15 ms | in-run WuKongIM 477 MiB, Go service 31 MiB; sampled CPU below 20%; queues zero |
 
+On 2026-08-12 the same policy-backed generator completed the full numerical
+target on the local development host: 10,000/10,000 authenticated connections,
+30,000/30,000 successful ACKs and peer deliveries over 30 seconds at exactly
+1,000 ACK/s, with zero rejected or unacknowledged messages. Connection P95/P99
+were 48.51/67.93 ms and ACK P95/P99 were 62.70/73.42 ms. Outbox and Webhook
+pending gauges remained zero and the run did not create a new permanent Outbox
+failure. This is strong engineering-capacity evidence, but it remains a
+same-host run on a previously used database and therefore does not replace the
+fresh-environment, independent-generator production release gate.
+
+Future runs should use `make wukong-message-load`. The wrapper preserves the
+load JSON, complete log, before/after business metrics, sampled container
+resources, Compose state, Docker capacity and exact container/image inspection
+under `build/qa/wukong-load-<UTC timestamp>/`. Set
+`WUKONG_LOAD_EVIDENCE_KIND=release-candidate` only on a fresh disposable
+database; that mode additionally requires the permanent-failure gauge to be
+zero.
+
 These are same-host development results, not the formal 10,000/1,000 release proof. The local database also retains intentionally generated historical permanent-failure rows from negative Outbox tests, now visible through `im_wukong_outbox_failed`; a formal run must use a fresh disposable database and retain zero failed gauges throughout. The target production server currently has only a 200 GB root disk, below the explicit 1 TB gate, and no independent load-generator host has been assigned.
 
 The target was audited read-only again on 2026-08-12: `/dev/vda1` remained 200 GB total with 184 GB available. The active Compose project was still `nexachat-ip` from `/opt/nexachat/current/infra/compose.ip.yaml` and still ran the legacy Coturn service, with no WuKongIM or LiveKit container. No production load or cutover was attempted because both the storage gate and the independent-generator requirement remain unmet.

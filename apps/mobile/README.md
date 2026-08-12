@@ -63,6 +63,12 @@ fvm flutter build appbundle --release \
   --dart-define=PRIVACY_URL=https://chat.example.com/legal/privacy
 ```
 
+Windows developers can run
+`powershell.exe -NoProfile -ExecutionPolicy Bypass -File ..\\..\\infra\\scripts\\generate-android-signing.ps1`
+to create the ignored `android/key.properties` and
+`android/release-upload.jks`. Back up both files offline before the first store
+release.
+
 密钥文件和密码不得提交到仓库；商店发布前应将上传密钥纳入组织级密码库和离线备份。
 
 ## 分层

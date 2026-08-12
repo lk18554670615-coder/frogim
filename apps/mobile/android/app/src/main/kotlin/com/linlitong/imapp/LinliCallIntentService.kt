@@ -1,9 +1,9 @@
 package com.linlitong.imapp
 
 import android.content.Context
+import android.content.Intent
+import android.os.Bundle
 import com.getui.getuiflut.FlutterIntentService
-import com.hiennv.flutter_callkit_incoming.CallkitIncomingBroadcastReceiver
-import com.hiennv.flutter_callkit_incoming.Data
 import com.igexin.sdk.message.GTTransmitMessage
 import org.json.JSONObject
 import java.nio.charset.StandardCharsets
@@ -40,35 +40,43 @@ class LinliCallIntentService : FlutterIntentService() {
             "conversationId" to conversationId,
             "mediaType" to mediaType,
         )
-        val android = hashMapOf<String, Any?>(
-            "isCustomNotification" to true,
-            "isShowLogo" to false,
-            "isShowCallID" to false,
-            "ringtonePath" to "system_ringtone_default",
-            "backgroundColor" to "#07101F",
-            "actionColor" to "#34C759",
-            "textColor" to "#FFFFFF",
-            "incomingCallNotificationChannelName" to "音视频来电",
-            "missedCallNotificationChannelName" to "未接来电",
-            "isShowFullLockedScreen" to true,
-            "isImportant" to true,
-            "isFullScreen" to true,
-            "textAccept" to "接听",
-            "textDecline" to "拒绝",
-        )
-        val data = Data(
-            hashMapOf(
-                "id" to systemCallId,
-                "nameCaller" to "邻里联系人",
-                "appName" to "邻里通讯",
-                "handle" to "邻里通讯",
-                "type" to if (mediaType == "video") 1 else 0,
-                "duration" to 30_000L,
-                "extra" to extra,
-                "android" to android,
-            ),
-        )
-        context.sendBroadcast(CallkitIncomingBroadcastReceiver.getIntentIncoming(context, data.toBundle()))
+        // flutter_callkit_incoming 3.1.3 publishes this Bundle/broadcast
+        // protocol in its Android manifest. Avoid importing plugin-internal
+        // Kotlin classes, which AGP 9 does not expose to the app module.
+        val data = Bundle().apply {
+            putString("EXTRA_CALLKIT_ID", systemCallId)
+            putString("EXTRA_CALLKIT_NAME_CALLER", "邻里联系人")
+            putString("EXTRA_CALLKIT_APP_NAME", "邻里通讯")
+            putString("EXTRA_CALLKIT_HANDLE", "邻里通讯")
+            putInt("EXTRA_CALLKIT_TYPE", if (mediaType == "video") 1 else 0)
+            putLong("EXTRA_CALLKIT_DURATION", 30_000L)
+            putString("EXTRA_CALLKIT_TEXT_ACCEPT", "接听")
+            putString("EXTRA_CALLKIT_TEXT_DECLINE", "拒绝")
+            putSerializable("EXTRA_CALLKIT_EXTRA", extra)
+            putBoolean("EXTRA_CALLKIT_IS_CUSTOM_NOTIFICATION", true)
+            putBoolean("EXTRA_CALLKIT_IS_SHOW_LOGO", false)
+            putBoolean("EXTRA_CALLKIT_IS_SHOW_CALL_ID", false)
+            putString("EXTRA_CALLKIT_RINGTONE_PATH", "system_ringtone_default")
+            putString("EXTRA_CALLKIT_BACKGROUND_COLOR", "#07101F")
+            putString("EXTRA_CALLKIT_ACTION_COLOR", "#34C759")
+            putString("EXTRA_CALLKIT_TEXT_COLOR", "#FFFFFF")
+            putString("EXTRA_CALLKIT_INCOMING_CALL_NOTIFICATION_CHANNEL_NAME", "音视频来电")
+            putString("EXTRA_CALLKIT_MISSED_CALL_NOTIFICATION_CHANNEL_NAME", "未接来电")
+            putBoolean("EXTRA_CALLKIT_IS_SHOW_FULL_LOCKED_SCREEN", true)
+            putBoolean("EXTRA_CALLKIT_IS_IMPORTANT", true)
+            putBoolean("EXTRA_CALLKIT_IS_FULL_SCREEN", true)
+        }
+        val action = "com.hiennv.flutter_callkit_incoming.ACTION_CALL_INCOMING"
+        val intent = Intent().apply {
+            setClassName(
+                context.packageName,
+                "com.hiennv.flutter_callkit_incoming.CallkitIncomingBroadcastReceiver",
+            )
+            this.action = "${context.packageName}.$action"
+            putExtra("EXTRA_CALLKIT_INCOMING_DATA", data)
+            `package` = context.packageName
+        }
+        context.sendBroadcast(intent)
     }
 
 }

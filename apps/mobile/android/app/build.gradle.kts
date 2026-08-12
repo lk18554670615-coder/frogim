@@ -6,20 +6,21 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-val releaseStoreFile = providers.gradleProperty("RELEASE_STORE_FILE")
-    .orElse(providers.environmentVariable("RELEASE_STORE_FILE"))
+val releaseSigningProperties = Properties().apply {
+    val file = rootProject.file("key.properties")
+    if (file.exists()) file.inputStream().use(::load)
+}
+
+fun releaseSigningValue(name: String): String? = providers.gradleProperty(name)
+    .orElse(providers.environmentVariable(name))
+    .orElse(releaseSigningProperties.getProperty(name, ""))
     .orNull
     ?.trim()
-val releaseStorePassword = providers.gradleProperty("RELEASE_STORE_PASSWORD")
-    .orElse(providers.environmentVariable("RELEASE_STORE_PASSWORD"))
-    .orNull
-val releaseKeyAlias = providers.gradleProperty("RELEASE_KEY_ALIAS")
-    .orElse(providers.environmentVariable("RELEASE_KEY_ALIAS"))
-    .orNull
-    ?.trim()
-val releaseKeyPassword = providers.gradleProperty("RELEASE_KEY_PASSWORD")
-    .orElse(providers.environmentVariable("RELEASE_KEY_PASSWORD"))
-    .orNull
+
+val releaseStoreFile = releaseSigningValue("RELEASE_STORE_FILE")
+val releaseStorePassword = releaseSigningValue("RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = releaseSigningValue("RELEASE_KEY_ALIAS")
+val releaseKeyPassword = releaseSigningValue("RELEASE_KEY_PASSWORD")
 val releaseSigningValues = listOf(
     releaseStoreFile,
     releaseStorePassword,

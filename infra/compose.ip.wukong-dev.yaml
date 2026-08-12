@@ -1,0 +1,39 @@
+# Development-stage public replacement overlay. It runs the real WuKongIM and
+# LiveKit stack on the production IP, while retaining the fixed OTP required for
+# rapid acceptance before an external SMS provider is connected.
+services:
+  web:
+    image: ${LINLI_WEB_IMAGE:?set LINLI_WEB_IMAGE}
+
+  admin:
+    image: ${LINLI_ADMIN_IMAGE:?set LINLI_ADMIN_IMAGE}
+
+  server:
+    image: ${LINLI_SERVER_IMAGE:?set LINLI_SERVER_IMAGE}
+    environment:
+      IM_ADMIN_TOTP_SECRET: ""
+
+  wukong-policy-plugin-init:
+    image: ${LINLI_WUKONG_POLICY_IMAGE:?set LINLI_WUKONG_POLICY_IMAGE}
+
+  wukong-probe:
+    image: ${LINLI_WUKONG_PROBE_IMAGE:?set LINLI_WUKONG_PROBE_IMAGE}
+
+  prometheus:
+    image: docker.io/prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-7d}
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/nexachat.rules.yml:/etc/prometheus/nexachat.rules.yml:ro
+      - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/monitoring/prometheus:/prometheus
+    expose:
+      - "9090"
+    networks:
+      - app
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped

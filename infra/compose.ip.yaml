@@ -32,6 +32,7 @@ services:
       - ${CERTBOT_DIR:?set CERTBOT_DIR}:/etc/letsencrypt:ro
       - ${CERTBOT_WEBROOT:?set CERTBOT_WEBROOT}:/var/www/certbot:ro
       - ${DOWNLOAD_DIR:-/data/linli-im/shared/downloads}:/srv/downloads:ro
+      - ./legal:/srv/legal:ro
       - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/caddy/data:/data
       - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/caddy/config:/config
     networks:
