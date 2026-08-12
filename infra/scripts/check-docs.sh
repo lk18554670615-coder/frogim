@@ -127,6 +127,18 @@ if ! grep -Fq 'exec bash "$TARGET" "$@"' "$ROOT_DIR/infra/scripts/linli-im-ops.s
   echo "linli-im operations wrapper must tolerate release archives without executable mode bits" >&2
   exit 1
 fi
+android_release_script="$ROOT_DIR/infra/scripts/build-android-release.ps1"
+for required_define in APP_ENV API_BASE_URL ENABLE_DEMO TERMS_URL PRIVACY_URL; do
+  if ! grep -Fq -- "--dart-define=$required_define=" "$android_release_script"; then
+    echo "Android release script must provide $required_define" >&2
+    exit 1
+  fi
+done
+if ! grep -Fq 'apksigner verify --verbose --print-certs' "$android_release_script" ||
+   ! grep -Fq 'jarsigner -verify' "$android_release_script"; then
+  echo "Android release script must verify both APK and AAB signatures" >&2
+  exit 1
+fi
 if find "$ROOT_DIR/server/migrations" -type f -print -quit 2>/dev/null | grep -q .; then
   echo "retired hand-applied SQL migration chain must remain removed; use the embedded schema" >&2
   exit 1

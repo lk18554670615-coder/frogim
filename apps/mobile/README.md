@@ -69,6 +69,18 @@ to create the ignored `android/key.properties` and
 `android/release-upload.jks`. Back up both files offline before the first store
 release.
 
+生成实际服务器正式包时使用统一门禁脚本，禁止手工省略构建参数：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File ..\\..\\infra\\scripts\\build-android-release.ps1 `
+  -ServerOrigin https://119.28.190.45 -Format all
+```
+
+脚本会先检查服务健康页、用户协议和隐私政策，再构建正式 APK/AAB、验证
+APK v2 签名和 AAB JAR 签名，并在仓库根目录 `build/releases/android/` 生成
+带目标服务器、Git 提交及 SHA-256 的发布清单。
+
 密钥文件和密码不得提交到仓库；商店发布前应将上传密钥纳入组织级密码库和离线备份。
 
 ## 分层
