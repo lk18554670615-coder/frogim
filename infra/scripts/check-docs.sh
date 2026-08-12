@@ -172,6 +172,13 @@ if ! grep -Fq 'probe_websocket_upgrade "$BASE_URL/im"' "$ROOT_DIR/infra/scripts/
   echo "production smoke must gate both WuKongIM and LiveKit public WebSocket routes" >&2
   exit 1
 fi
+if ! grep -Fq 'WUKONG_REQUIRE_1TIB_DISK' "$ROOT_DIR/infra/scripts/validate-production-env.sh" ||
+   ! grep -Fq 'WUKONG_REQUIRE_1TIB_DISK' "$ROOT_DIR/infra/scripts/production-cutover-preflight.sh" ||
+   ! grep -Fq 'WUKONG_REQUIRE_1TIB_DISK=true' "$ROOT_DIR/.env.ip.production.example" ||
+   ! grep -Fq 'WUKONG_REQUIRE_1TIB_DISK=true' "$ROOT_DIR/.env.production.example"; then
+  echo "the explicit 1 TiB capacity waiver contract is incomplete" >&2
+  exit 1
+fi
 for required_port in 5100/tcp 7881/tcp 7882-7889/udp; do
   if ! grep -Fq "$required_port" "$ROOT_DIR/infra/scripts/configure-ip-firewall.sh"; then
     echo "IP firewall script is missing required port $required_port" >&2

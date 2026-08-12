@@ -85,6 +85,8 @@ CERTBOT_DIR=/data/linli-im/shared/letsencrypt
 CERTBOT_WEBROOT=/data/linli-im/shared/certbot-webroot
 DOWNLOAD_DIR=/data/linli-im/shared/downloads
 LINLI_DATA_ROOT=/data/linli-im/data
+WUKONG_REQUIRE_1TIB_DISK=false
+WUKONG_PERFORMANCE_EVIDENCE=
 CERTBOT_IMAGE=certbot/certbot:latest
 
 # ===== 容器运行日志 =====

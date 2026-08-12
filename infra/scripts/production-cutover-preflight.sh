@@ -136,8 +136,15 @@ if [[ ! -d "$data_root" ]]; then
 else
   read -r disk_total disk_used disk_available disk_percent < <(df -PB1 "$data_root" | awk 'NR==2 {gsub(/%/,"",$5); print $2,$3,$4,$5}')
   info "data filesystem total=$disk_total used=$disk_used available=$disk_available usedPercent=$disk_percent"
+  require_1tib_disk="${values[WUKONG_REQUIRE_1TIB_DISK]:-true}"
+  if [[ "$require_1tib_disk" != true && "$require_1tib_disk" != false ]]; then
+    block "WUKONG_REQUIRE_1TIB_DISK must be true or false"
+    require_1tib_disk=true
+  fi
   if [[ "$disk_total" =~ ^[0-9]+$ ]] && (( disk_total >= 1099511627776 )); then
     pass "data filesystem is at least 1 TiB"
+  elif [[ "$require_1tib_disk" == false ]]; then
+    warn "data filesystem is below 1 TiB; the deployment owner explicitly waived this capacity gate"
   else
     block "data filesystem is below the approved 1 TiB gate"
   fi

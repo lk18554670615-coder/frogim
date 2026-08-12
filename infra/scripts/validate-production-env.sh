@@ -206,6 +206,16 @@ if [[ ! "${WUKONG_IMAGE:-}" =~ ^[^@[:space:]]+@sha256:[0-9a-f]{64}$ ]]; then
   failed=1
 fi
 
+require_1tib_disk="${WUKONG_REQUIRE_1TIB_DISK:-true}"
+case "$require_1tib_disk" in
+  true|false) ;;
+  *)
+    echo "WUKONG_REQUIRE_1TIB_DISK must be true or false" >&2
+    failed=1
+    require_1tib_disk=true
+    ;;
+esac
+
 if [[ "${LINLI_DATA_ROOT:-}" != /* || "${LINLI_DATA_ROOT:-}" == "/" ]]; then
   echo "LINLI_DATA_ROOT must be an absolute non-root directory" >&2
   failed=1
@@ -214,9 +224,16 @@ elif [[ ! -d "$LINLI_DATA_ROOT" ]]; then
   failed=1
 else
   disk_kib="$(df -Pk "$LINLI_DATA_ROOT" | awk 'NR==2 {print $2}')"
-  if [[ ! "$disk_kib" =~ ^[0-9]+$ ]] || (( disk_kib < 1073741824 )); then
-    echo "the production data filesystem must contain at least 1 TiB before WuKongIM cutover" >&2
+  if [[ ! "$disk_kib" =~ ^[0-9]+$ ]]; then
+    echo "could not determine the production data filesystem size" >&2
     failed=1
+  elif (( disk_kib < 1073741824 )); then
+    if [[ "$require_1tib_disk" == true ]]; then
+      echo "the production data filesystem must contain at least 1 TiB before WuKongIM cutover" >&2
+      failed=1
+    else
+      echo "warning: the 1 TiB data filesystem gate is explicitly waived for this deployment" >&2
+    fi
   fi
 fi
 
