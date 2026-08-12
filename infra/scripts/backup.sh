@@ -29,12 +29,16 @@ backup_complete=false
 wukong_stopped=false
 backup_metrics_started=false
 compose=(docker compose --env-file "$ENV_FILE")
-if [[ "${PRODUCTION_ENDPOINT_MODE:-domain}" == "ip" ]]; then
+if [[ "${WUKONG_DEV_PUBLIC_REPLACEMENT:-false}" == "true" ]]; then
+  compose+=(-f "$ROOT_DIR/infra/compose.ip.yaml" -f "$ROOT_DIR/infra/compose.wukong.production.yaml" -f "$ROOT_DIR/infra/compose.ip.wukong-dev.yaml")
+elif [[ "${PRODUCTION_ENDPOINT_MODE:-domain}" == "ip" ]]; then
   compose+=(-f "$ROOT_DIR/infra/compose.ip.yaml" -f "$ROOT_DIR/infra/compose.ip.production.yaml")
 else
   compose+=(-f "$ROOT_DIR/infra/compose.production.yaml")
 fi
-compose+=(-f "$ROOT_DIR/infra/compose.wukong.production.yaml")
+if [[ "${WUKONG_DEV_PUBLIC_REPLACEMENT:-false}" != "true" ]]; then
+  compose+=(-f "$ROOT_DIR/infra/compose.wukong.production.yaml")
+fi
 
 cleanup() {
   local exit_status="$?" metrics_status=0

@@ -79,10 +79,13 @@ fi
 json_post "$base/v2/media/$media_id/complete" "$token_a" "{\"checksum\":\"$upload_checksum\"}" | jq -e '.status == "ready" and .size == 256' >/dev/null
 echo "PASS HTTPS media presign, upload and completion"
 
-docker compose \
-  -f "$APP_ROOT/infra/compose.production.yaml" \
-  -f "$APP_ROOT/infra/compose.ip.production.yaml" \
-  -f "$APP_ROOT/infra/compose.wukong.production.yaml" \
+compose=(docker compose --env-file "$CONFIG_FILE")
+if [[ "${WUKONG_DEV_PUBLIC_REPLACEMENT:-false}" == "true" ]]; then
+  compose+=(-f "$APP_ROOT/infra/compose.ip.yaml" -f "$APP_ROOT/infra/compose.wukong.production.yaml" -f "$APP_ROOT/infra/compose.ip.wukong-dev.yaml")
+else
+  compose+=(-f "$APP_ROOT/infra/compose.ip.yaml" -f "$APP_ROOT/infra/compose.ip.production.yaml" -f "$APP_ROOT/infra/compose.wukong.production.yaml")
+fi
+"${compose[@]}" \
   --profile probe run --rm --no-deps wukong-probe \
   -api http://wukongim:5001 -manager-api http://wukongim:5300 -tcp tcp://wukongim:5100 \
   -manager-token "$IM_WUKONG_MANAGER_TOKEN" \
@@ -90,8 +93,13 @@ docker compose \
   | jq -e '.managerApi and .handshake and .sendAck and .receive and .offlineSync and .historySync and .groupSync and .businessAuth and .policyPluginRegistered and .policyAllowedMember and .policyDeniedOutsider' >/dev/null
 echo "PASS fixed WuKongIM handshake, ACK, sync, CMD, datasource and policy probe"
 
-admin_password="$(sed -n 's/^管理员密码：//p' "$CREDENTIAL_FILE")"
-totp="$(python3 - "$IM_ADMIN_TOTP_SECRET" <<'PY'
+admin_password="$(sed -n 's/^ADMIN_PASSWORD=//p' "$CREDENTIAL_FILE")"
+if [[ -z "$admin_password" ]]; then
+  admin_password="$(sed -n 's/^管理员密码：//p' "$CREDENTIAL_FILE")"
+fi
+totp=""
+if [[ -n "${IM_ADMIN_TOTP_SECRET:-}" ]]; then
+  totp="$(python3 - "$IM_ADMIN_TOTP_SECRET" <<'PY'
 import base64, hashlib, hmac, struct, sys, time
 secret = sys.argv[1]
 secret += '=' * ((8 - len(secret) % 8) % 8)
@@ -103,7 +111,13 @@ code = (struct.unpack('>I', digest[offset:offset+4])[0] & 0x7fffffff) % 1000000
 print(f'{code:06d}')
 PY
 )"
-admin="$(json_post "$base/v2/admin/auth/login" "" "{\"email\":\"$IM_ADMIN_EMAIL\",\"password\":\"$admin_password\",\"totp\":\"$totp\"}")"
+fi
+if [[ -n "$totp" ]]; then
+  admin_body="{\"email\":\"$IM_ADMIN_EMAIL\",\"password\":\"$admin_password\",\"totp\":\"$totp\"}"
+else
+  admin_body="{\"email\":\"$IM_ADMIN_EMAIL\",\"password\":\"$admin_password\"}"
+fi
+admin="$(json_post "$base/v2/admin/auth/login" "" "$admin_body")"
 admin_token="$(jq -er '.accessToken' <<<"$admin")"
 curl --fail --silent --show-error "$base/api/v2/admin/dashboard" -H "authorization: Bearer $admin_token" | jq -e 'type == "object"' >/dev/null
 echo "PASS admin password, TOTP and dashboard"

@@ -11,12 +11,16 @@ load_env_file "$ENV_FILE"
 
 BASE_URL="${BASE_URL:-https://${DOMAIN:-${SERVER_IP:?DOMAIN or SERVER_IP is required}}}"
 compose=(docker compose --env-file "$ENV_FILE")
-if [[ "${PRODUCTION_ENDPOINT_MODE:-domain}" == "ip" ]]; then
+if [[ "${WUKONG_DEV_PUBLIC_REPLACEMENT:-false}" == "true" ]]; then
+  compose+=(-f "$ROOT_DIR/infra/compose.ip.yaml" -f "$ROOT_DIR/infra/compose.wukong.production.yaml" -f "$ROOT_DIR/infra/compose.ip.wukong-dev.yaml")
+elif [[ "${PRODUCTION_ENDPOINT_MODE:-domain}" == "ip" ]]; then
   compose+=(-f "$ROOT_DIR/infra/compose.ip.yaml" -f "$ROOT_DIR/infra/compose.ip.production.yaml")
 else
   compose+=(-f "$ROOT_DIR/infra/compose.production.yaml")
 fi
-compose+=(-f "$ROOT_DIR/infra/compose.wukong.production.yaml")
+if [[ "${WUKONG_DEV_PUBLIC_REPLACEMENT:-false}" != "true" ]]; then
+  compose+=(-f "$ROOT_DIR/infra/compose.wukong.production.yaml")
+fi
 HEADERS_FILE="$(mktemp)"
 trap 'rm -f "$HEADERS_FILE"' EXIT
 

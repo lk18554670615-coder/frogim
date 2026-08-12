@@ -22,7 +22,9 @@ source "$APP_ROOT/infra/scripts/load-env.sh"
 load_env_file "$CONFIG_FILE"
 
 compose=(docker compose --env-file "$CONFIG_FILE" -f "$COMPOSE_FILE")
-if [[ "${IM_ENV:-development}" == "production" ]]; then
+if [[ "${WUKONG_DEV_PUBLIC_REPLACEMENT:-false}" == "true" ]]; then
+  compose+=(-f "$APP_ROOT/infra/compose.wukong.production.yaml" -f "$APP_ROOT/infra/compose.ip.wukong-dev.yaml")
+elif [[ "${IM_ENV:-development}" == "production" ]]; then
   "$APP_ROOT/infra/scripts/validate-production-env.sh" "$CONFIG_FILE"
   compose+=(-f "$APP_ROOT/infra/compose.ip.production.yaml")
   if [[ "${IM_PUSH_PROVIDER:-}" == "apns_voip" || "${IM_PUSH_PROVIDER:-}" == "getui_apns_voip" ]]; then
@@ -35,7 +37,12 @@ case "${1:-help}" in
     if [[ "${IM_ENV:-development}" == "production" ]]; then
       exec "$APP_ROOT/infra/scripts/deploy-ip-production.sh" "$CONFIG_FILE"
     fi
-    "${compose[@]}" up -d --build --scale "server=${IM_REPLICAS:-1}"
+    "${compose[@]}" config -q
+    if [[ "${WUKONG_DEV_PUBLIC_REPLACEMENT:-false}" == "true" ]]; then
+      "${compose[@]}" up -d --no-build --remove-orphans --scale "server=${IM_REPLICAS:-1}"
+    else
+      "${compose[@]}" up -d --build --scale "server=${IM_REPLICAS:-1}"
+    fi
     "${compose[@]}" wait minio-init
     "${compose[@]}" rm -f minio-init
     ;;
@@ -69,10 +76,7 @@ case "${1:-help}" in
     echo "日志归档已完成：$destination"
     ;;
   smoke)
-    curl --fail --silent --show-error "https://$SERVER_IP/health"
-    echo
-    curl --fail --silent --show-error "https://$SERVER_IP/healthz"
-    echo
+    exec "$APP_ROOT/infra/scripts/smoke.sh" "$CONFIG_FILE"
     ;;
   backup)
     # The installed systemd/CLI compatibility entrypoint delegates to the
