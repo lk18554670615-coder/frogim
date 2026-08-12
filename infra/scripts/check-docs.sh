@@ -119,6 +119,14 @@ if ! grep -Fq '\"channelId\":\"$user_b\",\"channelType\":1' "$ROOT_DIR/infra/scr
   echo "remote E2E must use the peer UID as the WuKong person-channel id" >&2
   exit 1
 fi
+if ! grep -Fq '.item.remote_extra.conversationId == $conversation' "$ROOT_DIR/infra/scripts/remote-e2e.sh"; then
+  echo "remote E2E must validate the client datasource remote_extra contract" >&2
+  exit 1
+fi
+if ! grep -Fq 'exec bash "$TARGET" "$@"' "$ROOT_DIR/infra/scripts/linli-im-ops.sh"; then
+  echo "linli-im operations wrapper must tolerate release archives without executable mode bits" >&2
+  exit 1
+fi
 if find "$ROOT_DIR/server/migrations" -type f -print -quit 2>/dev/null | grep -q .; then
   echo "retired hand-applied SQL migration chain must remain removed; use the embedded schema" >&2
   exit 1

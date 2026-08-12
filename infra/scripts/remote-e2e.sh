@@ -55,7 +55,7 @@ echo "PASS friend request and accept"
 conversation="$(json_post "$base/v2/channels/direct" "$token_a" "{\"userId\":\"$user_b\"}")"
 conversation_id="$(jq -er '.id' <<<"$conversation")"
 channel="$(json_post "$base/v2/im/datasource/channel" "$token_a" "{\"channelId\":\"$user_b\",\"channelType\":1}")"
-jq -e --arg peer "$user_b" --arg conversation "$conversation_id" '.item.channel_id == $peer and .item.extra.conversationId == $conversation' <<<"$channel" >/dev/null
+jq -e --arg peer "$user_b" --arg conversation "$conversation_id" '.item.channel_id == $peer and .item.remote_extra.conversationId == $conversation' <<<"$channel" >/dev/null
 echo "PASS direct channel provisioning and datasource"
 
 group="$(json_post "$base/v2/channels/groups" "$token_a" "{\"name\":\"真实验收群\",\"memberIds\":[\"$user_b\"]}")"
