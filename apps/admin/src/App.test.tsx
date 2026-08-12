@@ -162,6 +162,14 @@ describe('邻里通讯管理后台', () => {
     expect(screen.queryByText('违规内容已完成处置')).not.toBeInTheDocument();
   });
 
+  it('系统健康页面使用不与服务端探针冲突的可刷新路由', async () => {
+    window.history.replaceState({}, '', '/system-health');
+    render(<App />);
+    expect(screen.getByRole('heading', { name: '系统健康' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '系统健康' })).toHaveAttribute('href', '/system-health');
+    expect(await screen.findByText('WuKongIM 长连接')).toBeInTheDocument();
+  });
+
   it('发布系统设置前要求二次确认和理由', async () => {
     window.history.replaceState({}, '', '/settings');
     render(<App />);

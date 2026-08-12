@@ -210,7 +210,7 @@ const navItems = [
   { to: '/support-workbench', label: '客服工作台', icon: MessageSquareText },
   { to: '/im-infrastructure', label: 'IM 基础设施', icon: Server },
   { to: '/client-versions', label: '客户端版本', icon: RefreshCcw },
-  { to: '/sensitive-words', label: '敏感词库', icon: ShieldAlert }, { to: '/health', label: '系统健康', icon: HeartPulse },
+  { to: '/sensitive-words', label: '敏感词库', icon: ShieldAlert }, { to: '/system-health', label: '系统健康', icon: HeartPulse },
   { to: '/audit', label: '审计日志', icon: FileClock }, { to: '/settings', label: '系统设置', icon: Settings },
 ];
 
@@ -219,7 +219,7 @@ function Shell() {
   const [navOpen, setNavOpen] = useState(false);
   const { path, navigate } = usePath();
   useEffect(() => setNavOpen(false), [path]);
-  const pages: Record<string, ReactNode> = { '/overview': <OverviewPage />, '/users': <UsersPage />, '/groups': <GroupsPage />, '/reports': <ReportsPage />, '/messages': <MessagesPage />, '/media': <MediaPage />, '/online': <OnlinePage />, '/relationships': <RelationshipsPage />, '/operations': <OperationsPage />, '/announcements': <AnnouncementsPage />, '/calls': <CallsPage />, '/content-moderation': <ContentModerationPage />, '/business-channels': <BusinessChannelsPage />, '/support-workbench': <SupportWorkbenchPage />, '/im-infrastructure': <ImInfrastructurePage />, '/client-versions': <ClientVersionsPage />, '/sensitive-words': <SensitiveWordsPage />, '/health': <HealthPage />, '/audit': <AuditPage />, '/settings': <SettingsPage /> };
+  const pages: Record<string, ReactNode> = { '/overview': <OverviewPage />, '/users': <UsersPage />, '/groups': <GroupsPage />, '/reports': <ReportsPage />, '/messages': <MessagesPage />, '/media': <MediaPage />, '/online': <OnlinePage />, '/relationships': <RelationshipsPage />, '/operations': <OperationsPage />, '/announcements': <AnnouncementsPage />, '/calls': <CallsPage />, '/content-moderation': <ContentModerationPage />, '/business-channels': <BusinessChannelsPage />, '/support-workbench': <SupportWorkbenchPage />, '/im-infrastructure': <ImInfrastructurePage />, '/client-versions': <ClientVersionsPage />, '/sensitive-words': <SensitiveWordsPage />, '/system-health': <HealthPage />, '/audit': <AuditPage />, '/settings': <SettingsPage /> };
   useEffect(() => { if (!pages[path]) { window.history.replaceState({}, '', '/overview'); window.dispatchEvent(new PopStateEvent('popstate')); } }, [path]); // eslint-disable-line react-hooks/exhaustive-deps
   return <div className="app-shell">
     {navOpen && <button aria-label="关闭导航" className="nav-scrim" onClick={() => setNavOpen(false)} />}

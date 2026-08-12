@@ -57,6 +57,7 @@ quality:
 
 docs-check:
 	infra/scripts/check-docs.sh
+	infra/scripts/test-acceptance-json.sh
 	bash infra/scripts/verify-wukong-flutter-patch.sh
 	bash -n infra/scripts/*.sh
 

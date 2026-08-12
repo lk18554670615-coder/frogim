@@ -8,10 +8,49 @@ binary remains preferred when present.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
 from typing import Any
+
+
+def configure_utf8_streams() -> None:
+    """Keep native Windows Python byte-compatible with Git Bash.
+
+    MSYS passes command output through as bytes.  A native Python process uses
+    the active Windows code page by default, which makes a valid Chinese JSON
+    value compare unequal to the UTF-8 shell literal that produced it.
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="strict")
+
+
+def normalize_windows_argument(value: str) -> str:
+    """Repair the GBK-as-Latin-1 argv form produced by MSYS on Windows.
+
+    On a Chinese Windows host, an MSYS UTF-8 argument can reach a native
+    process as characters whose code points are the original GBK bytes (for
+    example ``验收`` becomes ``ÑéÊÕ``).  Only repair an argument when the
+    original contains no CJK text and a reversible Latin-1 -> GBK conversion
+    introduces CJK characters, so ordinary ASCII and genuine Unicode remain
+    untouched.
+    """
+
+    if os.name != "nt" or any("\u3400" <= char <= "\u9fff" for char in value):
+        return value
+    if not any(0x80 <= ord(char) <= 0xFF for char in value):
+        return value
+    try:
+        candidate = value.encode("latin-1").decode("gbk")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return value
+    if any("\u3400" <= char <= "\u9fff" for char in candidate):
+        return candidate
+    return value
 
 
 def fail(message: str) -> "NoReturn":
@@ -175,7 +214,9 @@ def print_value(value: Any) -> None:
 
 
 def main() -> None:
-    null_input, exit_status, variables, expression, file_name = parse_arguments(sys.argv[1:])
+    configure_utf8_streams()
+    arguments = [normalize_windows_argument(value) for value in sys.argv[1:]]
+    null_input, exit_status, variables, expression, file_name = parse_arguments(arguments)
     try:
         if null_input:
             result = build_json(expression, variables)
