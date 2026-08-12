@@ -28,7 +28,9 @@ mkdir -p \
   "$DATA_ROOT/data/redis" \
   "$DATA_ROOT/data/minio" \
   "$DATA_ROOT/data/caddy/data" \
-  "$DATA_ROOT/data/caddy/config"
+  "$DATA_ROOT/data/caddy/config" \
+  "$DATA_ROOT/data/wukongim/data/plugins" \
+  "$DATA_ROOT/data/wukongim/logs"
 chmod 700 "$SHARED_DIR" "$SHARED_DIR/secrets" "$DATA_ROOT/backups" "$DATA_ROOT/logs" "$DATA_ROOT/logs/archive" "$DATA_ROOT/logs/incidents"
 # 保留旧命令兼容入口，但唯一权威配置和证书都位于 /data/linli-im/shared。
 mkdir -p /opt/nexachat
@@ -57,7 +59,6 @@ redis_password="$(random_alnum 36)"
 jwt_secret="$(random_alnum 64)"
 admin_password="$(random_alnum 22)"
 minio_password="$(random_alnum 36)"
-turn_password="$(random_alnum 36)"
 dev_otp="$(shuf -i 100000-999999 -n 1)"
 totp_secret="$(python3 -c 'import base64,os; print(base64.b32encode(os.urandom(20)).decode().rstrip("="))')"
 admin_email="admin@nexachat.local"
@@ -124,15 +125,18 @@ IM_S3_REGION=us-east-1
 # 单文件上限，单位字节；Flutter 打包的 MEDIA_MAX_BYTES 必须保持一致。
 IM_MEDIA_MAX_BYTES=104857600
 
-# ===== 音视频通话与 TURN 中继 =====
+# ===== 音视频通话（LiveKit） =====
 IM_CALL_INVITE_TTL=30s
-IM_RTC_STUN_URLS=stun:$SERVER_IP:3478
-IM_RTC_TURN_URLS=turn:$SERVER_IP:3478?transport=udp,turn:$SERVER_IP:3478?transport=tcp
-IM_RTC_TURN_USERNAME=linli-im
-IM_RTC_TURN_CREDENTIAL=$turn_password
 
 # ===== 备份 =====
 BACKUP_DIR=/data/linli-im/backups
+BACKUP_METRICS_DIR=/data/linli-im/backups/.metrics
+BACKUP_OFFSITE_ENABLED=false
+BACKUP_OFFSITE_ENDPOINT=
+BACKUP_OFFSITE_ACCESS_KEY=
+BACKUP_OFFSITE_SECRET_KEY=
+BACKUP_OFFSITE_BUCKET=
+BACKUP_OFFSITE_PREFIX=linli-im
 EOF
 
 cat > "$CREDENTIAL_FILE" <<EOF

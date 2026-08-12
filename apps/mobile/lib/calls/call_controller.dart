@@ -3,7 +3,6 @@ import 'dart:math';
 
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import '../core/models.dart';
 import 'call_media_engine.dart';
@@ -21,9 +20,9 @@ class CallController extends ChangeNotifier {
     required this.findConversation,
     CallEngineFactory? engineFactory,
     SystemCallService? systemCallService,
-  }) : _engineFactory = engineFactory ?? WebRtcCallMediaEngine.new,
+  }) : _engineFactory = engineFactory ?? LiveKitCallMediaEngine.new,
        _systemCalls = systemCallService ?? createSystemCallService() {
-    _events = repository.callEvents.listen(_onSignalEvent);
+    _events = repository.callEvents.listen(_onCallEvent);
     _systemActions = _systemCalls.actions.listen(_onSystemCallAction);
     unawaited(_systemCalls.initialize());
   }
@@ -33,9 +32,9 @@ class CallController extends ChangeNotifier {
   final Conversation? Function(String id) findConversation;
   final CallEngineFactory _engineFactory;
   final SystemCallService _systemCalls;
+  final Random _random = Random.secure();
   late final StreamSubscription<CallSignalEvent> _events;
   late final StreamSubscription<SystemCallAction> _systemActions;
-  final Random _random = Random.secure();
 
   CallSession? session;
   CallPhase phase = CallPhase.idle;
@@ -43,22 +42,21 @@ class CallController extends ChangeNotifier {
   bool muted = false;
   bool speakerEnabled = true;
   bool cameraEnabled = true;
+  bool screenShareEnabled = false;
   DateTime? connectedAt;
   Duration elapsed = Duration.zero;
 
+  CallConfiguration? _configuration;
   CallMediaEngine? _engine;
   StreamSubscription<CallConnectionState>? _connections;
-  StreamSubscription<Map<String, Object?>>? _candidates;
+  StreamSubscription<void>? _mediaChanges;
   Timer? _inviteTimer;
   Timer? _durationTimer;
-  Timer? _disconnectTimer;
   Timer? _ringTimer;
-  Map<String, Object?>? _pendingOffer;
-  Map<String, Object?>? _lastOffer;
-  final List<Map<String, Object?>> _pendingRemoteCandidates = [];
   bool _answering = false;
+  bool _joining = false;
+  bool _failing = false;
   bool _cameraSuspendedByLifecycle = false;
-  bool _hasTurnServer = false;
   bool _disposed = false;
   Conversation? _draftConversation;
   CallMediaType? _draftMediaType;
@@ -67,8 +65,13 @@ class CallController extends ChangeNotifier {
   bool get isIncoming => phase == CallPhase.incoming;
   bool get isVideo =>
       (session?.mediaType ?? _draftMediaType) == CallMediaType.video;
-  RTCVideoRenderer? get localRenderer => _engine?.localRenderer;
-  RTCVideoRenderer? get remoteRenderer => _engine?.remoteRenderer;
+  bool get supportsScreenShare =>
+      _configuration?.supportsScreenShare == true && phase == CallPhase.active;
+  dynamic get localVideoTrack => _engine?.localVideoTrack;
+  List<CallRemoteVideo> get remoteVideos => _engine?.remoteVideos ?? const [];
+  CallRemoteVideo? get primaryRemoteVideo => remoteVideos.firstOrNull;
+  List<String> get activeSpeakerIds => _engine?.activeSpeakerIds ?? const [];
+  int get participantCount => _engine?.participantCount ?? 1;
   Future<String?> voipPushToken() => _systemCalls.voipPushToken();
   Future<void> prepareSystemCallPermissions() =>
       _systemCalls.preparePermissions();
@@ -76,6 +79,7 @@ class CallController extends ChangeNotifier {
       ? _draftConversation
       : findConversation(session!.conversationId) ?? _draftConversation;
   AppUser? get peer {
+    if (conversation?.kind == ConversationKind.group) return null;
     final me = currentUser()?.id;
     return conversation?.members.where((member) => member.id != me).firstOrNull;
   }
@@ -84,15 +88,17 @@ class CallController extends ChangeNotifier {
     Conversation conversation,
     CallMediaType mediaType,
   ) async {
-    if (conversation.kind != ConversationKind.direct) {
-      throw StateError('群聊暂不支持音视频通话');
-    }
     if (phase != CallPhase.idle) throw StateError('当前已有通话进行中');
     final me = currentUser();
-    final callee = conversation.members
-        .where((member) => member.id != me?.id)
-        .firstOrNull;
-    if (me == null || callee == null) throw StateError('无法识别通话联系人');
+    final callee = conversation.kind == ConversationKind.direct
+        ? conversation.members
+              .where((member) => member.id != me?.id)
+              .firstOrNull
+        : null;
+    if (me == null ||
+        (conversation.kind == ConversationKind.direct && callee == null)) {
+      throw StateError('无法识别通话成员');
+    }
     final callId = _newCallId();
     try {
       _draftConversation = conversation;
@@ -100,34 +106,33 @@ class CallController extends ChangeNotifier {
       errorMessage = null;
       phase = CallPhase.connecting;
       notifyListeners();
-      final configuration = await repository.callConfiguration();
+      final configuration = await _loadConfiguration();
+      final memberCount = conversation.memberCount > 0
+          ? conversation.memberCount
+          : conversation.members.length;
+      if (memberCount < 2 || memberCount > configuration.maxParticipants) {
+        throw StateError('群通话仅支持 2–${configuration.maxParticipants} 人');
+      }
       await _prepareEngine(configuration, mediaType);
       session = await repository.inviteCall(
         callId: callId,
         conversationId: conversation.id,
-        calleeUserId: callee.id,
+        calleeUserId: callee?.id,
         mediaType: mediaType,
       );
       phase = CallPhase.outgoing;
       _startInviteDeadline(session!.expiresAt);
       notifyListeners();
-      unawaited(
-        _systemCalls.showOutgoing(
-          session: session!,
-          calleeName: callee.name,
-          calleeHandle: callee.handle,
-          avatarUrl: callee.avatarUrl,
-        ),
-      );
-      final offer = await _engine!.createOffer();
-      _lastOffer = {
-        'callId': callId,
-        'conversationId': conversation.id,
-        'calleeUserId': callee.id,
-        'mediaType': mediaType.name,
-        ...offer,
-      };
-      await repository.sendCallSignal('call.offer', _lastOffer!);
+      if (callee != null) {
+        unawaited(
+          _systemCalls.showOutgoing(
+            session: session!,
+            calleeName: callee.name,
+            calleeHandle: callee.handle,
+            avatarUrl: callee.avatarUrl,
+          ),
+        );
+      }
     } catch (error) {
       await _fail(_readableError(error, '无法发起通话'));
       rethrow;
@@ -141,22 +146,13 @@ class CallController extends ChangeNotifier {
     phase = CallPhase.connecting;
     notifyListeners();
     try {
-      final configuration = await repository.callConfiguration();
+      final configuration = await _loadConfiguration();
       await _prepareEngine(configuration, session!.mediaType);
       session = await repository.acceptCall(session!.id);
-      final offer = await _waitForOffer();
-      await _engine!.setRemoteDescription(
-        sdp: offer['sdp']! as String,
-        type: offer['type'] as String? ?? 'offer',
-      );
-      await _flushRemoteCandidates();
-      final answer = await _engine!.createAnswer();
-      await repository.sendCallSignal('call.answer', {
-        'callId': session!.id,
-        'conversationId': session!.conversationId,
-        ...answer,
-      });
+      _inviteTimer?.cancel();
+      await _joinMedia();
     } catch (error) {
+      await _endAcceptedCallAfterMediaFailure();
       await _fail(_readableError(error, '接听失败，请稍后重试'));
     } finally {
       _answering = false;
@@ -184,22 +180,16 @@ class CallController extends ChangeNotifier {
         await repository.rejectCall(active.id, reason: 'declined');
       } else {
         await repository.hangupCall(active.id, reason: 'completed');
-        await repository.sendCallSignal('call.end', {
-          'callId': active.id,
-          'conversationId': active.conversationId,
-          'reason': 'completed',
-        });
       }
     } catch (_) {
-      // 本地必须立即结束；服务端会按超时或对端事件收敛状态。
+      // 本地媒体必须立即释放；服务端会通过状态查询或房间清理最终收敛。
     } finally {
       await _finish('通话结束');
     }
   }
 
   Future<void> dismissFailure() async {
-    if (phase != CallPhase.failed) return;
-    await _reset();
+    if (phase == CallPhase.failed) await _reset();
   }
 
   Future<void> toggleMute() async {
@@ -230,6 +220,19 @@ class CallController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> toggleScreenShare() async {
+    if (!supportsScreenShare) return;
+    final target = !screenShareEnabled;
+    try {
+      await _engine?.setScreenShareEnabled(target);
+      screenShareEnabled = target;
+      notifyListeners();
+    } catch (error) {
+      errorMessage = _readableError(error, '无法共享屏幕');
+      notifyListeners();
+    }
+  }
+
   Future<void> switchCamera() => _engine?.switchCamera() ?? Future.value();
 
   void handleAppLifecycle(AppLifecycleState state) {
@@ -255,13 +258,12 @@ class CallController extends ChangeNotifier {
     final callId = (payload['callId'] ?? payload['call_id'])?.toString();
     if (callId == null || callId.isEmpty || session?.id == callId) return;
     try {
-      final incoming = await repository.getCall(callId);
-      await _showIncoming(incoming);
+      await _showIncoming(await repository.getCall(callId));
     } catch (_) {}
   }
 
-  void _onSignalEvent(CallSignalEvent event) {
-    unawaited(_handleSignalEvent(event));
+  void _onCallEvent(CallSignalEvent event) {
+    unawaited(_handleCallEvent(event));
   }
 
   void _onSystemCallAction(SystemCallAction action) {
@@ -278,8 +280,7 @@ class CallController extends ChangeNotifier {
       }
       if (currentUser() == null) return;
       try {
-        final restored = await repository.getCall(action.serverCallId);
-        await _showIncoming(restored);
+        await _showIncoming(await repository.getCall(action.serverCallId));
       } catch (_) {
         await _systemCalls.end(action.serverCallId);
         return;
@@ -305,7 +306,7 @@ class CallController extends ChangeNotifier {
     }
   }
 
-  Future<void> _handleSignalEvent(CallSignalEvent event) async {
+  Future<void> _handleCallEvent(CallSignalEvent event) async {
     final callMap = event.payload['call'];
     final parsedCall = callMap is Map<String, Object?>
         ? CallSession.fromJson(callMap)
@@ -314,60 +315,52 @@ class CallController extends ChangeNotifier {
     switch (event.type) {
       case 'call.invite' || 'call.invited':
         if (parsedCall != null) await _showIncoming(parsedCall);
-      case 'call.offer':
-        if (eventCallId == null) return;
-        if (session == null && parsedCall != null) {
-          await _showIncoming(parsedCall);
-        }
-        if (session?.id != eventCallId) return;
-        _pendingOffer = event.payload;
-        notifyListeners();
-      case 'call.answer':
-        if (session?.id != eventCallId || _engine == null) return;
-        final sdp = event.payload['sdp'] as String?;
-        if (sdp == null) return;
-        await _engine!.setRemoteDescription(
-          sdp: sdp,
-          type: event.payload['type'] as String? ?? 'answer',
-        );
-        await _flushRemoteCandidates();
-        phase = CallPhase.connecting;
-        notifyListeners();
-      case 'call.ice':
-        if (session?.id != eventCallId) return;
-        final candidate = event.payload['candidate'];
-        final candidateMap = candidate is Map<String, Object?>
-            ? candidate
-            : event.payload;
-        if (_engine == null) {
-          _pendingRemoteCandidates.add(candidateMap);
-        } else {
-          await _engine!.addRemoteCandidate(candidateMap);
-        }
       case 'call.accepted':
-        if (session?.id == parsedCall?.id) {
-          session = parsedCall;
-          phase = CallPhase.connecting;
-          _inviteTimer?.cancel();
+        if (session?.id != eventCallId) return;
+        final wasActive = phase == CallPhase.active;
+        session = parsedCall ?? await repository.getCall(eventCallId!);
+        final currentUserId = currentUser()?.id;
+        if (currentUserId == null || !session!.hasJoined(currentUserId)) {
           notifyListeners();
-          final offer = _lastOffer;
-          if (offer != null) {
-            unawaited(repository.sendCallSignal('call.offer', offer));
-          }
+          return;
+        }
+        if (wasActive) {
+          notifyListeners();
+          return;
+        }
+        phase = CallPhase.connecting;
+        _inviteTimer?.cancel();
+        notifyListeners();
+        try {
+          await _joinMedia();
+        } catch (error) {
+          await _endAcceptedCallAfterMediaFailure();
+          await _fail(_readableError(error, '无法加入通话'));
         }
       case 'call.rejected':
-        if (session?.id == parsedCall?.id) await _finish('对方已拒绝');
+        if (session?.id == eventCallId) await _finish('对方已拒绝');
+      case 'call.participant_declined' || 'call.participant_left':
+        if (session?.id == eventCallId && parsedCall != null) {
+          session = parsedCall;
+          notifyListeners();
+        }
       case 'call.cancelled':
-        if (session?.id == parsedCall?.id) await _finish('对方已取消');
+        if (session?.id == eventCallId) await _finish('对方已取消');
       case 'call.timeout':
-        if (session?.id == parsedCall?.id) await _finish('无人接听');
+        if (session?.id == eventCallId) await _finish('无人接听');
       case 'call.ended' || 'call.end':
         if (session?.id == eventCallId) await _finish('通话结束');
     }
   }
 
   Future<void> _showIncoming(CallSession incoming) async {
-    if (incoming.isTerminal || incoming.calleeId != currentUser()?.id) return;
+    final currentUserId = currentUser()?.id;
+    if (incoming.isTerminal ||
+        currentUserId == null ||
+        incoming.callerId == currentUserId ||
+        !incoming.includes(currentUserId)) {
+      return;
+    }
     if (session?.id == incoming.id && phase != CallPhase.idle) return;
     if (phase != CallPhase.idle && session?.id != incoming.id) {
       try {
@@ -381,7 +374,7 @@ class CallController extends ChangeNotifier {
     _startInviteDeadline(incoming.expiresAt);
     final managedBySystem = await _systemCalls.showIncoming(
       session: incoming,
-      callerName: peer?.name ?? conversation?.title ?? '邻里联系人',
+      callerName: peer?.name ?? conversation?.title ?? '联系人',
       callerHandle: peer?.handle,
       avatarUrl: peer?.avatarUrl ?? conversation?.avatarUrl,
     );
@@ -389,95 +382,86 @@ class CallController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<CallConfiguration> _loadConfiguration() async {
+    final existing = _configuration;
+    if (existing != null) return existing;
+    final loaded = await repository.callConfiguration();
+    _configuration = loaded;
+    return loaded;
+  }
+
   Future<void> _prepareEngine(
     CallConfiguration configuration,
     CallMediaType mediaType,
   ) async {
     if (_engine != null) return;
-    _hasTurnServer = configuration.iceServers.any(
-      (server) => server.urls.any((url) {
-        final normalized = url.toLowerCase();
-        return normalized.startsWith('turn:') ||
-            normalized.startsWith('turns:');
-      }),
-    );
     final engine = _engineFactory();
     _engine = engine;
+    _connections = engine.connectionChanges.listen(_onConnectionChanged);
+    _mediaChanges = engine.mediaChanges.listen((_) {
+      screenShareEnabled = engine.screenShareEnabled;
+      if (!_disposed) notifyListeners();
+    });
     await engine.initialize(configuration: configuration, mediaType: mediaType);
     await engine.setSpeakerEnabled(speakerEnabled);
-    _connections = engine.connectionChanges.listen(_onConnectionChanged);
-    _candidates = engine.localCandidates.listen((candidate) {
-      final active = session;
-      if (active == null) return;
-      unawaited(
-        repository.sendCallSignal('call.ice', {
-          'callId': active.id,
-          'conversationId': active.conversationId,
-          'candidate': candidate,
-        }),
-      );
-    });
+  }
+
+  Future<void> _joinMedia() async {
+    if (_joining || phase == CallPhase.active) return;
+    final active = session;
+    if (active == null || active.status != 'accepted') {
+      throw StateError('通话尚未接通');
+    }
+    _joining = true;
+    try {
+      final configuration = await _loadConfiguration();
+      await _prepareEngine(configuration, active.mediaType);
+      final mediaSession = await repository.joinCall(active.id);
+      await _engine!.connect(mediaSession);
+    } finally {
+      _joining = false;
+    }
   }
 
   void _onConnectionChanged(CallConnectionState value) {
     switch (value) {
       case CallConnectionState.connected:
-        _disconnectTimer?.cancel();
         connectedAt ??= DateTime.now();
         phase = CallPhase.active;
         _startDurationTimer();
         final callId = session?.id;
         if (callId != null) unawaited(_systemCalls.setConnected(callId));
-      case CallConnectionState.disconnected:
-        _disconnectTimer?.cancel();
-        _disconnectTimer = Timer(const Duration(seconds: 10), () {
-          if (phase != CallPhase.active) return;
-          unawaited(_connectionFailed('网络中断，通话已结束'));
-        });
-      case CallConnectionState.failed:
-        unawaited(
-          _connectionFailed(
-            _hasTurnServer
-                ? '媒体连接失败，请检查网络后重新呼叫'
-                : '无法建立媒体连接，服务端尚未提供 TURN 中继，请联系管理员',
-          ),
-        );
-      case CallConnectionState.closed:
-      case CallConnectionState.connecting:
+      case CallConnectionState.reconnecting:
+        if (phase == CallPhase.active) phase = CallPhase.connecting;
+      case CallConnectionState.disconnected || CallConnectionState.failed:
+        if (!_disposed && phase != CallPhase.ended && phase != CallPhase.idle) {
+          unawaited(_connectionFailed('LiveKit 媒体连接已中断，请重新发起通话'));
+        }
+      case CallConnectionState.closed || CallConnectionState.connecting:
         break;
     }
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   Future<void> _connectionFailed(String message) async {
+    if (_failing) return;
+    _failing = true;
     final active = session;
-    if (active != null) {
+    if (active != null && active.status == 'accepted') {
       try {
-        await repository.hangupCall(active.id, reason: 'ice_failed');
+        await repository.hangupCall(active.id, reason: 'media_failed');
       } catch (_) {}
     }
     await _fail(message);
+    _failing = false;
   }
 
-  Future<Map<String, Object?>> _waitForOffer() async {
-    final deadline = DateTime.now().add(const Duration(seconds: 6));
-    while (_pendingOffer == null && DateTime.now().isBefore(deadline)) {
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-    }
-    final offer = _pendingOffer;
-    if (offer == null || offer['sdp'] is! String) {
-      throw StateError('未收到对方通话信令');
-    }
-    return offer;
-  }
-
-  Future<void> _flushRemoteCandidates() async {
-    final engine = _engine;
-    if (engine == null) return;
-    for (final candidate in _pendingRemoteCandidates) {
-      await engine.addRemoteCandidate(candidate);
-    }
-    _pendingRemoteCandidates.clear();
+  Future<void> _endAcceptedCallAfterMediaFailure() async {
+    final active = session;
+    if (active?.status != 'accepted') return;
+    try {
+      await repository.hangupCall(active!.id, reason: 'media_failed');
+    } catch (_) {}
   }
 
   void _startInviteDeadline(DateTime expiresAt) {
@@ -494,7 +478,7 @@ class CallController extends ChangeNotifier {
     _durationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (connectedAt == null) return;
       elapsed = DateTime.now().difference(connectedAt!);
-      notifyListeners();
+      if (!_disposed) notifyListeners();
     });
   }
 
@@ -520,9 +504,8 @@ class CallController extends ChangeNotifier {
     if (callId != null) unawaited(_systemCalls.end(callId));
     errorMessage = message;
     phase = CallPhase.failed;
-    notifyListeners();
+    if (!_disposed) notifyListeners();
     await _releaseEngine();
-    if (!_disposed && phase == CallPhase.failed) notifyListeners();
   }
 
   Future<void> _finish(String message) async {
@@ -532,7 +515,7 @@ class CallController extends ChangeNotifier {
     _stopRinging();
     errorMessage = message;
     phase = CallPhase.ended;
-    notifyListeners();
+    if (!_disposed) notifyListeners();
     await Future<void>.delayed(const Duration(milliseconds: 650));
     await _reset();
   }
@@ -540,7 +523,6 @@ class CallController extends ChangeNotifier {
   Future<void> _reset() async {
     _inviteTimer?.cancel();
     _durationTimer?.cancel();
-    _disconnectTimer?.cancel();
     _stopRinging();
     await _releaseEngine();
     session = null;
@@ -549,14 +531,13 @@ class CallController extends ChangeNotifier {
     muted = false;
     speakerEnabled = true;
     cameraEnabled = true;
+    screenShareEnabled = false;
     connectedAt = null;
     elapsed = Duration.zero;
-    _pendingOffer = null;
-    _lastOffer = null;
-    _pendingRemoteCandidates.clear();
     _answering = false;
+    _joining = false;
+    _failing = false;
     _cameraSuspendedByLifecycle = false;
-    _hasTurnServer = false;
     _draftConversation = null;
     _draftMediaType = null;
     if (!_disposed) notifyListeners();
@@ -564,9 +545,9 @@ class CallController extends ChangeNotifier {
 
   Future<void> _releaseEngine() async {
     await _connections?.cancel();
-    await _candidates?.cancel();
+    await _mediaChanges?.cancel();
     _connections = null;
-    _candidates = null;
+    _mediaChanges = null;
     final engine = _engine;
     _engine = null;
     if (engine != null) await engine.dispose();
@@ -581,13 +562,12 @@ class CallController extends ChangeNotifier {
     return 'call-$now-$random';
   }
 
-  String _readableError(Object error, String fallback) {
-    return readableCallMediaError(
-      error,
-      mediaType: isVideo ? CallMediaType.video : CallMediaType.audio,
-      fallback: fallback,
-    );
-  }
+  String _readableError(Object error, String fallback) =>
+      readableCallMediaError(
+        error,
+        mediaType: isVideo ? CallMediaType.video : CallMediaType.audio,
+        fallback: fallback,
+      );
 
   @override
   void dispose() {

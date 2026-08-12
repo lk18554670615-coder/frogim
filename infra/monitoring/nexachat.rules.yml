@@ -37,14 +37,59 @@ groups:
           summary: NexaChat durable message fanout is falling behind
           description: Per-user sync expansion cannot keep up with incoming messages.
 
-      - alert: NexaChatWebSocketDrops
-        expr: rate(im_websocket_dropped_events_total[5m]) > 0
+      - alert: NexaChatWukongOutboxBacklog
+        expr: im_wukong_outbox_oldest_seconds > 60 or im_wukong_outbox_pending > 100
         for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: WuKongIM business synchronization is falling behind
+          description: PostgreSQL business mutations have not reached WuKongIM within the expected delivery window.
+
+      - alert: NexaChatWukongOutboxFailed
+        expr: im_wukong_outbox_failed > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: WuKongIM business synchronization entered a permanent failure state
+          description: One or more durable business mutations were rejected permanently; inspect the sanitized failure reason and reconcile the affected aggregate.
+
+      - alert: NexaChatWukongWebhookBacklog
+        expr: im_wukong_webhook_oldest_seconds > 30 or im_wukong_webhook_pending > 100
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: WuKongIM webhook processing is falling behind
+          description: Message indexes, offline pushes, or presence projections are not being consumed quickly enough.
+
+      - alert: NexaChatWukongWebhookFailed
+        expr: im_wukong_webhook_failed > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: WuKongIM webhook events entered quarantine
+          description: One or more persisted webhook events were malformed or could not be recovered; inspect the sanitized failure reason.
+
+      - alert: NexaChatWukongChannelProposeFailures
+        expr: rate(cluster_channel_propose_failed_count_total{job="wukongim"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: WuKongIM channel proposals are failing
+          description: WuKongIM has reported channel proposal failures for five minutes; inspect node, disk and policy dependencies.
+
+      - alert: NexaChatWukongChannelP95Latency
+        expr: histogram_quantile(0.95, sum by (le) (rate(cluster_channel_propose_latency_bucket{job="wukongim"}[5m]))) > 300
+        for: 10m
         labels:
           severity: warning
         annotations:
-          summary: NexaChat WebSocket clients are falling behind
-          description: Slow WebSocket consumers are dropping live events and relying on durable cursor recovery.
+          summary: WuKongIM channel proposal P95 is high
+          description: WuKongIM channel proposal P95 has exceeded the 300 ms release threshold for ten minutes.
 
   - name: nexachat-availability
     rules:
@@ -74,3 +119,59 @@ groups:
         annotations:
           summary: 邻里通讯没有可观测的 HTTP 流量
           description: 请先检查入口路由和客户端连通性，再判定是否为服务中断。
+
+  - name: nexachat-backup
+    rules:
+      - alert: NexaChatBackupMetricsMissing
+        expr: absent(nexachat_backup_last_attempt_timestamp_seconds)
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: 备份监控指标缺失
+          description: Prometheus 已连续 15 分钟无法读取备份状态，定时备份是否执行已不可证明。
+
+      - alert: NexaChatBackupFailed
+        expr: nexachat_backup_last_status == 0 and nexachat_backup_running == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 最近一次完整备份失败
+          description: PostgreSQL、WuKongIM、MinIO、异地复制或校验发布步骤失败，请保留未完成代次并立即检查 systemd 日志。
+
+      - alert: NexaChatBackupStale
+        expr: time() - nexachat_backup_last_success_timestamp_seconds > 129600
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: 完整备份超过 36 小时未成功
+          description: 最新成功备份已超过每日备份周期和允许延迟，恢复点目标正在失守。
+
+      - alert: NexaChatBackupRunningTooLong
+        expr: nexachat_backup_running == 1 and time() - nexachat_backup_last_attempt_timestamp_seconds > 7200
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 备份任务运行超过两小时
+          description: 检查存储吞吐、MinIO 镜像、pg_dump 和 WuKongIM 重启状态。
+
+      - alert: NexaChatIncompleteBackupGenerations
+        expr: nexachat_backup_incomplete_generations > 0 and nexachat_backup_running == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 存在未发布的备份代次
+          description: 备份目录仍有 .incomplete-*，不得将其复制到异地或用于恢复。
+
+      - alert: NexaChatBackupOffsiteDisabled
+        expr: nexachat_backup_offsite_enabled == 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: 完整备份尚未包含异地副本
+          description: 本地恢复点不能抵御整机或机房故障，请配置经批准的 HTTPS S3 兼容异地目标与保留策略。

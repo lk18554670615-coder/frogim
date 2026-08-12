@@ -34,6 +34,11 @@ coverage/
 dist/
 build/
 *.log
+__pycache__/
 
 # Local service state
 .data/
+
+# Reproducible upstream archives and extracted source trees. The pinned
+# versions, hashes, licenses, and local patches live under third_party/.
+third_party/wukongim/cache/

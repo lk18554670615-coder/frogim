@@ -6,7 +6,7 @@ import (
 )
 
 func TestClientIPTrustBoundary(t *testing.T) {
-	r := httptest.NewRequest("GET", "http://service/v1/me", nil)
+	r := httptest.NewRequest("GET", "http://service/v2/users/me", nil)
 	r.RemoteAddr = "10.0.0.8:43120"
 	r.Header.Set("X-Forwarded-For", "203.0.113.9, 10.0.0.2")
 	if got := ClientIP(r, false); got != "10.0.0.8" {

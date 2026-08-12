@@ -9,6 +9,22 @@ import (
 	"github.com/linli/im/server/internal/model"
 )
 
+func (p *Postgres) AdminStats(ctx context.Context) (map[string]any, error) {
+	var users, bannedUsers, conversations, messages, pendingReports int64
+	err := p.pool.QueryRow(ctx, `WITH all_messages AS (`+adminMessageUnion+`) SELECT
+		(SELECT count(*) FROM im_users),(SELECT count(*) FROM im_users WHERE banned),
+		(SELECT count(*) FROM im_conversations),(SELECT count(*) FROM all_messages),
+		(SELECT count(*) FROM im_reports WHERE status='pending')
+	`).Scan(&users, &bannedUsers, &conversations, &messages, &pendingReports)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"users": users, "bannedUsers": bannedUsers, "conversations": conversations,
+		"messages": messages, "pendingReports": pendingReports,
+	}, nil
+}
+
 func (p *Postgres) ListAdminGroups(ctx context.Context, q, status, cursor string, limit int) ([]map[string]any, int64, string, error) {
 	offset, limit := pageOffset(cursor, limit)
 	pattern := "%" + q + "%"
@@ -17,7 +33,7 @@ func (p *Postgres) ListAdminGroups(ctx context.Context, q, status, cursor string
 	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_groups g JOIN im_conversations c ON c.id=g.conversation_id JOIN im_users owner ON owner.id=g.owner_id WHERE `+where, q, pattern, status).Scan(&total); err != nil {
 		return nil, 0, "", err
 	}
-	rows, err := p.pool.Query(ctx, `SELECT c.id,c.title,g.owner_id,owner.name,(SELECT count(*) FROM im_members m WHERE m.conversation_id=c.id),c.last_message_seq,CASE WHEN g.dissolved_at IS NOT NULL THEN 'dissolved' WHEN g.all_muted_until>now() THEN 'muted' ELSE 'active' END,c.created_at,(SELECT count(*) FROM im_reports r WHERE r.target_type='group' AND r.target_id=c.id) FROM im_groups g JOIN im_conversations c ON c.id=g.conversation_id JOIN im_users owner ON owner.id=g.owner_id WHERE `+where+` ORDER BY c.created_at DESC,c.id LIMIT $4 OFFSET $5`, q, pattern, status, limit, offset)
+	rows, err := p.pool.Query(ctx, `SELECT c.id,c.title,g.owner_id,owner.name,(SELECT count(*) FROM im_members m WHERE m.conversation_id=c.id),GREATEST(c.last_message_seq,COALESCE((SELECT max(message_seq) FROM im_wukong_message_index WHERE conversation_id=c.id),0)),CASE WHEN g.dissolved_at IS NOT NULL THEN 'dissolved' WHEN g.all_muted_until>now() THEN 'muted' ELSE 'active' END,c.created_at,(SELECT count(*) FROM im_reports r WHERE r.target_type='group' AND r.target_id=c.id) FROM im_groups g JOIN im_conversations c ON c.id=g.conversation_id JOIN im_users owner ON owner.id=g.owner_id WHERE `+where+` ORDER BY c.created_at DESC,c.id LIMIT $4 OFFSET $5`, q, pattern, status, limit, offset)
 	if err != nil {
 		return nil, 0, "", err
 	}
@@ -144,7 +160,10 @@ func (p *Postgres) AdminTaskStatus(ctx context.Context) (map[string]any, error) 
 	if err := p.pool.QueryRow(ctx, `SELECT count(*) FILTER(WHERE status='pending'),count(*) FILTER(WHERE status='processing'),count(*) FILTER(WHERE status='failed') FROM im_scheduled_messages`).Scan(&scheduledPending, &scheduledProcessing, &scheduledFailed); err != nil {
 		return nil, err
 	}
-	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_messages WHERE expires_at IS NOT NULL AND expired_at IS NULL`).Scan(&expiring); err != nil {
+	if err := p.pool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM im_messages WHERE expires_at IS NOT NULL AND expired_at IS NULL) +
+		(SELECT count(*) FROM im_wukong_message_index WHERE expires_at>now() AND expired_at IS NULL)
+	`).Scan(&expiring); err != nil {
 		return nil, err
 	}
 	result["scheduledMessages"] = map[string]any{"pending": scheduledPending, "processing": scheduledProcessing, "failed": scheduledFailed}
@@ -172,7 +191,7 @@ func (p *Postgres) AdminGroupOverview(ctx context.Context, id string) (map[strin
 	var title, owner, announcement, joinPolicy string
 	var memberCount, announcementVersion, messageCount int64
 	var allowMemberAddFriend bool
-	err := p.pool.QueryRow(ctx, `SELECT c.title,g.owner_id,g.announcement,g.announcement_version,g.join_policy,g.allow_member_add_friend,c.last_message_seq,(SELECT count(*) FROM im_members m WHERE m.conversation_id=c.id)
+	err := p.pool.QueryRow(ctx, `SELECT c.title,g.owner_id,g.announcement,g.announcement_version,g.join_policy,g.allow_member_add_friend,GREATEST(c.last_message_seq,COALESCE((SELECT max(message_seq) FROM im_wukong_message_index WHERE conversation_id=c.id),0)),(SELECT count(*) FROM im_members m WHERE m.conversation_id=c.id)
 		FROM im_conversations c JOIN im_groups g ON g.conversation_id=c.id WHERE c.id=$1`, id).Scan(&title, &owner, &announcement, &announcementVersion, &joinPolicy, &allowMemberAddFriend, &messageCount, &memberCount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound

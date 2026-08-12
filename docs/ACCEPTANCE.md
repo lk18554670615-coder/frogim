@@ -16,10 +16,12 @@ Software is considered launch-ready only when the applicable gates below have ev
 ## Correctness
 
 - Reusing `client_msg_id` never creates a second logical message.
-- Conversation sequences are monotonically increasing without reuse.
-- Sync can resume from every retained `user_sync_seq` boundary.
-- The UI deduplicates realtime and synchronization copies of the same event.
+- WuKong channel sequences are monotonically increasing without reuse.
+- Offline clients resume from WuKong recent-conversation/channel sequence state and receive every missing message.
+- The UI deduplicates live, offline and retry copies by WuKong message ID/client message number.
 - Acknowledged messages remain available after service restart.
+- Stream anchors, event IDs and event cursors remain idempotent; an event that arrives before its anchor is applied once after the anchor is stored.
+- Stream history restores the authoritative WuKong event snapshot without storing a second message body in PostgreSQL.
 
 ## Reliability
 
@@ -27,7 +29,7 @@ Software is considered launch-ready only when the applicable gates below have ev
 - Reconnect storms use jitter and bounded retry rates.
 - PostgreSQL restore and point-in-time recovery are exercised.
 - Loss of Redis does not lose acknowledged history.
-- Slow sockets are disconnected without blocking healthy recipients.
+- Slow or broken WuKong clients do not block healthy recipients; reconnect uses bounded jitter.
 
 ## Security and abuse
 
@@ -56,5 +58,5 @@ Software is considered launch-ready only when the applicable gates below have ev
 - Dialog focus is trapped, Escape closes when safe, and focus returns to the trigger.
 - Production Compose validates with real secret inputs and publishes only the TLS gateway publicly.
 - HTTPS smoke verifies health, security headers and unauthenticated admin rejection.
-- PostgreSQL and media backup completes off-host; an isolated restore drill and full product restore journey have recorded evidence.
+- PostgreSQL, WuKong and MinIO backup completes off-host; an isolated structural drill and full product restore journey have recorded evidence.
 - Prometheus targets, alert delivery, bounded logs and on-call ownership are verified.

@@ -1,14 +1,13 @@
 # 邻里通讯
 
-邻里通讯是一套可独立部署的即时通讯系统。仓库包含 Flutter 客户端、Go REST/WebSocket 服务、React 运营后台、PostgreSQL、Redis、MinIO/S3、监控、备份与生产部署脚本。新技术资源统一使用 `linli-im`；部分 `nexachat` 标识为已有数据和客户端升级兼容而保留，详见[兼容标识](docs/COMPATIBILITY.md)。
+邻里通讯是一套可独立部署的即时通讯系统。仓库包含 Flutter 四端客户端、Go 业务 API、WuKongIM、LiveKit、React 运营后台、PostgreSQL、Redis、MinIO/S3、监控、备份与生产部署脚本。新技术资源统一使用 `linli-im`；部分 `nexachat` 标识是现有部署资源名，详见[兼容标识](docs/COMPATIBILITY.md)。
 
 ## 目录
 
 ```text
 apps/mobile        Flutter iOS、Android、Web 与 macOS 客户端
 apps/admin         React 运营、审核与系统配置后台
-server             Go REST/WebSocket 服务及数据库迁移
-packages/protocol  实时通讯协议定义
+server             Go 业务 API、WuKong 适配与数据库迁移
 packages/getuiflut 个推 Flutter 插件兼容包
 infra              Compose、网关、监控、备份与运维脚本
 docs               架构、配置、部署、运维、测试和发布文档
@@ -29,7 +28,8 @@ infra/scripts/smoke-local.sh
 
 - 运营后台：`http://127.0.0.1:8088`
 - API：`http://127.0.0.1:8080`
-- WebSocket：`ws://127.0.0.1:8080/v1/ws`
+- WuKongIM TCP：`tcp://127.0.0.1:5100`
+- WuKongIM WSS：`ws://127.0.0.1:5200`
 - MinIO 控制台：`http://127.0.0.1:9001`
 
 本地管理员账号、固定验证码和 TOTP 种子仅用于回环开发环境，见 `.env.example`。禁止把示例配置用于公网或共享环境。
@@ -44,19 +44,19 @@ infra/scripts/smoke-local.sh
 (cd apps/admin && npm ci && npm run lint && npm test -- --run && npm run build)
 
 # Flutter
-(cd apps/mobile && flutter pub get && flutter analyze && flutter test)
+(cd apps/mobile && fvm flutter pub get && fvm flutter analyze && fvm flutter test)
 
 # 文档、脚本和 Compose
 infra/scripts/check-docs.sh
 bash -n infra/scripts/*.sh
-docker compose -f infra/compose.yaml config -q
+docker compose -f infra/compose.yaml -f infra/compose.wukong.yaml config -q
 ```
 
 完整测试范围与真实 PostgreSQL 测试方法见[测试指南](docs/TESTING.md)。
 
 ## 生产部署
 
-生产定义默认拒绝弱密钥、示例域名、开发验证码和 `noop`/`log` 推送。Web/API 只有 Caddy 暴露 80/443；自建 Coturn 另外暴露 3478 TCP/UDP 和 49160–49200 UDP。API、后台、数据库、缓存、对象存储和监控均位于内部网络。
+生产定义默认拒绝弱密钥、示例域名、开发验证码和 `noop`/`log` 推送。Web/API 只有 Caddy 暴露 80/443；LiveKit 按配置暴露 7881/TCP 与 7882–7889/UDP。API、后台、数据库、缓存、对象存储和监控均位于内部网络。
 
 ```bash
 cp .env.production.example .env.production
@@ -67,7 +67,7 @@ make production-config
 make production-deploy
 ```
 
-部署前必须完成短信、个推/APNs/Android 厂商通道、TURN、隐私政策、内容治理、备份恢复和发布审批。仓库能验证软件与配置，但不能代替云账号、证书、商店签名和合规主体。
+部署前必须完成短信、个推/APNs/Android 厂商通道、LiveKit、隐私政策、内容治理、备份恢复和发布审批。仓库能验证软件与配置，但不能代替云账号、证书、商店签名和合规主体。
 
 ## 文档导航
 
@@ -88,6 +88,6 @@ make production-deploy
 
 1. 业务策略优先通过运营后台热更新；密钥和基础设施参数通过部署环境管理。
 2. 任何数据库迁移都必须向前兼容，并先完成备份与恢复演练。
-3. WebSocket 是实时加速通道，`user_sync_seq` 同步游标是离线恢复依据。
+3. WuKongIM 的消息 ID、频道序号、最近会话和离线同步是实时消息事实来源；PostgreSQL 保存业务资料与扩展。
 4. 不直接重命名 Compose project、volume、数据库、存储桶、服务器目录或客户端持久化键。
 5. 发布必须留下测试、镜像、迁移、备份、冒烟和审批证据。

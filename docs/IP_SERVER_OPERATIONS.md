@@ -93,8 +93,9 @@ infra/scripts/smoke.sh .env.ip.production
 ## 认证与实时验收
 
 - REST Access Token 只允许 `Authorization: Bearer <token>`；query、请求体或 Cookie 中的 token 应返回未认证。
-- WebSocket 只允许先经 `POST /v1/ws/ticket` 获取的 30 秒一次性 ticket；Access Token query、升级请求 `Authorization` 和 ticket 重放都应被拒绝。
-- Redis Pub/Sub 的通话信令 publish 失败时服务端 fail-closed，但 SDP/ICE 仍是 ephemeral，不写 PostgreSQL、没有 replay。Flutter 客户端通过 `signalId` 重试和去重；accepted/rejected/cancelled/ended/timeout 状态会事务性写入双方同步流供重连收敛。必须真机验证跨节点、Redis 短时故障和重连。
+- `/v2/auth/im-session` 返回独立、短期的 WuKongIM Token；REST Access Token 不得进入 WSS/TCP URL。
+- 使用 `tools/wukong-probe` 验证真实 TCP 握手、ACK、互发、离线/历史同步、DataSource、CMD 和策略插件；仅做 HTTP 101 升级不算消息链路验收。
+- LiveKit 通话必须真机验证房间鉴权、2–9 人音视频、屏幕共享、成员离开和网络重连；业务服务与 PostgreSQL 不接收 SDP/ICE。
 
 ## MinIO 与媒体
 
@@ -104,7 +105,7 @@ infra/scripts/smoke.sh .env.ip.production
 
 ## 备份与恢复点
 
-备份过程使用 `umask 077`，先写入 `.incomplete-<UTC timestamp>`，生成 `postgres.dump`、MinIO 镜像和 `SHA256SUMS`，收紧权限后再原子重命名为最终时间戳目录。只有最终目录是有效恢复点；残留 `.incomplete-*` 表示失败，必须告警和排查，不能直接恢复。
+备份过程使用 `umask 077`，先写入 `.incomplete-<UTC timestamp>`，依次生成 WuKong 数据归档、`postgres.dump`、MinIO 镜像、固定依赖锁和 `SHA256SUMS`，收紧权限后再原子重命名为最终时间戳目录。只有最终目录是有效恢复点；残留 `.incomplete-*` 表示失败，必须告警和排查，不能直接恢复。
 
 生产部署后应立即执行一次备份并复制到异机加密存储。恢复流程与演练要求见 [BACKUP_RESTORE.md](BACKUP_RESTORE.md)。
 
@@ -115,10 +116,10 @@ infra/scripts/smoke.sh .env.ip.production
 正式 IP HTTPS 包示例：
 
 ```bash
-flutter build apk --release \
+fvm flutter build apk --release \
   --dart-define=APP_ENV=production \
   --dart-define=API_BASE_URL=https://203.0.113.10 \
-  --dart-define=WS_URL=wss://203.0.113.10/v1/ws \
+  --dart-define=WS_URL=wss://203.0.113.10/im \
   --dart-define=ENABLE_DEMO=false \
   --dart-define=TERMS_URL=https://203.0.113.10/legal/terms \
   --dart-define=PRIVACY_URL=https://203.0.113.10/legal/privacy \

@@ -75,23 +75,10 @@ case "${1:-help}" in
     echo
     ;;
   backup)
-    timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-    destination="${BACKUP_DIR:-/opt/nexachat/backups}/$timestamp"
-    working="${BACKUP_DIR:-/opt/nexachat/backups}/.incomplete-$timestamp"
-    [[ ! -e "$destination" && ! -e "$working" ]] || { echo "backup destination already exists" >&2; exit 1; }
-    mkdir -p -m 700 "$working/minio"
-    backup_complete=false
-    trap 'if [[ "$backup_complete" != true ]]; then echo "backup incomplete: $working" >&2; fi' EXIT
-    "${compose[@]}" exec -T postgres pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom --no-owner --no-acl > "$working/postgres.dump"
-    "${compose[@]}" --profile ops run --rm --no-deps minio-client -c '
-      mc alias set source http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
-      mc mirror --preserve "source/$IM_S3_BUCKET" "/backup/.incomplete-'"$timestamp"'/minio"
-    '
-    (cd "$working" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum) > "$working/SHA256SUMS"
-    chmod -R go-rwx "$working"
-    mv "$working" "$destination"
-    backup_complete=true
-    echo "backup completed: $destination"
+    # The installed systemd/CLI compatibility entrypoint delegates to the
+    # authoritative implementation. The removed inline path omitted WuKongIM
+    # data and the fixed dependency lock.
+    exec "$APP_ROOT/infra/scripts/backup.sh" "$CONFIG_FILE"
     ;;
   renew-cert)
     docker run --rm \

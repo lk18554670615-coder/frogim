@@ -60,7 +60,6 @@ services:
       dockerfile: apps/mobile/Dockerfile.web
       args:
         WEB_API_BASE_URL: https://${SERVER_IP:?set SERVER_IP}
-        WEB_WS_URL: wss://${SERVER_IP:?set SERVER_IP}/v1/ws
         WEB_BASE_HREF: /web/
         APP_ENV: staging
         ENABLE_DEMO: "false"
@@ -86,7 +85,7 @@ services:
     build:
       context: ../apps/admin
       args:
-        VITE_ADMIN_API_URL: /api/v1/admin
+        VITE_ADMIN_API_URL: /api/v2/admin
         VITE_ALLOW_DEMO: "false"
     expose:
       - "8080"
@@ -145,10 +144,6 @@ services:
       IM_S3_SECURE: "false"
       IM_S3_PUBLIC_SECURE: "true"
       IM_CALL_INVITE_TTL: ${IM_CALL_INVITE_TTL:-30s}
-      IM_RTC_STUN_URLS: ${IM_RTC_STUN_URLS:?set IM_RTC_STUN_URLS}
-      IM_RTC_TURN_URLS: ${IM_RTC_TURN_URLS:?set IM_RTC_TURN_URLS}
-      IM_RTC_TURN_USERNAME: ${IM_RTC_TURN_USERNAME:?set IM_RTC_TURN_USERNAME}
-      IM_RTC_TURN_CREDENTIAL: ${IM_RTC_TURN_CREDENTIAL:?set IM_RTC_TURN_CREDENTIAL}
     expose:
       - "8080"
     networks:
@@ -173,40 +168,6 @@ services:
     cap_drop:
       - ALL
     stop_grace_period: 30s
-
-  # WebRTC 媒体中继服务。使用主机网络避免 Docker 大端口范围转发带来的额外开销。
-  coturn:
-    <<: *service-defaults
-    image: coturn/coturn:4.16.0-r0
-    network_mode: host
-    environment:
-      DETECT_EXTERNAL_IP: "yes"
-      DETECT_RELAY_IP: "yes"
-    command:
-      - --log-file=stdout
-      - --fingerprint
-      - --lt-cred-mech
-      - --user=${IM_RTC_TURN_USERNAME:?set IM_RTC_TURN_USERNAME}:${IM_RTC_TURN_CREDENTIAL:?set IM_RTC_TURN_CREDENTIAL}
-      - --realm=linli-im
-      - --server-name=linli-im-turn
-      - --min-port=49160
-      - --max-port=49200
-      - --stale-nonce=600
-      - --no-multicast-peers
-    read_only: true
-    tmpfs:
-      - /tmp
-      - /var/lib/coturn
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE
-    healthcheck:
-      test: ["CMD-SHELL", "turnutils_stunclient 127.0.0.1 >/dev/null 2>&1"]
-      interval: 20s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
 
   postgres:
     <<: *service-defaults

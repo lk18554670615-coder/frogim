@@ -40,8 +40,17 @@ func roleAllowed(role, permission string) bool {
 	if role == "platform_admin" {
 		return true
 	}
+	if role == "system_operator" {
+		return permission == "read" || permission == "operations.write" || permission == "settings.write" || permission == "versions.write"
+	}
 	if role == "moderator" {
-		return permission == "read" || permission == "users.write" || permission == "reports.write" || permission == "rules.write"
+		return permission == "read" || permission == "users.write" || permission == "reports.write" || permission == "rules.write" || permission == "content.write"
+	}
+	if role == "content_operator" {
+		return permission == "read" || permission == "content.write" || permission == "announcements.write" || permission == "channels.write"
+	}
+	if role == "support_agent" {
+		return permission == "read" || permission == "support.write"
 	}
 	if role == "support" {
 		return permission == "read"
@@ -53,6 +62,16 @@ func adminPermission(method, path string) string {
 		return "read"
 	}
 	switch {
+	case strings.Contains(path, "/client-versions"):
+		return "versions.write"
+	case strings.Contains(path, "/moments") || strings.Contains(path, "/sticker-"):
+		return "content.write"
+	case strings.Contains(path, "/wukong") || strings.Contains(path, "/livekit") || strings.Contains(path, "/plugins"):
+		return "operations.write"
+	case strings.Contains(path, "/support"):
+		return "support.write"
+	case strings.Contains(path, "/channels"):
+		return "channels.write"
 	case strings.Contains(path, "/settings"):
 		return "settings.write"
 	case strings.Contains(path, "/users/"):

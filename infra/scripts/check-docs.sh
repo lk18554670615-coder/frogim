@@ -8,18 +8,24 @@ from __future__ import annotations
 
 import re
 import sys
+import os
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 root = Path(sys.argv[1]).resolve()
-ignored = {".dart_tool", ".git", ".symlinks", "Pods", "build", "dist", "node_modules"}
+# Vendored/frozen upstream sources keep their original documentation topology
+# and are verified by checksums, not by this repository's relative-link rules.
+ignored = {".dart_tool", ".git", ".symlinks", "Pods", "build", "dist", "node_modules", "third_party"}
 link_pattern = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 failures: list[str] = []
 checked = 0
 
-for markdown in sorted(root.rglob("*.md")):
-    if any(part in ignored for part in markdown.relative_to(root).parts):
-        continue
+markdown_files: list[Path] = []
+for directory, child_directories, files in os.walk(root):
+    child_directories[:] = [name for name in child_directories if name not in ignored]
+    markdown_files.extend(Path(directory) / name for name in files if name.endswith(".md"))
+
+for markdown in sorted(markdown_files):
     checked += 1
     for line_number, line in enumerate(markdown.read_text(encoding="utf-8").splitlines(), 1):
         for raw_target in link_pattern.findall(line):
@@ -48,3 +54,23 @@ if failures:
 
 print(f"documentation links verified: {checked} Markdown files")
 PY
+
+invalid_manager_name="WK_MANGER""TOKEN"
+if grep -R -n -- "$invalid_manager_name" "$ROOT_DIR/infra" >/dev/null; then
+  echo "invalid WuKongIM manager environment name: use WK_MANAGERTOKEN exactly" >&2
+  exit 1
+fi
+for compose_file in infra/compose.wukong.yaml infra/compose.wukong.production.yaml; do
+  if ! grep -q 'WK_MANAGERTOKEN:' "$ROOT_DIR/$compose_file"; then
+    echo "$compose_file does not bind the pinned server managerToken environment" >&2
+    exit 1
+  fi
+done
+if ! grep -Fq 'image: ${WUKONG_IMAGE:?set WUKONG_IMAGE to the promoted repository@sha256 digest}' "$ROOT_DIR/infra/compose.wukong.production.yaml"; then
+  echo "production WuKongIM must use the promoted WUKONG_IMAGE digest" >&2
+  exit 1
+fi
+if awk '/^  wukongim:/{in_service=1; next} in_service && /^  [A-Za-z0-9_-]+:/{exit} in_service && /^[[:space:]]+build:/{found=1} END{exit found ? 0 : 1}' "$ROOT_DIR/infra/compose.wukong.production.yaml"; then
+  echo "production WuKongIM must not be built on the target host" >&2
+  exit 1
+fi

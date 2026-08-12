@@ -33,3 +33,68 @@ services:
       - ./minio-init.sh:/config/minio-init.sh:ro
     entrypoint: ["/bin/sh", "/config/minio-init.sh"]
     command: []
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}
+      - --web.enable-lifecycle
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/nexachat.rules.yml:/etc/prometheus/nexachat.rules.yml:ro
+      - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/monitoring/prometheus:/prometheus
+    expose:
+      - "9090"
+    networks:
+      - app
+    depends_on:
+      server:
+        condition: service_healthy
+      backup-metrics:
+        condition: service_started
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  backup-metrics:
+    image: docker.io/prom/node-exporter@sha256:863b62ff9f392b6f472e22b4b670ad1cabb66b3042502ebd4b2cd192733e1bce
+    platform: linux/amd64
+    command:
+      - --collector.disable-defaults
+      - --collector.textfile
+      - --collector.textfile.directory=/var/lib/node_exporter/textfile
+      - --web.listen-address=:9100
+    volumes:
+      - ${BACKUP_METRICS_DIR:?set BACKUP_METRICS_DIR}:/var/lib/node_exporter/textfile:ro
+    expose:
+      - "9100"
+    networks:
+      - app
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  minio-client:
+    environment:
+      BACKUP_OFFSITE_ENDPOINT: ${BACKUP_OFFSITE_ENDPOINT:-}
+      BACKUP_OFFSITE_ACCESS_KEY: ${BACKUP_OFFSITE_ACCESS_KEY:-}
+      BACKUP_OFFSITE_SECRET_KEY: ${BACKUP_OFFSITE_SECRET_KEY:-}
+      BACKUP_OFFSITE_BUCKET: ${BACKUP_OFFSITE_BUCKET:-}
+      BACKUP_OFFSITE_PREFIX: ${BACKUP_OFFSITE_PREFIX:-}
+    networks:
+      - data
+      - edge

@@ -7,34 +7,43 @@ import 'package:linli_im/core/models.dart';
 import 'package:linli_im/data/live_repository.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/fake_wukong_gateway.dart';
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
   test('文本发送携带结构化 mentions 且不降级为纯显示文本', () async {
-    http.Request? sentRequest;
+    final gateway = FakeWukongGateway();
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
-        if (request.url.path == '/v1/conversations/group-1/messages') {
-          sentRequest = request;
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/channels/conversations') {
           return _jsonResponse({
             'data': {
-              'message': _message(
-                id: 'message-1',
-                conversationId: 'group-1',
-                body: {
-                  'text': '@所有人 @林安 请查看公告',
-                  'mentions': ['friend-1'],
-                  'mentionAll': true,
+              'items': [
+                {
+                  'conversation': {
+                    'id': 'group-1',
+                    'type': 'group',
+                    'title': '群聊',
+                    'updatedAt': '2026-08-11T00:00:00Z',
+                  },
+                  'members': <Object?>[],
                 },
-              ),
+              ],
             },
+          });
+        }
+        if (request.url.path == '/v2/im/datasource/conversations') {
+          return _jsonResponse({
+            'data': {'items': <Object?>[]},
           });
         }
         return http.Response('{}', 404);
       }),
+      gateway: gateway,
     );
     await repository.login('13800138000', '123456');
 
@@ -55,12 +64,12 @@ void main() {
       ),
     );
 
-    final payload = jsonDecode(sentRequest!.body) as Map<String, Object?>;
-    expect(payload['type'], 'text');
-    expect(payload['body'], {
-      'text': '@所有人 @林安 请查看公告',
-      'mentions': ['friend-1'],
-      'mentionAll': true,
+    final payload = gateway.sentMessages.single.payload;
+    expect(payload['type'], 1);
+    expect(payload['content'], '@所有人 @林安 请查看公告');
+    expect(payload['mention'], {
+      'all': 1,
+      'uids': ['friend-1'],
     });
     expect(message.mentions.first.isEveryone, isTrue);
     expect(message.mentions.last.userId, 'friend-1');
@@ -71,9 +80,9 @@ void main() {
     final requests = <http.Request>[];
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
         requests.add(request);
-        if (request.url.path == '/v1/messages/message-1') {
+        if (request.url.path == '/v2/messages/message-1') {
           return _jsonResponse({
             'data': {
               'message': _message(
@@ -136,10 +145,11 @@ void main() {
     final paths = <String>[];
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
         paths.add('${request.method} ${request.url.path}');
-        if (request.url.path == '/v1/conversations/group-1/pinned-messages' &&
+        if (request.url.path == '/v2/messages/pins' &&
             request.method == 'GET') {
+          expect(request.url.queryParameters['conversationId'], 'group-1');
           return _jsonResponse({
             'data': {
               'items': [
@@ -153,11 +163,12 @@ void main() {
             },
           });
         }
-        if (request.url.path ==
-            '/v1/conversations/group-1/pinned-messages/pinned-1') {
+        if (request.url.path == '/v2/messages/pins/pinned-1') {
+          expect(request.url.queryParameters['conversationId'], 'group-1');
           return http.Response('', 204);
         }
-        if (request.url.path == '/v1/conversations/group-1/messages/search') {
+        if (request.url.path == '/v2/messages/search') {
+          expect(request.url.queryParameters['conversationId'], 'group-1');
           expect(request.url.queryParameters['q'], '群规');
           expect(request.url.queryParameters['limit'], '20');
           return _jsonResponse({
@@ -184,18 +195,21 @@ void main() {
     expect(pinned.single.isPinned, isTrue);
     expect(results.single.id, 'pinned-1');
     expect(paths, [
-      'GET /v1/conversations/group-1/pinned-messages',
-      'DELETE /v1/conversations/group-1/pinned-messages/pinned-1',
-      'GET /v1/conversations/group-1/messages/search',
+      'GET /v2/messages/pins',
+      'DELETE /v2/messages/pins/pinned-1',
+      'GET /v2/messages/search',
     ]);
     await repository.close();
   });
 }
 
-LiveImRepository _repository(http.Client client) => LiveImRepository(
+LiveImRepository _repository(
+  http.Client client, {
+  FakeWukongGateway? gateway,
+}) => LiveImRepository(
   client: client,
   apiBaseUrl: 'https://api.example.com',
-  wsUrl: 'wss://api.example.com/ws',
+  wukongGateway: gateway ?? FakeWukongGateway(),
 );
 
 http.Response _loginResponse() => _jsonResponse({
@@ -207,6 +221,16 @@ http.Response _loginResponse() => _jsonResponse({
       'name': '测试用户',
       'handle': 'tester',
       'phone': '13800138000',
+    },
+    'imSession': {
+      'uid': 'user-1',
+      'token': 'wk1_test',
+      'deviceFlag': 2,
+      'deviceLevel': 1,
+      'tcpUrl': 'tcp://im.example.com:5100',
+      'wsUrl': 'wss://im.example.com/ws',
+      'sdk': 'wukongimfluttersdk',
+      'issuedAt': '2026-08-11T00:00:00Z',
     },
   },
 });

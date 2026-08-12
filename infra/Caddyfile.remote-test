@@ -4,7 +4,7 @@
 
 :8080 {
 	# 仅允许前端联调所需路径，其他请求不会被转发到远程服务器。
-	@remote path /v1/* /api/* /health /ready /nexachat-media/*
+	@remote path /v2/* /api/* /health /ready /nexachat-media/*
 	handle @remote {
 		reverse_proxy {$REMOTE_SERVER_ORIGIN} {
 			header_up Host {upstream_hostport}

@@ -43,7 +43,7 @@ describe('邻里通讯管理后台', () => {
     sessionStorage.setItem('nexachat_admin_session', JSON.stringify(session));
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true, status: 200, headers: new Headers(),
-      json: async () => ({ users: 11, bannedUsers: 1, conversations: 5, messages: 133, pendingReports: 2, websocketConnections: 7 }),
+      json: async () => ({ users: 11, bannedUsers: 1, conversations: 5, messages: 133, pendingReports: 2, wukongConnections: 7, wukongStatus: 'ok' }),
     })));
     render(<App />);
     expect(await screen.findByText('用户总数')).toBeInTheDocument();
@@ -76,7 +76,7 @@ describe('邻里通讯管理后台', () => {
       })
       .mockResolvedValue({
         ok: true, status: 200, headers: new Headers(),
-        json: async () => ({ users: 0, conversations: 0, messages: 0, pendingReports: 0, websocketConnections: 0 }),
+        json: async () => ({ users: 0, conversations: 0, messages: 0, pendingReports: 0, wukongConnections: 0, wukongStatus: 'unavailable' }),
       });
     vi.stubGlobal('fetch', fetchMock);
     render(<App />);
@@ -160,5 +160,149 @@ describe('邻里通讯管理后台', () => {
     expect(await screen.findByText('目标消息状态已变化')).toBeInTheDocument();
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(screen.queryByText('违规内容已完成处置')).not.toBeInTheDocument();
+  });
+
+  it('发布系统设置前要求二次确认和理由', async () => {
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+    const user = userEvent.setup();
+    await screen.findByRole('heading', { name: '系统设置' });
+    await user.click(await screen.findByRole('button', { name: '保存并立即生效' }));
+    expect(screen.getByRole('heading', { name: '发布系统业务策略' })).toBeInTheDocument();
+    const confirm = screen.getByRole('button', { name: '确认发布' });
+    expect(confirm).toBeDisabled();
+    await user.type(screen.getByLabelText('发布理由'), '变更单 OPS-2026-08-12');
+    expect(confirm).toBeEnabled();
+  });
+
+  it('内容审核要求填写理由并发送确认字段', async () => {
+    localStorage.setItem('nexachat_data_mode', 'live');
+    sessionStorage.setItem('nexachat_admin_session', JSON.stringify(session));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === 'POST') return { ok: true, status: 200, headers: new Headers(), json: async () => ({ id: 'moment_1', status: 'hidden' }) };
+      if (url.includes('/sticker-packs')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [], total: 0 }) };
+      return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ id: 'moment_1', authorId: 'u_1', authorName: '测试用户', content: '待审核动态', mediaKind: 'none', media: [], visibility: 'public', likeCount: 0, commentCount: 0, status: 'published', createdAt: '2026-08-11T00:00:00Z' }], total: 1 }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.replaceState({}, '', '/content-moderation');
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: '隐藏' }));
+    const confirm = screen.getByRole('button', { name: '确认并记录' });
+    expect(confirm).toBeDisabled();
+    await user.type(screen.getByLabelText('处置理由'), '举报复核确认违规');
+    await user.click(confirm);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(true));
+    const write = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
+    expect(JSON.parse(String(write?.[1]?.body))).toEqual({ status: 'hidden', reason: '举报复核确认违规', confirmed: true });
+  });
+
+  it('表情商店可以创建分类和表情包', async () => {
+    window.history.replaceState({}, '', '/content-moderation');
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('tab', { name: '表情包' }));
+    await user.click(await screen.findByRole('button', { name: '创建分类' }));
+    const categoryConfirm = screen.getByRole('button', { name: '保存分类' });
+    expect(categoryConfirm).toBeDisabled();
+    await user.type(screen.getByLabelText('分类名称'), '节日');
+    await user.type(screen.getByLabelText('操作理由'), '初始化节日分类');
+    await user.click(categoryConfirm);
+    expect(await screen.findByRole('button', { name: /节日/ })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '创建表情包' }));
+    const packConfirm = screen.getByRole('button', { name: '保存表情包' });
+    await user.type(screen.getByLabelText('表情包名称'), '新年祝福');
+    await user.type(screen.getByLabelText('封面媒体 ID'), 'media_cover_demo');
+    await user.type(screen.getByLabelText('操作理由'), '创建运营表情包');
+    expect(packConfirm).toBeEnabled();
+    await user.click(packConfirm);
+    expect(await screen.findByText('新年祝福')).toBeInTheDocument();
+  });
+
+  it('系统运维角色可以发布客户端版本策略', async () => {
+    localStorage.setItem('nexachat_data_mode', 'live');
+    sessionStorage.setItem('nexachat_admin_session', JSON.stringify({ ...session, role: 'system_operator' }));
+    const policy = { platform: 'android', minimumVersion: '1.0.0', latestVersion: '1.1.0', forceUpdate: false, rolloutPercentage: 100, releaseNotes: '', downloadUrl: 'https://download.example.com/app.apk', updatedBy: 'ops', updatedAt: '2026-08-11T00:00:00Z' };
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => ({ ok: true, status: 200, headers: new Headers(), json: async () => init?.method === 'PUT' ? policy : { items: [policy] } }));
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.replaceState({}, '', '/client-versions');
+    render(<App />);
+    const user = userEvent.setup();
+    const publish = await screen.findByRole('button', { name: '保存并发布' });
+    expect(publish).toBeEnabled();
+    await user.click(publish);
+    await user.type(screen.getByLabelText('发布原因'), '发布单 REL-1024');
+    await user.click(screen.getByRole('button', { name: '确认发布' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(true));
+    const write = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT');
+    expect(JSON.parse(String(write?.[1]?.body))).toEqual(expect.objectContaining({ reason: '发布单 REL-1024', confirmed: true }));
+  });
+
+  it('统一展示 WuKongIM 节点并可切换到 LiveKit 房间', async () => {
+    window.history.replaceState({}, '', '/im-infrastructure');
+    render(<App />);
+    expect(screen.getByRole('heading', { name: 'IM 基础设施' })).toBeInTheDocument();
+    expect((await screen.findAllByText('v2.2.5-20260422')).length).toBeGreaterThan(0);
+    expect(await screen.findByText('Prometheus 指标')).toBeInTheDocument();
+    expect(screen.getByText('Trace 追踪')).toBeInTheDocument();
+    expect(screen.getByText('Loki 日志')).toBeInTheDocument();
+    expect(screen.getByText('压力测试模式')).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('tab', { name: '音视频房间' }));
+    expect(await screen.findByText('call_demo')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '关闭房间' })).toBeEnabled();
+    await user.click(screen.getByRole('tab', { name: '插件' }));
+    expect(screen.getByRole('heading', { name: '签名插件发布' })).toBeInTheDocument();
+    expect(screen.getByText(/AI Receive 插件会被拒绝/)).toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: '运行日志' }));
+    expect(screen.getByRole('heading', { name: '插件运行日志' })).toBeInTheDocument();
+    expect(await screen.findByText('policy plugin ready')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: '卸载' })).toBeDisabled();
+  });
+
+  it('可在 IM 基础设施中管理系统账号', async () => {
+    window.history.replaceState({}, '', '/im-infrastructure');
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('tab', { name: '系统账号' }));
+    expect(screen.getByRole('heading', { name: '系统账号' })).toBeInTheDocument();
+    expect(await screen.findByText('系统通知')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '设为系统账号' })).toBeDisabled();
+    await user.type(screen.getByLabelText('用户 UID'), 'u_notice_2');
+    expect(screen.getByRole('button', { name: '设为系统账号' })).toBeEnabled();
+  });
+
+  it('频道运营覆盖成员、临时订阅与黑白名单入口', async () => {
+    window.history.replaceState({}, '', '/business-channels');
+    render(<App />);
+    expect(screen.getByRole('heading', { name: '频道运营' })).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: '运营管理' }));
+    expect(screen.getByRole('heading', { name: '成员与临时订阅' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '黑白名单' })).toBeInTheDocument();
+    await user.type(screen.getByLabelText('成员用户 ID'), 'u_temp');
+    await user.click(screen.getByRole('button', { name: '添加' }));
+    expect(screen.getByRole('heading', { name: '添加频道成员' })).toBeInTheDocument();
+    const confirm = screen.getByRole('button', { name: '确认并记录' });
+    expect(confirm).toBeDisabled();
+    await user.type(screen.getByLabelText('操作原因'), '临时活动订阅');
+    expect(confirm).toBeEnabled();
+  });
+
+  it('客服工作台提供队列认领、转接和结束处置', async () => {
+    window.history.replaceState({}, '', '/support-workbench');
+    render(<App />);
+    expect(screen.getByRole('heading', { name: '客服工作台' })).toBeInTheDocument();
+    expect(await screen.findByText('账号登录问题')).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('目标客服 ID'), 'u_support_2');
+    await user.click(screen.getByRole('button', { name: '转接' }));
+    expect(screen.getByRole('heading', { name: '转接客服会话' })).toBeInTheDocument();
+    const confirm = screen.getByRole('button', { name: '确认并记录' });
+    expect(confirm).toBeDisabled();
+    await user.type(screen.getByLabelText('操作原因'), '升级到高级客服');
+    expect(confirm).toBeEnabled();
   });
 });

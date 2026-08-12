@@ -14,15 +14,15 @@ import 'package:linli_im/ui/screens/chat_screen.dart';
 import 'package:linli_im/ui/screens/home_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/fake_wukong_gateway.dart';
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
   test('页面销毁时保存草稿不在锁定的 widget 树内同步通知根组件', () async {
-    final controller = AppController(
-      DemoImRepository(latency: Duration.zero),
-    );
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
     var notificationCount = 0;
     controller.addListener(() => notificationCount += 1);
 
@@ -35,15 +35,35 @@ void main() {
 
   test('LiveRepository 严格使用归档、送达、定时、过期和链接预览契约', () async {
     final requests = <http.Request>[];
+    final gateway = FakeWukongGateway();
     final scheduledAt = DateTime(2026, 8, 2, 9);
     final client = MockClient((request) async {
       requests.add(request);
-      if (request.url.path == '/v1/conversations/c1/preferences' ||
-          request.url.path == '/v1/conversations/c1/delivered' ||
-          request.url.path == '/v1/scheduled-messages/scheduled-1') {
+      if (request.url.path == '/v2/auth/login') {
+        return _json({
+          'data': {
+            'accessToken': 'access-token',
+            'refreshToken': 'refresh-token',
+            'user': {'id': 'me', 'name': '我', 'handle': 'me'},
+            'imSession': {
+              'uid': 'me',
+              'token': 'wk1_test',
+              'deviceFlag': 2,
+              'deviceLevel': 1,
+              'tcpUrl': 'tcp://im.example.com:5100',
+              'wsUrl': 'wss://im.example.com/ws',
+              'sdk': 'wukongimfluttersdk',
+              'issuedAt': '2026-08-11T00:00:00Z',
+            },
+          },
+        });
+      }
+      if (request.url.path == '/v2/channels/conversations/c1/preferences' ||
+          request.url.path == '/v2/channels/conversations/c1/delivered' ||
+          request.url.path == '/v2/messages/scheduled/scheduled-1') {
         return http.Response('', 204);
       }
-      if (request.url.path == '/v1/scheduled-messages' &&
+      if (request.url.path == '/v2/messages/scheduled' &&
           request.method == 'GET') {
         return _json({
           'data': {
@@ -51,7 +71,7 @@ void main() {
           },
         });
       }
-      if (request.url.path == '/v1/scheduled-messages' &&
+      if (request.url.path == '/v2/messages/scheduled' &&
           request.method == 'POST') {
         final body = jsonDecode(request.body) as Map<String, Object?>;
         return _json({
@@ -64,7 +84,7 @@ void main() {
           },
         });
       }
-      if (request.url.path == '/v1/link-preview') {
+      if (request.url.path == '/v2/link-preview') {
         return _json({
           'data': {
             'url': 'https://example.com/a',
@@ -75,20 +95,29 @@ void main() {
           },
         });
       }
-      if (request.url.path == '/v1/conversations/c1/messages') {
+      if (request.url.path == '/v2/channels/conversations') {
         return _json({
           'data': {
-            'message': {
-              'id': 'message-1',
-              'clientMsgId': 'client-1',
-              'conversationId': 'c1',
-              'senderId': 'me',
-              'type': 'text',
-              'body': {'text': '限时消息'},
-              'createdAt': '2026-08-01T08:00:00Z',
-              'conversationSeq': 7,
-            },
+            'items': [
+              {
+                'conversation': {
+                  'id': 'c1',
+                  'type': 'direct',
+                  'title': 'Friend',
+                  'updatedAt': '2026-08-11T00:00:00Z',
+                },
+                'members': [
+                  {'id': 'me', 'name': '我'},
+                  {'id': 'friend', 'name': 'Friend'},
+                ],
+              },
+            ],
           },
+        });
+      }
+      if (request.url.path == '/v2/im/datasource/conversations') {
+        return _json({
+          'data': {'items': <Object?>[]},
         });
       }
       return http.Response('{}', 404);
@@ -96,9 +125,10 @@ void main() {
     final repository = LiveImRepository(
       client: client,
       apiBaseUrl: 'https://api.example.com',
-      wsUrl: 'wss://api.example.com/ws',
+      wukongGateway: gateway,
     );
 
+    await repository.login('13800138000', '123456');
     await repository.updateConversationPreferences('c1', archived: true);
     await repository.markDelivered('c1', 42);
     final scheduled = await repository.scheduledMessages('c1');
@@ -137,7 +167,7 @@ void main() {
     expect(jsonDecode(deliveredRequest.body), {'seq': 42});
     final createRequest = requests.singleWhere(
       (request) =>
-          request.url.path.endsWith('/scheduled-messages') &&
+          request.url.path == '/v2/messages/scheduled' &&
           request.method == 'POST',
     );
     expect(
@@ -150,7 +180,7 @@ void main() {
     );
     final listRequest = requests.singleWhere(
       (request) =>
-          request.url.path == '/v1/scheduled-messages' &&
+          request.url.path == '/v2/messages/scheduled' &&
           request.method == 'GET',
     );
     expect(listRequest.url.queryParameters['status'], 'pending');
@@ -159,17 +189,22 @@ void main() {
       requests.any(
         (request) =>
             request.method == 'DELETE' &&
-            request.url.path == '/v1/scheduled-messages/scheduled-1',
+            request.url.path == '/v2/messages/scheduled/scheduled-1',
       ),
       isTrue,
     );
-    final sendRequest = requests.singleWhere(
-      (request) => request.url.path == '/v1/conversations/c1/messages',
-    );
+    expect(gateway.sentMessages.single.expireSeconds, greaterThan(3500));
     expect(
-      (jsonDecode(sendRequest.body)
-          as Map<String, Object?>)['expiresInSeconds'],
-      greaterThan(3500),
+      requests,
+      isNot(
+        contains(
+          isA<http.Request>().having(
+            (request) => request.url.path,
+            'path',
+            '/v2/messages/conversations/c1/send',
+          ),
+        ),
+      ),
     );
     await repository.close();
   });
@@ -189,6 +224,31 @@ void main() {
     expect(repository.deliveredSequences, [3, 5]);
 
     repository.emitMessage(sequence: 6, id: 'mine-6', senderId: 'me');
+    final mappedSending = ChatMessage(
+      id: 'wk-client-7',
+      clientMessageId: 'wk-client-7',
+      conversationId: 'c-linyu',
+      senderId: controller.currentUser!.id,
+      senderName: controller.currentUser!.name,
+      text: 'WuKong sending event',
+      sentAt: DateTime.utc(2026, 8, 1, 10, 1),
+      isMine: true,
+      status: MessageStatus.sending,
+    );
+    repository.emit(
+      ImEvent(
+        type: ImEventType.messageCreated,
+        payload: {'message': mappedSending.toJson()},
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      controller
+          .messagesFor('c-linyu')
+          .singleWhere((message) => message.id == 'wk-client-7')
+          .status,
+      MessageStatus.sending,
+    );
     repository.emit(
       const ImEvent(
         type: ImEventType.messageDelivered,
@@ -208,10 +268,65 @@ void main() {
       ),
     );
     await Future<void>.delayed(Duration.zero);
-    final expired = controller.messagesFor('c-linyu').last;
+    final expired = controller
+        .messagesFor('c-linyu')
+        .singleWhere((message) => message.id == 'mine-6');
     expect(expired.status, MessageStatus.expired);
     expect(expired.text, isEmpty);
   });
+
+  test('正在输入状态去重发送、接收展示并在消息到达时清除', () async {
+    final repository = _ReceiptRepository();
+    final controller = AppController(repository);
+    addTearDown(controller.dispose);
+    await controller.loginAsDemo();
+
+    controller.updateTyping('c-linyu', true);
+    controller.updateTyping('c-linyu', true);
+    await Future<void>.delayed(Duration.zero);
+    expect(repository.typingStates, [true]);
+    controller.updateTyping('c-linyu', false);
+    await Future<void>.delayed(Duration.zero);
+    expect(repository.typingStates, [true, false]);
+
+    repository.emit(
+      const ImEvent(
+        type: ImEventType.typing,
+        payload: {'conversationId': 'c-linyu', 'userId': 'u1', 'typing': true},
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.typingLabelFor('c-linyu'), '正在输入…');
+
+    repository.emitMessage(sequence: 8, id: 'typing-finished', senderId: 'u1');
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.typingLabelFor('c-linyu'), isNull);
+  });
+
+  test(
+    'bursty SDK conversation invalidations are coalesced without sync loops',
+    () async {
+      final repository = _ConversationRefreshRepository();
+      final controller = AppController(repository);
+      addTearDown(controller.dispose);
+      await controller.loginAsDemo();
+      repository.conversationLoads = 0;
+      repository.syncCalls = 0;
+
+      for (var index = 0; index < 25; index++) {
+        repository.emit(
+          const ImEvent(
+            type: ImEventType.conversationChanged,
+            payload: <String, Object?>{},
+          ),
+        );
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      expect(repository.conversationLoads, 1);
+      expect(repository.syncCalls, 0);
+    },
+  );
 
   testWidgets('已归档入口和左滑归档恢复适配小屏深色 200% 字体', (tester) async {
     tester.view.physicalSize = const Size(320, 568);
@@ -451,6 +566,7 @@ class _ReceiptRepository extends DemoImRepository {
 
   final eventController = StreamController<ImEvent>.broadcast();
   final deliveredSequences = <int>[];
+  final typingStates = <bool>[];
 
   @override
   Stream<ImEvent> get events => eventController.stream;
@@ -472,6 +588,11 @@ class _ReceiptRepository extends DemoImRepository {
   @override
   Future<void> markDelivered(String conversationId, int sequence) async {
     deliveredSequences.add(sequence);
+  }
+
+  @override
+  Future<void> setTyping(String conversationId, bool typing) async {
+    typingStates.add(typing);
   }
 
   void emit(ImEvent event) => eventController.add(event);
@@ -497,6 +618,37 @@ class _ReceiptRepository extends DemoImRepository {
       },
     ),
   );
+
+  @override
+  Future<void> close() async {
+    await eventController.close();
+    await super.close();
+  }
+}
+
+class _ConversationRefreshRepository extends DemoImRepository {
+  _ConversationRefreshRepository() : super(latency: Duration.zero);
+
+  final eventController = StreamController<ImEvent>.broadcast();
+  int conversationLoads = 0;
+  int syncCalls = 0;
+
+  @override
+  Stream<ImEvent> get events => eventController.stream;
+
+  @override
+  Future<List<Conversation>> conversations() async {
+    conversationLoads++;
+    return super.conversations();
+  }
+
+  @override
+  Future<void> syncNow() async {
+    syncCalls++;
+    await super.syncNow();
+  }
+
+  void emit(ImEvent event) => eventController.add(event);
 
   @override
   Future<void> close() async {

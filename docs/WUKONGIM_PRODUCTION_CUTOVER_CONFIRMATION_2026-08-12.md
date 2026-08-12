@@ -1,0 +1,107 @@
+# WuKongIM 正式切换确认单（2026-08-12）
+
+本文只记录已通过只读检查确认的事实。执行本单中的破坏性步骤前，必须由项目负责人明确确认磁盘方案、维护窗口、旧客户端停用时间和数据清空范围。
+
+## 目标环境
+
+- 服务器：`119.28.190.45`（主机名 `VM-0-16-tencentos`）
+- SSH：已验证 `root` 免密连接可用
+- 当前 Compose 项目：`nexachat-ip`
+- 当前发布目录：`/opt/nexachat/releases/20260810T005210Z`
+- 当前链接：`/opt/nexachat/current` → 上述发布目录
+- 当前 Compose 配置：`/opt/nexachat/current/infra/compose.ip.yaml`
+- 当前环境文件：`/data/linli-im/shared/config.env`
+
+## 当前运行事实
+
+- 旧服务共8个：gateway、web、server、admin、postgres、redis、minio、coturn。
+- 当前没有 WuKongIM、LiveKit、Prometheus 和新版备份指标服务。
+- 根盘：200 GB，总使用约16 GB、可用约184 GB；低于计划规定的1 TB上线门槛。
+- 内存：15 GiB，检查时约1.9 GiB已用、13 GiB可用。
+- 当前旧 Coturn仍监听3478；新链路验收通过后才删除。
+
+## 现有数据与备份
+
+现有持久数据目录：
+
+- PostgreSQL：`/data/linli-im/data/postgres/data`
+- PostgreSQL归档：`/data/linli-im/data/postgres/archive`
+- MinIO：`/data/linli-im/data/minio`
+- Redis：`/data/linli-im/data/redis`
+- Caddy：`/data/linli-im/data/caddy`
+- 历史备份：`/data/linli-im/backups`
+
+最近已发布旧栈备份：`/data/linli-im/backups/20260811T205232Z`。
+
+- `SHA256SUMS`中的 PostgreSQL和2个 MinIO对象全部校验通过。
+- PostgreSQL快照已在临时 PostgreSQL 17容器中真实隔离恢复：35张公共表、24个用户、schema 25、210项约束。
+- 这是旧栈备份，不含 WuKongIM目录；正式切换前必须再生成最终旧栈快照。
+
+本地新栈 schema 45快照也已真实隔离恢复：64张公共表、7张关键表（包含`im_wukong_system_users`）、342项约束。
+
+## 正式切换将清空或替换的对象
+
+确认后才执行：
+
+1. 停止 `nexachat-ip`旧 server、web、admin和coturn；冻结旧客户端写入。
+2. 对当前 PostgreSQL、MinIO和配置生成最终旧栈快照并完成校验与隔离恢复。
+3. 清空并重建业务 PostgreSQL数据基线；不迁移旧账号、好友、群和消息。
+4. 创建全新 WuKongIM数据目录：
+   - `/data/linli-im/data/wukongim/data`
+   - `/data/linli-im/data/wukongim/logs`
+   - `/data/linli-im/data/wukongim/plugins`
+5. 旧 Redis仅作为缓存处理，不作为消息恢复来源。
+6. MinIO旧对象保留在最终备份中；新数据库不引用旧对象。稳定观察期结束前不物理删除备份。
+7. 启动 WuKongIM、LiveKit、Go业务服务、Flutter Web、管理后台和监控。
+8. 完成冒烟后关闭并删除旧 Coturn服务；旧发布目录与最终备份在稳定观察一周后再决定是否删除。
+
+不会在切换时删除：
+
+- `/data/linli-im/backups`中的已发布备份；
+- `/opt/nexachat/releases`中的旧发布目录；
+- `/data/linli-im/shared`中的证书、下载文件和生产配置，除非先生成替代文件并复验。
+
+## 新生产配置缺口
+
+远端现有环境文件尚未包含下列上线必需类别：
+
+- WuKongIM镜像摘要、Manager Token、用户Token密钥、策略密钥、TCP/WSS外部地址；
+- LiveKit API Key、Secret、外部WSS地址；
+- WuKong插件信任公钥和白名单；
+- 正式用户协议、隐私政策URL；
+- 新版备份指标目录和异地备份选择；
+- APNs VoIP凭据（iOS真机来电需要）；Getui变量已存在但仍需真机到达验证。
+
+切换时可自动生成服务内部随机密钥，但正式法律URL、APNs资料、异地备份目标不能由代码推断。
+
+## 已通过的本地门禁
+
+- Go全包测试通过。
+- Flutter静态分析无问题，173项测试全部通过。
+- 2026-08-12候选Android APK已在API 35模拟器安装并启动，Web Release构建通过；Android正式包仍需提供外部`RELEASE_*`签名材料。
+- React后台31项测试、TypeScript检查和生产构建通过。
+- 本地真实全链路产品验收通过，包含系统账号双向策略语义及WuKong运行缓存同步。
+- 固定版本 WuKongIM、Android、Web、macOS Easy SDK协议探针已通过。
+- 本地1000连接/1000 msg/s及5000连接/500 msg/s测试通过；目标机10k/1k正式容量测试尚未执行。
+- LiveKit 10房间×9人真实媒体负载已在本机通过。
+
+## 尚需明确确认
+
+1. 磁盘方案：扩容到至少1 TB，或明确书面豁免计划中的1 TB门槛并接受当前单盘200 GB、非高可用上线。
+2. 维护窗口：开始时间和允许中断时长。
+3. 旧客户端停用时间：切换后立即拒绝旧版本登录。
+4. 数据范围：确认清空旧 PostgreSQL业务数据并不迁移旧账号/好友/群/消息。
+5. Apple条件：提供 iOS真机与 macOS设备/构建环境；缺少时不能宣称四端正式验收完成。
+6. 异地备份：提供目标，或明确首版只保留本机备份。
+
+只有上述项目得到明确回复后，才执行正式生产切换。
+
+## 只读自动预检
+
+在每次准备切换前执行以下命令；它只通过 SSH 读取主机、容器、配置键名和备份，不复制文件、不改配置、不启停服务：
+
+```bash
+make production-cutover-preflight HOST=119.28.190.45
+```
+
+预检会把1 TiB磁盘、生产配置、新版发布文件、24小时内可读备份、当前核心服务和10k/1k正式性能证据列为硬门禁；旧Coturn仍运行、WuKongIM/LiveKit尚未启动等切换前预期状态只显示警告。输出只列缺失键名，不输出任何密钥值。

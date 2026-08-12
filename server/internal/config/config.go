@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/linli/im/server/internal/wukongplugin"
 )
 
 type Config struct {
@@ -19,28 +21,36 @@ type Config struct {
 	APNSVoIPSandbox                                                      bool
 	OTPWebhookURL, OTPWebhookToken                                       string
 	AdminEmail, AdminPasswordHash, AdminTOTPSecret, AdminID, AdminRole   string
-	S3Endpoint, S3PublicEndpoint, S3AccessKey, S3SecretKey, S3Bucket     string
+	S3Endpoint, S3PublicEndpoint, S3AndroidPublicEndpoint                string
+	S3AccessKey, S3SecretKey, S3Bucket                                   string
 	S3Region                                                             string
 	DevOTPCode                                                           string
 	AllowedOrigins                                                       []string
-	RTCSTUNURLs, RTCTURNURLs                                             []string
-	RTCTURNUsername, RTCTURNCredential                                   string
 	S3Secure, S3PublicSecure                                             bool
 	DevMode                                                              bool
 	TrustProxy                                                           bool
 	AdminSharedKeyEnabled                                                bool
 	DevAllowContainerBind                                                bool
 	DevIPTestOnly                                                        bool
-	WSMaxPerUser, WSMaxPerIP, WSMaxConnections                           int
 	DBMaxConns, DBMinConns                                               int
+	WukongInternalRateLimitPerMinute                                     int
 	PushWorkers, PushBatchSize, MessageFanoutBatchSize                   int
 	MediaMaxBytes                                                        int64
 	AccessTTL, RefreshTTL                                                time.Duration
 	CallInviteTTL                                                        time.Duration
+	LiveKitTokenTTL                                                      time.Duration
 	DBMaxConnLifetime, DBMaxConnIdleTime, DBHealthCheckPeriod            time.Duration
 	DBStatementTimeout                                                   time.Duration
-	RuntimeCleanupInterval, SyncRetention, OutboxRetention               time.Duration
+	RuntimeCleanupInterval, OutboxRetention                              time.Duration
 	HTTPLogSuccessSampleRate                                             float64
+	WukongEnabled                                                        bool
+	WukongAPIURL, WukongManagerURL, WukongManagerToken                   string
+	WukongTokenSecret, WukongPolicySecret, WukongGRPCAddr                string
+	WukongTCPURL, WukongWSURL                                            string
+	WukongPluginDir, WukongPluginTrustedKeys, WukongPluginAllowlist      string
+	WukongPluginMaxBytes                                                 int64
+	LiveKitEnabled                                                       bool
+	LiveKitURL, LiveKitAPIURL, LiveKitAPIKey, LiveKitAPISecret           string
 }
 
 func Load() Config {
@@ -53,18 +63,21 @@ func Load() Config {
 		GetuiAppID: os.Getenv("IM_GETUI_APP_ID"), GetuiAppKey: os.Getenv("IM_GETUI_APP_KEY"), GetuiMasterSecret: os.Getenv("IM_GETUI_MASTER_SECRET"),
 		APNSVoIPKeyID: os.Getenv("IM_APNS_VOIP_KEY_ID"), APNSVoIPTeamID: os.Getenv("IM_APNS_VOIP_TEAM_ID"), APNSVoIPBundleID: os.Getenv("IM_APNS_VOIP_BUNDLE_ID"), APNSVoIPKeyFile: os.Getenv("IM_APNS_VOIP_PRIVATE_KEY_FILE"), APNSVoIPSandbox: boolValue("IM_APNS_VOIP_SANDBOX", false),
 		OTPWebhookURL: os.Getenv("IM_OTP_WEBHOOK_URL"), OTPWebhookToken: os.Getenv("IM_OTP_WEBHOOK_TOKEN"),
-		S3Endpoint: os.Getenv("IM_S3_ENDPOINT"), S3PublicEndpoint: os.Getenv("IM_S3_PUBLIC_ENDPOINT"), S3AccessKey: os.Getenv("IM_S3_ACCESS_KEY"), S3SecretKey: os.Getenv("IM_S3_SECRET_KEY"), S3Bucket: value("IM_S3_BUCKET", "nexachat-media"), S3Region: value("IM_S3_REGION", "us-east-1"), S3Secure: boolValue("IM_S3_SECURE", false), S3PublicSecure: boolValue("IM_S3_PUBLIC_SECURE", false),
+		S3Endpoint: os.Getenv("IM_S3_ENDPOINT"), S3PublicEndpoint: os.Getenv("IM_S3_PUBLIC_ENDPOINT"), S3AndroidPublicEndpoint: os.Getenv("IM_S3_ANDROID_PUBLIC_ENDPOINT"), S3AccessKey: os.Getenv("IM_S3_ACCESS_KEY"), S3SecretKey: os.Getenv("IM_S3_SECRET_KEY"), S3Bucket: value("IM_S3_BUCKET", "nexachat-media"), S3Region: value("IM_S3_REGION", "us-east-1"), S3Secure: boolValue("IM_S3_SECURE", false), S3PublicSecure: boolValue("IM_S3_PUBLIC_SECURE", false),
 		DevMode: boolValue("IM_DEV_MODE", false), TrustProxy: boolValue("IM_TRUST_PROXY", false), DevAllowContainerBind: boolValue("IM_DEV_ALLOW_CONTAINER_BIND", false), DevIPTestOnly: boolValue("IM_IP_TEST_ONLY", false), DevOTPCode: os.Getenv("IM_DEV_OTP_CODE"), AllowedOrigins: csv("IM_ALLOWED_ORIGINS"),
-		RTCSTUNURLs: csv("IM_RTC_STUN_URLS"), RTCTURNURLs: csv("IM_RTC_TURN_URLS"), RTCTURNUsername: os.Getenv("IM_RTC_TURN_USERNAME"), RTCTURNCredential: os.Getenv("IM_RTC_TURN_CREDENTIAL"),
-		WSMaxPerUser: intValue("IM_WS_MAX_PER_USER", 5), WSMaxPerIP: intValue("IM_WS_MAX_PER_IP", 20), WSMaxConnections: intValue("IM_WS_MAX_CONNECTIONS", 10000),
 		DBMaxConns: intValue("IM_DB_MAX_CONNS", 20), DBMinConns: intValue("IM_DB_MIN_CONNS", 2),
-		DBMaxConnLifetime: duration("IM_DB_MAX_CONN_LIFETIME", time.Hour), DBMaxConnIdleTime: duration("IM_DB_MAX_CONN_IDLE_TIME", 15*time.Minute), DBHealthCheckPeriod: duration("IM_DB_HEALTH_CHECK_PERIOD", time.Minute), DBStatementTimeout: duration("IM_DB_STATEMENT_TIMEOUT", 15*time.Second),
+		WukongInternalRateLimitPerMinute: intValue("IM_WUKONG_INTERNAL_RATE_LIMIT_PER_MINUTE", 120000),
+		DBMaxConnLifetime:                duration("IM_DB_MAX_CONN_LIFETIME", time.Hour), DBMaxConnIdleTime: duration("IM_DB_MAX_CONN_IDLE_TIME", 15*time.Minute), DBHealthCheckPeriod: duration("IM_DB_HEALTH_CHECK_PERIOD", time.Minute), DBStatementTimeout: duration("IM_DB_STATEMENT_TIMEOUT", 15*time.Second),
 		PushWorkers: intValue("IM_PUSH_WORKERS", 16), PushBatchSize: intValue("IM_PUSH_BATCH_SIZE", 200), MessageFanoutBatchSize: intValue("IM_MESSAGE_FANOUT_BATCH_SIZE", 500),
-		RuntimeCleanupInterval: duration("IM_RUNTIME_CLEANUP_INTERVAL", time.Hour), SyncRetention: duration("IM_SYNC_RETENTION", 30*24*time.Hour), OutboxRetention: duration("IM_OUTBOX_RETENTION", 7*24*time.Hour),
+		RuntimeCleanupInterval: duration("IM_RUNTIME_CLEANUP_INTERVAL", time.Hour), OutboxRetention: duration("IM_OUTBOX_RETENTION", 7*24*time.Hour),
 		HTTPLogSuccessSampleRate: floatValue("IM_HTTP_LOG_SUCCESS_SAMPLE_RATE", 0.01),
 		MediaMaxBytes:            int64Value("IM_MEDIA_MAX_BYTES", 100<<20),
 		AccessTTL:                duration("IM_ACCESS_TTL", 15*time.Minute), RefreshTTL: duration("IM_REFRESH_TTL", 30*24*time.Hour),
 		CallInviteTTL: duration("IM_CALL_INVITE_TTL", 30*time.Second),
+		WukongEnabled: boolValue("IM_WUKONG_ENABLED", false), WukongAPIURL: os.Getenv("IM_WUKONG_API_URL"), WukongManagerURL: os.Getenv("IM_WUKONG_MANAGER_URL"), WukongManagerToken: os.Getenv("IM_WUKONG_MANAGER_TOKEN"),
+		WukongTokenSecret: os.Getenv("IM_WUKONG_TOKEN_SECRET"), WukongPolicySecret: os.Getenv("IM_WUKONG_POLICY_SECRET"), WukongGRPCAddr: value("IM_WUKONG_GRPC_ADDR", ":6970"), WukongTCPURL: os.Getenv("IM_WUKONG_TCP_URL"), WukongWSURL: os.Getenv("IM_WUKONG_WS_URL"),
+		WukongPluginDir: os.Getenv("IM_WUKONG_PLUGIN_DIR"), WukongPluginTrustedKeys: os.Getenv("IM_WUKONG_PLUGIN_TRUSTED_KEYS"), WukongPluginAllowlist: os.Getenv("IM_WUKONG_PLUGIN_ALLOWLIST"), WukongPluginMaxBytes: int64Value("IM_WUKONG_PLUGIN_MAX_BYTES", 64<<20),
+		LiveKitEnabled: boolValue("IM_LIVEKIT_ENABLED", false), LiveKitURL: os.Getenv("IM_LIVEKIT_URL"), LiveKitAPIURL: os.Getenv("IM_LIVEKIT_API_URL"), LiveKitAPIKey: os.Getenv("IM_LIVEKIT_API_KEY"), LiveKitAPISecret: os.Getenv("IM_LIVEKIT_API_SECRET"), LiveKitTokenTTL: duration("IM_LIVEKIT_TOKEN_TTL", 5*time.Minute),
 	}
 }
 
@@ -138,13 +151,6 @@ func (c Config) Validate() error {
 			return errors.New("development mode may bind publicly only for explicit full-mode development containers")
 		}
 	}
-	wsMaxConnections := c.WSMaxConnections
-	if wsMaxConnections == 0 {
-		wsMaxConnections = 10000
-	}
-	if c.WSMaxPerUser < 1 || c.WSMaxPerUser > 20 || c.WSMaxPerIP < 1 || c.WSMaxPerIP > 200 || wsMaxConnections < 1 || wsMaxConnections > 1000000 {
-		return errors.New("invalid WebSocket connection budget")
-	}
 	dbMaxConns, dbMinConns := c.DBMaxConns, c.DBMinConns
 	if dbMaxConns == 0 {
 		dbMaxConns, dbMinConns = 20, 2
@@ -181,37 +187,95 @@ func (c Config) Validate() error {
 	if pushWorkers < 1 || pushWorkers > 128 || pushBatch < 1 || pushBatch > 1000 || fanoutBatch < 10 || fanoutBatch > 5000 {
 		return errors.New("invalid asynchronous worker configuration")
 	}
-	cleanupInterval, syncRetention, outboxRetention := c.RuntimeCleanupInterval, c.SyncRetention, c.OutboxRetention
+	cleanupInterval, outboxRetention := c.RuntimeCleanupInterval, c.OutboxRetention
 	if cleanupInterval == 0 {
 		cleanupInterval = time.Hour
-	}
-	if syncRetention == 0 {
-		syncRetention = 30 * 24 * time.Hour
 	}
 	if outboxRetention == 0 {
 		outboxRetention = 7 * 24 * time.Hour
 	}
-	if cleanupInterval < time.Minute || syncRetention < 24*time.Hour || outboxRetention < time.Hour {
+	if cleanupInterval < time.Minute || outboxRetention < time.Hour {
 		return errors.New("invalid runtime data retention configuration")
 	}
 	if c.HTTPLogSuccessSampleRate < 0 || c.HTTPLogSuccessSampleRate > 1 {
 		return errors.New("IM_HTTP_LOG_SUCCESS_SAMPLE_RATE must be between 0 and 1")
 	}
+	if c.WukongInternalRateLimitPerMinute != 0 && (c.WukongInternalRateLimitPerMinute < 60000 || c.WukongInternalRateLimitPerMinute > 600000) {
+		return errors.New("IM_WUKONG_INTERNAL_RATE_LIMIT_PER_MINUTE must be between 60000 and 600000")
+	}
 	if c.MediaMaxBytes < 1<<20 || c.MediaMaxBytes > 2<<30 {
 		return errors.New("IM_MEDIA_MAX_BYTES must be between 1 MiB and 2 GiB")
+	}
+	if strings.TrimSpace(c.S3AndroidPublicEndpoint) != "" && !c.DevMode {
+		return errors.New("IM_S3_ANDROID_PUBLIC_ENDPOINT is permitted only in development mode")
 	}
 	if c.CallInviteTTL != 0 && (c.CallInviteTTL < 15*time.Second || c.CallInviteTTL > 2*time.Minute) {
 		return errors.New("IM_CALL_INVITE_TTL must be between 15s and 2m")
 	}
-	if c.Mode == "full" && !c.DevMode {
-		if !hasURLPrefix(c.RTCSTUNURLs, "stun:") || (!hasURLPrefix(c.RTCTURNURLs, "turn:") && !hasURLPrefix(c.RTCTURNURLs, "turns:")) {
-			return errors.New("production full mode requires STUN and TURN URLs")
+	if c.Mode == "full" && !c.WukongEnabled {
+		return errors.New("IM_MODE=full requires WuKongIM; the legacy message transport is not deployable")
+	}
+	if c.WukongEnabled {
+		if !isHTTPURL(c.WukongAPIURL) || !isHTTPURL(c.WukongManagerURL) {
+			return errors.New("WuKongIM internal API and manager URLs must use http or https")
 		}
-		if c.RTCTURNUsername == "" || len(c.RTCTURNCredential) < 16 {
-			return errors.New("production full mode requires TURN username and a credential of at least 16 bytes")
+		if len(c.WukongManagerToken) < 24 || len(c.WukongTokenSecret) < 32 || len(c.WukongPolicySecret) < 32 {
+			return errors.New("WuKongIM manager token must contain at least 24 bytes and token and policy secrets at least 32 bytes")
+		}
+		if c.WukongGRPCAddr == "" || !hasAnyPrefix(c.WukongTCPURL, "tcp://", "tls://") || !hasAnyPrefix(c.WukongWSURL, "ws://", "wss://") {
+			return errors.New("WuKongIM requires gRPC, TCP and WebSocket endpoints")
+		}
+		pluginConfigCount := 0
+		for _, value := range []string{c.WukongPluginDir, c.WukongPluginTrustedKeys, c.WukongPluginAllowlist} {
+			if strings.TrimSpace(value) != "" {
+				pluginConfigCount++
+			}
+		}
+		if pluginConfigCount != 0 && pluginConfigCount != 3 {
+			return errors.New("WuKongIM plugin lifecycle requires directory, trusted keys, and an allowlist together")
+		}
+		if pluginConfigCount == 3 {
+			trustedKeys, keyErr := wukongplugin.ParseTrustedKeys(c.WukongPluginTrustedKeys)
+			allowlist, allowErr := wukongplugin.ParseAllowlist(c.WukongPluginAllowlist)
+			if keyErr != nil || allowErr != nil || len(trustedKeys) == 0 || len(allowlist) == 0 {
+				return errors.New("WuKongIM plugin trusted keys and allowlist must be valid and non-empty")
+			}
+		}
+		pluginMaxBytes := c.WukongPluginMaxBytes
+		if pluginMaxBytes == 0 {
+			pluginMaxBytes = 64 << 20
+		}
+		if pluginMaxBytes < 1<<20 || pluginMaxBytes > 512<<20 {
+			return errors.New("IM_WUKONG_PLUGIN_MAX_BYTES must be between 1 MiB and 512 MiB")
+		}
+		if c.Mode == "full" && !c.DevMode && pluginConfigCount != 3 {
+			return errors.New("production WuKongIM requires the signed plugin lifecycle configuration")
 		}
 	}
+	if c.LiveKitEnabled {
+		if !hasAnyPrefix(c.LiveKitURL, "ws://", "wss://") || !isHTTPURL(c.LiveKitAPIURL) || c.LiveKitAPIKey == "" || len(c.LiveKitAPISecret) < 32 {
+			return errors.New("LiveKit requires signal/API URLs, an API key and a secret of at least 32 bytes")
+		}
+		if c.LiveKitTokenTTL < time.Minute || c.LiveKitTokenTTL > 15*time.Minute {
+			return errors.New("IM_LIVEKIT_TOKEN_TTL must be between 1m and 15m")
+		}
+	}
+	if c.Mode == "full" && !c.DevMode && !c.LiveKitEnabled {
+		return errors.New("production full mode requires LiveKit")
+	}
 	return nil
+}
+
+func isHTTPURL(value string) bool { return hasAnyPrefix(value, "http://", "https://") }
+
+func hasAnyPrefix(value string, prefixes ...string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c Config) validateGetui() error {
@@ -243,15 +307,6 @@ func (c Config) validateAPNSVoIP() error {
 		return errors.New("APNs VoIP requires IM_APNS_VOIP_PRIVATE_KEY_FILE")
 	}
 	return nil
-}
-
-func hasURLPrefix(values []string, prefix string) bool {
-	for _, candidate := range values {
-		if strings.HasPrefix(strings.ToLower(candidate), prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 func value(k, d string) string {

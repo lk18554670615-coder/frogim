@@ -24,7 +24,7 @@ The Vite server listens on `http://127.0.0.1:4173` and proxies `/api` to `ADMIN_
 Supported build variables:
 
 ```dotenv
-VITE_ADMIN_API_URL=/api/v1/admin
+VITE_ADMIN_API_URL=/api/v2/admin
 VITE_ALLOW_DEMO=false
 ```
 

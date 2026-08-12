@@ -9,7 +9,6 @@ abstract final class AppConfig {
     'API_BASE_URL',
     defaultValue: '',
   );
-  static const wsUrl = String.fromEnvironment('WS_URL', defaultValue: '');
   static const enableDemo = bool.fromEnvironment(
     'ENABLE_DEMO',
     defaultValue: false,
@@ -28,8 +27,7 @@ abstract final class AppConfig {
   static const termsUrl = String.fromEnvironment('TERMS_URL');
   static const privacyUrl = String.fromEnvironment('PRIVACY_URL');
 
-  static bool get hasLiveBackend =>
-      apiBaseUrl.trim().isNotEmpty && wsUrl.trim().isNotEmpty;
+  static bool get hasLiveBackend => apiBaseUrl.trim().isNotEmpty;
 
   static bool get isReleaseLike =>
       environment == 'production' || environment == 'staging';
@@ -40,7 +38,6 @@ abstract final class AppConfig {
   static void validate() => validateConfiguration(
     environment: environment,
     apiBaseUrl: apiBaseUrl,
-    wsUrl: wsUrl,
     enableDemo: enableDemo,
     mediaMaxBytes: mediaMaxBytes,
     getuiEnabled: getuiEnabled,
@@ -54,7 +51,6 @@ abstract final class AppConfig {
   static void validateConfiguration({
     required String environment,
     required String apiBaseUrl,
-    required String wsUrl,
     required bool enableDemo,
     required int mediaMaxBytes,
     required bool getuiEnabled,
@@ -70,28 +66,20 @@ abstract final class AppConfig {
     }
 
     final hasApi = apiBaseUrl.trim().isNotEmpty;
-    final hasWebSocket = wsUrl.trim().isNotEmpty;
-    if (hasApi != hasWebSocket) {
-      throw StateError('API_BASE_URL and WS_URL must be configured together');
-    }
     if (hasApi && !_validUrl(apiBaseUrl, const {'http', 'https'})) {
       throw StateError('API_BASE_URL must be a valid HTTP(S) URL');
     }
-    if (hasWebSocket && !_validUrl(wsUrl, const {'ws', 'wss'})) {
-      throw StateError('WS_URL must be a valid WS(S) URL');
-    }
 
     final releaseLike = environment == 'production' || environment == 'staging';
-    if (releaseLike && !(hasApi && hasWebSocket)) {
-      throw StateError('$environment builds require API_BASE_URL and WS_URL');
+    if (releaseLike && !hasApi) {
+      throw StateError('$environment builds require API_BASE_URL');
     }
     if (releaseLike && enableDemo) {
       throw StateError('Demo mode is forbidden in $environment builds');
     }
     if (environment == 'production' &&
-        (!_validUrl(apiBaseUrl, const {'https'}) ||
-            !_validUrl(wsUrl, const {'wss'}))) {
-      throw StateError('Production requires HTTPS API and WSS realtime URLs');
+        !_validUrl(apiBaseUrl, const {'https'})) {
+      throw StateError('Production requires an HTTPS API URL');
     }
     if (environment == 'production' &&
         (!_validUrl(termsUrl, const {'https'}) ||

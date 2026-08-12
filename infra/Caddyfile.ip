@@ -16,7 +16,7 @@
 		-Server
 	}
 
-	@backend path /v1/* /api/* /health /ready
+	@backend path /v2/* /api/* /health /ready
 	handle @backend {
 		reverse_proxy {
 			dynamic a server 8080 {
@@ -27,6 +27,17 @@
 			lb_try_interval 250ms
 			header_up X-Request-ID {http.request.uuid}
 		}
+	}
+
+	@wukong_ws path /im /im/*
+	handle @wukong_ws {
+		uri strip_prefix /im
+		reverse_proxy wukongim:5200
+	}
+
+	@livekit_signal path /rtc /rtc/*
+	handle @livekit_signal {
+		reverse_proxy livekit:7880
 	}
 
 	handle_path /downloads/* {

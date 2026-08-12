@@ -21,13 +21,13 @@ RUN apt-get update \
 WORKDIR /workspace
 
 COPY packages/getuiflut packages/getuiflut
+COPY third_party/wukongim/flutter-sdk-1.7.9-patched third_party/wukongim/flutter-sdk-1.7.9-patched
 COPY apps/mobile apps/mobile
 
 WORKDIR /workspace/apps/mobile
 RUN flutter pub get
 
 ARG WEB_API_BASE_URL
-ARG WEB_WS_URL
 ARG WEB_BASE_HREF=/web/
 ARG APP_ENV=production
 ARG ENABLE_DEMO=false
@@ -35,14 +35,12 @@ ARG TERMS_URL
 ARG PRIVACY_URL
 
 RUN test -n "$WEB_API_BASE_URL" \
-    && test -n "$WEB_WS_URL" \
     && { [ "$APP_ENV" != "production" ] || { test -n "$TERMS_URL" && test -n "$PRIVACY_URL"; }; } \
     && flutter build web --release \
       --base-href "$WEB_BASE_HREF" \
       --no-web-resources-cdn \
       --dart-define=APP_ENV="$APP_ENV" \
       --dart-define=API_BASE_URL="$WEB_API_BASE_URL" \
-      --dart-define=WS_URL="$WEB_WS_URL" \
       --dart-define=ENABLE_DEMO="$ENABLE_DEMO" \
       --dart-define=TERMS_URL="$TERMS_URL" \
       --dart-define=PRIVACY_URL="$PRIVACY_URL"

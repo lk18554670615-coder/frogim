@@ -8,29 +8,37 @@ import 'calls/call_screen.dart';
 import 'core/app_controller.dart';
 import 'core/app_config.dart';
 import 'core/app_theme.dart';
+import 'core/client_upgrade.dart';
+import 'core/bundled_licenses.dart';
 import 'core/push_service.dart';
 import 'data/im_repository.dart';
 import 'data/live_repository.dart';
 import 'ui/screens/home_screen.dart';
+import 'ui/screens/client_upgrade_screen.dart';
 import 'ui/screens/login_screen.dart';
 
 void main() {
   AppConfig.validate();
+  registerBundledLicenses();
   runApp(const LinliApp());
 }
 
 class LinliApp extends StatefulWidget {
-  const LinliApp({super.key, this.repository});
+  const LinliApp({super.key, this.repository, this.upgradeService});
   final ImRepository? repository;
+  final ClientUpgradeService? upgradeService;
 
   @override
   State<LinliApp> createState() => _LinliAppState();
 }
 
-class _LinliAppState extends State<LinliApp> {
+class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
   late final AppController controller;
   late final PushCoordinator pushCoordinator;
+  late final ClientUpgradeService upgradeService;
   ThemeMode themeMode = ThemeMode.system;
+  ClientUpgradeDecision? upgradeDecision;
+  String? promptedUpgradeKey;
 
   @override
   void initState() {
@@ -39,10 +47,13 @@ class _LinliAppState extends State<LinliApp> {
       widget.repository ?? ResilientImRepository.fromEnvironment(),
     );
     pushCoordinator = PushCoordinator();
+    upgradeService = widget.upgradeService ?? ClientUpgradeService();
+    WidgetsBinding.instance.addObserver(this);
     controller.addListener(_refreshRoot);
     unawaited(pushCoordinator.initialize(controller));
     unawaited(controller.initialize());
     unawaited(_restoreTheme());
+    unawaited(_checkUpgrade());
   }
 
   void _refreshRoot() {
@@ -51,10 +62,16 @@ class _LinliAppState extends State<LinliApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     controller.removeListener(_refreshRoot);
     unawaited(pushCoordinator.dispose());
     controller.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) unawaited(_checkUpgrade());
   }
 
   @override
@@ -76,19 +93,47 @@ class _LinliAppState extends State<LinliApp> {
       controller: controller.callController,
       child: child ?? const SizedBox.shrink(),
     ),
-    home: AnimatedSwitcher(
-      duration: Duration.zero,
-      child: controller.authenticated
-          ? HomeScreen(
-              key: const ValueKey('home'),
-              controller: controller,
-              onToggleTheme: _toggleTheme,
-            )
-          : controller.initializing
-          ? const _LaunchScreen(key: ValueKey('launch'))
-          : LoginScreen(key: const ValueKey('login'), controller: controller),
-    ),
+    home: upgradeDecision?.forceUpdate == true
+        ? ForcedUpgradeScreen(
+            key: const ValueKey('forced-upgrade'),
+            decision: upgradeDecision!,
+            onRetry: _checkUpgrade,
+          )
+        : AnimatedSwitcher(
+            duration: Duration.zero,
+            child: controller.authenticated
+                ? HomeScreen(
+                    key: const ValueKey('home'),
+                    controller: controller,
+                    onToggleTheme: _toggleTheme,
+                  )
+                : controller.initializing
+                ? const _LaunchScreen(key: ValueKey('launch'))
+                : LoginScreen(
+                    key: const ValueKey('login'),
+                    controller: controller,
+                  ),
+          ),
   );
+
+  Future<void> _checkUpgrade() async {
+    try {
+      final decision = await upgradeService.check();
+      if (!mounted) return;
+      setState(() => upgradeDecision = decision);
+      if (decision?.updateAvailable == true &&
+          decision?.forceUpdate == false &&
+          promptedUpgradeKey != decision!.policyKey) {
+        promptedUpgradeKey = decision.policyKey;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) unawaited(showOptionalUpgradeDialog(context, decision));
+        });
+      }
+    } catch (_) {
+      // A transient version-check failure must not lock out a healthy client.
+      // Foreground resume retries the policy without disturbing IM recovery.
+    }
+  }
 
   Future<void> _restoreTheme() async {
     final saved = (await SharedPreferences.getInstance()).getString(

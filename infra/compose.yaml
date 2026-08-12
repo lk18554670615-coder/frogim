@@ -9,14 +9,13 @@ x-logging: &default-logging
     compress: "true"
 
 services:
-  # Flutter Web 正式构建；浏览器通过宿主机的 REST/WebSocket 地址访问本地服务端。
+  # Flutter Web 正式构建；浏览器通过宿主机的业务 API 与 WuKong WSS 地址访问本地服务。
   web:
     build:
       context: ..
       dockerfile: apps/mobile/Dockerfile.web
       args:
         WEB_API_BASE_URL: http://127.0.0.1:${WEB_PORT:-8090}
-        WEB_WS_URL: ws://127.0.0.1:${WEB_PORT:-8090}/v1/ws
         WEB_BASE_HREF: /
         # 本地容器仍连接真实 API，只允许 HTTP 回环地址；生产 Compose 不覆盖此安全模式。
         APP_ENV: development
@@ -62,8 +61,8 @@ services:
       IM_IP_TEST_ONLY: ${IM_IP_TEST_ONLY:-true}
       IM_TRUST_PROXY: "false"
       # Allow the loopback-hosted Flutter Web and admin frontends to use
-      # browser REST/WebSocket connections in the local stack.
-      IM_ALLOWED_ORIGINS: ${IM_ALLOWED_ORIGINS:-http://127.0.0.1:8090,http://localhost:8090,http://127.0.0.1:8088,http://localhost:8088}
+      # browser REST and WuKong WSS connections in the local stack.
+      IM_ALLOWED_ORIGINS: ${IM_ALLOWED_ORIGINS:-http://127.0.0.1:8090,http://localhost:8090,http://127.0.0.1:8088,http://localhost:8088,http://127.0.0.1:52180,http://localhost:52180,http://127.0.0.1:52181,http://localhost:52181,http://127.0.0.1:52182,http://localhost:52182}
       IM_DEV_OTP_CODE: ${IM_DEV_OTP_CODE:-123456}
       IM_GETUI_APP_ID: ${IM_GETUI_APP_ID:-}
       IM_GETUI_APP_KEY: ${IM_GETUI_APP_KEY:-}
@@ -78,10 +77,6 @@ services:
       IM_S3_SECURE: "false"
       IM_S3_PUBLIC_SECURE: "false"
       IM_CALL_INVITE_TTL: ${IM_CALL_INVITE_TTL:-30s}
-      IM_RTC_STUN_URLS: ${IM_RTC_STUN_URLS:-stun:stun.cloudflare.com:3478}
-      IM_RTC_TURN_URLS: ${IM_RTC_TURN_URLS:-turn:127.0.0.1:3478?transport=udp,turn:127.0.0.1:3478?transport=tcp}
-      IM_RTC_TURN_USERNAME: ${IM_RTC_TURN_USERNAME:-linli-local}
-      IM_RTC_TURN_CREDENTIAL: ${IM_RTC_TURN_CREDENTIAL:-local-turn-password}
     ports:
       - "127.0.0.1:${SERVER_PORT:-8080}:8080"
     depends_on:
@@ -97,41 +92,6 @@ services:
       timeout: 3s
       retries: 12
       start_period: 15s
-    restart: unless-stopped
-    logging: *default-logging
-
-  # 本地音视频中继；真机联调时把 IM_RTC_TURN_URLS 中的地址改为本机局域网 IP。
-  coturn:
-    image: coturn/coturn:4.16.0-r0
-    command:
-      - --log-file=stdout
-      - --fingerprint
-      - --lt-cred-mech
-      - --user=${IM_RTC_TURN_USERNAME:-linli-local}:${IM_RTC_TURN_CREDENTIAL:-local-turn-password}
-      - --realm=linli-im-local
-      - --server-name=linli-im-local-turn
-      - --min-port=49160
-      - --max-port=49200
-      - --stale-nonce=600
-      - --no-multicast-peers
-    ports:
-      - "127.0.0.1:${TURN_PORT:-3478}:3478/tcp"
-      - "127.0.0.1:${TURN_PORT:-3478}:3478/udp"
-      - "127.0.0.1:49160-49200:49160-49200/udp"
-    read_only: true
-    tmpfs:
-      - /tmp
-      - /var/lib/coturn
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE
-    healthcheck:
-      test: ["CMD-SHELL", "turnutils_stunclient 127.0.0.1 >/dev/null 2>&1"]
-      interval: 20s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
     restart: unless-stopped
     logging: *default-logging
 

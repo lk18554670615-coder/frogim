@@ -1,10 +1,11 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:livekit_client/livekit_client.dart';
 
 import '../core/app_theme.dart';
 import '../ui/widgets/linli_widgets.dart';
 import 'call_controller.dart';
+import 'call_media_engine.dart';
 import 'call_models.dart';
 
 class CallUiHost extends StatefulWidget {
@@ -120,19 +121,16 @@ class _VideoStage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final remote = controller.remoteRenderer;
-    final local = controller.localRenderer;
+    final remotes = controller.remoteVideos;
+    final local = controller.localVideoTrack;
     return Stack(
       fit: StackFit.expand,
       children: [
-        if (remote?.srcObject != null)
-          RTCVideoView(
-            remote!,
-            objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-          )
+        if (remotes.isNotEmpty)
+          _RemoteVideoStage(videos: remotes)
         else
           _AudioBackdrop(controller: controller),
-        if (local?.srcObject != null && controller.cameraEnabled)
+        if (local != null && controller.cameraEnabled)
           Positioned(
             top: MediaQuery.paddingOf(context).top + 72,
             right: 18,
@@ -147,15 +145,51 @@ class _VideoStage extends StatelessWidget {
                     BoxShadow(color: Colors.black38, blurRadius: 18),
                   ],
                 ),
-                child: RTCVideoView(
-                  local!,
-                  mirror: true,
-                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                child: VideoTrackRenderer(
+                  local,
+                  mirrorMode: VideoViewMirrorMode.mirror,
+                  fit: VideoViewFit.cover,
                 ),
               ),
             ),
           ),
       ],
+    );
+  }
+}
+
+class _RemoteVideoStage extends StatelessWidget {
+  const _RemoteVideoStage({required this.videos});
+
+  final List<CallRemoteVideo> videos;
+
+  @override
+  Widget build(BuildContext context) {
+    if (videos.length == 1) {
+      return VideoTrackRenderer(videos.first.track, fit: VideoViewFit.cover);
+    }
+    final columns = videos.length <= 4 ? 2 : 3;
+    return GridView.builder(
+      physics: const NeverScrollableScrollPhysics(),
+      padding: EdgeInsets.zero,
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: columns,
+        childAspectRatio: 9 / 16,
+        crossAxisSpacing: 2,
+        mainAxisSpacing: 2,
+      ),
+      itemCount: videos.length,
+      itemBuilder: (context, index) {
+        final video = videos[index];
+        return DecoratedBox(
+          decoration: BoxDecoration(
+            border: video.isActiveSpeaker
+                ? Border.all(color: LinliColors.systemGreen, width: 2)
+                : null,
+          ),
+          child: VideoTrackRenderer(video.track, fit: VideoViewFit.cover),
+        );
+      },
     );
   }
 }
@@ -198,7 +232,10 @@ class _CallHeading extends StatelessWidget {
       CallPhase.incoming => controller.isVideo ? '邀请你视频通话' : '邀请你语音通话',
       CallPhase.outgoing => '正在等待对方接听…',
       CallPhase.connecting => '正在建立安全连接…',
-      CallPhase.active => _duration(controller.elapsed),
+      CallPhase.active =>
+        controller.session?.isGroup == true
+            ? '${controller.participantCount} 人 · ${_duration(controller.elapsed)}'
+            : _duration(controller.elapsed),
       CallPhase.ended => controller.errorMessage ?? '通话结束',
       CallPhase.failed => '通话未接通',
       CallPhase.idle => '',
@@ -386,6 +423,21 @@ class _OngoingActions extends StatelessWidget {
             style: TextButton.styleFrom(foregroundColor: Colors.white),
             icon: const Icon(CupertinoIcons.camera_rotate, size: 19),
             label: const Text('切换摄像头'),
+          ),
+        ],
+        if (controller.supportsScreenShare) ...[
+          const SizedBox(height: 12),
+          TextButton.icon(
+            key: const Key('toggle-screen-share'),
+            onPressed: controller.toggleScreenShare,
+            style: TextButton.styleFrom(foregroundColor: Colors.white),
+            icon: Icon(
+              controller.screenShareEnabled
+                  ? CupertinoIcons.stop_circle
+                  : CupertinoIcons.rectangle_on_rectangle,
+              size: 19,
+            ),
+            label: Text(controller.screenShareEnabled ? '停止共享' : '共享屏幕'),
           ),
         ],
         const SizedBox(height: 30),

@@ -1,7 +1,7 @@
-.PHONY: help mobile mobile-remote admin server test quality docs-check infra-up infra-down infra-status acceptance-local remote-test-validate remote-test-up remote-test-down remote-test-status remote-test-logs production-validate production-config production-deploy production-smoke ip-production-validate ip-production-config ip-production-cert ip-production-deploy backup restore-drill
+.PHONY: help mobile mobile-remote admin server test quality docs-check verify-wukong-server-patch infra-test infra-up infra-up-android-emulator infra-down infra-status acceptance-local wukong-web-probe livekit-media-load remote-test-validate remote-test-up remote-test-down remote-test-status remote-test-logs production-validate production-config production-deploy production-smoke production-cutover-preflight ip-production-validate ip-production-config ip-production-cert ip-production-deploy backup restore-drill
 
 PROD_ENV ?= .env.production
-PROD_COMPOSE = docker compose --env-file $(PROD_ENV) -f infra/compose.production.yaml
+PROD_COMPOSE = docker compose --env-file $(PROD_ENV) -f infra/compose.production.yaml -f infra/compose.wukong.production.yaml
 REMOTE_TEST_ENV ?= .env.remote-test
 REMOTE_TEST_COMPOSE = docker compose --env-file $(REMOTE_TEST_ENV) -f infra/compose.remote-test.yaml
 
@@ -13,22 +13,27 @@ help:
 	@echo "test                   Run all test suites"
 	@echo "quality                Run admin lint/build and all tests"
 	@echo "docs-check             Validate local Markdown links and shell syntax"
+	@echo "infra-test             Verify backup metrics, failure and off-site integrity paths"
 	@echo "infra-up               Start the local full stack"
+	@echo "infra-up-android-emulator  Start local stack with emulator-reachable WuKong TCP"
 	@echo "infra-down             Stop the local full stack without deleting data"
 	@echo "infra-status           Show local container health"
 	@echo "acceptance-local       Exercise full product journeys on local Docker"
+	@echo "wukong-web-probe      Verify real JS SDK WSS events and browser reconnect"
+	@echo "livekit-media-load     Run the opt-in 10-room/9-participant WebRTC media gate"
 	@echo "remote-test-up         Run only local Web/Admin against remote resources"
 	@echo "remote-test-status     Show remote-test frontend container status"
 	@echo "remote-test-logs       Follow remote-test frontend logs"
 	@echo "production-validate    Validate production secrets and configuration"
 	@echo "production-config      Render and validate production Compose"
 	@echo "production-deploy      Build, deploy and smoke-test production"
+	@echo "production-cutover-preflight  Read-only audit of the target server"
 	@echo "ip-production-cert     Issue/renew the short-lived IP TLS certificate"
 	@echo "ip-production-deploy   Build, deploy and smoke-test IP production"
-	@echo "backup                 Back up PostgreSQL and object storage"
+	@echo "backup                 Back up PostgreSQL, WuKongIM and object storage"
 
 mobile:
-	cd apps/mobile && flutter run
+	cd apps/mobile && fvm flutter run
 
 mobile-remote:
 	REMOTE_TEST_ENV=$(REMOTE_TEST_ENV) infra/scripts/run-mobile-remote.sh
@@ -41,29 +46,46 @@ server:
 
 test:
 	cd server && go test ./...
-	cd apps/mobile && flutter test
+	cd apps/mobile && fvm flutter test
 	cd apps/admin && npm test
 
 quality:
 	cd apps/admin && npm run lint && npm test && npm run build
 	cd server && go test ./...
-	cd apps/mobile && flutter analyze && flutter test
+	cd apps/mobile && fvm flutter analyze && fvm flutter test
 
 docs-check:
 	infra/scripts/check-docs.sh
+	bash infra/scripts/verify-wukong-flutter-patch.sh
 	bash -n infra/scripts/*.sh
 
+verify-wukong-server-patch:
+	bash infra/scripts/verify-wukong-server-patch.sh
+
+infra-test:
+	bash infra/scripts/test-backup-metrics.sh
+	bash infra/scripts/test-offsite-backup.sh
+
 infra-up:
-	docker compose -f infra/compose.yaml up -d --build
+	docker compose -f infra/compose.yaml -f infra/compose.wukong.yaml up -d --build
+
+infra-up-android-emulator:
+	docker compose -f infra/compose.yaml -f infra/compose.wukong.yaml -f infra/compose.android-emulator.yaml up -d --build
 
 infra-down:
-	docker compose -f infra/compose.yaml down
+	docker compose -f infra/compose.yaml -f infra/compose.wukong.yaml down
 
 infra-status:
-	docker compose -f infra/compose.yaml ps
+	docker compose -f infra/compose.yaml -f infra/compose.wukong.yaml ps
 
 acceptance-local:
 	infra/scripts/acceptance-local.sh
+
+wukong-web-probe:
+	node tools/wukong-web-probe.mjs $(WEB_PROBE_ARGS)
+
+livekit-media-load:
+	infra/scripts/livekit-load-test.sh
 
 remote-test-validate:
 	infra/scripts/validate-remote-test-env.sh $(REMOTE_TEST_ENV)
@@ -94,11 +116,15 @@ production-deploy:
 production-smoke:
 	infra/scripts/smoke.sh $(PROD_ENV)
 
+production-cutover-preflight:
+	@test -n "$(HOST)" || (echo "usage: make production-cutover-preflight HOST=119.28.190.45" >&2; exit 2)
+	infra/scripts/production-cutover-preflight.sh $(HOST)
+
 ip-production-validate:
 	infra/scripts/validate-production-env.sh $${IP_PROD_ENV:-.env.ip.production}
 
 ip-production-config: ip-production-validate
-	docker compose --env-file $${IP_PROD_ENV:-.env.ip.production} -f infra/compose.ip.yaml -f infra/compose.ip.production.yaml config -q
+	docker compose --env-file $${IP_PROD_ENV:-.env.ip.production} -f infra/compose.ip.yaml -f infra/compose.ip.production.yaml -f infra/compose.wukong.production.yaml config -q
 
 ip-production-cert: ip-production-validate
 	infra/scripts/issue-ip-certificate.sh $${IP_PROD_ENV:-.env.ip.production}
@@ -110,5 +136,5 @@ backup:
 	infra/scripts/backup.sh $(PROD_ENV)
 
 restore-drill:
-	@test -n "$(BACKUP)" || (echo "usage: make restore-drill BACKUP=/absolute/path/postgres.dump" >&2; exit 2)
+	@test -n "$(BACKUP)" || (echo "usage: make restore-drill BACKUP=/absolute/path/published-backup-directory" >&2; exit 2)
 	infra/scripts/restore-drill.sh $(BACKUP)

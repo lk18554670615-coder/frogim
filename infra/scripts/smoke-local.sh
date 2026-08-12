@@ -8,7 +8,7 @@ curl --fail --silent --show-error --retry 8 --retry-delay 2 "$SERVER_URL/ready" 
 curl --fail --silent --show-error --retry 8 --retry-delay 2 "$ADMIN_URL/healthz" >/dev/null
 curl --fail --silent --show-error -D - "$ADMIN_URL/" -o /dev/null | grep -qi '^content-security-policy:'
 
-status="$(curl --silent --output /dev/null --write-out '%{http_code}' "$SERVER_URL/api/v1/admin/dashboard")"
+status="$(curl --silent --output /dev/null --write-out '%{http_code}' "$SERVER_URL/api/v2/admin/dashboard")"
 if [[ "$status" != "401" ]]; then
   echo "expected unauthenticated admin API to return 401, got $status" >&2
   exit 1

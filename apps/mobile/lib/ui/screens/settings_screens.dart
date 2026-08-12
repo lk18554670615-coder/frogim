@@ -807,6 +807,7 @@ class DevicesScreen extends StatefulWidget {
 
 class _DevicesScreenState extends State<DevicesScreen> {
   List<UserDevice>? devices;
+  List<ImDeviceSession>? imSessions;
 
   @override
   void initState() {
@@ -815,14 +816,22 @@ class _DevicesScreenState extends State<DevicesScreen> {
   }
 
   Future<void> _load() async {
-    final loaded = await widget.controller.loadUserDevices();
-    if (mounted) setState(() => devices = loaded);
+    final results = await Future.wait<Object>([
+      widget.controller.loadImDeviceSessions(),
+      widget.controller.loadUserDevices(),
+    ]);
+    if (mounted) {
+      setState(() {
+        imSessions = results[0] as List<ImDeviceSession>;
+        devices = results[1] as List<UserDevice>;
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: const GlassAppBar(title: Text('登录设备')),
-    body: devices == null
+    body: devices == null || imSessions == null
         ? const Center(child: CupertinoActivityIndicator())
         : RefreshIndicator(
             onRefresh: _load,
@@ -830,26 +839,47 @@ class _DevicesScreenState extends State<DevicesScreen> {
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
               children: [
-                const _PageIntro('设备列表来自服务端，不展示推送令牌。移除后，该设备需要重新完成登录。'),
+                const _PageIntro('登录会话按 App、Web 和桌面端分别管理；推送设备只控制通知投递。'),
                 const SectionHeader('登录会话'),
-                if (devices!.isEmpty)
+                if (imSessions!.isEmpty)
                   const StatePanel(
                     icon: CupertinoIcons.device_phone_portrait,
-                    title: '暂无已注册设备',
-                    body: '当前登录尚未注册推送设备，完成 APNs 或 FCM 注册后会显示。',
+                    title: '暂无 IM 登录会话',
+                    body: '完成 App、Web 或桌面端登录后会显示。',
+                  )
+                else
+                  SectionCard(
+                    children: imSessions!
+                        .map(
+                          (session) => _SettingsRow(
+                            icon: _imDeviceIcon(session.deviceFlag),
+                            title: _imDeviceName(session.deviceFlag),
+                            subtitle:
+                                '${session.isOnline ? '${session.connectionCount} 个连接在线' : '当前离线'} · ${_dateText(session.updatedAt)}',
+                            status: '下线',
+                            destructive: true,
+                            onTap: () => _confirmQuitSession(session),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                const SectionHeader('推送设备'),
+                if (devices!.isEmpty)
+                  const StatePanel(
+                    icon: CupertinoIcons.bell_slash,
+                    title: '暂无推送设备',
+                    body: '完成 APNs、FCM 或其他推送注册后会显示。',
                   )
                 else
                   SectionCard(
                     children: devices!
                         .map(
                           (device) => _SettingsRow(
-                            icon: device.platform == 'ios'
-                                ? CupertinoIcons.device_phone_portrait
-                                : CupertinoIcons.device_phone_portrait,
+                            icon: CupertinoIcons.bell,
                             title: _platformName(device.platform),
                             subtitle:
                                 '${device.provider.toUpperCase()} · ${_dateText(device.updatedAt)}',
-                            status: '移除',
+                            status: '停止通知',
                             destructive: true,
                             onTap: () => _confirmRemove(device),
                           ),
@@ -865,8 +895,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
     final remove = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('退出这台设备？'),
-        content: Text('${_platformName(device.platform)} 将从设备列表移除。'),
+        title: const Text('停止这台设备的通知？'),
+        content: Text('${_platformName(device.platform)} 将不再接收推送通知，不影响登录会话。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
@@ -874,13 +904,38 @@ class _DevicesScreenState extends State<DevicesScreen> {
           ),
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('移除设备'),
+            child: const Text('停止通知'),
           ),
         ],
       ),
     );
     if (remove != true) return;
     final success = await widget.controller.removeUserDevice(device.id);
+    if (success) await _load();
+  }
+
+  Future<void> _confirmQuitSession(ImDeviceSession session) async {
+    final quit = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('下线${_imDeviceName(session.deviceFlag)}？'),
+        content: const Text('该平台当前的 WuKongIM 连接会立即断开，下次使用时需要重新连接。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('确认下线'),
+          ),
+        ],
+      ),
+    );
+    if (quit != true) return;
+    final success = await widget.controller.quitImDeviceSession(
+      session.deviceFlag,
+    );
     if (success) await _load();
   }
 }
@@ -2058,6 +2113,20 @@ String _platformName(String platform) => switch (platform.toLowerCase()) {
   'macos' => 'Mac',
   'windows' => 'Windows 设备',
   _ => '登录设备',
+};
+
+String _imDeviceName(int deviceFlag) => switch (deviceFlag) {
+  0 => 'App（Android / iOS）',
+  1 => 'Web',
+  2 => '桌面端（macOS）',
+  _ => '未知平台',
+};
+
+IconData _imDeviceIcon(int deviceFlag) => switch (deviceFlag) {
+  0 => CupertinoIcons.device_phone_portrait,
+  1 => CupertinoIcons.globe,
+  2 => CupertinoIcons.desktopcomputer,
+  _ => CupertinoIcons.device_phone_portrait,
 };
 
 String _dateText(DateTime time) =>

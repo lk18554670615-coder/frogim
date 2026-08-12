@@ -488,6 +488,66 @@ void main() {
     expect(find.text('删除'), findsOneWidget);
   });
 
+  testWidgets('直播频道显示并发送结构化直播互动', (tester) async {
+    tester.view.physicalSize = const Size(375, 812);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+    final live = Conversation(
+      id: 'live-channel-1',
+      channelId: 'live-channel-1',
+      channelType: 9,
+      title: '社区直播间',
+      subtitle: '正在直播',
+      updatedAt: DateTime.now(),
+      kind: ConversationKind.group,
+      members: controller.contacts.take(2).toList(),
+    );
+    controller.conversations.add(live);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: ChatScreen(controller: controller, conversation: live),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('send-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('直播互动'), findsOneWidget);
+
+    await tester.tap(find.text('直播互动'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('live-event-live.like')));
+    await tester.pumpAndSettle();
+
+    final sent = controller.messagesFor(live.id).last;
+    expect(sent.kind, MessageContentKind.liveEvent);
+    expect(sent.event, 'live.like');
+    expect(
+      find.byKey(Key('live-event-${sent.clientMessageId}')),
+      findsOneWidget,
+    );
+  });
+
+  test('普通会话不能发送直播互动', () async {
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    await controller.loginAsDemo();
+    addTearDown(controller.dispose);
+
+    expect(
+      () => controller.sendLiveEvent(
+        'c-linyu',
+        event: 'live.like',
+        label: '❤️ 点赞了直播',
+      ),
+      throwsFormatException,
+    );
+  });
+
   testWidgets('群主可从群资料页修改群头像', (tester) async {
     tester.view.physicalSize = const Size(375, 812);
     tester.view.devicePixelRatio = 1;

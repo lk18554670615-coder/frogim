@@ -250,6 +250,16 @@ class DemoImRepository implements ImRepository {
   ];
 
   @override
+  Future<List<ImDeviceSession>> imDeviceSessions() async => [
+    ImDeviceSession(
+      deviceFlag: 1,
+      deviceLevel: 1,
+      connectionCount: 1,
+      updatedAt: DateTime.now(),
+    ),
+  ];
+
+  @override
   Future<void> registerDevice({
     required String deviceId,
     required String platform,
@@ -263,6 +273,9 @@ class DemoImRepository implements ImRepository {
 
   @override
   Future<void> removeUserDevice(String deviceId) async {}
+
+  @override
+  Future<void> quitImDeviceSession(int deviceFlag) async {}
 
   @override
   Future<List<ChatMessage>> favorites() async {
@@ -502,7 +515,7 @@ class DemoImRepository implements ImRepository {
           ? old.avatarUrl
           : avatarMediaId.isEmpty
           ? null
-          : '/v1/media/$avatarMediaId',
+          : '/v2/media/$avatarMediaId',
       announcement: old.announcement,
       announcementVersion: old.announcementVersion,
       announcementReadAt: old.announcementReadAt,
@@ -1025,6 +1038,11 @@ class DemoImRepository implements ImRepository {
 
   @override
   Future<void> markDelivered(String conversationId, int sequence) async {
+    await Future<void>.delayed(latency);
+  }
+
+  @override
+  Future<void> setTyping(String conversationId, bool typing) async {
     await Future<void>.delayed(latency);
   }
 

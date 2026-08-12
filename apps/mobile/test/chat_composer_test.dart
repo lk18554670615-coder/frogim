@@ -95,6 +95,27 @@ void main() {
     expect(sends, 1);
   });
 
+  testWidgets(
+    'composer reports typing only while focused with non-empty text',
+    (tester) async {
+      final controller = TextEditingController();
+      addTearDown(controller.dispose);
+      final states = <bool>[];
+      await tester.pumpWidget(
+        _composer(controller: controller, onTypingChanged: states.add),
+      );
+
+      await tester.tap(find.byKey(const Key('message-input')));
+      await tester.enterText(find.byKey(const Key('message-input')), '正在输入');
+      await tester.pump();
+      expect(states, contains(true));
+
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pump();
+      expect(states.last, isFalse);
+    },
+  );
+
   testWidgets('composer panels remain usable on a narrow 200% text layout', (
     tester,
   ) async {
@@ -128,6 +149,7 @@ void main() {
 Widget _composer({
   required TextEditingController controller,
   VoidCallback? onSend,
+  ValueChanged<bool>? onTypingChanged,
   bool showEmoji = false,
   bool showAttachments = false,
   TextScaler textScaler = TextScaler.noScaling,
@@ -142,6 +164,7 @@ Widget _composer({
           showEmoji: showEmoji,
           showAttachments: showAttachments,
           onSend: onSend ?? () {},
+          onTypingChanged: onTypingChanged,
           onToggleAttachments: () {},
           onToggleEmoji: () {},
           onAttachment: (_) {},

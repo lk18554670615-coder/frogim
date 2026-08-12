@@ -18,6 +18,7 @@ import (
 
 	"github.com/linli/im/server/internal/model"
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/wukong"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -57,8 +58,8 @@ func validHandle(handle string) bool {
 var httpDurationBuckets = [...]time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 25 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second, 5 * time.Second}
 
 type Metrics struct {
-	Requests, Messages, WSConnections, Errors  atomic.Int64
-	HTTPInFlight, WSDroppedEvents              atomic.Int64
+	Requests, Messages, Errors                 atomic.Int64
+	HTTPInFlight                               atomic.Int64
 	FanoutRecipients, RetentionDeleted         atomic.Int64
 	HTTPDurationNanoseconds, HTTPDurationCount atomic.Int64
 	HTTPDurationBuckets                        [len(httpDurationBuckets)]atomic.Int64
@@ -87,23 +88,62 @@ func HTTPDurationBuckets() []time.Duration {
 
 type EventSink func(userIDs []string, typ string, payload any)
 
+type businessEvent struct {
+	UserID  string
+	Type    string
+	Payload map[string]any
+}
+
+type MessageTransportRequest struct {
+	UserID, ConversationID, ClientMsgID, Type, ReplyToID string
+	Body                                                 map[string]any
+	Mentions                                             []string
+	MentionAll                                           bool
+	ExpiresInSeconds                                     int64
+}
+
+type MessageTransportResult struct {
+	MessageID   string
+	MessageSeq  int64
+	ClientMsgID string
+	Duplicate   bool
+	CreatedAt   time.Time
+}
+
+type MessageTransport func(context.Context, MessageTransportRequest) (MessageTransportResult, error)
+type MessageSourceLoader func(context.Context, string, []string) ([]*model.Message, error)
+type MessageSearchLoader func(context.Context, string, string, string, int64, int) ([]*model.Message, error)
+type MessageHistoryLoader func(context.Context, string, string, int64, int) ([]*model.Message, error)
+type ReadStateTransport func(context.Context, string, string, int64) (int64, error)
+
 type App struct {
-	mu                sync.RWMutex
-	state             *model.State
-	persistence       store.Persistence
-	emitMu            sync.RWMutex
-	emit              EventSink
-	Metrics           Metrics
-	refreshSessions   map[string]refreshSession
-	passwordHashes    map[string]string
-	callMu            sync.Mutex
-	calls             map[string]*model.CallSession
-	announcements     map[string]*model.Announcement
-	announcementReads map[string]map[string]time.Time
-	callInviteTTL     time.Duration
-	friendMetadata    map[string]store.FriendMetadata
-	policyRefreshing  atomic.Bool
-	policyLoadedAt    atomic.Int64
+	mu                 sync.RWMutex
+	state              *model.State
+	persistence        store.Persistence
+	emitMu             sync.RWMutex
+	emit               EventSink
+	messageTransportMu sync.RWMutex
+	messageTransport   MessageTransport
+	messageSourceMu    sync.RWMutex
+	messageSource      MessageSourceLoader
+	messageSearchMu    sync.RWMutex
+	messageSearch      MessageSearchLoader
+	messageHistoryMu   sync.RWMutex
+	messageHistory     MessageHistoryLoader
+	readStateMu        sync.RWMutex
+	readState          ReadStateTransport
+	Metrics            Metrics
+	refreshSessions    map[string]refreshSession
+	passwordHashes     map[string]string
+	callMu             sync.Mutex
+	calls              map[string]*model.CallSession
+	announcements      map[string]*model.Announcement
+	announcementReads  map[string]map[string]time.Time
+	callInviteTTL      time.Duration
+	friendMetadata     map[string]store.FriendMetadata
+	mediaBindings      map[string][]store.MediaChannelBinding
+	policyRefreshing   atomic.Bool
+	policyLoadedAt     atomic.Int64
 }
 type refreshSession struct {
 	UserID    string
@@ -121,7 +161,7 @@ func New(ctx context.Context, p store.Persistence) (*App, error) {
 		}
 		s = loaded
 	}
-	a := &App{state: s, persistence: p, refreshSessions: map[string]refreshSession{}, passwordHashes: map[string]string{}, calls: map[string]*model.CallSession{}, announcements: map[string]*model.Announcement{}, announcementReads: map[string]map[string]time.Time{}, callInviteTTL: 30 * time.Second, friendMetadata: map[string]store.FriendMetadata{}}
+	a := &App{state: s, persistence: p, refreshSessions: map[string]refreshSession{}, passwordHashes: map[string]string{}, calls: map[string]*model.CallSession{}, announcements: map[string]*model.Announcement{}, announcementReads: map[string]map[string]time.Time{}, callInviteTTL: 30 * time.Second, friendMetadata: map[string]store.FriendMetadata{}, mediaBindings: map[string][]store.MediaChannelBinding{}}
 	a.ensureMaps()
 	a.refreshPolicySettings(true)
 	return a, nil
@@ -132,6 +172,69 @@ func (a *App) SetEventSink(s EventSink) {
 	a.emit = s
 	a.emitMu.Unlock()
 }
+
+// SetMessageTransport replaces the legacy PostgreSQL message writer for
+// server-originated sends. It is installed only when WuKongIM is enabled, so
+// the in-memory implementation remains usable by isolated domain tests.
+func (a *App) SetMessageTransport(transport MessageTransport) {
+	a.messageTransportMu.Lock()
+	a.messageTransport = transport
+	a.messageTransportMu.Unlock()
+}
+
+func (a *App) currentMessageTransport() MessageTransport {
+	a.messageTransportMu.RLock()
+	defer a.messageTransportMu.RUnlock()
+	return a.messageTransport
+}
+
+func (a *App) SetMessageSourceLoader(loader MessageSourceLoader) {
+	a.messageSourceMu.Lock()
+	a.messageSource = loader
+	a.messageSourceMu.Unlock()
+}
+
+func (a *App) currentMessageSourceLoader() MessageSourceLoader {
+	a.messageSourceMu.RLock()
+	defer a.messageSourceMu.RUnlock()
+	return a.messageSource
+}
+
+func (a *App) SetMessageSearchLoader(loader MessageSearchLoader) {
+	a.messageSearchMu.Lock()
+	a.messageSearch = loader
+	a.messageSearchMu.Unlock()
+}
+
+func (a *App) currentMessageSearchLoader() MessageSearchLoader {
+	a.messageSearchMu.RLock()
+	defer a.messageSearchMu.RUnlock()
+	return a.messageSearch
+}
+
+func (a *App) SetMessageHistoryLoader(loader MessageHistoryLoader) {
+	a.messageHistoryMu.Lock()
+	a.messageHistory = loader
+	a.messageHistoryMu.Unlock()
+}
+
+func (a *App) currentMessageHistoryLoader() MessageHistoryLoader {
+	a.messageHistoryMu.RLock()
+	defer a.messageHistoryMu.RUnlock()
+	return a.messageHistory
+}
+
+func (a *App) SetReadStateTransport(transport ReadStateTransport) {
+	a.readStateMu.Lock()
+	a.readState = transport
+	a.readStateMu.Unlock()
+}
+
+func (a *App) currentReadStateTransport() ReadStateTransport {
+	a.readStateMu.RLock()
+	defer a.readStateMu.RUnlock()
+	return a.readState
+}
 func (a *App) SetCallInviteTTL(ttl time.Duration) {
 	if ttl >= 15*time.Second && ttl <= 2*time.Minute {
 		a.callInviteTTL = ttl
@@ -139,6 +242,479 @@ func (a *App) SetCallInviteTTL(ttl time.Duration) {
 }
 func (a *App) Ready(ctx context.Context) error { return a.persistence.Ping(ctx) }
 func (a *App) Close()                          { a.persistence.Close() }
+
+func (a *App) WukongCredentialProvisioned(ctx context.Context, uid string, deviceFlag, deviceLevel int, tokenDigest string) (bool, error) {
+	if credentials, ok := a.persistence.(wukong.CredentialProvisionStore); ok {
+		return credentials.WukongCredentialProvisioned(ctx, uid, deviceFlag, deviceLevel, tokenDigest)
+	}
+	return false, nil
+}
+
+func (a *App) MarkWukongCredentialProvisioned(ctx context.Context, uid string, deviceFlag, deviceLevel int, tokenDigest string) error {
+	if credentials, ok := a.persistence.(wukong.CredentialProvisionStore); ok {
+		return credentials.MarkWukongCredentialProvisioned(ctx, uid, deviceFlag, deviceLevel, tokenDigest)
+	}
+	return nil
+}
+
+func (a *App) InvalidateWukongCredential(ctx context.Context, uid string, deviceFlag int) error {
+	if credentials, ok := a.persistence.(wukong.CredentialProvisionStore); ok {
+		return credentials.InvalidateWukongCredential(ctx, uid, deviceFlag)
+	}
+	return nil
+}
+
+// InternalConversationMemberIDs exposes the authoritative membership list to
+// trusted infrastructure adapters without weakening the public membership
+// authorization checks.
+func (a *App) InternalConversationMemberIDs(ctx context.Context, conversationID string) ([]string, error) {
+	if query, ok := a.persistence.(store.QueryStore); ok {
+		return query.ConversationMemberIDs(ctx, conversationID)
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.state.Conversations[conversationID] == nil {
+		return nil, ErrNotFound
+	}
+	return memberIDs(a.state.Members[conversationID]), nil
+}
+
+func (a *App) InternalWukongChannelSnapshot(ctx context.Context, channelID string, channelType uint8) (wukong.ChannelSnapshot, error) {
+	if snapshots, ok := a.persistence.(wukong.ChannelSnapshotStore); ok {
+		item, err := snapshots.LoadWukongChannelSnapshot(ctx, channelID, channelType)
+		return item, mapStoreError(err)
+	}
+	return wukong.ChannelSnapshot{}, ErrNotFound
+}
+
+func (a *App) InternalWukongSystemUIDs(ctx context.Context) ([]string, error) {
+	if users, ok := a.persistence.(store.WukongSystemUserStore); ok {
+		return users.WukongSystemUIDs(ctx)
+	}
+	return []string{}, nil
+}
+
+func (a *App) WukongSystemUsers(ctx context.Context) ([]*store.WukongSystemUser, error) {
+	if users, ok := a.persistence.(store.WukongSystemUserStore); ok {
+		return users.ListWukongSystemUsers(ctx)
+	}
+	return nil, store.ErrUnsupported
+}
+
+func (a *App) SetWukongSystemUser(ctx context.Context, userID string, enabled bool, actorID, reason string, at time.Time) (*store.WukongSystemUser, error) {
+	if users, ok := a.persistence.(store.WukongSystemUserStore); ok {
+		item, err := users.SetWukongSystemUser(ctx, userID, enabled, actorID, reason, at)
+		return item, mapStoreError(err)
+	}
+	return nil, store.ErrUnsupported
+}
+
+// AuthorizeWukongMessage resolves the business conversation to the canonical
+// WuKongIM channel while applying the same membership, mute, block, mention,
+// sensitive-word and reply policy used by the legacy normalized writer.
+func (a *App) AuthorizeWukongMessage(ctx context.Context, request MessageTransportRequest) (store.WukongMessageRoute, error) {
+	text, _ := request.Body["text"].(string)
+	input := store.WukongMessageRouteInput{
+		UserID: request.UserID, ConversationID: request.ConversationID,
+		Type: request.Type, ReplyToID: request.ReplyToID, Text: text,
+		Mentions: request.Mentions, MentionAll: request.MentionAll,
+	}
+	if routes, ok := a.persistence.(store.WukongMessageRouteStore); ok {
+		return routes.AuthorizeWukongMessage(ctx, input)
+	}
+
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	conversation := a.state.Conversations[input.ConversationID]
+	membership := a.state.Members[input.ConversationID][input.UserID]
+	user := a.state.Users[input.UserID]
+	if membership == nil || user == nil || user.Banned || (membership.MutedUntil != nil && membership.MutedUntil.After(time.Now())) {
+		return store.WukongMessageRoute{}, store.ErrForbidden
+	}
+	if conversation == nil {
+		return store.WukongMessageRoute{}, store.ErrNotFound
+	}
+	if len(input.Mentions) > 0 || input.MentionAll {
+		if input.Type != "text" || conversation.Type != "group" || (input.MentionAll && membership.Role != "owner" && membership.Role != "admin") {
+			return store.WukongMessageRoute{}, store.ErrForbidden
+		}
+		for _, mentionedID := range input.Mentions {
+			if a.state.Members[input.ConversationID][mentionedID] == nil {
+				return store.WukongMessageRoute{}, store.ErrForbidden
+			}
+		}
+	}
+	if input.ReplyToID != "" {
+		replied := a.state.MessageByID[input.ReplyToID]
+		if replied == nil || replied.ConversationID != input.ConversationID {
+			return store.WukongMessageRoute{}, store.ErrConflict
+		}
+	}
+	if conversation.Type == "group" {
+		return store.WukongMessageRoute{ChannelID: conversation.ID, ChannelType: wukong.ChannelGroup}, nil
+	}
+	if conversation.Type != "direct" {
+		return store.WukongMessageRoute{}, store.ErrUnsupported
+	}
+	otherID := ""
+	for memberID := range a.state.Members[input.ConversationID] {
+		if memberID == input.UserID {
+			continue
+		}
+		if otherID != "" || a.blockedLocked(input.UserID, memberID) {
+			return store.WukongMessageRoute{}, store.ErrForbidden
+		}
+		otherID = memberID
+	}
+	if otherID == "" {
+		return store.WukongMessageRoute{}, store.ErrForbidden
+	}
+	if !a.state.Friends[input.UserID][otherID] {
+		return store.WukongMessageRoute{}, store.ErrForbidden
+	}
+	return store.WukongMessageRoute{ChannelID: otherID, ChannelType: wukong.ChannelPerson}, nil
+}
+
+// AuthorizeWukongClientMessage applies business policy to the exact channel
+// tuple received by the WuKongIM Send plugin. The returned route must match the
+// input tuple so a client cannot authorize one conversation and send to another.
+func (a *App) AuthorizeWukongClientMessage(ctx context.Context, input store.WukongClientMessageInput) (store.WukongMessageRoute, error) {
+	if systemUsers, ok := a.persistence.(store.WukongSystemUserStore); ok {
+		systemSender, err := systemUsers.IsWukongSystemUser(ctx, input.UserID)
+		if err != nil {
+			return store.WukongMessageRoute{}, mapStoreError(err)
+		}
+		systemRecipient := false
+		if !systemSender && input.ChannelType == wukong.ChannelPerson {
+			systemRecipient, err = systemUsers.IsWukongSystemUser(ctx, input.ChannelID)
+			if err != nil {
+				return store.WukongMessageRoute{}, mapStoreError(err)
+			}
+		}
+		if systemSender || systemRecipient {
+			if strings.TrimSpace(input.ChannelID) == "" || !wukong.SupportedChannelType(input.ChannelType) {
+				return store.WukongMessageRoute{}, ErrForbidden
+			}
+			return store.WukongMessageRoute{ChannelID: input.ChannelID, ChannelType: input.ChannelType}, nil
+		}
+	}
+	if policy, ok := a.persistence.(store.WukongClientMessagePolicyStore); ok {
+		route, err := policy.AuthorizeWukongClientMessage(ctx, input)
+		return route, mapStoreError(err)
+	}
+	if input.ChannelType != wukong.ChannelPerson && input.ChannelType != wukong.ChannelGroup {
+		return store.WukongMessageRoute{}, ErrForbidden
+	}
+	a.mu.RLock()
+	conversationID := ""
+	if input.ChannelType == wukong.ChannelGroup {
+		conversationID = input.ChannelID
+	} else {
+		for id, conversation := range a.state.Conversations {
+			if conversation == nil || conversation.Type != "direct" || len(a.state.Members[id]) != 2 {
+				continue
+			}
+			if a.state.Members[id][input.UserID] != nil && a.state.Members[id][input.ChannelID] != nil {
+				conversationID = id
+				break
+			}
+		}
+	}
+	a.mu.RUnlock()
+	if conversationID == "" {
+		return store.WukongMessageRoute{}, ErrForbidden
+	}
+	route, err := a.AuthorizeWukongMessage(ctx, MessageTransportRequest{
+		UserID: input.UserID, ConversationID: conversationID, Type: input.Type,
+		Body: map[string]any{"text": input.Text}, ReplyToID: input.ReplyToID,
+		Mentions: input.Mentions, MentionAll: input.MentionAll,
+	})
+	if err != nil {
+		return store.WukongMessageRoute{}, err
+	}
+	if route.ChannelID != input.ChannelID || route.ChannelType != input.ChannelType {
+		return store.WukongMessageRoute{}, ErrForbidden
+	}
+	return route, nil
+}
+
+func (a *App) ResolveWukongChannel(ctx context.Context, userID, conversationID string) (store.WukongMessageRoute, error) {
+	if routes, ok := a.persistence.(store.WukongChannelRouteStore); ok {
+		return routes.ResolveWukongChannel(ctx, userID, conversationID)
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	conversation := a.state.Conversations[conversationID]
+	if conversation == nil || a.state.Members[conversationID][userID] == nil {
+		return store.WukongMessageRoute{}, store.ErrForbidden
+	}
+	if conversation.Type == "group" {
+		return store.WukongMessageRoute{ChannelID: conversationID, ChannelType: wukong.ChannelGroup}, nil
+	}
+	if conversation.Type != "direct" {
+		return store.WukongMessageRoute{}, store.ErrUnsupported
+	}
+	peerID := ""
+	for memberID := range a.state.Members[conversationID] {
+		if memberID != userID {
+			if peerID != "" {
+				return store.WukongMessageRoute{}, store.ErrForbidden
+			}
+			peerID = memberID
+		}
+	}
+	if peerID == "" {
+		return store.WukongMessageRoute{}, store.ErrForbidden
+	}
+	return store.WukongMessageRoute{ChannelID: peerID, ChannelType: wukong.ChannelPerson}, nil
+}
+
+func (a *App) WukongForwardMessageRefs(ctx context.Context, userID string, messageIDs []string) ([]store.WukongMessageRef, error) {
+	if sources, ok := a.persistence.(store.WukongForwardSourceStore); ok {
+		return sources.ListWukongForwardMessageRefs(ctx, userID, messageIDs)
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	refs := make([]store.WukongMessageRef, 0, len(messageIDs))
+	for _, messageID := range messageIDs {
+		message := a.state.MessageByID[messageID]
+		if message == nil || a.state.Members[message.ConversationID][userID] == nil {
+			return nil, store.ErrForbidden
+		}
+		conversation := a.state.Conversations[message.ConversationID]
+		if conversation == nil {
+			return nil, store.ErrForbidden
+		}
+		ref := store.WukongMessageRef{MessageID: messageID, ConversationID: message.ConversationID, ChannelID: conversation.ID, ChannelType: wukong.ChannelGroup}
+		if conversation.Type == "direct" {
+			ref.ChannelType = wukong.ChannelPerson
+			ref.ChannelID = ""
+			for memberID := range a.state.Members[conversation.ID] {
+				if memberID != userID {
+					ref.ChannelID = memberID
+					break
+				}
+			}
+		}
+		if ref.ChannelID == "" {
+			return nil, store.ErrForbidden
+		}
+		refs = append(refs, ref)
+	}
+	return refs, nil
+}
+
+func (a *App) WukongMessageExtensions(ctx context.Context, userID string, messageIDs []string) (map[string]map[string]any, error) {
+	if extensions, ok := a.persistence.(store.WukongMessageExtensionStore); ok {
+		return extensions.LoadWukongMessageExtensions(ctx, userID, messageIDs)
+	}
+	return map[string]map[string]any{}, nil
+}
+
+func (a *App) WukongMessageExtras(ctx context.Context, userID, channelID string, channelType uint8, version int64, limit int) ([]store.WukongMessageExtra, error) {
+	if extensions, ok := a.persistence.(store.WukongMessageExtensionStore); ok {
+		items, err := extensions.SyncWukongMessageExtras(ctx, userID, channelID, channelType, version, limit)
+		return items, mapStoreError(err)
+	}
+	return nil, ErrNotFound
+}
+
+func (a *App) WukongReminders(ctx context.Context, userID string, version int64, limit int) ([]store.WukongReminder, error) {
+	if reminders, ok := a.persistence.(store.WukongReminderStore); ok {
+		items, err := reminders.SyncWukongReminders(ctx, userID, version, limit)
+		return items, mapStoreError(err)
+	}
+	return nil, ErrNotFound
+}
+
+func (a *App) DoneWukongReminders(ctx context.Context, userID string, reminderIDs []int64) error {
+	if reminders, ok := a.persistence.(store.WukongReminderStore); ok {
+		return mapStoreError(reminders.DoneWukongReminders(ctx, userID, reminderIDs))
+	}
+	return ErrNotFound
+}
+
+func (a *App) WukongChannelInfo(ctx context.Context, userID, channelID string, channelType uint8) (store.WukongChannelInfo, error) {
+	if channels, ok := a.persistence.(store.WukongChannelDataStore); ok {
+		item, err := channels.LoadWukongChannelInfo(ctx, userID, channelID, channelType)
+		return item, mapStoreError(err)
+	}
+	return store.WukongChannelInfo{}, ErrNotFound
+}
+
+func (a *App) WukongChannelMembers(ctx context.Context, userID, channelID string, channelType uint8, version int64, limit int) ([]store.WukongChannelMember, error) {
+	if channels, ok := a.persistence.(store.WukongChannelDataStore); ok {
+		items, err := channels.SyncWukongChannelMembers(ctx, userID, channelID, channelType, version, limit)
+		return items, mapStoreError(err)
+	}
+	return nil, ErrNotFound
+}
+
+func publicBusinessChannelType(channelType int) bool {
+	return channelType == int(wukong.ChannelCommunity) ||
+		channelType == int(wukong.ChannelCommunityTopic) ||
+		channelType == int(wukong.ChannelInfo) ||
+		channelType == int(wukong.ChannelLive)
+}
+
+func (a *App) CreateBusinessChannel(ctx context.Context, actorID string, input store.BusinessChannelCreate) (*store.BusinessChannel, error) {
+	channels, ok := a.persistence.(store.BusinessChannelStore)
+	if !ok {
+		return nil, ErrNotFound
+	}
+	input.ActorID = actorID
+	switch input.ChannelType {
+	case int(wukong.ChannelCommunity):
+		input.ID = id("community")
+	case int(wukong.ChannelCommunityTopic):
+		parentID := strings.TrimSpace(input.ParentID)
+		if parentID == "" {
+			return nil, ErrInvalid
+		}
+		input.ID = parentID + "@" + id("topic")
+	case int(wukong.ChannelInfo):
+		input.ID = id("info")
+	case int(wukong.ChannelLive):
+		input.ID = id("live")
+	default:
+		return nil, ErrInvalid
+	}
+	if input.Visibility == "" {
+		input.Visibility = "public"
+	}
+	if input.JoinPolicy == "" {
+		input.JoinPolicy = "open"
+	}
+	if input.PostingPolicy == "" {
+		input.PostingPolicy = "members"
+		if input.ChannelType == int(wukong.ChannelInfo) {
+			input.PostingPolicy = "operators"
+		}
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	item, err := channels.CreateBusinessChannel(callCtx, input, time.Now())
+	if err != nil {
+		return nil, mapStoreError(err)
+	}
+	a.publish([]string{actorID}, "channel.created", item)
+	return item, nil
+}
+
+func (a *App) BusinessChannel(ctx context.Context, userID, channelID string, channelType int) (*store.BusinessChannel, error) {
+	if !publicBusinessChannelType(channelType) {
+		return nil, ErrInvalid
+	}
+	if channels, ok := a.persistence.(store.BusinessChannelStore); ok {
+		item, err := channels.GetBusinessChannel(ctx, userID, channelID, channelType)
+		return item, mapStoreError(err)
+	}
+	return nil, ErrNotFound
+}
+
+func (a *App) BusinessChannels(ctx context.Context, userID, category, parentID string, channelType int, cursor string, limit int) ([]*store.BusinessChannel, string, error) {
+	if channelType != 0 && !publicBusinessChannelType(channelType) {
+		return nil, "", ErrInvalid
+	}
+	if channels, ok := a.persistence.(store.BusinessChannelStore); ok {
+		items, next, err := channels.ListBusinessChannels(ctx, userID, category, parentID, channelType, cursor, limit)
+		return items, next, mapStoreError(err)
+	}
+	return nil, "", ErrNotFound
+}
+
+func (a *App) AdminBusinessChannelsPage(ctx context.Context, query, category string, channelType int, cursor string, limit int) ([]*store.BusinessChannel, int64, string, error) {
+	if channels, ok := a.persistence.(store.BusinessChannelAdminStore); ok {
+		items, total, next, err := channels.ListAdminBusinessChannels(ctx, query, category, channelType, cursor, limit)
+		return items, total, next, mapStoreError(err)
+	}
+	return nil, 0, "", ErrNotFound
+}
+
+func (a *App) AdminBusinessChannelOwner(ctx context.Context, channelID string, channelType int) (string, error) {
+	if channels, ok := a.persistence.(store.BusinessChannelAdminStore); ok {
+		ownerID, err := channels.AdminBusinessChannelOwner(ctx, channelID, channelType)
+		return ownerID, mapStoreError(err)
+	}
+	return "", ErrNotFound
+}
+
+func (a *App) AdminBusinessChannelAccess(ctx context.Context, channelID string, channelType int, accessType, cursor string, limit int) ([]*store.BusinessChannelAccess, string, error) {
+	if channels, ok := a.persistence.(store.BusinessChannelAdminStore); ok {
+		items, next, err := channels.ListAdminBusinessChannelAccess(ctx, channelID, channelType, accessType, cursor, limit)
+		return items, next, mapStoreError(err)
+	}
+	return nil, "", ErrNotFound
+}
+
+func (a *App) UpdateBusinessChannel(ctx context.Context, actorID, channelID string, channelType int, update store.BusinessChannelUpdate) (*store.BusinessChannel, error) {
+	if !publicBusinessChannelType(channelType) {
+		return nil, ErrInvalid
+	}
+	if channels, ok := a.persistence.(store.BusinessChannelStore); ok {
+		update.ActorID, update.At = actorID, time.Now()
+		item, err := channels.UpdateBusinessChannel(ctx, channelID, channelType, update)
+		if err != nil {
+			return nil, mapStoreError(err)
+		}
+		a.publish([]string{actorID}, "channel.updated", item)
+		return item, nil
+	}
+	return nil, ErrNotFound
+}
+
+func (a *App) ApplyBusinessChannelMember(ctx context.Context, action store.BusinessChannelMemberAction) error {
+	if !publicBusinessChannelType(action.ChannelType) {
+		return ErrInvalid
+	}
+	if channels, ok := a.persistence.(store.BusinessChannelStore); ok {
+		action.At = time.Now()
+		if err := channels.ApplyBusinessChannelMemberAction(ctx, action); err != nil {
+			return mapStoreError(err)
+		}
+		a.publish([]string{action.ActorID, action.TargetID}, "channel.members.updated", map[string]any{
+			"channelId": action.ChannelID, "channelType": action.ChannelType, "userId": action.TargetID,
+		})
+		return nil
+	}
+	return ErrNotFound
+}
+
+func (a *App) BusinessChannelMembers(ctx context.Context, actorID, channelID string, channelType int, cursor string, limit int) ([]*store.BusinessChannelMember, string, error) {
+	if !publicBusinessChannelType(channelType) {
+		return nil, "", ErrInvalid
+	}
+	if channels, ok := a.persistence.(store.BusinessChannelStore); ok {
+		items, next, err := channels.ListBusinessChannelMembers(ctx, actorID, channelID, channelType, cursor, limit)
+		return items, next, mapStoreError(err)
+	}
+	return nil, "", ErrNotFound
+}
+
+func (a *App) ApplyBusinessChannelAccess(ctx context.Context, action store.BusinessChannelAccessAction) error {
+	if !publicBusinessChannelType(action.ChannelType) {
+		return ErrInvalid
+	}
+	if channels, ok := a.persistence.(store.BusinessChannelStore); ok {
+		action.At = time.Now()
+		if err := channels.ApplyBusinessChannelAccess(ctx, action); err != nil {
+			return mapStoreError(err)
+		}
+		a.publish([]string{action.ActorID, action.TargetID}, "channel.access.updated", map[string]any{
+			"channelId": action.ChannelID, "channelType": action.ChannelType, "userId": action.TargetID,
+			"accessType": action.AccessType, "enabled": action.Enabled,
+		})
+		return nil
+	}
+	return ErrNotFound
+}
+
+func (a *App) AuthorizeBusinessChannelSend(ctx context.Context, userID, channelID string, channelType int, at time.Time) error {
+	if channels, ok := a.persistence.(store.BusinessChannelStore); ok {
+		return mapStoreError(channels.AuthorizeBusinessChannelSend(ctx, userID, channelID, channelType, at))
+	}
+	return ErrNotFound
+}
 
 func (a *App) AllowRate(ctx context.Context, key string, max int, window time.Duration) (bool, error) {
 	if limiter, ok := a.persistence.(store.RateLimiterStore); ok {
@@ -197,12 +773,6 @@ func (a *App) ensureMaps() {
 	}
 	if a.state.GroupMessagePins == nil {
 		a.state.GroupMessagePins = fresh.GroupMessagePins
-	}
-	if a.state.SyncEvents == nil {
-		a.state.SyncEvents = fresh.SyncEvents
-	}
-	if a.state.UserSyncSeq == nil {
-		a.state.UserSyncSeq = fresh.UserSyncSeq
 	}
 	if a.state.Reports == nil {
 		a.state.Reports = fresh.Reports
@@ -731,7 +1301,7 @@ func (a *App) UpdateUserProfile(uid string, update store.UserProfileUpdate) (*mo
 		u.AvatarMediaID = *update.AvatarMediaID
 		u.AvatarURL = ""
 		if u.AvatarMediaID != "" {
-			u.AvatarURL = "/v1/media/" + u.AvatarMediaID
+			u.AvatarURL = "/v2/media/" + u.AvatarMediaID
 		}
 	}
 	if err := a.saveLocked(); err != nil {
@@ -800,7 +1370,15 @@ func (a *App) Favorites(uid string, limit int) ([]*model.Message, error) {
 	if s, ok := a.persistence.(store.ProfileStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		defer cancel()
-		return s.ListFavorites(ctx, uid, limit)
+		items, err := s.ListFavorites(ctx, uid, limit)
+		if err != nil {
+			return nil, err
+		}
+		hydrated, err := a.hydrateWukongMessages(ctx, uid, items)
+		if err != nil {
+			return nil, mapStoreError(err)
+		}
+		return hydrated, nil
 	}
 	return []*model.Message{}, nil
 }
@@ -1002,9 +1580,9 @@ func (a *App) RequestFriendWithContext(from, to, message, source, sourceID strin
 		}
 	}
 	a.state.FriendRequests[request.ID] = request
-	e1 := a.syncLocked(from, "friend.request.sent", map[string]any{"requestId": request.ID, "userId": to, "status": "pending"})
+	e1 := a.businessEventLocked(from, "friend.request.sent", map[string]any{"requestId": request.ID, "userId": to, "status": "pending"})
 	requestSnapshot := *request
-	e2 := a.syncLocked(to, "friend.request", map[string]any{"request": &requestSnapshot})
+	e2 := a.businessEventLocked(to, "friend.request", map[string]any{"request": &requestSnapshot})
 	if err := a.saveLocked(); err != nil {
 		return nil, err
 	}
@@ -1148,8 +1726,8 @@ func (a *App) TransitionFriendRequest(uid, rid, action string) (*model.FriendReq
 	if target == "accepted" {
 		typ = "friend.accepted"
 	}
-	e1 := a.syncLocked(r.FromUserID, typ, map[string]any{"requestId": rid, "userId": r.ToUserID, "status": target})
-	e2 := a.syncLocked(r.ToUserID, typ, map[string]any{"requestId": rid, "userId": r.FromUserID, "status": target})
+	e1 := a.businessEventLocked(r.FromUserID, typ, map[string]any{"requestId": rid, "userId": r.ToUserID, "status": target})
+	e2 := a.businessEventLocked(r.ToUserID, typ, map[string]any{"requestId": rid, "userId": r.FromUserID, "status": target})
 	if err := a.saveLocked(); err != nil {
 		return nil, false, err
 	}
@@ -1187,13 +1765,13 @@ func (a *App) Block(uid, target string, blocked bool) error {
 		delete(a.state.Friends[uid], target)
 		delete(a.state.Friends[target], uid)
 		if wasFriend {
-			e := a.syncLocked(target, "friend.removed", map[string]any{"userId": uid})
+			e := a.businessEventLocked(target, "friend.removed", map[string]any{"userId": uid})
 			go a.publish([]string{target}, e.Type, e)
 		}
 	} else {
 		delete(a.state.Blocks[uid], target)
 	}
-	a.syncLocked(uid, "block.updated", map[string]any{"userId": target, "blocked": blocked})
+	a.businessEventLocked(uid, "block.updated", map[string]any{"userId": target, "blocked": blocked})
 	if ms, ok := a.persistence.(store.MutationStore); ok {
 		if err := ms.SetBlock(context.Background(), uid, target, blocked); err != nil {
 			return err
@@ -1227,8 +1805,8 @@ func (a *App) DeleteFriend(uid, target string) error {
 	delete(a.state.Friends[target], uid)
 	delete(a.friendMetadata, uid+":"+target)
 	delete(a.friendMetadata, target+":"+uid)
-	e1 := a.syncLocked(uid, "friend.removed", map[string]any{"userId": target})
-	e2 := a.syncLocked(target, "friend.removed", map[string]any{"userId": uid})
+	e1 := a.businessEventLocked(uid, "friend.removed", map[string]any{"userId": target})
+	e2 := a.businessEventLocked(target, "friend.removed", map[string]any{"userId": uid})
 	if err := a.saveLocked(); err != nil {
 		return err
 	}
@@ -1270,7 +1848,7 @@ func (a *App) UpdateFriendMetadata(uid, target, remark string, tags []string) er
 		return ErrNotFound
 	}
 	a.friendMetadata[uid+":"+target] = metadata
-	e := a.syncLocked(uid, "friend.metadata.updated", map[string]any{"userId": target, "remark": remark, "tags": clean})
+	e := a.businessEventLocked(uid, "friend.metadata.updated", map[string]any{"userId": target, "remark": remark, "tags": clean})
 	if err := a.saveLocked(); err != nil {
 		return err
 	}
@@ -1308,6 +1886,18 @@ func (a *App) DirectConversation(uid, other string) (*model.Conversation, error)
 	if uid == other {
 		return nil, ErrInvalid
 	}
+	if directs, ok := a.persistence.(store.DirectConversationStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		conversation, created, err := directs.GetOrCreateDirectConversation(ctx, uid, other, id("conv"), time.Now())
+		if err != nil {
+			return nil, mapStoreError(err)
+		}
+		if created {
+			a.publish([]string{uid, other}, "conversation.created", conversation)
+		}
+		return conversation, nil
+	}
 	if err := a.refresh(); err != nil {
 		return nil, err
 	}
@@ -1331,7 +1921,7 @@ func (a *App) DirectConversation(uid, other string) (*model.Conversation, error)
 	a.state.Members[c.ID] = map[string]*model.ConversationMember{uid: {ConversationID: c.ID, UserID: uid, Role: "member", JoinedAt: now}, other: {ConversationID: c.ID, UserID: other, Role: "member", JoinedAt: now}}
 	snapshot := *c
 	for _, x := range []string{uid, other} {
-		a.syncLocked(x, "conversation.created", map[string]any{"conversation": &snapshot})
+		a.businessEventLocked(x, "conversation.created", map[string]any{"conversation": &snapshot})
 	}
 	if err := a.saveLocked(); err != nil {
 		return nil, err
@@ -1374,7 +1964,7 @@ func (a *App) CreateGroup(owner, name string, members []string) (*model.Conversa
 	}
 	ids := memberIDs(a.state.Members[c.ID])
 	for _, uid := range ids {
-		a.syncLocked(uid, "group.created", map[string]any{"conversation": c})
+		a.businessEventLocked(uid, "group.created", map[string]any{"conversation": c})
 	}
 	if err := a.saveLocked(); err != nil {
 		return nil, err
@@ -1416,7 +2006,7 @@ func (a *App) AddGroupMembers(actor, cid string, users []string) error {
 	for _, uid := range users {
 		if a.state.Users[uid] != nil && a.state.Members[cid][uid] == nil {
 			a.state.Members[cid][uid] = &model.ConversationMember{ConversationID: cid, UserID: uid, Role: "member", JoinedAt: now}
-			a.syncLocked(uid, "group.joined", map[string]any{"conversation": c})
+			a.businessEventLocked(uid, "group.joined", map[string]any{"conversation": c})
 		}
 	}
 	ids := memberIDs(a.state.Members[cid])
@@ -1528,7 +2118,7 @@ func (a *App) RemoveGroupMember(actor, cid, target string) error {
 		return ErrForbidden
 	}
 	delete(members, target)
-	a.syncLocked(target, "group.left", map[string]any{"conversationId": cid})
+	a.businessEventLocked(target, "group.left", map[string]any{"conversationId": cid})
 	ids := memberIDs(members)
 	if err := a.saveLocked(); err != nil {
 		return err
@@ -1567,7 +2157,7 @@ func (a *App) SetGroupRole(actor, cid, uid, role string) error {
 		return ErrForbidden
 	}
 	m.Role = role
-	a.syncLocked(uid, "group.role", map[string]any{"conversationId": cid, "role": role})
+	a.businessEventLocked(uid, "group.role", map[string]any{"conversationId": cid, "role": role})
 	return a.saveLocked()
 }
 func (a *App) MuteMember(actor, cid, uid string, until *time.Time) error {
@@ -1593,7 +2183,7 @@ func (a *App) MuteMember(actor, cid, uid string, until *time.Time) error {
 		return ErrForbidden
 	}
 	m.MutedUntil = until
-	a.syncLocked(uid, "group.mute", map[string]any{"conversationId": cid, "mutedUntil": until})
+	a.businessEventLocked(uid, "group.mute", map[string]any{"conversationId": cid, "mutedUntil": until})
 	return a.saveLocked()
 }
 
@@ -2061,6 +2651,30 @@ func (a *App) RunRuntimeCleanup(ctx context.Context, interval time.Duration, pol
 	}
 }
 
+func (a *App) RunBusinessMembershipExpirations(ctx context.Context) {
+	expiry, ok := a.persistence.(store.BusinessMembershipExpiryStore)
+	if !ok {
+		return
+	}
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		for range 10 {
+			expiryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			removed, err := expiry.ExpireBusinessChannelMemberships(expiryCtx, time.Now(), 200)
+			cancel()
+			if err != nil || removed < 200 {
+				break
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 func (a *App) SendMessageWithExpiry(uid, cid, clientID, typ string, body map[string]any, reply string, expiresInSeconds int64) (*model.Message, bool, error) {
 	return a.SendMessageWithExpiryContext(context.Background(), uid, cid, clientID, typ, body, reply, expiresInSeconds)
 }
@@ -2194,10 +2808,52 @@ func (a *App) sendMessage(parent context.Context, uid, cid, clientID, typ string
 		value := now.Add(time.Duration(expiresInSeconds) * time.Second)
 		expiresAt = &value
 	}
+	if transport := a.currentMessageTransport(); transport != nil {
+		ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+		defer cancel()
+		result, err := transport(ctx, MessageTransportRequest{
+			UserID: uid, ConversationID: cid, ClientMsgID: clientID,
+			Type: typ, Body: body, ReplyToID: reply,
+			Mentions: mentions, MentionAll: mentionAll,
+			ExpiresInSeconds: expiresInSeconds,
+		})
+		if err != nil {
+			switch {
+			case errors.Is(err, store.ErrForbidden), errors.Is(err, ErrForbidden):
+				return nil, false, ErrForbidden
+			case errors.Is(err, store.ErrNotFound), errors.Is(err, ErrNotFound):
+				return nil, false, ErrNotFound
+			case errors.Is(err, store.ErrConflict), errors.Is(err, ErrConflict):
+				return nil, false, ErrConflict
+			default:
+				return nil, false, err
+			}
+		}
+		result.MessageID = strings.TrimSpace(result.MessageID)
+		if result.MessageID == "" {
+			return nil, false, errors.New("message transport returned an empty message id")
+		}
+		if strings.TrimSpace(result.ClientMsgID) == "" {
+			result.ClientMsgID = clientID
+		}
+		if result.CreatedAt.IsZero() {
+			result.CreatedAt = now
+		}
+		message := &model.Message{
+			ID: result.MessageID, ClientMsgID: result.ClientMsgID,
+			ConversationID: cid, SenderID: uid, Seq: result.MessageSeq,
+			Type: typ, Body: body, ReplyToID: reply, ExpiresAt: expiresAt,
+			CreatedAt: result.CreatedAt,
+		}
+		if !result.Duplicate {
+			a.Metrics.Messages.Add(1)
+		}
+		return message, result.Duplicate, nil
+	}
 	if db, ok := a.persistence.(store.MessageStore); ok {
 		ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 		defer cancel()
-		m, duplicate, events, err := db.SendMessage(ctx, store.MessageInput{UserID: uid, ConversationID: cid, ClientMsgID: clientID, Type: typ, Body: body, Mentions: mentions, MentionAll: mentionAll, ReplyToID: reply, MessageID: id("msg"), CreatedAt: now.UnixMilli(), ExpiresAt: expiresAt})
+		m, duplicate, err := db.SendMessage(ctx, store.MessageInput{UserID: uid, ConversationID: cid, ClientMsgID: clientID, Type: typ, Body: body, Mentions: mentions, MentionAll: mentionAll, ReplyToID: reply, MessageID: id("msg"), CreatedAt: now.UnixMilli(), ExpiresAt: expiresAt})
 		if err != nil {
 			switch err {
 			case store.ErrForbidden:
@@ -2219,17 +2875,8 @@ func (a *App) sendMessage(parent context.Context, uid, cid, clientID, typ string
 			a.state.Messages[cid] = append(a.state.Messages[cid], m)
 			a.state.MessageByID[m.ID] = m
 			a.state.MessageIdempotency[uid+":"+clientID] = m.ID
-			for _, e := range events {
-				a.state.UserSyncSeq[e.UserID] = e.Seq
-				a.state.SyncEvents[e.UserID] = append(a.state.SyncEvents[e.UserID], e)
-			}
 			a.mu.Unlock()
 			a.Metrics.Messages.Add(1)
-			if _, distributed := a.persistence.(store.EventSubscriber); !distributed {
-				for _, e := range events {
-					go a.publish([]string{e.UserID}, e.Type, e.Payload)
-				}
-			}
 		}
 		return m, duplicate, nil
 	}
@@ -2287,9 +2934,9 @@ func (a *App) sendMessage(parent context.Context, uid, cid, clientID, typ string
 	a.state.MessageByID[m.ID] = m
 	a.state.MessageIdempotency[key] = m.ID
 	ids := memberIDs(a.state.Members[cid])
-	events := make([]*model.SyncEvent, 0, len(ids))
+	events := make([]*businessEvent, 0, len(ids))
 	for _, recipient := range ids {
-		events = append(events, a.syncLocked(recipient, "message.created", map[string]any{"message": m}))
+		events = append(events, a.businessEventLocked(recipient, "message.created", map[string]any{"message": m}))
 	}
 	err := a.saveLocked()
 	a.mu.Unlock()
@@ -2404,7 +3051,22 @@ func (a *App) ForwardMessages(uid, targetID string, sourceIDs []string, mode, cl
 		seen[sourceID] = true
 	}
 	var sources []*model.Message
-	if q, ok := a.persistence.(store.QueryStore); ok {
+	if loader := a.currentMessageSourceLoader(); loader != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		items, err := loader(ctx, uid, sourceIDs)
+		if err != nil {
+			switch {
+			case errors.Is(err, store.ErrForbidden), errors.Is(err, store.ErrNotFound):
+				return nil, false, ErrForbidden
+			case errors.Is(err, store.ErrConflict):
+				return nil, false, ErrConflict
+			default:
+				return nil, false, err
+			}
+		}
+		sources = items
+	} else if q, ok := a.persistence.(store.QueryStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		items, err := q.ListForwardMessages(ctx, uid, sourceIDs)
@@ -2433,6 +3095,9 @@ func (a *App) ForwardMessages(uid, targetID string, sourceIDs []string, mode, cl
 	}
 	totalSize := 0
 	for _, source := range sources {
+		if source.RecalledAt != nil || source.ExpiredAt != nil {
+			return nil, false, ErrForbidden
+		}
 		raw, _ := json.Marshal(source.Body)
 		totalSize += len(raw)
 	}
@@ -2484,6 +3149,12 @@ func forwardSummary(message *model.Message) string {
 }
 
 func (a *App) History(uid, cid string, before int64, limit int) ([]*model.Message, error) {
+	if loader := a.currentMessageHistoryLoader(); loader != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		items, err := loader(ctx, uid, cid, before, limit)
+		return items, mapStoreError(err)
+	}
 	if q, ok := a.persistence.(store.QueryStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		defer cancel()
@@ -2558,9 +3229,9 @@ func (a *App) Recall(uid, mid string) error {
 		}
 	}
 	ids := memberIDs(a.state.Members[m.ConversationID])
-	events := make([]*model.SyncEvent, 0, len(ids))
+	events := make([]*businessEvent, 0, len(ids))
 	for _, x := range ids {
-		events = append(events, a.syncLocked(x, "message.recalled", map[string]any{"messageId": mid, "conversationId": m.ConversationID, "conversationSeq": m.Seq}))
+		events = append(events, a.businessEventLocked(x, "message.recalled", map[string]any{"messageId": mid, "conversationId": m.ConversationID, "conversationSeq": m.Seq}))
 	}
 	if err := a.saveLocked(); err != nil {
 		return err
@@ -2593,7 +3264,24 @@ func (a *App) EditMessage(uid, mid, editID string, body map[string]any) (*model.
 	if s, ok := a.persistence.(store.MessageCollaborationStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		message, duplicate, err := s.EditMessage(ctx, uid, mid, editID, canonical, time.Now(), window)
+		var originalBody map[string]any
+		if loader := a.currentMessageSourceLoader(); loader != nil {
+			original, loadErr := loader(ctx, uid, []string{mid})
+			if loadErr != nil {
+				if loadErr == store.ErrNotFound {
+					return nil, false, ErrNotFound
+				}
+				if loadErr == store.ErrForbidden {
+					return nil, false, ErrForbidden
+				}
+				return nil, false, loadErr
+			}
+			if len(original) != 1 || original[0] == nil {
+				return nil, false, ErrNotFound
+			}
+			originalBody = original[0].Body
+		}
+		message, duplicate, err := s.EditMessage(ctx, uid, mid, editID, canonical, originalBody, time.Now(), window)
 		if err == store.ErrNotFound {
 			return nil, false, ErrNotFound
 		}
@@ -2667,10 +3355,10 @@ func (a *App) EditMessage(uid, mid, editID string, body map[string]any) (*model.
 	message.Body = canonical
 	a.state.MessageEdits[mid] = append(a.state.MessageEdits[mid], &model.MessageEdit{MessageID: mid, Version: message.EditVersion, EditID: editID, EditorID: uid, Body: canonical, EditedAt: now})
 	ids := memberIDs(a.state.Members[message.ConversationID])
-	events := make([]*model.SyncEvent, 0, len(ids))
+	events := make([]*businessEvent, 0, len(ids))
 	payload := map[string]any{"message": message, "editId": editID}
 	for _, memberID := range ids {
-		events = append(events, a.syncLocked(memberID, "message.edited", payload))
+		events = append(events, a.businessEventLocked(memberID, "message.edited", payload))
 	}
 	a.auditLocked(uid, "message.edited", "message", mid, map[string]any{"editId": editID, "version": message.EditVersion})
 	if err = a.saveLocked(); err != nil {
@@ -2771,11 +3459,11 @@ func (a *App) SetMessageReaction(uid, mid, emoji string, add bool) (model.Messag
 	}
 	summary := model.MessageReactionSummary{Emoji: emoji, Count: len(a.state.MessageReactions[mid][emoji]), ReactedByMe: add}
 	ids := memberIDs(a.state.Members[message.ConversationID])
-	events := []*model.SyncEvent{}
+	events := []*businessEvent{}
 	if changed {
 		payload := map[string]any{"messageId": mid, "conversationId": message.ConversationID, "emoji": emoji, "actorId": uid, "added": add, "count": summary.Count}
 		for _, memberID := range ids {
-			events = append(events, a.syncLocked(memberID, "message.reaction.updated", payload))
+			events = append(events, a.businessEventLocked(memberID, "message.reaction.updated", payload))
 		}
 	}
 	if err := a.saveLocked(); err != nil {
@@ -2790,6 +3478,23 @@ func (a *App) SetMessageReaction(uid, mid, emoji string, add bool) (model.Messag
 }
 
 func (a *App) CollaborationMessage(uid, mid string) (*model.Message, error) {
+	if loader := a.currentMessageSourceLoader(); loader != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		items, err := loader(ctx, uid, []string{mid})
+		if err != nil {
+			return nil, mapStoreError(err)
+		}
+		if len(items) != 1 {
+			return nil, ErrNotFound
+		}
+		extensions, err := a.WukongMessageExtensions(ctx, uid, []string{mid})
+		if err != nil {
+			return nil, err
+		}
+		applyModelMessageExtension(items[0], extensions[mid])
+		return items[0], nil
+	}
 	if q, ok := a.persistence.(store.QueryStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		defer cancel()
@@ -2817,6 +3522,62 @@ func (a *App) CollaborationMessage(uid, mid string) (*model.Message, error) {
 	return a.messageWithMemoryReactionsLocked(uid, message), nil
 }
 
+func applyModelMessageExtension(message *model.Message, extension map[string]any) {
+	if message == nil || len(extension) == 0 {
+		return
+	}
+	if value, ok := extension["recalledAt"].(string); ok {
+		if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+			message.RecalledAt = &parsed
+		}
+	}
+	if value, ok := extension["editedAt"].(string); ok {
+		if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+			message.EditedAt = &parsed
+		}
+	}
+	if value, ok := extension["editVersion"].(float64); ok {
+		message.EditVersion = int(value)
+	}
+	if body, ok := extension["editedBody"].(map[string]any); ok {
+		message.Body = body
+	}
+	message.Reactions = nil
+	if reactions, ok := extension["reactions"].([]map[string]any); ok {
+		for _, reaction := range reactions {
+			count, _ := reaction["count"].(int)
+			if numeric, numericOK := reaction["count"].(int64); numericOK {
+				count = int(numeric)
+			}
+			reacted, _ := reaction["reactedByMe"].(bool)
+			emoji, _ := reaction["emoji"].(string)
+			message.Reactions = append(message.Reactions, model.MessageReactionSummary{Emoji: emoji, Count: count, ReactedByMe: reacted})
+		}
+	}
+}
+
+func (a *App) EnrichWukongMessages(ctx context.Context, userID string, messages []*model.Message) error {
+	if len(messages) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(messages))
+	for _, message := range messages {
+		if message != nil {
+			ids = append(ids, message.ID)
+		}
+	}
+	extensions, err := a.WukongMessageExtensions(ctx, userID, ids)
+	if err != nil {
+		return err
+	}
+	for _, message := range messages {
+		if message != nil {
+			applyModelMessageExtension(message, extensions[message.ID])
+		}
+	}
+	return nil
+}
+
 func (a *App) SetGroupMessagePin(uid, cid, mid string, pin bool) (*model.MessagePin, bool, error) {
 	if s, ok := a.persistence.(store.MessageCollaborationStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2827,6 +3588,11 @@ func (a *App) SetGroupMessagePin(uid, cid, mid string, pin bool) (*model.Message
 		}
 		if err == store.ErrForbidden {
 			return nil, false, ErrForbidden
+		}
+		if err == nil && item != nil {
+			if err = a.hydrateWukongMessagePins(ctx, uid, []*model.MessagePin{item}); err != nil {
+				return nil, false, mapStoreError(err)
+			}
 		}
 		return item, duplicate, err
 	}
@@ -2853,7 +3619,7 @@ func (a *App) SetGroupMessagePin(uid, cid, mid string, pin bool) (*model.Message
 		delete(a.state.GroupMessagePins[cid], mid)
 	}
 	ids := memberIDs(a.state.Members[cid])
-	events := []*model.SyncEvent{}
+	events := []*businessEvent{}
 	if changed {
 		eventType := "group.message.pinned"
 		if !pin {
@@ -2861,7 +3627,7 @@ func (a *App) SetGroupMessagePin(uid, cid, mid string, pin bool) (*model.Message
 		}
 		payload := map[string]any{"conversationId": cid, "messageId": mid, "actorId": uid}
 		for _, memberID := range ids {
-			events = append(events, a.syncLocked(memberID, eventType, payload))
+			events = append(events, a.businessEventLocked(memberID, eventType, payload))
 		}
 		conversation.Seq++
 		conversation.LastMessageSeq = conversation.Seq
@@ -2870,7 +3636,7 @@ func (a *App) SetGroupMessagePin(uid, cid, mid string, pin bool) (*model.Message
 		a.state.Messages[cid] = append(a.state.Messages[cid], system)
 		a.state.MessageByID[system.ID] = system
 		for _, memberID := range ids {
-			events = append(events, a.syncLocked(memberID, "message.created", map[string]any{"message": system}))
+			events = append(events, a.businessEventLocked(memberID, "message.created", map[string]any{"message": system}))
 		}
 		a.auditLocked(uid, eventType, "message", mid, map[string]any{"conversationId": cid})
 	}
@@ -2892,6 +3658,11 @@ func (a *App) GroupMessagePins(uid, cid string, before int64, limit int) ([]*mod
 		items, err := s.ListGroupMessagePins(ctx, uid, cid, before, limit)
 		if err == store.ErrForbidden {
 			return nil, ErrForbidden
+		}
+		if err == nil {
+			if err = a.hydrateWukongMessagePins(ctx, uid, items); err != nil {
+				return nil, mapStoreError(err)
+			}
 		}
 		return items, err
 	}
@@ -2918,10 +3689,82 @@ func (a *App) GroupMessagePins(uid, cid string, before int64, limit int) ([]*mod
 	return items, nil
 }
 
+func (a *App) hydrateWukongMessagePins(ctx context.Context, uid string, items []*model.MessagePin) error {
+	if a.currentMessageSourceLoader() == nil || len(items) == 0 {
+		return nil
+	}
+	messages := make([]*model.Message, 0, len(items))
+	for _, item := range items {
+		if item != nil && item.Message != nil {
+			messages = append(messages, item.Message)
+		}
+	}
+	hydrated, err := a.hydrateWukongMessages(ctx, uid, messages)
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]*model.Message, len(hydrated))
+	for _, message := range hydrated {
+		byID[message.ID] = message
+	}
+	for _, item := range items {
+		if item != nil && item.Message != nil {
+			if message := byID[item.Message.ID]; message != nil {
+				item.Message = message
+			}
+		}
+	}
+	return nil
+}
+
+func (a *App) hydrateWukongMessages(ctx context.Context, uid string, items []*model.Message) ([]*model.Message, error) {
+	loader := a.currentMessageSourceLoader()
+	if loader == nil || len(items) == 0 {
+		return items, nil
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if item != nil {
+			ids = append(ids, item.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return items, nil
+	}
+	messages, err := loader(ctx, uid, ids)
+	if err != nil {
+		return nil, err
+	}
+	extensions, err := a.WukongMessageExtensions(ctx, uid, ids)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]*model.Message, len(messages))
+	for _, message := range messages {
+		applyModelMessageExtension(message, extensions[message.ID])
+		byID[message.ID] = message
+	}
+	ordered := make([]*model.Message, 0, len(items))
+	for _, item := range items {
+		message := byID[item.ID]
+		if message == nil {
+			return nil, store.ErrNotFound
+		}
+		ordered = append(ordered, message)
+	}
+	return ordered, nil
+}
+
 func (a *App) SearchConversationMessages(uid, cid, query string, before int64, limit int) ([]*model.Message, error) {
 	query = strings.TrimSpace(query)
 	if query == "" || len([]rune(query)) > 100 {
 		return nil, ErrInvalid
+	}
+	if loader := a.currentMessageSearchLoader(); loader != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		items, err := loader(ctx, uid, cid, query, before, limit)
+		return items, mapStoreError(err)
 	}
 	if s, ok := a.persistence.(store.MessageCollaborationStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
@@ -2966,6 +3809,18 @@ func (a *App) Read(uid, cid string, seq int64) error {
 	if seq < 0 {
 		return ErrInvalid
 	}
+	if transport := a.currentReadStateTransport(); transport != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		actual, err := transport(ctx, uid, cid, seq)
+		if err != nil {
+			return mapStoreError(err)
+		}
+		if receipts, ok := a.persistence.(store.WukongReceiptStore); ok {
+			_, _, err = receipts.MarkWukongRead(ctx, uid, cid, actual, time.Now())
+			return mapStoreError(err)
+		}
+	}
 	if s, ok := a.persistence.(store.RuntimeMutationStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -2973,7 +3828,10 @@ func (a *App) Read(uid, cid string, seq int64) error {
 		if err == store.ErrForbidden {
 			return ErrForbidden
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		return nil
 	}
 	if err := a.refresh(); err != nil {
 		return err
@@ -2993,7 +3851,7 @@ func (a *App) Read(uid, cid string, seq int64) error {
 	}
 	m.ManualUnread = false
 	ids := memberIDs(a.state.Members[cid])
-	a.syncLocked(uid, "conversation.read", map[string]any{"conversationId": cid, "seq": seq})
+	a.businessEventLocked(uid, "conversation.read", map[string]any{"conversationId": cid, "seq": seq})
 	if err := a.saveLocked(); err != nil {
 		return err
 	}
@@ -3034,7 +3892,7 @@ func (a *App) Delivered(uid, cid string, seq int64) (int64, error) {
 	payload := map[string]any{"conversationId": cid, "userId": uid, "seq": seq}
 	ids := memberIDs(a.state.Members[cid])
 	for _, memberID := range ids {
-		a.syncLocked(memberID, "message.delivered", payload)
+		a.businessEventLocked(memberID, "message.delivered", payload)
 	}
 	if err := a.saveLocked(); err != nil {
 		return 0, err
@@ -3079,7 +3937,7 @@ func (a *App) UpdateConversationPreferences(uid, cid string, preferences store.C
 	if preferences.ManualUnread != nil {
 		m.ManualUnread = *preferences.ManualUnread
 	}
-	a.syncLocked(uid, "conversation.preferences.updated", map[string]any{"conversationId": cid, "pinned": m.Pinned, "archived": m.Archived, "notificationsMuted": m.NotificationsMuted, "manualUnread": m.ManualUnread})
+	a.businessEventLocked(uid, "conversation.preferences.updated", map[string]any{"conversationId": cid, "pinned": m.Pinned, "archived": m.Archived, "notificationsMuted": m.NotificationsMuted, "manualUnread": m.ManualUnread})
 	return a.saveLocked()
 }
 
@@ -3152,9 +4010,6 @@ func (a *App) SetTypingContext(parent context.Context, uid, cid string, typing b
 			}
 		}
 		a.publish(others, "typing", map[string]any{"conversationId": cid, "userId": uid, "typing": typing, "expiresAt": time.Now().Add(6 * time.Second)})
-		if bus, ok := a.persistence.(store.EphemeralBus); ok {
-			_ = bus.PublishEphemeral(ctx, others, "typing", map[string]any{"conversationId": cid, "userId": uid, "typing": typing, "expiresAt": time.Now().Add(6 * time.Second)})
-		}
 		return nil
 	}
 	a.mu.RLock()
@@ -3173,43 +4028,42 @@ func (a *App) SetTypingContext(parent context.Context, uid, cid string, typing b
 	a.publish(others, "typing", map[string]any{"conversationId": cid, "userId": uid, "typing": typing, "expiresAt": time.Now().Add(6 * time.Second)})
 	return nil
 }
-func (a *App) callMemberIDs(uid, cid string) ([]string, error) {
+func (a *App) callConversation(uid, cid string) (string, []string, error) {
 	if q, ok := a.persistence.(store.QueryStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		access, err := q.CanAccessConversation(ctx, uid, cid)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		if !access {
-			return nil, ErrForbidden
+			return "", nil, ErrForbidden
 		}
 		ids, err := q.ConversationMemberIDs(ctx, cid)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
-		return ids, nil
+		kind := ""
+		if kinds, ok := a.persistence.(store.ConversationKindStore); ok {
+			kind, err = kinds.ConversationKind(ctx, cid)
+			if err != nil {
+				return "", nil, err
+			}
+		}
+		return kind, ids, nil
 	}
 	a.mu.RLock()
 	if a.state.Members[cid][uid] == nil {
 		a.mu.RUnlock()
-		return nil, ErrForbidden
+		return "", nil, ErrForbidden
 	}
 	ids := memberIDs(a.state.Members[cid])
-	a.mu.RUnlock()
-	return ids, nil
-}
-
-func (a *App) publishCall(users []string, typ string, payload map[string]any) error {
-	a.publish(users, typ, payload)
-	if bus, ok := a.persistence.(store.EphemeralBus); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if err := bus.PublishEphemeral(ctx, users, typ, payload); err != nil {
-			return fmt.Errorf("publish realtime call signal: %w", err)
-		}
+	kind := ""
+	if conversation := a.state.Conversations[cid]; conversation != nil {
+		kind = conversation.Type
 	}
-	return nil
+	a.mu.RUnlock()
+	return kind, ids, nil
 }
 
 func (a *App) InviteCall(uid, cid, calleeID, callID, mediaType string) (*model.CallSession, bool, error) {
@@ -3225,32 +4079,42 @@ func (a *App) InviteCall(uid, cid, calleeID, callID, mediaType string) (*model.C
 	if !callIDPattern.MatchString(callID) {
 		return nil, false, ErrInvalid
 	}
-	ids, err := a.callMemberIDs(uid, cid)
+	kind, ids, err := a.callConversation(uid, cid)
 	if err != nil {
 		return nil, false, err
 	}
-	if len(ids) != 2 {
+	if kind == "" && len(ids) == 2 {
+		kind = "direct"
+	}
+	if kind != "direct" && kind != "group" {
 		return nil, false, ErrConflict
 	}
-	if calleeID == "" {
+	if len(ids) < 2 || len(ids) > 9 || (kind == "direct" && len(ids) != 2) {
+		return nil, false, ErrConflict
+	}
+	if kind == "direct" && calleeID == "" {
 		for _, member := range ids {
 			if member != uid {
 				calleeID = member
 			}
 		}
 	}
-	if calleeID == "" || calleeID == uid {
+	if kind == "direct" && (calleeID == "" || calleeID == uid) {
 		return nil, false, ErrInvalid
+	}
+	if kind == "group" {
+		calleeID = ""
 	}
 	calleeIsMember := false
 	for _, member := range ids {
 		calleeIsMember = calleeIsMember || member == calleeID
 	}
-	if !calleeIsMember {
+	if kind == "direct" && !calleeIsMember {
 		return nil, false, ErrForbidden
 	}
+	sort.Strings(ids)
 	now := time.Now()
-	invite := store.CallInvite{ID: callID, ConversationID: cid, CallerID: uid, CalleeID: calleeID, MediaType: mediaType, InvitedAt: now, ExpiresAt: now.Add(a.callInviteTTL)}
+	invite := store.CallInvite{ID: callID, ConversationID: cid, Kind: kind, CallerID: uid, CalleeID: calleeID, ParticipantIDs: append([]string(nil), ids...), MediaType: mediaType, InvitedAt: now, ExpiresAt: now.Add(a.callInviteTTL)}
 	var call *model.CallSession
 	var duplicate bool
 	if calls, ok := a.persistence.(store.CallStore); ok {
@@ -3264,7 +4128,7 @@ func (a *App) InviteCall(uid, cid, calleeID, callID, mediaType string) (*model.C
 		a.callMu.Lock()
 		defer a.callMu.Unlock()
 		if existing := a.calls[callID]; existing != nil {
-			if existing.ConversationID != cid || existing.CallerID != uid || existing.CalleeID != calleeID || existing.MediaType != mediaType {
+			if existing.ConversationID != cid || existing.Kind != kind || existing.CallerID != uid || existing.CalleeID != calleeID || existing.MediaType != mediaType {
 				return nil, false, ErrConflict
 			}
 			copy := *existing
@@ -3278,11 +4142,8 @@ func (a *App) InviteCall(uid, cid, calleeID, callID, mediaType string) (*model.C
 				return nil, false, ErrConflict
 			}
 		}
-		call = &model.CallSession{ID: callID, ConversationID: cid, CallerID: uid, CalleeID: calleeID, MediaType: mediaType, Status: "invited", InvitedAt: now, ExpiresAt: invite.ExpiresAt, UpdatedAt: now}
+		call = &model.CallSession{ID: callID, ConversationID: cid, Kind: kind, CallerID: uid, CalleeID: calleeID, ParticipantIDs: append([]string(nil), ids...), JoinedUserIDs: []string{uid}, MediaType: mediaType, Status: "invited", InvitedAt: now, ExpiresAt: invite.ExpiresAt, UpdatedAt: now}
 		a.calls[callID] = call
-	}
-	if !duplicate {
-		_ = a.publishCall([]string{calleeID}, "call.invited", map[string]any{"call": call, "callId": call.ID, "conversationId": call.ConversationID, "mediaType": call.MediaType})
 	}
 	return call, duplicate, nil
 }
@@ -3324,10 +4185,6 @@ func (a *App) TransitionCall(uid, callID, action, reason string) (*model.CallSes
 			return call, false, err
 		}
 	}
-	if !duplicate {
-		event := map[string]string{"accept": "call.accepted", "reject": "call.rejected", "cancel": "call.cancelled", "hangup": "call.ended", "end": "call.ended"}[action]
-		_ = a.publishCall([]string{call.CallerID, call.CalleeID}, event, map[string]any{"call": call})
-	}
 	return call, duplicate, nil
 }
 
@@ -3335,57 +4192,120 @@ func transitionMemoryCall(c *model.CallSession, uid, action, reason string, at t
 	if c == nil {
 		return nil, false, ErrNotFound
 	}
-	if uid != c.CallerID && uid != c.CalleeID {
+	if !callSessionHas(c.ParticipantIDs, uid) {
 		return nil, false, ErrForbidden
 	}
 	if c.Status == "invited" && !at.Before(c.ExpiresAt) {
 		c.Status, c.EndReason, c.UpdatedAt, c.EndedAt = "missed", "timeout", at, &at
 		return c, false, ErrConflict
 	}
-	target := ""
-	switch action {
-	case "accept":
-		if c.Status == "accepted" && uid == c.CalleeID {
-			return c, true, nil
+	terminal := false
+	if c.Kind == "group" {
+		switch action {
+		case "accept":
+			if callSessionHas(c.JoinedUserIDs, uid) && uid != c.CallerID {
+				return c, true, nil
+			}
+			if uid == c.CallerID || (c.Status != "invited" && c.Status != "accepted") || callSessionHas(c.DeclinedUserIDs, uid) || callSessionHas(c.LeftUserIDs, uid) {
+				return nil, false, ErrConflict
+			}
+			c.JoinedUserIDs = appendCallSessionUser(c.JoinedUserIDs, uid)
+			c.Status = "accepted"
+			if c.AcceptedAt == nil {
+				c.AcceptedAt = &at
+			}
+		case "reject":
+			if callSessionHas(c.DeclinedUserIDs, uid) {
+				return c, true, nil
+			}
+			if uid == c.CallerID || (c.Status != "invited" && c.Status != "accepted") || callSessionHas(c.JoinedUserIDs, uid) {
+				return nil, false, ErrConflict
+			}
+			c.DeclinedUserIDs = appendCallSessionUser(c.DeclinedUserIDs, uid)
+			if c.Status == "invited" && allMemoryCallInviteesDeclined(c) {
+				c.Status, terminal = "rejected", true
+			}
+		case "cancel":
+			if c.Status == "cancelled" && uid == c.CallerID {
+				return c, true, nil
+			}
+			if c.Status != "invited" || uid != c.CallerID {
+				return nil, false, ErrConflict
+			}
+			c.Status, terminal = "cancelled", true
+		case "hangup", "end":
+			if callSessionHas(c.LeftUserIDs, uid) || c.Status == "ended" {
+				return c, true, nil
+			}
+			if c.Status == "invited" && action == "end" && uid != c.CallerID {
+				c.DeclinedUserIDs = appendCallSessionUser(c.DeclinedUserIDs, uid)
+				if allMemoryCallInviteesDeclined(c) {
+					c.Status, terminal = "rejected", true
+				}
+			} else if c.Status == "invited" && action == "end" && uid == c.CallerID {
+				c.Status, terminal = "cancelled", true
+			} else if c.Status == "accepted" && callSessionHas(c.JoinedUserIDs, uid) {
+				c.LeftUserIDs = appendCallSessionUser(c.LeftUserIDs, uid)
+				if uid == c.CallerID {
+					c.Status, terminal = "ended", true
+				}
+			} else {
+				return nil, false, ErrConflict
+			}
+		default:
+			return nil, false, ErrInvalid
 		}
-		if c.Status != "invited" || uid != c.CalleeID {
-			return nil, false, ErrConflict
+	} else {
+		target := ""
+		switch action {
+		case "accept":
+			if c.Status == "accepted" && uid == c.CalleeID {
+				return c, true, nil
+			}
+			if c.Status != "invited" || uid != c.CalleeID {
+				return nil, false, ErrConflict
+			}
+			c.JoinedUserIDs = appendCallSessionUser(c.JoinedUserIDs, uid)
+			target, c.AcceptedAt = "accepted", &at
+		case "reject":
+			if c.Status == "rejected" && uid == c.CalleeID {
+				return c, true, nil
+			}
+			if c.Status != "invited" || uid != c.CalleeID {
+				return nil, false, ErrConflict
+			}
+			c.DeclinedUserIDs = appendCallSessionUser(c.DeclinedUserIDs, uid)
+			target, terminal = "rejected", true
+		case "cancel":
+			if c.Status == "cancelled" && uid == c.CallerID {
+				return c, true, nil
+			}
+			if c.Status != "invited" || uid != c.CallerID {
+				return nil, false, ErrConflict
+			}
+			target, terminal = "cancelled", true
+		case "hangup", "end":
+			if c.Status == "ended" || (action == "end" && (c.Status == "cancelled" || c.Status == "rejected")) {
+				return c, true, nil
+			}
+			if c.Status == "accepted" {
+				c.LeftUserIDs = appendCallSessionUser(c.LeftUserIDs, uid)
+				target, terminal = "ended", true
+			} else if action == "end" && c.Status == "invited" && uid == c.CallerID {
+				target, terminal = "cancelled", true
+			} else if action == "end" && c.Status == "invited" && uid == c.CalleeID {
+				c.DeclinedUserIDs = appendCallSessionUser(c.DeclinedUserIDs, uid)
+				target, terminal = "rejected", true
+			} else {
+				return nil, false, ErrConflict
+			}
+		default:
+			return nil, false, ErrInvalid
 		}
-		target, c.AcceptedAt = "accepted", &at
-	case "reject":
-		if c.Status == "rejected" && uid == c.CalleeID {
-			return c, true, nil
-		}
-		if c.Status != "invited" || uid != c.CalleeID {
-			return nil, false, ErrConflict
-		}
-		target = "rejected"
-	case "cancel":
-		if c.Status == "cancelled" && uid == c.CallerID {
-			return c, true, nil
-		}
-		if c.Status != "invited" || uid != c.CallerID {
-			return nil, false, ErrConflict
-		}
-		target = "cancelled"
-	case "hangup", "end":
-		if c.Status == "ended" || (action == "end" && (c.Status == "cancelled" || c.Status == "rejected")) {
-			return c, true, nil
-		}
-		if c.Status == "accepted" {
-			target = "ended"
-		} else if action == "end" && c.Status == "invited" && uid == c.CallerID {
-			target = "cancelled"
-		} else if action == "end" && c.Status == "invited" && uid == c.CalleeID {
-			target = "rejected"
-		} else {
-			return nil, false, ErrConflict
-		}
-	default:
-		return nil, false, ErrInvalid
+		c.Status = target
 	}
-	c.Status, c.EndReason, c.UpdatedAt = target, reason, at
-	if target != "accepted" {
+	c.EndReason, c.UpdatedAt = reason, at
+	if terminal {
 		c.EndedAt, c.EndedBy = &at, uid
 		if c.AcceptedAt != nil {
 			c.DurationSeconds = max(int64(0), int64(at.Sub(*c.AcceptedAt).Seconds()))
@@ -3393,6 +4313,33 @@ func transitionMemoryCall(c *model.CallSession, uid, action, reason string, at t
 	}
 	copy := *c
 	return &copy, false, nil
+}
+
+func callSessionHas(users []string, userID string) bool {
+	for _, candidate := range users {
+		if candidate == userID {
+			return true
+		}
+	}
+	return false
+}
+
+func appendCallSessionUser(users []string, userID string) []string {
+	if callSessionHas(users, userID) {
+		return users
+	}
+	users = append(users, userID)
+	sort.Strings(users)
+	return users
+}
+
+func allMemoryCallInviteesDeclined(c *model.CallSession) bool {
+	for _, participantID := range c.ParticipantIDs {
+		if participantID != c.CallerID && !callSessionHas(c.DeclinedUserIDs, participantID) {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *App) GetCall(uid, callID string) (*model.CallSession, error) {
@@ -3408,7 +4355,7 @@ func (a *App) GetCall(uid, callID string) (*model.CallSession, error) {
 	if call == nil {
 		return nil, ErrNotFound
 	}
-	if uid != call.CallerID && uid != call.CalleeID {
+	if !callSessionHas(call.ParticipantIDs, uid) {
 		return nil, ErrNotFound
 	}
 	if call.Status == "invited" && !time.Now().Before(call.ExpiresAt) {
@@ -3440,147 +4387,22 @@ func (a *App) RunCallTimeouts(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			expired, err := calls.ExpireCalls(ctx, now, 100)
-			if err != nil {
-				continue
-			}
-			for _, call := range expired {
-				_ = a.publishCall([]string{call.CallerID, call.CalleeID}, "call.timeout", map[string]any{"call": call})
-			}
+			_, _ = calls.ExpireCalls(ctx, now, 100)
 		}
 	}
 }
-
-func (a *App) SignalCall(uid, cid, typ string, payload map[string]any) error {
-	callID, _ := payload["callId"].(string)
-	if !callIDPattern.MatchString(callID) {
-		return ErrInvalid
-	}
-	deliverType := typ
-	switch typ {
-	case "call.offer":
-		mediaType, _ := payload["mediaType"].(string)
-		callee, _ := payload["calleeUserId"].(string)
-		call, _, err := a.InviteCall(uid, cid, callee, callID, mediaType)
-		if err != nil {
-			return err
-		}
-		if call.ConversationID != cid {
-			return ErrConflict
-		}
-	case "call.answer":
-		existing, err := a.GetCall(uid, callID)
-		if err != nil {
-			return err
-		}
-		if existing.ConversationID != cid {
-			return ErrConflict
-		}
-		call, _, err := a.TransitionCall(uid, callID, "accept", "")
-		if err != nil {
-			return err
-		}
-		if call.ConversationID != cid {
-			return ErrConflict
-		}
-	case "call.end":
-		existing, err := a.GetCall(uid, callID)
-		if err != nil {
-			return err
-		}
-		if existing.ConversationID != cid {
-			return ErrConflict
-		}
-		call, _, err := a.TransitionCall(uid, callID, "end", stringValue(payload["reason"]))
-		if err != nil {
-			return err
-		}
-		if call.ConversationID != cid {
-			return ErrConflict
-		}
-	case "call.ice":
-		call, err := a.GetCall(uid, callID)
-		if err != nil {
-			return err
-		}
-		if call.ConversationID != cid || (call.Status != "invited" && call.Status != "accepted") {
-			return ErrConflict
-		}
-	case "call.signal.received":
-		call, err := a.GetCall(uid, callID)
-		if err != nil {
-			return err
-		}
-		signalID, _ := payload["signalId"].(string)
-		if call.ConversationID != cid || !callIDPattern.MatchString(signalID) {
-			return ErrInvalid
-		}
-		deliverType = "call.signal.ack"
-	default:
-		return ErrInvalid
-	}
-	ids, err := a.callMemberIDs(uid, cid)
-	if err != nil {
-		return err
-	}
-	others := make([]string, 0, len(ids))
-	for _, member := range ids {
-		if member != uid {
-			others = append(others, member)
-		}
-	}
-	payload["conversationId"], payload["fromUserId"], payload["serverTime"] = cid, uid, time.Now()
-	return a.publishCall(others, deliverType, payload)
-}
-func stringValue(v any) string { s, _ := v.(string); return s }
-func (a *App) Sync(uid string, after int64, limit int) ([]*model.SyncEvent, int64, bool) {
-	return a.SyncContext(context.Background(), uid, after, limit)
-}
-func (a *App) SyncContext(parent context.Context, uid string, after int64, limit int) ([]*model.SyncEvent, int64, bool) {
-	if q, ok := a.persistence.(store.QueryStore); ok {
-		ctx, cancel := context.WithTimeout(parent, 4*time.Second)
-		defer cancel()
-		events, cursor, more, err := q.ListSync(ctx, uid, after, limit)
-		if err == nil {
-			return events, cursor, more
-		}
-		return nil, after, false
-	}
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if limit <= 0 || limit > 500 {
-		limit = 200
-	}
-	xs := a.state.SyncEvents[uid]
-	i := sort.Search(len(xs), func(i int) bool { return xs[i].Seq > after })
-	end := min(len(xs), i+limit)
-	out := append([]*model.SyncEvent(nil), xs[i:end]...)
-	cursor := after
-	if len(out) > 0 {
-		cursor = out[len(out)-1].Seq
-	}
-	return out, cursor, end < len(xs)
-}
-func (a *App) syncLocked(uid, typ string, payload map[string]any) *model.SyncEvent {
-	a.state.UserSyncSeq[uid]++
-	// 同步事件离开状态锁后会异步序列化。必须在锁内保存独立快照，避免后续
-	// 编辑消息、修改群资料等操作与 WebSocket JSON 编码并发读写同一对象。
-	snapshot := cloneJSONMap(payload)
-	e := &model.SyncEvent{Seq: a.state.UserSyncSeq[uid], UserID: uid, Type: typ, Payload: snapshot, CreatedAt: time.Now()}
-	a.state.SyncEvents[uid] = append(a.state.SyncEvents[uid], e)
-	return e
+func (a *App) businessEventLocked(uid, typ string, payload map[string]any) *businessEvent {
+	return &businessEvent{UserID: uid, Type: typ, Payload: cloneJSONMap(payload)}
 }
 
 func cloneJSONMap(value map[string]any) map[string]any {
 	raw, err := json.Marshal(value)
 	if err != nil {
-		// 所有同步 payload 都由服务端构造且必须满足 JSON 协议；若新增了不可编码
-		// 类型，应在测试阶段立即暴露，而不是发送不完整事件导致客户端游标跳过。
-		panic("sync payload is not JSON serializable: " + err.Error())
+		panic("business event payload is not JSON serializable: " + err.Error())
 	}
 	cloned := make(map[string]any, len(value))
 	if err = json.Unmarshal(raw, &cloned); err != nil {
-		panic("sync payload snapshot cannot be decoded: " + err.Error())
+		panic("business event payload snapshot cannot be decoded: " + err.Error())
 	}
 	return cloned
 }
@@ -3593,15 +4415,11 @@ func (a *App) publish(ids []string, typ string, payload any) {
 	}
 }
 
-// Deliver publishes a durable cross-instance event to connections held by this
-// process. Persistence implementations invoke it after receiving the event bus.
-func (a *App) Deliver(ids []string, typ string, payload map[string]any) { a.publish(ids, typ, payload) }
-
 func (a *App) Report(uid, targetType, targetID, reason, details string) (*model.Report, error) {
 	if targetID == "" || reason == "" || len([]rune(reason)) > 80 || len([]rune(details)) > 5000 {
 		return nil, ErrInvalid
 	}
-	if targetType != "user" && targetType != "message" && targetType != "group" {
+	if targetType != "user" && targetType != "message" && targetType != "group" && targetType != "moment" {
 		return nil, ErrInvalid
 	}
 	if s, ok := a.persistence.(store.RuntimeMutationStore); ok {
@@ -3633,6 +4451,13 @@ func (a *App) Report(uid, targetType, targetID, reason, details string) (*model.
 	return r, nil
 }
 func (a *App) AdminStats() map[string]any {
+	if s, ok := a.persistence.(store.AdminOperationsStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if stats, err := s.AdminStats(ctx); err == nil {
+			return stats
+		}
+	}
 	_ = a.refresh()
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -3648,7 +4473,7 @@ func (a *App) AdminStats() map[string]any {
 			banned++
 		}
 	}
-	return map[string]any{"users": len(a.state.Users), "bannedUsers": banned, "conversations": len(a.state.Conversations), "messages": len(a.state.MessageByID), "pendingReports": pending, "websocketConnections": a.Metrics.WSConnections.Load()}
+	return map[string]any{"users": len(a.state.Users), "bannedUsers": banned, "conversations": len(a.state.Conversations), "messages": len(a.state.MessageByID), "pendingReports": pending}
 }
 func (a *App) AdminUsers(q string) []*model.User { return a.SearchUsers(q) }
 func (a *App) AdminUsersPage(q, status, cursor string, limit int) ([]*model.User, int64, string, error) {
@@ -4397,7 +5222,7 @@ func (a *App) DisbandGroup(actor, cid, reason string) error {
 	delete(a.state.Messages, cid)
 	a.auditLocked(actor, "group.disbanded", "group", cid, map[string]any{"reason": reason})
 	for _, uid := range ids {
-		a.syncLocked(uid, "group.disbanded", map[string]any{"conversationId": cid})
+		a.businessEventLocked(uid, "group.disbanded", map[string]any{"conversationId": cid})
 	}
 	if err := a.saveLocked(); err != nil {
 		return err
@@ -4656,6 +5481,38 @@ func (a *App) GetMedia(id string) (store.Media, error) {
 	}
 	return store.Media{ID: m.ID, OwnerID: m.OwnerID, ObjectKey: m.ObjectKey, MIME: m.MIME, Status: m.Status, Checksum: m.Checksum, Size: m.Size}, nil
 }
+
+func (a *App) BindMediaChannel(binding store.MediaChannelBinding) error {
+	media, err := a.GetMedia(binding.MediaID)
+	if err != nil {
+		return err
+	}
+	if media.Status != "ready" || binding.ChannelID == "" || binding.SenderID == "" {
+		return ErrForbidden
+	}
+	// A server-side forward may legitimately reuse media uploaded by the
+	// original sender. Require the forwarding sender to already have access;
+	// the public fresh-upload endpoint applies the stricter ownership check.
+	allowed, err := a.CanAccessMedia(binding.SenderID, binding.MediaID)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return ErrForbidden
+	}
+	if bindings, ok := a.persistence.(store.MediaChannelBindingStore); ok {
+		return bindings.BindMediaChannel(context.Background(), binding)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, existing := range a.mediaBindings[binding.MediaID] {
+		if existing.ChannelID == binding.ChannelID && existing.ChannelType == binding.ChannelType {
+			return nil
+		}
+	}
+	a.mediaBindings[binding.MediaID] = append(a.mediaBindings[binding.MediaID], binding)
+	return nil
+}
 func (a *App) LeaseMediaCleanup(ctx context.Context, now time.Time, pendingAge, orphanAge, lease time.Duration, limit int) ([]store.MediaCleanupItem, error) {
 	if cleanup, ok := a.persistence.(store.MediaCleanupStore); ok {
 		return cleanup.LeaseMediaCleanup(ctx, now, pendingAge, orphanAge, lease, limit)
@@ -4697,6 +5554,18 @@ func (a *App) CanAccessMedia(uid, id string) (bool, error) {
 		}
 		for _, message := range messages {
 			if mediaID, _ := message.Body["mediaId"].(string); mediaID == id {
+				return true, nil
+			}
+		}
+	}
+	for _, binding := range a.mediaBindings[id] {
+		switch binding.ChannelType {
+		case 1:
+			if binding.SenderID == uid || binding.ChannelID == uid {
+				return true, nil
+			}
+		case 2:
+			if a.state.Members[binding.ChannelID][uid] != nil {
 				return true, nil
 			}
 		}

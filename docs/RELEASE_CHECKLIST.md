@@ -12,9 +12,12 @@
 - [ ] 文档链接、Shell 语法和 Compose 配置检查通过。
 - [ ] 数据库迁移已审阅，确认向前兼容且不自动执行 down migration。
 - [ ] `.env.production` 权限为 `600`，无占位符、开发验证码或日志推送。
-- [ ] 短信、个推/APNs/Android 厂商通道、TURN、对象存储与管理员 TOTP 已配置。
-- [ ] 自建 Coturn 的 3478 TCP/UDP 与 49160–49200 UDP 已在主机和云安全组放行，并完成跨网络中继验证。
-- [ ] PostgreSQL 和媒体备份完成，校验值已复制到异机。
+- [ ] `infra/scripts/verify-wukong-server-patch.sh` 已通过；自定义 WuKongIM 镜像已推送到受控仓库，`WUKONG_IMAGE` 固定为实际 `repository@sha256`，并记录构建来源与补丁摘要。
+- [ ] 短信、个推/APNs/Android 厂商通道、LiveKit、对象存储与管理员 TOTP 已配置。
+- [ ] LiveKit 的 7881/TCP 与 7882–7889/UDP 已在主机和云安全组放行，并完成跨网络音视频验证。
+- [ ] PostgreSQL、WuKongIM 和 MinIO 完整备份完成，固定版本锁与校验值已复制到异机。
+- [ ] 异地S3目标已启用，`_COMPLETE`最后写入，对象锁/保留策略和下载校验已验证。
+- [ ] `nexachat_backup_last_status=1`、最近成功时间未陈旧且不存在非运行中的 `.incomplete-*`。
 - [ ] 恢复演练在约定周期内完成，RPO/RTO 证据有效。
 - [ ] 监控、告警接收人、值班和回滚负责人在线。
 

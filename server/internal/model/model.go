@@ -155,19 +155,16 @@ type MessagePin struct {
 	PinnedAt       time.Time `json:"pinnedAt"`
 }
 
-type SyncEvent struct {
-	Seq       int64          `json:"userSyncSeq"`
-	UserID    string         `json:"userId"`
-	Type      string         `json:"type"`
-	Payload   map[string]any `json:"payload"`
-	CreatedAt time.Time      `json:"createdAt"`
-}
-
 type CallSession struct {
 	ID              string     `json:"id"`
 	ConversationID  string     `json:"conversationId"`
+	Kind            string     `json:"kind"`
 	CallerID        string     `json:"callerId"`
-	CalleeID        string     `json:"calleeId"`
+	CalleeID        string     `json:"calleeId,omitempty"`
+	ParticipantIDs  []string   `json:"participantIds"`
+	JoinedUserIDs   []string   `json:"joinedUserIds"`
+	DeclinedUserIDs []string   `json:"declinedUserIds"`
+	LeftUserIDs     []string   `json:"leftUserIds"`
 	MediaType       string     `json:"mediaType"`
 	Status          string     `json:"status"`
 	EndReason       string     `json:"endReason,omitempty"`
@@ -261,8 +258,6 @@ type State struct {
 	MessageEditRequests map[string]map[string]string              `json:"messageEditRequests"`
 	MessageReactions    map[string]map[string]map[string]bool     `json:"messageReactions"`
 	GroupMessagePins    map[string]map[string]*MessagePin         `json:"groupMessagePins"`
-	SyncEvents          map[string][]*SyncEvent                   `json:"syncEvents"`
-	UserSyncSeq         map[string]int64                          `json:"userSyncSeq"`
 	Reports             map[string]*Report                        `json:"reports"`
 	Audits              []*AuditEntry                             `json:"audits"`
 	SensitiveWords      map[string]string                         `json:"sensitiveWords"`
@@ -276,8 +271,8 @@ func NewState() *State {
 		Users: map[string]*User{}, PhoneToUser: map[string]string{}, FriendRequests: map[string]*FriendRequest{},
 		Friends: map[string]map[string]bool{}, Blocks: map[string]map[string]bool{}, Conversations: map[string]*Conversation{},
 		Members: map[string]map[string]*ConversationMember{}, DirectIndex: map[string]string{}, Messages: map[string][]*Message{},
-		MessageByID: map[string]*Message{}, MessageIdempotency: map[string]string{}, MessageEdits: map[string][]*MessageEdit{}, MessageEditRequests: map[string]map[string]string{}, MessageReactions: map[string]map[string]map[string]bool{}, GroupMessagePins: map[string]map[string]*MessagePin{}, SyncEvents: map[string][]*SyncEvent{},
-		UserSyncSeq: map[string]int64{}, Reports: map[string]*Report{}, Audits: []*AuditEntry{},
+		MessageByID: map[string]*Message{}, MessageIdempotency: map[string]string{}, MessageEdits: map[string][]*MessageEdit{}, MessageEditRequests: map[string]map[string]string{}, MessageReactions: map[string]map[string]map[string]bool{}, GroupMessagePins: map[string]map[string]*MessagePin{},
+		Reports: map[string]*Report{}, Audits: []*AuditEntry{},
 		SensitiveWords: map[string]string{}, Settings: map[string]any{
 			"registrationEnabled": true, "allowRegistration": true, "passwordMinLength": 8,
 			"maxMessageTextLength": 5000, "messageRecallMinutes": 2,

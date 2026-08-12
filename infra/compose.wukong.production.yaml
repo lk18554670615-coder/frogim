@@ -1,0 +1,180 @@
+services:
+  server:
+    environment:
+      IM_WUKONG_ENABLED: "true"
+      IM_WUKONG_API_URL: http://wukongim:5001
+      IM_WUKONG_MANAGER_URL: http://wukongim:5300
+      IM_WUKONG_MANAGER_TOKEN: ${IM_WUKONG_MANAGER_TOKEN:?set IM_WUKONG_MANAGER_TOKEN}
+      IM_WUKONG_TOKEN_SECRET: ${IM_WUKONG_TOKEN_SECRET:?set IM_WUKONG_TOKEN_SECRET}
+      IM_WUKONG_POLICY_SECRET: ${IM_WUKONG_POLICY_SECRET:?set IM_WUKONG_POLICY_SECRET}
+      IM_WUKONG_GRPC_ADDR: :6970
+      IM_WUKONG_TCP_URL: ${IM_WUKONG_TCP_URL:?set IM_WUKONG_TCP_URL}
+      IM_WUKONG_WS_URL: ${IM_WUKONG_WS_URL:?set IM_WUKONG_WS_URL}
+      IM_WUKONG_PLUGIN_DIR: /var/lib/nexachat/wukong-plugins
+      IM_WUKONG_PLUGIN_TRUSTED_KEYS: ${IM_WUKONG_PLUGIN_TRUSTED_KEYS:?set IM_WUKONG_PLUGIN_TRUSTED_KEYS}
+      IM_WUKONG_PLUGIN_ALLOWLIST: ${IM_WUKONG_PLUGIN_ALLOWLIST:?set IM_WUKONG_PLUGIN_ALLOWLIST}
+      IM_WUKONG_PLUGIN_MAX_BYTES: ${IM_WUKONG_PLUGIN_MAX_BYTES:-67108864}
+      IM_LIVEKIT_ENABLED: "true"
+      IM_LIVEKIT_URL: ${IM_LIVEKIT_URL:?set IM_LIVEKIT_URL}
+      IM_LIVEKIT_API_URL: http://livekit:7880
+      IM_LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY}
+      IM_LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET}
+      IM_LIVEKIT_TOKEN_TTL: ${IM_LIVEKIT_TOKEN_TTL:-5m}
+    expose:
+      - "6970"
+    volumes:
+      - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/wukongim/plugins:/var/lib/nexachat/wukong-plugins
+
+  wukongim:
+    image: ${WUKONG_IMAGE:?set WUKONG_IMAGE to the promoted repository@sha256 digest}
+    platform: linux/amd64
+    environment:
+      WK_MODE: release
+      WK_MANAGERTOKEN: ${IM_WUKONG_MANAGER_TOKEN:?set IM_WUKONG_MANAGER_TOKEN}
+      WK_TOKENAUTHON: "true"
+      WK_EXTERNAL_IP: ${WUKONG_EXTERNAL_IP:?set WUKONG_EXTERNAL_IP}
+      WK_EXTERNAL_TCPADDR: ${IM_WUKONG_TCP_URL:?set IM_WUKONG_TCP_URL}
+      WK_EXTERNAL_WSSADDR: ${IM_WUKONG_WS_URL:?set IM_WUKONG_WS_URL}
+      WK_WEBHOOK_GRPCADDR: server:6970
+      WK_DATASOURCE_ADDR: http://server:8080/internal/wukong/datasource
+      WK_DATASOURCE_CHANNELINFOON: "false"
+      WK_TRACE_PROMETHEUSAPIURL: http://prometheus:9090
+      IM_WUKONG_POLICY_URL: http://server:8080/internal/wukong/policy/send
+      IM_WUKONG_POLICY_SECRET: ${IM_WUKONG_POLICY_SECRET:?set IM_WUKONG_POLICY_SECRET}
+      IM_WUKONG_POLICY_TIMEOUT: ${IM_WUKONG_POLICY_TIMEOUT:-500ms}
+    volumes:
+      - ./wukongim/wk.yaml:/root/wukongim/wk.yaml:ro
+      - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/wukongim/data:/root/wukongim/data
+      - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/wukongim/logs:/root/wukongim/logs
+      - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/wukongim/plugins:/root/wukongim/data/plugins
+    ports:
+      - "${WUKONG_TCP_BIND:-0.0.0.0}:${WUKONG_TCP_PORT:-5100}:5100"
+    expose:
+      - "5001"
+      - "5200"
+      - "5300"
+    networks:
+      - app
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --header='token: '$$WK_MANAGERTOKEN -O /dev/null http://127.0.0.1:5001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+      wukong-policy-plugin-init:
+        condition: service_completed_successfully
+
+  wukong-policy-plugin-init:
+    build:
+      context: ..
+      dockerfile: tools/wukong-policy-plugin/Dockerfile
+    platform: linux/amd64
+    volumes:
+      - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/wukongim/plugins:/data/plugins
+    networks:
+      - app
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  wukong-probe:
+    profiles: ["probe"]
+    build:
+      context: ../tools/wukong-probe
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    command:
+      - -api
+      - http://wukongim:5001
+      - -manager-api
+      - http://wukongim:5300
+      - -tcp
+      - tcp://wukongim:5100
+      - -manager-token
+      - ${IM_WUKONG_MANAGER_TOKEN:?set IM_WUKONG_MANAGER_TOKEN}
+      - -timeout
+      - 90s
+    networks:
+      - app
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      server:
+        condition: service_healthy
+      wukongim:
+        condition: service_healthy
+
+  # Explicit profile and harmless default prevent an accidental production
+  # load. Use `docker compose ... run --rm wukong-load <threshold flags>` only
+  # in the approved disposable load environment.
+  wukong-load:
+    profiles: ["loadtest"]
+    build:
+      context: ../tools/wukong-load
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    command: ["-h"]
+    environment:
+      WUKONG_API_URL: http://wukongim:5001
+      WUKONG_BUSINESS_API_URL: http://server:8080
+      WUKONG_TCP_URL: tcp://wukongim:5100
+      WUKONG_LOAD_OTP: ${WUKONG_LOAD_OTP:-}
+      IM_WUKONG_MANAGER_TOKEN: ${IM_WUKONG_MANAGER_TOKEN:?set IM_WUKONG_MANAGER_TOKEN}
+    networks:
+      - app
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      server:
+        condition: service_healthy
+      wukongim:
+        condition: service_healthy
+
+  livekit:
+    image: docker.io/livekit/livekit-server@sha256:d0d1cfdbe95617647bbe91630454526c2cdd88cec83f41114b3495b444918b9a
+    platform: linux/amd64
+    command: ["--config", "/etc/livekit.yaml"]
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET}"
+    volumes:
+      - ./livekit/livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "${LIVEKIT_TCP_BIND:-0.0.0.0}:${LIVEKIT_TCP_PORT:-7881}:7881"
+      - "${LIVEKIT_UDP_BIND:-0.0.0.0}:7882-7889:7882-7889/udp"
+    expose:
+      - "7880"
+      - "6789"
+    networks:
+      - app
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:7880/"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped

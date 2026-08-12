@@ -8,6 +8,8 @@ import 'package:flutter/foundation.dart';
 import '../calls/call_controller.dart';
 import '../calls/call_repository.dart';
 import '../data/im_repository.dart';
+import '../im/business_features.dart';
+import 'client_message_id.dart';
 import 'models.dart';
 
 class AppController extends ChangeNotifier {
@@ -46,6 +48,14 @@ class AppController extends ChangeNotifier {
   final Map<String, int> _lastDeliveredSeq = {};
   final Map<String, int> _pendingDeliveredSeq = {};
   final Map<String, Timer> _deliveryTimers = {};
+  final Map<String, Map<String, DateTime>> _typingUsers = {};
+  final Map<String, Timer> _typingExpiryTimers = {};
+  final Map<String, Timer> _typingStopTimers = {};
+  final Map<String, DateTime> _lastTypingSent = {};
+  final Set<String> _typingAnnounced = {};
+  Timer? _conversationRefreshTimer;
+  bool _conversationRefreshRunning = false;
+  bool _conversationRefreshQueued = false;
   final Set<String> _linkPreviewAttempted = {};
   final Set<String> messageLoading = {};
   final Map<String, String> messageErrors = {};
@@ -75,6 +85,34 @@ class AppController extends ChangeNotifier {
   );
   String? get pendingConversationId => _pendingConversationId;
   String? get activeConversationId => _activeConversationId;
+  String? typingLabelFor(String conversationId) {
+    final now = DateTime.now();
+    final userIds = (_typingUsers[conversationId] ?? const {}).entries
+        .where((entry) => entry.value.isAfter(now))
+        .map((entry) => entry.key)
+        .toList();
+    if (userIds.isEmpty) return null;
+    final conversation = conversations
+        .where((item) => item.id == conversationId)
+        .firstOrNull;
+    if (conversation == null || conversation.kind != ConversationKind.group) {
+      return '正在输入…';
+    }
+    final names = userIds
+        .map(
+          (userId) => conversation.members
+              .where((member) => member.id == userId)
+              .firstOrNull
+              ?.name,
+        )
+        .whereType<String>()
+        .where((name) => name.trim().isNotEmpty)
+        .toList();
+    if (names.isEmpty) return '有人正在输入…';
+    if (names.length == 1) return '${names.single} 正在输入…';
+    return '${names.take(2).join('、')} 等正在输入…';
+  }
+
   List<ChatMessage> messagesFor(String conversationId) =>
       List.unmodifiable(_messages[conversationId] ?? const []);
   String draftFor(String conversationId) => _drafts[conversationId] ?? '';
@@ -84,6 +122,15 @@ class AppController extends ChangeNotifier {
       List.unmodifiable(_scheduledMessages[conversationId] ?? const []);
   int get archivedConversationCount =>
       conversations.where((conversation) => conversation.archived).length;
+  bool get supportsBusinessFeatures => repository is BusinessFeatureRepository;
+
+  BusinessFeatureRepository get _businessFeatures {
+    final active = repository;
+    if (active is BusinessFeatureRepository) {
+      return active as BusinessFeatureRepository;
+    }
+    throw StateError('当前模式不支持业务频道与客服功能');
+  }
 
   Future<String> loadDraft(String conversationId) async {
     final draft = await repository.readDraft(conversationId);
@@ -354,6 +401,311 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<List<BusinessChannelSummary>> loadBusinessChannels({
+    int channelType = 0,
+    String parentId = '',
+  }) => _businessFeatures.businessChannels(
+    channelType: channelType,
+    parentId: parentId,
+  );
+
+  Future<BusinessChannelSummary> createBusinessChannel({
+    required int channelType,
+    required String name,
+    String parentId = '',
+    String description = '',
+    String postingPolicy = 'members',
+    int slowModeSeconds = 0,
+  }) => _businessFeatures.createBusinessChannel(
+    channelType: channelType,
+    name: name,
+    parentId: parentId,
+    description: description,
+    postingPolicy: postingPolicy,
+    slowModeSeconds: slowModeSeconds,
+  );
+
+  Future<BusinessChannelSummary> loadBusinessChannel(
+    String channelId,
+    int channelType,
+  ) => _businessFeatures.businessChannel(channelId, channelType);
+
+  Future<BusinessChannelSummary> updateBusinessChannel(
+    BusinessChannelSummary channel, {
+    String? name,
+    String? description,
+    String? visibility,
+    String? joinPolicy,
+    String? postingPolicy,
+    int? slowModeSeconds,
+    bool? sendBan,
+    bool? allowStranger,
+  }) => _businessFeatures.updateBusinessChannel(
+    channel.id,
+    channel.channelType,
+    name: name,
+    description: description,
+    visibility: visibility,
+    joinPolicy: joinPolicy,
+    postingPolicy: postingPolicy,
+    slowModeSeconds: slowModeSeconds,
+    sendBan: sendBan,
+    allowStranger: allowStranger,
+  );
+
+  Future<List<BusinessChannelMemberSummary>> loadBusinessChannelMembers(
+    BusinessChannelSummary channel,
+  ) =>
+      _businessFeatures.businessChannelMembers(channel.id, channel.channelType);
+
+  Future<void> addBusinessChannelMember(
+    BusinessChannelSummary channel,
+    String userId, {
+    DateTime? expiresAt,
+  }) => _businessFeatures.addBusinessChannelMember(
+    channel.id,
+    channel.channelType,
+    userId,
+    expiresAt: expiresAt,
+  );
+
+  Future<void> removeBusinessChannelMember(
+    BusinessChannelSummary channel,
+    String userId,
+  ) => _businessFeatures.removeBusinessChannelMember(
+    channel.id,
+    channel.channelType,
+    userId,
+  );
+
+  Future<void> updateBusinessChannelMember(
+    BusinessChannelSummary channel,
+    String userId, {
+    String? role,
+    DateTime? mutedUntil,
+    bool clearMute = false,
+    DateTime? expiresAt,
+    bool clearExpiry = false,
+  }) => _businessFeatures.updateBusinessChannelMember(
+    channel.id,
+    channel.channelType,
+    userId,
+    role: role,
+    mutedUntil: mutedUntil,
+    clearMute: clearMute,
+    expiresAt: expiresAt,
+    clearExpiry: clearExpiry,
+  );
+
+  Future<void> setBusinessChannelAccess(
+    BusinessChannelSummary channel,
+    String userId,
+    String accessType,
+    bool enabled, {
+    String reason = '',
+  }) => _businessFeatures.setBusinessChannelAccess(
+    channel.id,
+    channel.channelType,
+    userId,
+    accessType,
+    enabled,
+    reason: reason,
+  );
+
+  Future<List<BusinessChannelAccessSummary>> loadBusinessChannelAccess(
+    BusinessChannelSummary channel, {
+    String accessType = '',
+  }) => _businessFeatures.businessChannelAccess(
+    channel.id,
+    channel.channelType,
+    accessType: accessType,
+  );
+
+  Future<Conversation?> enterBusinessChannel(
+    BusinessChannelSummary channel, {
+    DateTime? expiresAt,
+  }) async {
+    if (!channel.subscribed) {
+      await _businessFeatures.subscribeBusinessChannel(
+        channel.id,
+        channel.channelType,
+        expiresAt: expiresAt,
+      );
+    }
+    return _refreshAndFindBusinessConversation(channel.id);
+  }
+
+  Future<void> leaveBusinessChannel(BusinessChannelSummary channel) async {
+    await _businessFeatures.unsubscribeBusinessChannel(
+      channel.id,
+      channel.channelType,
+    );
+    await refresh();
+  }
+
+  Future<Conversation?> _refreshAndFindBusinessConversation(
+    String channelId,
+  ) async {
+    await repository.syncNow();
+    conversations = await repository.conversations();
+    _sortConversations();
+    notifyListeners();
+    return conversations.where((item) => item.id == channelId).firstOrNull;
+  }
+
+  Future<List<SupportSkillGroupSummary>> loadSupportSkillGroups() =>
+      _businessFeatures.supportSkillGroups();
+
+  Future<List<SupportAgentSummary>> loadSupportAgents({
+    String skillGroupId = '',
+  }) => _businessFeatures.supportAgents(skillGroupId: skillGroupId);
+
+  Future<SupportAgentSummary> setSupportAgentStatus(String status) =>
+      _businessFeatures.setSupportAgentStatus(status);
+
+  Future<List<SupportSessionSummary>> loadSupportSessions({
+    String status = '',
+    String skillGroupId = '',
+  }) => _businessFeatures.supportSessions(
+    status: status,
+    skillGroupId: skillGroupId,
+  );
+
+  Future<(SupportSessionSummary, Conversation?)> startSupportSession({
+    required String skillGroupId,
+    String subject = '',
+  }) async {
+    final session = await _businessFeatures.createSupportSession(
+      skillGroupId: skillGroupId,
+      subject: subject,
+    );
+    final conversation = await _refreshAndFindBusinessConversation(
+      session.channelId,
+    );
+    return (session, conversation);
+  }
+
+  Future<Conversation?> enterSupportSession(SupportSessionSummary session) =>
+      _refreshAndFindBusinessConversation(session.channelId);
+
+  Future<SupportSessionSummary> claimSupportSession(String sessionId) =>
+      _businessFeatures.claimSupportSession(sessionId);
+
+  Future<SupportSessionSummary> transferSupportSession(
+    String sessionId,
+    String targetAgentId,
+  ) => _businessFeatures.transferSupportSession(sessionId, targetAgentId);
+
+  Future<SupportSessionSummary> endSupportSession(String sessionId) =>
+      _businessFeatures.endSupportSession(sessionId);
+
+  Future<SupportSessionSummary> rateSupportSession(
+    String sessionId,
+    int rating,
+    String comment,
+  ) => _businessFeatures.rateSupportSession(sessionId, rating, comment);
+
+  Future<MomentPage> loadMoments({
+    String authorId = '',
+    String cursor = '',
+    int limit = 20,
+  }) => _businessFeatures.moments(
+    authorId: authorId,
+    cursor: cursor,
+    limit: limit,
+  );
+
+  Future<MomentSummary> publishMoment({
+    required String content,
+    List<MediaUpload> uploads = const [],
+    String visibility = 'public',
+    List<String> visibleUserIds = const [],
+    Map<String, Object?> location = const {},
+    void Function(int index, double progress)? onProgress,
+  }) async {
+    if (uploads.length > 9) {
+      throw const FormatException('朋友圈最多上传 9 张图片');
+    }
+    final videos = uploads
+        .where((upload) => upload.kind == MessageContentKind.video)
+        .length;
+    if (videos > 0 && (videos != 1 || uploads.length != 1)) {
+      throw const FormatException('朋友圈视频必须单独发布');
+    }
+    if (uploads.any(
+      (upload) =>
+          upload.kind != MessageContentKind.image &&
+          upload.kind != MessageContentKind.video,
+    )) {
+      throw const FormatException('朋友圈只支持图片或单个视频');
+    }
+    final mediaIds = <String>[];
+    for (var index = 0; index < uploads.length; index++) {
+      final media = await _businessFeatures.uploadBusinessMedia(
+        uploads[index],
+        onProgress: (progress) => onProgress?.call(index, progress),
+      );
+      mediaIds.add(media.id);
+    }
+    return _businessFeatures.createMoment(
+      content: content.trim(),
+      mediaKind: uploads.isEmpty
+          ? 'none'
+          : videos == 1
+          ? 'video'
+          : 'images',
+      mediaIds: mediaIds,
+      visibility: visibility,
+      visibleUserIds: visibleUserIds,
+      location: location,
+    );
+  }
+
+  Future<MomentSummary> toggleMomentLike(MomentSummary moment) =>
+      _businessFeatures.setMomentLike(moment.id, !moment.likedByMe);
+
+  Future<MomentCommentSummary> commentMoment(
+    MomentSummary moment,
+    String content, {
+    String parentId = '',
+  }) => _businessFeatures.createMomentComment(
+    moment.id,
+    content.trim(),
+    parentId: parentId,
+  );
+
+  Future<void> removeMoment(MomentSummary moment) =>
+      _businessFeatures.deleteMoment(moment.id);
+
+  Future<void> removeMomentComment(
+    MomentSummary moment,
+    MomentCommentSummary comment,
+  ) => _businessFeatures.deleteMomentComment(moment.id, comment.id);
+
+  Future<List<MomentReminderSummary>> loadMomentReminders({int limit = 100}) =>
+      _businessFeatures.momentReminders(limit: limit);
+
+  Future<void> markMomentRemindersRead(List<int> reminderIds) =>
+      _businessFeatures.markMomentRemindersRead(reminderIds);
+
+  Future<List<StickerCategorySummary>> loadStickerCategories() =>
+      _businessFeatures.stickerCategories();
+
+  Future<List<StickerPackSummary>> loadStickerPacks({String categoryId = ''}) =>
+      _businessFeatures.stickerPacks(categoryId: categoryId);
+
+  Future<List<StickerItemSummary>> loadRecentStickers({int limit = 50}) =>
+      _businessFeatures.recentStickers(limit: limit);
+
+  Future<List<StickerItemSummary>> loadFavoriteStickers({int limit = 50}) =>
+      _businessFeatures.favoriteStickers(limit: limit);
+
+  Future<void> toggleStickerPackFavorite(StickerPackSummary pack) =>
+      _businessFeatures.setStickerPackFavorite(pack.id, !pack.favorite);
+
+  Future<void> toggleStickerFavorite(StickerItemSummary sticker) =>
+      _businessFeatures.setStickerFavorite(sticker.id, !sticker.favorite);
+
   Future<List<AppUser>> searchUsers(
     String query, {
     String by = 'handle',
@@ -611,6 +963,139 @@ class AppController extends ChangeNotifier {
     final list = _messages.putIfAbsent(conversationId, () => []);
     list.add(pending);
     _updateConversation(conversationId, label);
+    await repository.persistMessages(conversationId, list);
+    notifyListeners();
+    return _sendPending(pending);
+  }
+
+  Future<ChatMessage> sendSticker(
+    String conversationId,
+    StickerItemSummary sticker,
+  ) async {
+    final clientId = _newClientMessageId();
+    final pending = ChatMessage(
+      id: 'local-$clientId',
+      clientMessageId: clientId,
+      conversationId: conversationId,
+      senderId: currentUser?.id ?? 'me',
+      senderName: currentUser?.name ?? '我',
+      text: sticker.name.isEmpty ? '[表情]' : '[表情] ${sticker.name}',
+      sentAt: DateTime.now(),
+      isMine: true,
+      kind: MessageContentKind.sticker,
+      stickerId: sticker.id,
+      mediaId: sticker.mediaId,
+      mediaUrl: sticker.url,
+      fileName: sticker.name,
+      mimeType: sticker.mime,
+      status: MessageStatus.sending,
+    );
+    final list = _messages.putIfAbsent(conversationId, () => []);
+    list.add(pending);
+    _updateConversation(conversationId, pending.text);
+    await repository.persistMessages(conversationId, list);
+    notifyListeners();
+    final sent = await _sendPending(pending);
+    if (sent.status != MessageStatus.failed) {
+      await _businessFeatures.recordStickerUse(sticker.id);
+    }
+    return sent;
+  }
+
+  Future<ChatMessage> sendMomentShare(
+    String conversationId,
+    MomentSummary moment,
+  ) async {
+    final clientId = _newClientMessageId();
+    final preview = moment.content.trim().isEmpty
+        ? '[朋友圈]'
+        : '[朋友圈] ${moment.content.trim()}';
+    final pending = ChatMessage(
+      id: 'local-$clientId',
+      clientMessageId: clientId,
+      conversationId: conversationId,
+      senderId: currentUser?.id ?? 'me',
+      senderName: currentUser?.name ?? '我',
+      text: preview,
+      sentAt: DateTime.now(),
+      isMine: true,
+      kind: MessageContentKind.momentShare,
+      momentId: moment.id,
+      mediaId: moment.media.firstOrNull?.id,
+      mediaUrl: moment.media.firstOrNull?.url,
+      mimeType: moment.media.firstOrNull?.mime,
+      status: MessageStatus.sending,
+    );
+    final list = _messages.putIfAbsent(conversationId, () => []);
+    list.add(pending);
+    _updateConversation(conversationId, preview);
+    await repository.persistMessages(conversationId, list);
+    notifyListeners();
+    return _sendPending(pending);
+  }
+
+  Future<ChatMessage> sendLiveEvent(
+    String conversationId, {
+    required String event,
+    required String label,
+    Map<String, Object?> data = const {},
+  }) async {
+    final conversation = conversations
+        .where((item) => item.id == conversationId)
+        .firstOrNull;
+    if (conversation?.channelType != 9) {
+      throw const FormatException('直播互动只能发送到直播频道');
+    }
+    const allowedEvents = {'live.like', 'live.applause', 'live.follow'};
+    if (!allowedEvents.contains(event)) {
+      throw const FormatException('不支持的直播互动事件');
+    }
+    final normalizedLabel = label.trim();
+    if (normalizedLabel.isEmpty) {
+      throw const FormatException('直播互动文案不能为空');
+    }
+    final clientId = _newClientMessageId();
+    final pending = ChatMessage(
+      id: 'local-$clientId',
+      clientMessageId: clientId,
+      conversationId: conversationId,
+      senderId: currentUser?.id ?? 'me',
+      senderName: currentUser?.name ?? '我',
+      text: normalizedLabel,
+      sentAt: DateTime.now(),
+      isMine: true,
+      kind: MessageContentKind.liveEvent,
+      event: event,
+      eventData: data,
+      status: MessageStatus.sending,
+    );
+    final list = _messages.putIfAbsent(conversationId, () => []);
+    list.add(pending);
+    _updateConversation(conversationId, normalizedLabel);
+    await repository.persistMessages(conversationId, list);
+    notifyListeners();
+    return _sendPending(pending);
+  }
+
+  Future<ChatMessage> sendScreenshotNotice(String conversationId) async {
+    final clientId = _newClientMessageId();
+    final actor = currentUser?.name.trim();
+    final text = '${actor == null || actor.isEmpty ? '当前用户' : actor} 截取了聊天界面';
+    final pending = ChatMessage(
+      id: 'local-$clientId',
+      clientMessageId: clientId,
+      conversationId: conversationId,
+      senderId: currentUser?.id ?? 'me',
+      senderName: currentUser?.name ?? '我',
+      text: text,
+      sentAt: DateTime.now(),
+      isMine: true,
+      kind: MessageContentKind.screenshotNotice,
+      status: MessageStatus.sending,
+    );
+    final list = _messages.putIfAbsent(conversationId, () => []);
+    list.add(pending);
+    _updateConversation(conversationId, '[截屏提示]');
     await repository.persistMessages(conversationId, list);
     notifyListeners();
     return _sendPending(pending);
@@ -1061,8 +1546,49 @@ class AppController extends ChangeNotifier {
 
   void setActiveConversation(String? conversationId) {
     if (_disposed) return;
+    final previous = _activeConversationId;
+    if (previous != null && previous != conversationId) {
+      updateTyping(previous, false);
+    }
     _activeConversationId = conversationId;
     if (conversationId != null) unawaited(markRead(conversationId));
+  }
+
+  void updateTyping(String conversationId, bool typing) {
+    if (_disposed || !authenticated || conversationId.isEmpty) return;
+    _typingStopTimers.remove(conversationId)?.cancel();
+    if (!typing) {
+      _lastTypingSent.remove(conversationId);
+      if (!_typingAnnounced.remove(conversationId)) return;
+      unawaited(_sendTyping(conversationId, false));
+      return;
+    }
+    _typingStopTimers[conversationId] = Timer(
+      const Duration(seconds: 4),
+      () => updateTyping(conversationId, false),
+    );
+    final now = DateTime.now();
+    final lastSent = _lastTypingSent[conversationId];
+    if (_typingAnnounced.contains(conversationId) &&
+        lastSent != null &&
+        now.difference(lastSent) < const Duration(seconds: 3)) {
+      return;
+    }
+    _typingAnnounced.add(conversationId);
+    _lastTypingSent[conversationId] = now;
+    unawaited(_sendTyping(conversationId, true));
+  }
+
+  Future<void> _sendTyping(String conversationId, bool typing) async {
+    try {
+      await repository.setTyping(conversationId, typing);
+    } catch (_) {
+      if (typing) {
+        _typingAnnounced.remove(conversationId);
+        _lastTypingSent.remove(conversationId);
+      }
+      // Typing is an ephemeral hint and must never block message composition.
+    }
   }
 
   Future<void> registerPushDevice({
@@ -1744,12 +2270,33 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<List<ImDeviceSession>> loadImDeviceSessions() async {
+    try {
+      return await repository.imDeviceSessions();
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '登录会话加载失败');
+      notifyListeners();
+      return const [];
+    }
+  }
+
   Future<bool> removeUserDevice(String deviceId) async {
     try {
       await repository.removeUserDevice(deviceId);
       return true;
     } catch (exception) {
       error = _messageFor(exception, fallback: '设备退出失败');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> quitImDeviceSession(int deviceFlag) async {
+    try {
+      await repository.quitImDeviceSession(deviceFlag);
+      return true;
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '会话下线失败');
       notifyListeners();
       return false;
     }
@@ -1826,6 +2373,21 @@ class AppController extends ChangeNotifier {
       timer.cancel();
     }
     _deliveryTimers.clear();
+    for (final timer in _typingExpiryTimers.values) {
+      timer.cancel();
+    }
+    for (final timer in _typingStopTimers.values) {
+      timer.cancel();
+    }
+    _typingUsers.clear();
+    _typingExpiryTimers.clear();
+    _typingStopTimers.clear();
+    _lastTypingSent.clear();
+    _typingAnnounced.clear();
+    _activeConversationId = null;
+    _conversationRefreshTimer?.cancel();
+    _conversationRefreshTimer = null;
+    _conversationRefreshQueued = false;
     _linkPreviewAttempted.clear();
     messageErrors.clear();
     messageLoading.clear();
@@ -1839,6 +2401,9 @@ class AppController extends ChangeNotifier {
         final raw = event.payload['message'] as Map<String, Object?>?;
         if (raw == null) return;
         final message = _messageFromEvent(raw);
+        if (!message.isMine) {
+          _clearTypingUser(message.conversationId, message.senderId);
+        }
         final list = _messages.putIfAbsent(message.conversationId, () => []);
         final index = list.indexWhere(
           (existing) =>
@@ -1869,6 +2434,21 @@ class AppController extends ChangeNotifier {
         _hydrateLinkPreview(message);
         unawaited(repository.persistMessages(message.conversationId, list));
       case ImEventType.messageChanged:
+        final raw = event.payload['message'] as Map<String, Object?>?;
+        if (raw != null) {
+          final message = _messageFromEvent(raw);
+          final list = _messages[message.conversationId];
+          final index = list?.indexWhere(
+            (existing) =>
+                existing.id == message.id ||
+                existing.clientMessageId == message.clientMessageId,
+          );
+          if (list != null && index != null && index >= 0) {
+            list[index] = message;
+            unawaited(repository.persistMessages(message.conversationId, list));
+          }
+          break;
+        }
         final conversationId = event.payload['conversationId'] as String?;
         if (conversationId != null && _messages.containsKey(conversationId)) {
           unawaited(loadMessages(conversationId, force: true));
@@ -1903,18 +2483,125 @@ class AppController extends ChangeNotifier {
           }
         }
       case ImEventType.conversationChanged:
-        unawaited(refresh());
+        _scheduleConversationRefresh();
       case ImEventType.friendChanged:
         unawaited(_refreshSocial());
       case ImEventType.groupInvitationChanged:
         unawaited(_refreshGroupInvitations());
       case ImEventType.announcementChanged:
         unawaited(refreshAnnouncements());
+      case ImEventType.scheduledChanged:
+        final scheduled = event.payload['scheduledMessage'];
+        final scheduledPayload = scheduled is Map<String, Object?>
+            ? scheduled
+            : const <String, Object?>{};
+        final conversationId =
+            scheduledPayload['conversationId'] as String? ??
+            event.payload['conversationId'] as String?;
+        if (conversationId != null && conversationId.isNotEmpty) {
+          unawaited(loadScheduledMessages(conversationId, force: true));
+        }
       case ImEventType.typing:
+        _applyTypingEvent(event.payload);
+        break;
       case ImEventType.unknown:
         break;
     }
     notifyListeners();
+  }
+
+  void _applyTypingEvent(Map<String, Object?> payload) {
+    final conversationId = payload['conversationId']?.toString() ?? '';
+    final userId = payload['userId']?.toString() ?? '';
+    if (conversationId.isEmpty || userId.isEmpty || userId == currentUser?.id) {
+      return;
+    }
+    if (payload['typing'] != true) {
+      _clearTypingUser(conversationId, userId);
+      return;
+    }
+    final users = _typingUsers.putIfAbsent(conversationId, () => {});
+    // Use a local bounded TTL so a skewed or malicious timestamp cannot leave
+    // a permanent typing state. The server's contract currently expires at 6s.
+    users[userId] = DateTime.now().add(const Duration(seconds: 6));
+    _scheduleTypingExpiry(conversationId);
+  }
+
+  void _clearTypingUser(String conversationId, String userId) {
+    final users = _typingUsers[conversationId];
+    if (users == null) return;
+    users.remove(userId);
+    if (users.isEmpty) {
+      _typingUsers.remove(conversationId);
+      _typingExpiryTimers.remove(conversationId)?.cancel();
+      return;
+    }
+    _scheduleTypingExpiry(conversationId);
+  }
+
+  void _scheduleTypingExpiry(String conversationId) {
+    _typingExpiryTimers.remove(conversationId)?.cancel();
+    final users = _typingUsers[conversationId];
+    if (users == null || users.isEmpty) return;
+    final now = DateTime.now();
+    final nextExpiry = users.values.reduce(
+      (current, value) => value.isBefore(current) ? value : current,
+    );
+    final delay = nextExpiry.isAfter(now)
+        ? nextExpiry.difference(now) + const Duration(milliseconds: 20)
+        : Duration.zero;
+    _typingExpiryTimers[conversationId] = Timer(delay, () {
+      _typingExpiryTimers.remove(conversationId);
+      final active = _typingUsers[conversationId];
+      if (active == null) return;
+      final current = DateTime.now();
+      active.removeWhere((_, expiresAt) => !expiresAt.isAfter(current));
+      if (active.isEmpty) {
+        _typingUsers.remove(conversationId);
+      } else {
+        _scheduleTypingExpiry(conversationId);
+      }
+      if (!_disposed) notifyListeners();
+    });
+  }
+
+  void _scheduleConversationRefresh() {
+    if (_disposed || !authenticated) return;
+    if (_conversationRefreshRunning) {
+      _conversationRefreshQueued = true;
+      return;
+    }
+    _conversationRefreshTimer?.cancel();
+    _conversationRefreshTimer = Timer(
+      const Duration(milliseconds: 120),
+      () => unawaited(_refreshConversationsFromEvent()),
+    );
+  }
+
+  Future<void> _refreshConversationsFromEvent() async {
+    if (_disposed || !authenticated) return;
+    if (_conversationRefreshRunning) {
+      _conversationRefreshQueued = true;
+      return;
+    }
+    _conversationRefreshTimer = null;
+    _conversationRefreshRunning = true;
+    try {
+      final refreshed = await repository.conversations();
+      if (_disposed || !authenticated) return;
+      conversations = refreshed;
+      _sortConversations();
+      notifyListeners();
+    } catch (_) {
+      // SDK conversation notifications are best-effort invalidations. A
+      // transient metadata failure must not replace the current list.
+    } finally {
+      _conversationRefreshRunning = false;
+      if (_conversationRefreshQueued && !_disposed) {
+        _conversationRefreshQueued = false;
+        _scheduleConversationRefresh();
+      }
+    }
   }
 
   void _applyReceipt(Map<String, Object?> payload, {required bool delivered}) {
@@ -1955,6 +2642,14 @@ class AppController extends ChangeNotifier {
   }
 
   ChatMessage _messageFromEvent(Map<String, Object?> raw) {
+    // The WuKong gateway already maps SDK messages into the page model. Keep
+    // accepting the legacy business-event shape below until the remaining
+    // non-chat WebSocket events have moved to CMD.
+    if (raw['sentAt'] is String &&
+        raw['status'] is String &&
+        raw['kind'] is String) {
+      return ChatMessage.fromJson(raw);
+    }
     final body = raw['body'] as Map<String, Object?>? ?? const {};
     final previewRaw = raw['linkPreview'] is Map<String, Object?>
         ? raw['linkPreview']! as Map<String, Object?>
@@ -1978,7 +2673,10 @@ class AppController extends ChangeNotifier {
       'contact' => MessageContentKind.contact,
       'location' => MessageContentKind.location,
       'chat_history' => MessageContentKind.chatHistory,
+      'live' || 'live_event' => MessageContentKind.liveEvent,
       'system' => MessageContentKind.system,
+      'screenshot' ||
+      'screenshot_notice' => MessageContentKind.screenshotNotice,
       null || 'text' =>
         replyToId == null || replyToId.isEmpty
             ? MessageContentKind.text
@@ -2003,10 +2701,20 @@ class AppController extends ChangeNotifier {
             'contact' => '[名片] ${body['name'] as String? ?? ''}'.trim(),
             'location' => '[位置] ${body['name'] as String? ?? ''}'.trim(),
             'chat_history' => _chatHistoryEventSummary(body),
+            'live' || 'live_event' =>
+              body['digest'] as String? ??
+                  body['content'] as String? ??
+                  '[直播互动]',
+            'screenshot' || 'screenshot_notice' =>
+              senderId == currentUser?.id ? '你截取了聊天界面' : '对方截取了聊天界面',
             null || 'text' => '',
             _ => '[当前版本暂不支持此消息]',
           },
       kind: kind,
+      event: body['event'] as String?,
+      eventData: body['data'] is Map
+          ? Map<String, Object?>.from(body['data']! as Map)
+          : const {},
       mediaUrl: body['url'] as String? ?? body['downloadUrl'] as String?,
       mediaId: body['mediaId'] as String?,
       fileName: body['fileName'] as String?,
@@ -2219,8 +2927,7 @@ class AppController extends ChangeNotifier {
   }
 
   String _newClientMessageId() {
-    final random = _random.nextInt(1 << 32).toRadixString(16).padLeft(8, '0');
-    return '${DateTime.now().microsecondsSinceEpoch}-$random';
+    return createClientMessageId(_random);
   }
 
   String _messageFor(Object exception, {required String fallback}) {
@@ -2241,7 +2948,14 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _conversationRefreshTimer?.cancel();
     for (final timer in _deliveryTimers.values) {
+      timer.cancel();
+    }
+    for (final timer in _typingExpiryTimers.values) {
+      timer.cancel();
+    }
+    for (final timer in _typingStopTimers.values) {
       timer.cancel();
     }
     _connectionSubscription?.cancel();

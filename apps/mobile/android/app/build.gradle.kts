@@ -42,7 +42,9 @@ android {
         if (file.exists()) file.inputStream().use(::load)
     }
     namespace = "com.linlitong.imapp"
-    compileSdk = flutter.compileSdkVersion
+    // API 36 is required transitively by the pinned LiveKit 2.7.0 graph.
+    // This does not opt the app into new target-SDK runtime behavior.
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

@@ -10,6 +10,8 @@ import flutter_callkit_incoming
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate,
   PKPushRegistryDelegate, CallkitIncomingAppDelegate {
   private var voipRegistry: PKPushRegistry?
+  private var screenshotChannel: FlutterMethodChannel?
+  private var screenshotObserver: NSObjectProtocol?
 
   override func application(
     _ application: UIApplication,
@@ -24,6 +26,44 @@ import flutter_callkit_incoming
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "LinliScreenshotDetection")
+    let channel = FlutterMethodChannel(
+      name: "com.linlitong.imapp/screenshot",
+      binaryMessenger: registrar.messenger()
+    )
+    screenshotChannel = channel
+    channel.setMethodCallHandler { [weak self] call, result in
+      switch call.method {
+      case "start":
+        self?.startScreenshotDetection()
+        result(["supported": true])
+      case "stop":
+        self?.stopScreenshotDetection()
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  private func startScreenshotDetection() {
+    guard screenshotObserver == nil else { return }
+    screenshotObserver = NotificationCenter.default.addObserver(
+      forName: UIApplication.userDidTakeScreenshotNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      self?.screenshotChannel?.invokeMethod(
+        "detected",
+        arguments: ["occurredAt": Int64(Date().timeIntervalSince1970 * 1_000)]
+      )
+    }
+  }
+
+  private func stopScreenshotDetection() {
+    guard let observer = screenshotObserver else { return }
+    NotificationCenter.default.removeObserver(observer)
+    screenshotObserver = nil
   }
 
   func pushRegistry(

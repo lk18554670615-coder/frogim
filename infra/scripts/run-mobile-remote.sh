@@ -13,6 +13,5 @@ cd "$ROOT_DIR/apps/mobile"
 exec flutter run \
   --dart-define=APP_ENV=staging \
   --dart-define=API_BASE_URL="$REMOTE_API_BASE_URL" \
-  --dart-define=WS_URL="$REMOTE_WS_URL" \
   --dart-define=ENABLE_DEMO=false \
   "$@"

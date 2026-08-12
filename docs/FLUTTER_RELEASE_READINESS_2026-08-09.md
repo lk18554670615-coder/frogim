@@ -4,7 +4,7 @@
 
 Flutter 客户端已经达到“首发代码候选版”状态：静态检查、101 项自动化测试、生产 Web 构建、Android Debug 构建、Android Release APK/AAB 构建链路均已验证，生产配置和签名缺失时会主动失败，不再静默生成 Demo 或 Debug 签名的正式包。
 
-当前仓库仍不能直接宣称“商店正式版已发布”。真实域名、法务页面、Android 上传密钥、iOS/macOS 签名、生产推送/短信/TURN 凭据和真机验收属于发布方必须提供或完成的外部条件。验证生成的 Release APK/AAB 使用测试地址和本机 Debug 密钥，仅证明构建链路可用，严禁上传商店或对外分发。
+当前仓库仍不能直接宣称“商店正式版已发布”。真实域名、法务页面、Android 上传密钥、iOS/macOS 签名、生产推送/短信/LiveKit 凭据和真机验收属于发布方必须提供或完成的外部条件。验证生成的 Release APK/AAB 使用测试地址和本机 Debug 密钥，仅证明构建链路可用，严禁上传商店或对外分发。
 
 当前应用版本为 `1.0.0+1`，Android applicationId 为 `com.linlitong.imapp`。发布前需要由产品/商店账号所有者确认这两个身份信息不会再修改。
 
@@ -67,14 +67,14 @@ Flutter 客户端已经达到“首发代码候选版”状态：静态检查、
 2. 发布并经运营主体/法务审核正式用户协议、隐私政策；必须覆盖运营主体、联系方式、数据收集/共享/删除、第三方 SDK 清单和未成年人规则，并提供两个公开 HTTPS URL。
 3. 提供 Android 上传密钥及安全备份，或明确授权生成；不得使用本轮测试证书。确认 Play App Signing 策略。
 4. 在 macOS/Xcode 环境完成 iOS/macOS 正式签名、Provisioning Profile、Bundle ID、Associated/Push/VoIP 能力和 Archive 验证。
-5. 配置并端到端验收真实短信 webhook、个推/APNs、对象存储、TURN/TLS；验证码、通知到达、前后台/杀进程来电必须用真实服务验证。
+5. 配置并端到端验收真实短信 webhook、个推/APNs、对象存储和 LiveKit/TLS；验证码、通知到达、前后台/杀进程来电必须用真实服务验证。
 6. 使用至少一台 Android 真机和一台 iPhone 完成权限拒绝/恢复、相机/相册/文件、语音/视频通话、弱网重连、后台推送、账号注销、100 MB 媒体边界和深色/大字体回归。
 7. 在 Play/App Store 后台完成隐私标签、数据安全、账号删除 URL、全屏来电及电话账户敏感权限说明、内容分级和客服信息。
 
 ## 非阻断但建议首发前处理
 
 - Demo 头像资源仍由 `pubspec.yaml` 打入生产包，约 5.2 MB；不影响正确性，但增加包体。后续可拆分 Demo flavor 或改为按需测试资源。
-- 尚未接入生产崩溃收集/告警平台。至少应确定崩溃、API 错误、WebSocket 重连、推送失败和通话失败的可观测方案，并遵守隐私政策。
+- 尚未接入生产崩溃收集/告警平台。至少应确定崩溃、API 错误、WuKong 重连、推送失败和 LiveKit 通话失败的可观测方案，并遵守隐私政策。
 - `file_picker`、`flutter_callkit_incoming`、`flutter_webrtc`、`mobile_scanner`、`package_info_plus` 当前仍应用旧 Kotlin Gradle Plugin 方式；Flutter 3.44.8 可构建，但后续 Flutter 版本会提高风险，应跟踪插件升级。
 - 多个直接依赖存在新主版本。首发冻结期不建议无验证地集中升级；应在独立升级周期完成迁移和真机回归。
 - Windows 无法完成 iOS/macOS 编译与签名，本轮仅验证配置文件语法；这两端仍需在 macOS CI 或开发机验证。
@@ -92,7 +92,7 @@ export RELEASE_KEY_PASSWORD='***'
 fvm flutter build appbundle --release \
   --dart-define=APP_ENV=production \
   --dart-define=API_BASE_URL=https://im.your-domain.example \
-  --dart-define=WS_URL=wss://im.your-domain.example/v1/ws \
+  --dart-define=WS_URL=wss://im.your-domain.example/im \
   --dart-define=ENABLE_DEMO=false \
   --dart-define=TERMS_URL=https://www.your-domain.example/legal/terms \
   --dart-define=PRIVACY_URL=https://www.your-domain.example/legal/privacy

@@ -1,6 +1,6 @@
 # 邻里通讯服务端（linli-im）
 
-基于 Go 1.26 的模块化单体服务，为邻里通讯 Flutter 客户端和运营后台提供 REST、WebSocket、PostgreSQL 持久化、Redis 跨实例实时路由、对象存储和推送能力。服务健康标识与新技术资源名统一使用 `linli-im`。
+基于 Go 1.26 的模块化单体业务服务，为邻里通讯 Flutter 客户端和运营后台提供 REST、WuKongIM DataSource/策略/Webhook、PostgreSQL 持久化、Redis 任务协调、对象存储、推送和 LiveKit 房间控制。消息长连接、ACK、离线消息与最近会话由固定版本 WuKongIM 负责。
 
 ## Run
 
@@ -23,7 +23,7 @@ setting all of `IM_MODE=full`, `IM_DEV_MODE=true`, `IM_ENV=development`, and
 `IM_DEV_ALLOW_CONTAINER_BIND=true`. The escape hatch defaults to false and is
 always rejected when either `IM_ENV` or `APP_ENV` resolves to `production`.
 
-Demo phones are `13800000001` (Alice), `13800000002` (Bob), and `13800000000` (Admin). Request a code with `POST /v1/auth/code`; the server never returns the configured development code.
+Demo phones are `13800000001` (Alice), `13800000002` (Bob), and `13800000000` (Admin). Request a code with `POST /v2/auth/code`; the server never returns the configured development code.
 
 Full mode uses normalized PostgreSQL tables, automatically applies its idempotent schema, and checks Redis when configured:
 
@@ -57,7 +57,7 @@ The server can also deliver directly through Getui RestAPI V2. Set `IM_PUSH_PROV
 
 For production iOS killed-process calls, use `IM_PUSH_PROVIDER=getui_apns_voip`. Configure `IM_APNS_VOIP_KEY_ID`, `IM_APNS_VOIP_TEAM_ID`, `IM_APNS_VOIP_BUNDLE_ID=com.linlitong.imapp`, `IM_APNS_VOIP_PRIVATE_KEY_FILE`, and the correct sandbox flag. The `.p8` key is parsed at startup and the process fails closed when it is absent or invalid. The host key must be owned by container uid or gid `10001` and have mode `0400` or `0440`. `infra/scripts/deploy.sh` automatically adds `infra/compose.apns-voip.yaml` for `apns_voip` and `getui_apns_voip`; the overlay mounts the key read-only without copying it into the image. The APNs sender uses a cached ES256 provider JWT, HTTP/2, the `.voip` topic, a zero expiry, privacy-safe call routing fields, retry classification, and automatic invalid-token disabling. See `../docs/CONFIGURATION.md` for the Chinese deployment procedure.
 
-`internal/store/schema.sql` is embedded into the binary and is the full-mode source of truth. Message insertion, sender-scoped `clientMsgId` idempotency, conversation sequence allocation, every recipient's sync cursor, durable sync events, push outbox, and event outbox commit in one PostgreSQL transaction. Conversation rows serialize sequence allocation; sender/client advisory locks serialize simultaneous retries across instances. The integration test opens two independent connection pools and verifies concurrent gap-free sequences and duplicate ACK behavior.
+`internal/store/schema.sql` is embedded into the binary and is the full-mode business schema. WuKongIM owns message body, message ID, channel sequence, ACK, recent conversations and offline history. PostgreSQL transactions own accounts, relationships, channel policy, extensions, message indexes, push rows and WuKong Outbox; sender/client and aggregate idempotency keys serialize retries across instances.
 
 To inspect or apply the same schema manually with `psql`:
 
@@ -72,81 +72,67 @@ All user routes except login require `Authorization: Bearer <accessToken>`. REST
 | Area | Method and path |
 |---|---|
 | Runtime | `GET /health`, `GET /ready`, `GET /metrics` |
-| Auth/profile | OTP login, password registration/login/reset under `/v1/auth/*`; refresh/logout; `GET/PATCH /v1/users/me`; phone change code and confirmation routes |
-| Devices/push | `POST /v1/devices`, `GET/DELETE /v1/users/me/devices[/{id}]`; transactional `im_push_outbox` |
-| Media | `POST /v1/media/presign`, direct S3/MinIO `PUT`, `POST /v1/media/{id}/complete`, authenticated `GET /v1/media/{id}` |
-| Users | `GET /v1/users/search?q=&by=handle|phone`, `GET /v1/users/search/capabilities`, `GET /v1/friends`, `PUT /v1/users/{id}/block` |
-| Friends | `GET/POST /v1/friend-requests`, accept/reject/cancel routes, `DELETE/PATCH /v1/friends/{id}` |
-| Conversations | `GET /v1/conversations`, `POST /v1/conversations/direct`, `PATCH /v1/conversations/{id}/preferences`, `DELETE /v1/conversations/{id}` |
-| Groups | profile, announcement/read, invite confirmation, QR join, member/role/mute/nickname, owner transfer, leave and disband under `/v1/groups/*` |
-| Messages | `GET/POST /v1/conversations/{id}/messages`, `POST /v1/conversations/{targetId}/forward`, `POST /v1/messages/{id}/recall`, `PUT /v1/conversations/{id}/read` |
-| Realtime state | `POST /v1/conversations/{id}/typing`, `GET /v1/sync?after=&limit=`, `POST /v1/ws/ticket`, `GET /v1/ws?ticket=` |
-| Trust | `POST /v1/reports` |
-| Personal | `GET /v1/users/me/favorites`, `POST /v1/feedback` |
-| Admin | `/v1/admin/{dashboard,users,groups,reports,sensitive-words,health,audit-logs,settings}` |
+| Auth/profile | OTP login, password registration/login/reset under `/v2/auth/*`; refresh/logout; `GET/PATCH /v2/users/me`; phone change code and confirmation routes |
+| Devices/push | `POST /v2/users/me/devices`, `GET/DELETE /v2/users/me/devices[/{id}]`; transactional `im_push_outbox` |
+| Media | `POST /v2/media/presign`, direct S3/MinIO `PUT`, `POST /v2/media/{id}/complete`, authenticated `GET /v2/media/{id}` |
+| Users | `GET /v2/contacts/search?q=&by=handle|phone`, `GET /v2/contacts/search/capabilities`, `GET /v2/contacts/friends`, `PUT /v2/contacts/blocks/{id}` |
+| Friends | `GET/POST /v2/contacts/requests`, accept/reject/cancel routes, `DELETE/PATCH /v2/contacts/friends/{id}` |
+| Conversations | `GET /v2/channels/conversations`, `POST /v2/channels/direct`, `PATCH /v2/channels/conversations/{id}/preferences`, `DELETE /v2/channels/conversations/{id}` |
+| Groups | profile, announcement/read, invite confirmation, QR join, member/role/mute/nickname, owner transfer, leave and disband under `/v2/channels/groups/*` |
+| Messages | WuKongIM SDK send/history, `/v2/messages/{id}` edit/recall/reactions, business DataSource and CMD |
+| IM session/data source | `POST /v2/auth/im-session`; `/v2/im/datasource/{conversations,messages,extensions,message-extras,reminders,channel,members}` |
+| Channels/modules | `/v2/channels/*`, `/v2/moments/*`, `/v2/stickers/*`, `/v2/support/*`, `/v2/calls/*` |
+| Trust | `POST /v2/reports` |
+| Personal | `GET /v2/messages/favorites`, `POST /v2/feedback` |
+| Admin | `/v2/admin/{dashboard,users,groups,reports,sensitive-words,health,audit-logs,settings}` |
 
-Administrators authenticate at `POST /v1/admin/auth/login` with `email`, `password`, and `totp`, then use the returned short-lived admin JWT. Roles are `platform_admin`, `moderator`, and read-only `support`. The shared emergency key is disabled by default and is accepted only when `IM_ADMIN_SHARED_KEY_ENABLED=true`. `/api/v1/admin/*` is an alias for admin frontends deployed behind an `/api` prefix.
+Administrators authenticate at `POST /v2/admin/auth/login` with `email`, `password`, and `totp`, then use the returned short-lived admin JWT. Roles are `platform_admin`, `system_operator`, `moderator`, `content_operator`, `support_agent`, and read-only `support`. The shared emergency key is disabled by default and is accepted only when `IM_ADMIN_SHARED_KEY_ENABLED=true`. `/api/v2/admin/*` is an alias for admin frontends deployed behind an `/api` prefix; WuKongIM/LiveKit secrets are never returned to the browser.
 
-Example login and message flow:
+Example login and IM-session flow:
 
 ```bash
-curl -s localhost:8080/v1/auth/code -H 'content-type: application/json' -d '{"phone":"13800000001"}'
-curl -s localhost:8080/v1/auth/login -H 'content-type: application/json' -d '{"phone":"13800000001","code":"<one-time-code>"}'
-curl -s localhost:8080/v1/conversations/direct -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"userId":"usr_bob"}'
-curl -s localhost:8080/v1/conversations/$CONVERSATION/messages -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"clientMsgId":"device-a-0001","type":"text","body":{"text":"hello"}}'
+curl -s localhost:8080/v2/auth/code -H 'content-type: application/json' -H 'x-client-platform: android' -d '{"phone":"13800000001"}'
+curl -s localhost:8080/v2/auth/login -H 'content-type: application/json' -H 'x-client-platform: android' -d '{"phone":"13800000001","code":"<one-time-code>"}'
+curl -s localhost:8080/v2/auth/im-session -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"deviceId":"device-a","platform":"android"}'
 ```
 
-Conversation preferences are per-user and independent from group moderation. `PATCH /v1/conversations/{id}/preferences` accepts any non-empty subset of `pinned`, `notificationsMuted`, and `manualUnread`. `PUT /v1/conversations/{id}/read` always clears `manualUnread`. `DELETE /v1/conversations/{id}` does not delete messages or remove membership: it hides the conversation only for the requesting user up to its current `lastMessageSeq`, clears pin/manual-unread, and the next message makes the conversation visible again. `GET /v1/conversations` returns these fields under `membership` and sorts pinned conversations first.
+Flutter 使用返回的 `ImSession` 初始化对应平台的 WuKongIM Gateway；消息通过 WuKongIM SDK 发送，不通过业务服务自建 WebSocket。业务资料、权限、扩展、提醒和模块数据继续经已鉴权 REST/DataSource 同步。
 
-Every registration receives a random globally unique neighbor handle beginning with `ll_`; it is independent of the phone number. `PATCH /v1/users/me` accepts a non-empty subset of `name`, unique lowercase `handle` (`[a-z0-9_]`, 6–24 characters), `signature` (up to 160 characters), and `avatarMediaId`. Reserved or impersonation-prone handles are rejected. A user may change the generated handle at most twice; `GET` and `PATCH /v1/users/me` return `handleChangeCount`, `handleChangesRemaining`, `allowSearchByHandle`, and `allowSearchByPhone`. An avatar media object must belong to the caller and be in `ready` state; the response includes both `avatarMediaId` and the authenticated relative `avatarUrl`. Phone changes are two-step: request a code with `POST /v1/users/me/phone/code`, then send `phone` and `code` to `PATCH /v1/users/me/phone`. Device list responses never expose push tokens.
+Conversation preferences are per-user and independent from group moderation. `PATCH /v2/channels/conversations/{id}/preferences` accepts any non-empty subset of `pinned`, `notificationsMuted`, and `manualUnread`. `PUT /v2/channels/conversations/{id}/read` always clears `manualUnread`. `DELETE /v2/channels/conversations/{id}` does not delete messages or remove membership: it hides the conversation only for the requesting user up to its current `lastMessageSeq`, clears pin/manual-unread, and the next message makes the conversation visible again. `GET /v2/channels/conversations` returns these fields under `membership` and sorts pinned conversations first.
 
-Discovery is exact-match only. `GET /v1/users/search?q=<value>&by=handle|phone` obeys the separately audited `allowSearchByHandle` and `allowSearchByPhone` runtime settings and returns a privacy-safe projection with an empty/omitted phone. `GET /v1/users/search/capabilities` lets authenticated clients hide disabled search modes. There is no partial phone search.
+Every registration receives a random globally unique neighbor handle beginning with `ll_`; it is independent of the phone number. `PATCH /v2/users/me` accepts a non-empty subset of `name`, unique lowercase `handle` (`[a-z0-9_]`, 6–24 characters), `signature` (up to 160 characters), and `avatarMediaId`. Reserved or impersonation-prone handles are rejected. A user may change the generated handle at most twice; `GET` and `PATCH /v2/users/me` return `handleChangeCount`, `handleChangesRemaining`, `allowSearchByHandle`, and `allowSearchByPhone`. An avatar media object must belong to the caller and be in `ready` state; the response includes both `avatarMediaId` and the authenticated relative `avatarUrl`. Phone changes are two-step: request a code with `POST /v2/users/me/phone/code`, then send `phone` and `code` to `PATCH /v2/users/me/phone`. Device list responses never expose push tokens.
+
+Discovery is exact-match only. `GET /v2/contacts/search?q=<value>&by=handle|phone` obeys the separately audited `allowSearchByHandle` and `allowSearchByPhone` runtime settings and returns a privacy-safe projection with an empty/omitted phone. `GET /v2/contacts/search/capabilities` lets authenticated clients hide disabled search modes. There is no partial phone search.
 
 Friend requests use a persisted `pending -> accepted|rejected|cancelled|expired` state machine. A request with `source=group` must also provide `sourceId=<conversationId>`; the server verifies that both users remain members and that the group still allows member-to-member friend requests. Push payloads contain routing identifiers and state only, never the verification message.
 
-Group management is transactional and role-checked. `GET/PATCH /v1/groups/{id}` handles name, avatar, join policy, QR rotation, all-member mute, and the member-add-friend switch. Announcement update/read, invite creation and accept/reject/cancel, short-lived QR-token join, owner transfer, self nickname, leave, remove, admin role, member mute, and owner-only disband have dedicated routes. QR payloads contain only a 192-bit cryptographically random opaque token with a 24-hour expiry; no phone number or user identifier is encoded. `GET /v1/groups/{id}/members` returns `userId`, `name`, `handle`, `avatarUrl`, role, group nickname and mute/read metadata, and never returns phone numbers. Every privileged operation writes an audit entry, a durable `group.system` sync event, and a persistent `system` message visible in normal group history.
+Group management is transactional and role-checked. `GET/PATCH /v2/channels/groups/{id}` handles name, avatar, join policy, QR rotation, all-member mute, and the member-add-friend switch. Announcement update/read, invite creation and accept/reject/cancel, short-lived QR-token join, owner transfer, self nickname, leave, remove, admin role, member mute, and owner-only disband have dedicated routes. QR payloads contain only a 192-bit cryptographically random opaque token with a 24-hour expiry; no phone number or user identifier is encoded. `GET /v2/channels/groups/{id}/members` returns `userId`, `name`, `handle`, `avatarUrl`, role, group nickname and mute/read metadata, and never returns phone numbers. Every privileged operation writes an audit entry and durable business/outbox state; WuKongIM provisioning and CMD delivery are retried and reconciled.
 
-Forwarding is server-generated: `POST /v1/conversations/{targetId}/forward` accepts `sourceMessageIds` (1–100 unique IDs), `mode` (`separate` or `merged`), and a required `clientBatchId`. The caller must be a member of every source conversation and the target. Separate forwarding preserves the trusted source type/body and annotates it as forwarded; merged forwarding emits one `chat_history` message containing only server-read sender IDs, timestamps, source IDs, types, and bounded summaries. Retries with the same batch ID return the same messages, and normal message sync/outbox delivery is used.
+Forwarding is server-generated: `POST /v2/messages/forward` accepts `targetConversationId`, `sourceMessageIds` (1–100 unique IDs), `mode` (`separate` or `merged`), and a required `clientBatchId`. The caller must be a member of every source conversation and the target. Separate forwarding preserves the trusted source type/body and annotates it as forwarded; merged forwarding emits one `chat_history` message containing only server-read sender IDs, timestamps, source IDs, types, and bounded summaries. Retries with the same batch ID return the same messages, and normal message sync/outbox delivery is used.
 
-`POST /v1/conversations/{id}/messages` also supports `contact` and `location`. A contact body may contain only `userId`, `name`, `handle`, and `avatarUrl`; `userId` is required and the server replaces the body with the canonical current public profile, so phone, remark, tags, and forged display fields cannot be persisted. A location body must contain only numeric `latitude` (-90…90), numeric `longitude` (-180…180), non-empty `name` (up to 80 characters), and `address` (up to 240 characters). Push-outbox payloads contain only message ID, conversation ID, and type; contact fields, coordinates, addresses, captions, text, and other message bodies remain available only through authenticated sync/history. These types use the existing JSONB message schema, so no database migration is required.
+`POST /v2/messages/conversations/{id}/send` is the server-side sending endpoint used by protocol probes and trusted business flows; Flutter clients send ordinary messages through the WuKongIM SDK. It also supports `contact` and `location`. A contact body may contain only `userId`, `name`, `handle`, and `avatarUrl`; `userId` is required and the server replaces the body with the canonical current public profile, so phone, remark, tags, and forged display fields cannot be persisted. A location body must contain only numeric `latitude` (-90…90), numeric `longitude` (-180…180), non-empty `name` (up to 80 characters), and `address` (up to 240 characters). Push-outbox payloads contain only message ID, conversation ID, and type; contact fields, coordinates, addresses, captions, text, and other message bodies remain available only through authenticated sync/history.
 
-Password accounts use `POST /v1/auth/register` (`phone`, `code`, `password`, `name`), `POST /v1/auth/password-login`, `POST /v1/auth/password/reset-code`, and `POST /v1/auth/password/reset`. Passwords are bcrypt cost 12, login failures use the same `INVALID_CREDENTIALS` response for unknown phones and wrong passwords, and all public auth routes are rate-limited. Reset-code responses do not reveal whether an account exists; a successful reset revokes existing refresh sessions. Registration obeys `registrationEnabled`/`allowRegistration`. The fixed OTP is available only when `IM_DEV_MODE=true`; production validation requires a configured external OTP webhook.
+Password accounts use `POST /v2/auth/register` (`phone`, `code`, `password`, `name`), `POST /v2/auth/password-login`, `POST /v2/auth/password/reset-code`, and `POST /v2/auth/password/reset`. Login, registration, and refresh requests include `X-Client-Platform: android|ios|web|macos` so the response can issue the correct WuKongIM SDK session. Passwords are bcrypt cost 12, login failures use the same `INVALID_CREDENTIALS` response for unknown phones and wrong passwords, and all public auth routes are rate-limited. Reset-code responses do not reveal whether an account exists; a successful reset revokes existing refresh sessions. Registration obeys `registrationEnabled`/`allowRegistration`. The fixed OTP is available only when `IM_DEV_MODE=true`; production validation requires a configured external OTP webhook.
 
 ## Voice and video call sessions
 
-Calls are limited to two-member direct conversations. `POST /v1/calls/invite` accepts `callId` (optional idempotency key), `conversationId`, optional `calleeUserId`, and `mediaType` (`audio` or `video`). Participants transition the session with `POST /v1/calls/{id}/accept`, `/reject`, `/cancel`, or `/hangup`; `GET /v1/calls/{id}` returns the current metadata. Invites expire after `IM_CALL_INVITE_TTL` and become `missed`. Caller/callee authorization and the `invited -> accepted -> ended` state machine are enforced transactionally.
+`POST /v2/calls/invite` creates a direct or group call for 2–9 canonical conversation members. Per-member accept/reject/leave transitions, caller-only termination, invitation timeout, membership checks and idempotency are enforced transactionally. `POST /v2/calls/{id}/token` issues a short-lived, participant-scoped LiveKit token only after authorization; the API secret never leaves the server.
 
-`GET /v1/calls/config` returns authenticated ICE configuration. Production requires `IM_RTC_STUN_URLS`, `IM_RTC_TURN_URLS`, `IM_RTC_TURN_USERNAME`, and `IM_RTC_TURN_CREDENTIAL`. SDP and ICE candidates continue to use `call.offer`, `call.answer`, and `call.ice` WebSocket frames and are never written to PostgreSQL. Cross-node call-signal publication through Redis fails closed: a publish failure is returned to the sender instead of being acknowledged as delivered. These frames remain ephemeral and have no server replay log; the Flutter client assigns `signalId`, retries until the peer acknowledgement, and deduplicates received signal IDs. In contrast, `accepted`, `rejected`, `cancelled`, `ended`, and `timeout` state changes are transactionally appended to both participants' durable `userSyncSeq` streams, so reconnecting clients converge without persisting SDP/ICE. `GET /v1/admin/calls?q=&status=&cursor=&limit=` returns call IDs, participants, media type, status, timestamps, duration, and end reason only—never SDP or ICE candidates.
+LiveKit handles media negotiation, active-speaker updates, reconnect, audio/video and screen sharing. The business service does not receive or persist SDP/ICE; PostgreSQL stores only call/member state, timestamps and end reason. State changes are delivered through durable business Outbox plus WuKongIM CMD and clients re-read canonical call state after reconnect. Admin APIs expose room/participant controls without returning LiveKit credentials.
 
 ## Announcements and runtime policy
 
-`GET /v1/announcements` returns published announcements for the authenticated user, with pinned items first. `POST /v1/announcements/{id}/read` records an idempotent read receipt. Administrators use `/v1/admin/announcements` to create drafts or scheduled items, update, publish, withdraw, delete, and target all users or an explicit user-ID list. A replica-safe scheduler promotes due announcements every 15 seconds. Optional publication push is written to the normal retrying push outbox and obeys the global `announcementPushEnabled` policy.
+`GET /v2/announcements` returns published announcements for the authenticated user, with pinned items first. `POST /v2/announcements/{id}/read` records an idempotent read receipt. Administrators use `/v2/admin/announcements` to create drafts or scheduled items, update, publish, withdraw, delete, and target all users or an explicit user-ID list. A replica-safe scheduler promotes due announcements every 15 seconds. Optional publication push is written to the normal retrying push outbox and obeys the global `announcementPushEnabled` policy.
 
-`GET/PUT /v1/admin/settings` is the audited runtime-policy endpoint. It validates registration/password, message text/recall/retention, group size, friend requests, announcement push, audio/video availability, sensitive-word enforcement, report SLA, and maintenance fields. The response also contains boolean `configurationStatus` values for database, Redis, object storage, OTP, push, TURN, and admin TOTP. Credentials and endpoints are never returned. Read-only infrastructure limits are grouped under `infrastructure` and listed in `restartRequiredKeys`; change those through deployment secrets/environment and roll the service rather than sending them to `PUT`.
+`GET/PUT /v2/admin/settings` is the audited runtime-policy endpoint. It validates registration/password, message text/recall/retention, group size, friend requests, announcement push, audio/video availability, sensitive-word enforcement, report SLA, and maintenance fields. The response also contains boolean `configurationStatus` values for database, Redis, object storage, OTP, push, LiveKit, and admin TOTP. Credentials and endpoints are never returned. Read-only infrastructure limits are grouped under `infrastructure` and listed in `restartRequiredKeys`; change those through deployment secrets/environment and roll the service rather than sending them to `PUT`.
 
 The Getui provider sends a privacy-safe online `transmission` plus Android UPS and iOS APNs `push_channel` notifications. Routing payloads contain event type, unread/badge information, and bounded identifiers only. User message text, friend verification text, file names, credentials, and push tokens are excluded; the client performs sync after opening the notification.
 
-## WebSocket protocol
+## WuKongIM transport
 
-First call authenticated `POST /v1/ws/ticket`, then connect to `ws://localhost:8080/v1/ws?ticket=<shortLivedTicket>`. The ticket expires after 30 seconds and is consumed once; it is the only accepted WebSocket admission credential. Access tokens in the WebSocket URL or upgrade `Authorization` header are rejected. Every frame is one JSON envelope:
+The client obtains an `ImSession` from the authenticated business API, then connects directly to WuKongIM over TCP on Android/iOS or WSS on Web/macOS. WuKongIM owns handshake, message ACK, channel sequence, deduplication, reconnect, offline messages and recent conversations. The business service supplies channel/member/data-source responses and enforces friend, membership, mute, ban, sensitive-word and message-type policies before delivery.
 
-```json
-{
-  "version": 1,
-  "requestId": "local-request-id",
-  "type": "message.send",
-  "payload": {
-    "conversationId": "conv_...",
-    "clientMsgId": "device-a-0001",
-    "messageType": "text",
-    "body": {"text": "hello"}
-  }
-}
-```
-
-Client request types are `ping`, `message.send`, `message.read`, `typing`, `sync`, `call.offer`, `call.answer`, `call.ice`, and `call.end`. Call frames only carry WebRTC signaling; media never traverses this server. Server types include `session.ready`, `pong`, `message.ack`, `message.created`, `message.recalled`, `message.read`, `typing`, `sync.result`, call signals, group/friend events, and `error`. `clientMsgId` is unique per sender and makes retries idempotent. `conversationSeq` orders messages inside a conversation. `userSyncSeq` provides a gap-free per-user offline event cursor. The equivalent transport-neutral envelope is documented at `../packages/protocol/im/v1/envelope.proto`.
-
-When a live event is missed because an app was suspended or a client was slow, call `/v1/sync?after=<lastUserSyncSeq>` until `hasMore` is false. WebSocket delivery is an accelerator; the sync cursor is the recovery source of truth.
+Business message extensions (edit, recall, reactions, pins, reminders and read state) remain canonical in PostgreSQL. Their Outbox rows publish WuKongIM CMD notifications; clients treat CMD as an invalidation signal and re-sync the authoritative extension state. `/v1/sync`, `/v1/ws/ticket` and `/v1/ws` are not client recovery or transport interfaces.
 
 ## Verification
 
@@ -158,18 +144,18 @@ IM_TEST_DATABASE_URL="$IM_DATABASE_URL" go test -run TestPostgresConcurrent -cou
 docker build -t linli-im-server .
 ```
 
-The tests cover memory and PostgreSQL message idempotency, multi-pool concurrent conversation sequencing, sync cursor continuity, group role/recall rules, real HTTP login, WebSocket connection, ACK, and duplicate WebSocket sends.
+The tests cover memory/PostgreSQL business invariants, Outbox/reconciliation, group roles, message extensions, real HTTP login, WuKongIM DataSource/policy contracts, LiveKit authorization and call membership. `tools/wukong-probe` validates a real fixed-version WuKongIM handshake, ACK, receive, offline/history/group sync, CMD, policy and message-extension flow.
 
 ## Production checklist
 
 - `IM_DEV_MODE` defaults to false and development mode can bind only to loopback. Startup rejects missing/weak JWT and admin secrets.
 - Refresh tokens are one-time rotating sessions persisted in PostgreSQL; reuse, logout, and account bans revoke them.
-- Redis Pub/Sub routes typing and call signaling across online instances. Call-signal publication fails closed, but SDP/ICE remains ephemeral with no replay; clients retry/deduplicate using `signalId`. Durable message sync is the recovery source only for persisted IM events, not WebRTC signaling.
+- WuKongIM provides message long connections and CMD delivery; LiveKit provides media signaling and transport. Redis remains a business cache/task coordination dependency, never the unique copy of a message.
 - Production full mode requires HTTPS OTP and push webhooks with high-entropy bearer tokens. OTP gateway endpoints are `POST <base>/request` and `POST <base>/verify`; the push gateway receives a bounded outbox item with up to 20 registered devices.
-- Production full mode also requires real STUN/TURN endpoints and a TURN credential. The example hostname is a placeholder, not a relay service.
-- Terminate TLS at a trusted reverse proxy and only expose HTTPS/WSS.
+- Production requires valid WuKongIM TCP/WSS endpoints and a LiveKit deployment with externally reachable media ports. The example hostnames are placeholders.
+- Terminate business HTTP and WSS at a trusted reverse proxy; expose only the explicitly documented HTTPS/TCP/WSS/UDP ports.
 - Restrict CORS and admin ingress at the edge; rotate `IM_ADMIN_KEY`.
-- Run PostgreSQL backups and restore drills. Use a shared event bus for cross-instance WebSocket fan-out; durable sync remains the recovery path.
+- Run PostgreSQL, WuKongIM and MinIO backups and restore drills. Do not claim high availability while the documented single-node topology is in use.
 - `IM_PUSH_PROVIDER=noop|log` are development-only. The production webhook gateway owns APNs/FCM credentials, provider feedback, and token invalidation; the server owns durable leasing, retry, and dead-letter state.
 - Production MinIO bootstraps a separate application credential with bucket-scoped least-privilege object access; the root credential is reserved for initialization, backup and administration. Upload completion verifies expected size, client SHA-256 and magic-byte MIME before marking an object ready. General-file malware scanning, archive inspection and media safety scanning remain external production dependencies and must be connected before allowing arbitrary files.
 - Backups are created under a private `.incomplete-<timestamp>` directory with `umask 077`, checksummed, permission-tightened, and atomically renamed to the published timestamp only after all steps succeed. Incomplete directories are never valid restore points.

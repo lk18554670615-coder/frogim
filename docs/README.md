@@ -15,15 +15,18 @@
 | [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) | 发布前、中、后核对与签字记录 | 发布负责人 |
 | [ACCEPTANCE.md](ACCEPTANCE.md) | 上线门槛与证据要求 | 产品、QA、安全 |
 | [SECURITY.md](SECURITY.md) | 密钥、权限、日志和暴露面基线 | 安全、开发、运维 |
-| [BACKUP_RESTORE.md](BACKUP_RESTORE.md) | PostgreSQL 与对象存储备份、恢复演练 | DBA、SRE |
+| [BACKUP_RESTORE.md](BACKUP_RESTORE.md) | PostgreSQL、WuKongIM 与 MinIO 备份、恢复演练 | DBA、SRE |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | 品牌、技术名和旧持久化标识的边界 | 全体维护者 |
 | [DATA_DIRECTORY.md](DATA_DIRECTORY.md) | 服务器 `/data/linli-im` 统一数据目录 | 运维、DBA |
 | [LOGGING.md](LOGGING.md) | 容器日志、中文服务对照、轮转与事故归档 | 运维、研发、安全 |
-| [CLUSTERING.md](CLUSTERING.md) | IM 节点横向扩展、多副本一致性和扩容步骤 | 架构、后端、运维 |
+| [CLUSTERING.md](CLUSTERING.md) | 当前单节点声明与未来集群前置条件 | 架构、后端、运维 |
+| [WUKONGIM_PERFORMANCE_GATE.md](WUKONGIM_PERFORMANCE_GATE.md) | 10k 连接、1k msg/s 与 ACK 延迟压测门禁 | 后端、SRE、测试 |
 
 ## 产品与环境资料
 
 - [IM_FEATURE_MATRIX.md](IM_FEATURE_MATRIX.md)：功能实现状态和外部依赖。
+- [WUKONGIM_FEATURE_MATRIX.md](WUKONGIM_FEATURE_MATRIX.md)：WuKongIM 迁移功能、入口和验收证据。
+- [WUKONGIM_PRODUCTION_CUTOVER_CONFIRMATION_2026-08-12.md](WUKONGIM_PRODUCTION_CUTOVER_CONFIRMATION_2026-08-12.md)：目标服务器、备份、清理范围和正式切换确认项。
 - [IP_SERVER_OPERATIONS.md](IP_SERVER_OPERATIONS.md)：保留的 IP 直连环境运维手册。
 - [DEPLOYMENT_REPORT_2026-07-31.md](DEPLOYMENT_REPORT_2026-07-31.md)：历史部署证据快照，使用前必须重新核验。
 - [../PRODUCT.md](../PRODUCT.md)：产品目标与非目标。

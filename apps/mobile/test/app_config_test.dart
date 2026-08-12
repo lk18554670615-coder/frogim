@@ -5,7 +5,6 @@ void main() {
   void validate({
     String environment = 'production',
     String apiBaseUrl = 'https://chat.example.test',
-    String wsUrl = 'wss://chat.example.test/v1/ws',
     bool enableDemo = false,
     int mediaMaxBytes = 100 * 1024 * 1024,
     bool getuiEnabled = false,
@@ -17,7 +16,6 @@ void main() {
   }) => AppConfig.validateConfiguration(
     environment: environment,
     apiBaseUrl: apiBaseUrl,
-    wsUrl: wsUrl,
     enableDemo: enableDemo,
     mediaMaxBytes: mediaMaxBytes,
     getuiEnabled: getuiEnabled,
@@ -32,14 +30,10 @@ void main() {
     expect(validate, returnsNormally);
   });
 
-  test('production rejects demo mode and insecure endpoints', () {
+  test('production rejects demo mode and an insecure API endpoint', () {
     expect(() => validate(enableDemo: true), throwsStateError);
     expect(
       () => validate(apiBaseUrl: 'http://chat.example.test'),
-      throwsStateError,
-    );
-    expect(
-      () => validate(wsUrl: 'ws://chat.example.test/v1/ws'),
       throwsStateError,
     );
   });
@@ -52,12 +46,11 @@ void main() {
     );
   });
 
-  test('release-like environments require both backend endpoints', () {
+  test('release-like environments require the business API endpoint', () {
     expect(
       () => validate(
         environment: 'staging',
-        apiBaseUrl: 'http://127.0.0.1:8080',
-        wsUrl: '',
+        apiBaseUrl: '',
         termsUrl: '',
         privacyUrl: '',
       ),

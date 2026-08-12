@@ -1,6 +1,6 @@
 import 'call_models.dart';
 
-/// 音视频通话所需的短期信令接口。SDP/ICE 只经 WebSocket 转发，不落本地或服务端数据库。
+/// 音视频通话的业务控制接口；媒体协商与实时传输由 LiveKit SDK 负责。
 abstract interface class CallRepository {
   Stream<CallSignalEvent> get callEvents;
 
@@ -8,7 +8,7 @@ abstract interface class CallRepository {
   Future<CallSession> inviteCall({
     required String callId,
     required String conversationId,
-    required String calleeUserId,
+    String? calleeUserId,
     required CallMediaType mediaType,
   });
   Future<CallSession> getCall(String callId);
@@ -16,5 +16,5 @@ abstract interface class CallRepository {
   Future<CallSession> rejectCall(String callId, {String reason = ''});
   Future<CallSession> cancelCall(String callId, {String reason = ''});
   Future<CallSession> hangupCall(String callId, {String reason = 'completed'});
-  Future<void> sendCallSignal(String type, Map<String, Object?> payload);
+  Future<CallMediaSession> joinCall(String callId);
 }

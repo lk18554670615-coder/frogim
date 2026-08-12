@@ -38,13 +38,6 @@ func (m Manager) Issue(userID string) (string, string, error) {
 	return access, refresh, err
 }
 
-// IssueWebSocket creates a short-lived, single-use admission ticket. Its brief
-// lifetime and atomic consumption limit exposure; callers and gateways must
-// still treat it as a credential and redact it from access logs.
-func (m Manager) IssueWebSocket(userID string, ttl time.Duration) (string, error) {
-	return m.sign(userID, "ws", ttl)
-}
-
 func (m Manager) sign(userID, typ string, ttl time.Duration) (string, error) {
 	now := time.Now()
 	var b [16]byte

@@ -17,13 +17,19 @@ import '../../calls/call_models.dart';
 import '../../core/app_controller.dart';
 import '../../core/app_config.dart';
 import '../../core/app_theme.dart';
+import '../../core/image_send_editor.dart';
+import '../../core/local_media_path.dart';
 import '../../core/media_opener.dart';
 import '../../core/models.dart';
+import '../../core/screenshot_detection.dart';
 import '../../core/web_drop_paste.dart';
 import '../widgets/linli_widgets.dart';
+import '../widgets/media_send_widgets.dart';
+import 'moments_screen.dart';
 import 'people_screens.dart';
 import 'relationship_screens.dart';
 import 'settings_screens.dart';
+import 'sticker_store_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
@@ -58,6 +64,8 @@ class _ChatScreenState extends State<ChatScreen> {
   ChatMessage? replyingTo;
   Timer? _draftTimer;
   bool _draftReady = false;
+  late final StreamSubscription<DateTime> _screenshotEvents;
+  DateTime? _lastScreenshotNotice;
 
   AppUser? get peer => widget.conversation.members.firstOrNull;
   String? get conversationAvatarUrl =>
@@ -70,10 +78,14 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     HardwareKeyboard.instance.addHandler(_handleChatHardwareKey);
+    _screenshotEvents = ScreenshotDetection.instance.events.listen(
+      _handleScreenshot,
+    );
     unawaited(_restoreDraft());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       widget.controller.setActiveConversation(widget.conversation.id);
+      unawaited(ScreenshotDetection.instance.start());
       widget.controller
           .loadMessages(widget.conversation.id)
           .then((_) => _scrollToInitialMessage());
@@ -83,6 +95,8 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_handleChatHardwareKey);
+    unawaited(_screenshotEvents.cancel());
+    unawaited(ScreenshotDetection.instance.stop());
     _draftTimer?.cancel();
     if (_draftReady) {
       final conversationId = widget.conversation.id;
@@ -98,10 +112,26 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       );
     }
+    widget.controller.updateTyping(widget.conversation.id, false);
     widget.controller.setActiveConversation(null);
     textController.dispose();
     scrollController.dispose();
     super.dispose();
+  }
+
+  void _handleScreenshot(DateTime occurredAt) {
+    if (!mounted) return;
+    final previous = _lastScreenshotNotice;
+    if (previous != null &&
+        occurredAt.difference(previous).abs().inSeconds < 2) {
+      return;
+    }
+    _lastScreenshotNotice = occurredAt;
+    unawaited(
+      widget.controller
+          .sendScreenshotNotice(widget.conversation.id)
+          .then((_) => _scrollToEnd()),
+    );
   }
 
   bool _handleChatHardwareKey(KeyEvent event) {
@@ -164,21 +194,35 @@ class _ChatScreenState extends State<ChatScreen> {
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
-                      Text(
-                        widget.conversation.kind == ConversationKind.group
-                            ? '${widget.conversation.memberCount} 位成员'
-                            : (peer?.isOnline ?? false)
-                            ? '在线'
-                            : '稍后回复',
-                        maxLines: 1,
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color:
-                              widget.conversation.kind ==
-                                      ConversationKind.direct &&
-                                  (peer?.isOnline ?? false)
-                              ? LinliColors.systemGreen
-                              : LinliColors.preview,
-                        ),
+                      AnimatedBuilder(
+                        animation: widget.controller,
+                        builder: (context, _) {
+                          final typing = widget.controller.typingLabelFor(
+                            widget.conversation.id,
+                          );
+                          return Text(
+                            typing ??
+                                (widget.conversation.kind ==
+                                        ConversationKind.group
+                                    ? '${widget.conversation.memberCount} 位成员'
+                                    : (peer?.isOnline ?? false)
+                                    ? '在线'
+                                    : '稍后回复'),
+                            key: Key('chat-presence-${widget.conversation.id}'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(
+                                  color:
+                                      typing != null ||
+                                          (widget.conversation.kind ==
+                                                  ConversationKind.direct &&
+                                              (peer?.isOnline ?? false))
+                                      ? LinliColors.systemGreen
+                                      : LinliColors.preview,
+                                ),
+                          );
+                        },
                       ),
                     ],
                   ),
@@ -186,14 +230,15 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             ),
             actions: [
-              if (widget.conversation.kind == ConversationKind.group)
+              if (widget.conversation.kind == ConversationKind.group &&
+                  !widget.conversation.isBusinessChannel)
                 IconButton(
                   key: const Key('pinned-messages-button'),
                   tooltip: '置顶消息',
                   onPressed: _showPinnedMessages,
                   icon: const Icon(CupertinoIcons.pin),
                 ),
-              if (widget.conversation.kind == ConversationKind.direct) ...[
+              if (!widget.conversation.isBusinessChannel) ...[
                 IconButton(
                   key: const Key('start-audio-call'),
                   tooltip: '语音通话',
@@ -281,11 +326,15 @@ class _ChatScreenState extends State<ChatScreen> {
                           showAttachments = false;
                         }),
                         onAttachment: _pickAttachment,
+                        allowLiveInteraction:
+                            widget.conversation.channelType == 9,
                         onVoiceReady: _sendVoice,
                         onMention:
                             widget.conversation.kind == ConversationKind.group
                             ? _pickMention
                             : null,
+                        onTypingChanged: (typing) => widget.controller
+                            .updateTyping(widget.conversation.id, typing),
                         onSend: _send,
                         onSendOptions: _showSendOptions,
                       ),
@@ -821,37 +870,94 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _pickAttachment(String label) async {
     try {
+      if (label == '直播互动') {
+        await _showLiveInteraction();
+        return;
+      }
+      if (label == '表情') {
+        final sticker = await showStickerPicker(context, widget.controller);
+        if (!mounted || sticker == null) return;
+        setState(() => showAttachments = false);
+        unawaited(
+          widget.controller.sendSticker(widget.conversation.id, sticker),
+        );
+        _scrollToEnd();
+        return;
+      }
+      if (label == '朋友圈') {
+        final moment = await showMomentPicker(context, widget.controller);
+        if (!mounted || moment == null) return;
+        setState(() => showAttachments = false);
+        unawaited(
+          widget.controller.sendMomentShare(widget.conversation.id, moment),
+        );
+        _scrollToEnd();
+        return;
+      }
       MediaUpload? upload;
       if (label == '相册' || label == '拍摄') {
+        final source = label == '拍摄' ? ImageSource.camera : ImageSource.gallery;
         final picked = await ImagePicker().pickImage(
-          source: label == '拍摄' ? ImageSource.camera : ImageSource.gallery,
-          imageQuality: 88,
-          maxWidth: 2400,
+          source: source,
+          // Android's picker may transcode a gallery GIF to JPEG while
+          // retaining the .gif name when resize/quality options are present.
+          // Gallery bytes must stay original until we inspect their MIME.
+          imageQuality: source == ImageSource.camera ? 88 : null,
+          maxWidth: source == ImageSource.camera ? 2400 : null,
         );
         if (picked == null) return;
-        final bytes = await picked.readAsBytes();
-        _validateMediaSize(bytes.length);
-        upload = MediaUpload(
-          bytes: bytes,
-          fileName: picked.name,
-          mimeType: _mimeFor(picked.name, imageFallback: true),
-          kind: MessageContentKind.image,
-          localPath: picked.path,
-        );
+        final original = await picked.readAsBytes();
+        if (!mounted) return;
+        final pickedMime = _mimeFor(picked.name);
+        if (pickedMime == 'image/gif') {
+          // Editing/encoding an animated GIF as JPEG silently destroys its
+          // animation. Preserve the validated original and let MessageMapper
+          // select WuKongIM's pinned built-in content type 3.
+          _validateMediaSize(original.length);
+          final localPath = await persistImageBytes(
+            original,
+            mime: pickedMime,
+            extension: '.gif',
+          );
+          upload = MediaUpload(
+            bytes: original,
+            fileName: picked.name,
+            mimeType: pickedMime,
+            kind: MessageContentKind.image,
+            localPath: localPath,
+          );
+        } else {
+          final bytes = await editImageBeforeSending(context, original);
+          if (!mounted || bytes == null) return;
+          _validateMediaSize(bytes.length);
+          final localPath = await persistEditedImage(bytes);
+          upload = MediaUpload(
+            bytes: bytes,
+            fileName: _editedImageName(picked.name),
+            mimeType: 'image/jpeg',
+            kind: MessageContentKind.image,
+            localPath: localPath,
+          );
+        }
       } else if (label == '视频') {
+        final source = await chooseVideoSource(context);
+        if (!mounted || source == null) return;
         final picked = await ImagePicker().pickVideo(
-          source: ImageSource.gallery,
+          source: source,
           maxDuration: const Duration(minutes: 5),
         );
-        if (picked == null) return;
-        final bytes = await picked.readAsBytes();
-        _validateMediaSize(bytes.length);
-        upload = MediaUpload(
-          bytes: bytes,
-          fileName: picked.name,
-          mimeType: _mimeFor(picked.name, videoFallback: true),
-          kind: MessageContentKind.video,
-          localPath: picked.path,
+        if (!mounted || picked == null) return;
+        final preview = await showVideoSendPreview(
+          context,
+          source: picked.path,
+          title: picked.name,
+        );
+        if (!mounted || preview == null) return;
+        upload = await prepareVideoUploadWithDialog(
+          context,
+          file: picked,
+          maxBytes: AppConfig.mediaMaxBytes,
+          previewDurationSeconds: preview.durationSeconds,
         );
       } else if (label == '文件') {
         final result = await FilePicker.platform.pickFiles(
@@ -895,6 +1001,45 @@ class _ChatScreenState extends State<ChatScreen> {
       _scrollToEnd();
     } on PlatformException catch (error) {
       _showError(error.message ?? '无法访问照片或文件，请检查系统权限');
+    } catch (error) {
+      _showError(error.toString().replaceFirst('FormatException: ', ''));
+    }
+  }
+
+  Future<void> _showLiveInteraction() async {
+    const options = <(String, String, String)>[
+      ('live.like', '❤️', '点赞了直播'),
+      ('live.applause', '👏', '为直播鼓掌'),
+      ('live.follow', '⭐', '关注了直播'),
+    ];
+    final selected = await showCupertinoModalPopup<(String, String, String)>(
+      context: context,
+      builder: (context) => CupertinoActionSheet(
+        title: const Text('直播互动'),
+        message: const Text('互动将实时发送给当前直播频道的成员。'),
+        actions: [
+          for (final option in options)
+            CupertinoActionSheetAction(
+              key: Key('live-event-${option.$1}'),
+              onPressed: () => Navigator.pop(context, option),
+              child: Text('${option.$2}  ${option.$3}'),
+            ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+      ),
+    );
+    if (!mounted || selected == null) return;
+    setState(() => showAttachments = false);
+    try {
+      await widget.controller.sendLiveEvent(
+        widget.conversation.id,
+        event: selected.$1,
+        label: '${selected.$2} ${selected.$3}',
+      );
+      _scrollToEnd();
     } catch (error) {
       _showError(error.toString().replaceFirst('FormatException: ', ''));
     }
@@ -1116,6 +1261,14 @@ class _ChatScreenState extends State<ChatScreen> {
     };
   }
 
+  String _editedImageName(String original) {
+    final trimmed = original.trim();
+    if (trimmed.isEmpty) return 'image-edited.jpg';
+    final dot = trimmed.lastIndexOf('.');
+    final base = dot > 0 ? trimmed.substring(0, dot) : trimmed;
+    return '$base-edited.jpg';
+  }
+
   void _showError(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -1166,6 +1319,7 @@ class _ChatScreenState extends State<ChatScreen> {
         canRecall: canRecall,
         canPin:
             widget.conversation.kind == ConversationKind.group &&
+            !widget.conversation.isBusinessChannel &&
             !message.id.startsWith('local-') &&
             message.status != MessageStatus.recalled,
         onSelected: (value) => Navigator.pop(dialogContext, value),
@@ -1453,7 +1607,8 @@ class _MessageContextMenu extends StatelessWidget {
     final canForward =
         !message.id.startsWith('local-') &&
         message.status != MessageStatus.recalled &&
-        message.kind != MessageContentKind.system;
+        message.kind != MessageContentKind.system &&
+        message.kind != MessageContentKind.screenshotNotice;
     final canCopy =
         message.kind == MessageContentKind.text ||
         message.kind == MessageContentKind.reply;
@@ -1611,6 +1766,8 @@ class _MessageContextPreview extends StatelessWidget {
       MessageContentKind.voice => '${message.durationSeconds ?? 1} 秒语音',
       MessageContentKind.video => message.fileName ?? '视频消息',
       MessageContentKind.file => message.fileName ?? '文件消息',
+      MessageContentKind.sticker => message.fileName ?? '表情消息',
+      MessageContentKind.momentShare => message.text,
       _ => message.text,
     };
     final time =
@@ -1799,19 +1956,27 @@ class ChatInfoScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final group = conversation.kind == ConversationKind.group;
+    final multiUser = conversation.kind == ConversationKind.group;
+    final business = conversation.isBusinessChannel;
+    final group = multiUser && !business;
     return Scaffold(
       appBar: const GlassAppBar(title: Text('聊天信息')),
       body: ListView(
         key: const Key('chat-info-list'),
         padding: const EdgeInsets.fromLTRB(16, 4, 16, 36),
         children: [
-          SectionHeader(group ? '群成员' : '联系人'),
+          SectionHeader(
+            group
+                ? '群成员'
+                : business
+                ? '频道资料'
+                : '联系人',
+          ),
           SectionCard(
             children: [
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 16, 12, 14),
-                child: group
+                child: multiUser
                     ? _ChatMemberMatrix(
                         members: conversation.members,
                         fallbackName: conversation.title,
@@ -1886,6 +2051,12 @@ class ChatInfoScreen extends StatelessWidget {
           SectionCard(
             children: [
               SettingTile(
+                key: const Key('screenshot-detection-status'),
+                icon: CupertinoIcons.device_phone_portrait,
+                title: '截屏提示',
+                subtitle: ScreenshotDetection.instance.description,
+              ),
+              SettingTile(
                 icon: CupertinoIcons.exclamationmark_triangle,
                 title: '举报会话',
                 subtitle: '填写原因后提交给平台审核',
@@ -1901,7 +2072,7 @@ class ChatInfoScreen extends StatelessWidget {
                   ),
                 ),
               ),
-              if (!group)
+              if (!multiUser)
                 SettingTile(
                   icon: CupertinoIcons.nosign,
                   title: '加入黑名单',
@@ -2183,7 +2354,8 @@ class MessageBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     if (message.status == MessageStatus.recalled ||
         message.status == MessageStatus.expired ||
-        message.kind == MessageContentKind.system) {
+        message.kind == MessageContentKind.system ||
+        message.kind == MessageContentKind.screenshotNotice) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 10),
         child: Text(
@@ -2194,6 +2366,29 @@ class MessageBubble extends StatelessWidget {
               : message.text,
           textAlign: TextAlign.center,
           style: Theme.of(context).textTheme.labelSmall,
+        ),
+      );
+    }
+    if (message.kind == MessageContentKind.liveEvent) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 7),
+        child: Center(
+          child: Container(
+            key: Key('live-event-${message.clientMessageId}'),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            decoration: BoxDecoration(
+              color: LinliColors.yellow.withValues(alpha: .16),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              '${message.isMine ? '我' : message.senderName} ${message.text.replaceFirst(RegExp(r'^[❤️👏⭐]\s*'), '')}',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                color: LinliColors.navy,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
         ),
       );
     }
@@ -2501,7 +2696,10 @@ class _MessageContent extends StatelessWidget {
       if (media != null) {
         final image = media.startsWith('assets/')
             ? Image.asset(media, width: 220, height: 164, fit: BoxFit.cover)
-            : media.startsWith('http://') || media.startsWith('https://')
+            : media.startsWith('http://') ||
+                  media.startsWith('https://') ||
+                  media.startsWith('data:') ||
+                  media.startsWith('blob:')
             ? Image.network(
                 media,
                 width: 220,
@@ -2539,6 +2737,36 @@ class _MessageContent extends StatelessWidget {
       );
     }
 
+    if (message.kind == MessageContentKind.sticker) {
+      final media = message.mediaUrl;
+      if (media == null || media.isEmpty) {
+        return _MediaUnavailable(
+          color: bubbleColor,
+          textColor: textColor,
+          label: '表情暂不可用',
+        );
+      }
+      return Semantics(
+        label: message.fileName?.isNotEmpty == true
+            ? '表情：${message.fileName}'
+            : '表情消息',
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: Image.network(
+            media,
+            width: 132,
+            height: 132,
+            fit: BoxFit.contain,
+            errorBuilder: (_, _, _) => _MediaUnavailable(
+              color: bubbleColor,
+              textColor: textColor,
+              label: '表情加载失败',
+            ),
+          ),
+        ),
+      );
+    }
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
       decoration: BoxDecoration(
@@ -2555,14 +2783,9 @@ class _MessageContent extends StatelessWidget {
           message: message,
           color: textColor,
         ),
-        MessageContentKind.video => _OpenableMediaContent(
+        MessageContentKind.video => _VideoMessageContent(
           message: message,
           color: textColor,
-          icon: CupertinoIcons.play_circle_fill,
-          title: message.fileName ?? '视频消息',
-          subtitle: message.durationSeconds == null
-              ? '视频文件'
-              : '${message.durationSeconds} 秒',
         ),
         MessageContentKind.reply => Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -2609,8 +2832,93 @@ class _MessageContent extends StatelessWidget {
           message: message,
           color: textColor,
         ),
+        MessageContentKind.momentShare => _MomentShareMessageCard(
+          message: message,
+          controller: controller,
+          color: textColor,
+        ),
         _ => _TextWithPreview(message: message, color: textColor, mine: mine),
       },
+    );
+  }
+}
+
+class _MomentShareMessageCard extends StatelessWidget {
+  const _MomentShareMessageCard({
+    required this.message,
+    required this.controller,
+    required this.color,
+  });
+
+  final ChatMessage message;
+  final AppController? controller;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final preview = message.text.replaceFirst('[朋友圈]', '').trim();
+    final media = message.mediaUrl;
+    final isImage = message.mimeType?.startsWith('image/') == true;
+    return Semantics(
+      button: controller != null,
+      label: '朋友圈分享${preview.isEmpty ? '' : '：$preview'}',
+      child: InkWell(
+        onTap: controller == null
+            ? null
+            : () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => MomentsScreen(controller: controller!),
+                ),
+              ),
+        borderRadius: BorderRadius.circular(10),
+        child: SizedBox(
+          width: 220,
+          child: Row(
+            children: [
+              Container(
+                width: 54,
+                height: 54,
+                clipBehavior: Clip.antiAlias,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: .10),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: isImage && media != null && media.isNotEmpty
+                    ? Image.network(
+                        media,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) =>
+                            Icon(CupertinoIcons.person_2_fill, color: color),
+                      )
+                    : Icon(CupertinoIcons.person_2_fill, color: color),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '朋友圈',
+                      style: TextStyle(
+                        color: color,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      preview.isEmpty ? '查看分享内容' : preview,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: color.withValues(alpha: .78)),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(CupertinoIcons.chevron_forward, size: 15, color: color),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -2765,6 +3073,75 @@ class _MentionedMessageText extends StatelessWidget {
       spans.add(TextSpan(text: message.text.substring(offset)));
     }
     return Text.rich(TextSpan(style: base, children: spans));
+  }
+}
+
+class _VideoMessageContent extends StatelessWidget {
+  const _VideoMessageContent({required this.message, required this.color});
+
+  final ChatMessage message;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final source = message.mediaUrl?.trim();
+    final title = message.fileName?.trim().isNotEmpty == true
+        ? message.fileName!.trim()
+        : '视频消息';
+    final duration = message.durationSeconds;
+    return Semantics(
+      button: source?.isNotEmpty == true,
+      label: source?.isNotEmpty == true ? '播放$title' : '视频暂不可播放',
+      child: InkWell(
+        key: Key('play-video-${message.id}'),
+        onTap: source?.isNotEmpty == true
+            ? () => showMessageVideo(context, source: source!, title: title)
+            : null,
+        borderRadius: BorderRadius.circular(12),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minWidth: 178),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: .12),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(CupertinoIcons.play_fill, color: color, size: 22),
+              ),
+              const SizedBox(width: 10),
+              Flexible(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: color, fontSize: 15),
+                    ),
+                    Text(
+                      source?.isNotEmpty == true
+                          ? duration == null || duration <= 0
+                                ? '点击播放'
+                                : '$duration 秒 · 点击播放'
+                          : '视频地址暂不可用',
+                      style: TextStyle(
+                        color: color.withValues(alpha: .65),
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -3437,9 +3814,11 @@ class ChatComposer extends StatefulWidget {
     required this.onToggleAttachments,
     required this.onToggleEmoji,
     required this.onAttachment,
+    this.allowLiveInteraction = false,
     required this.onVoiceReady,
     required this.onCancelReply,
     this.onMention,
+    this.onTypingChanged,
     this.replyingTo,
     this.showAttachments = false,
     this.showEmoji = false,
@@ -3451,9 +3830,11 @@ class ChatComposer extends StatefulWidget {
   final VoidCallback onToggleAttachments;
   final VoidCallback onToggleEmoji;
   final ValueChanged<String> onAttachment;
+  final bool allowLiveInteraction;
   final ValueChanged<MediaUpload> onVoiceReady;
   final VoidCallback onCancelReply;
   final VoidCallback? onMention;
+  final ValueChanged<bool>? onTypingChanged;
   final ChatMessage? replyingTo;
   final bool showAttachments;
   final bool showEmoji;
@@ -3480,6 +3861,7 @@ class _ChatComposerState extends State<ChatComposer> {
   void initState() {
     super.initState();
     widget.controller.addListener(_onTextChanged);
+    _inputFocusNode.addListener(_onInputFocusChanged);
     HardwareKeyboard.instance.addHandler(_handleHardwareKey);
     _player.onPlayerComplete.listen((_) {
       if (mounted) setState(() => _playing = false);
@@ -3497,7 +3879,9 @@ class _ChatComposerState extends State<ChatComposer> {
 
   @override
   void dispose() {
+    widget.onTypingChanged?.call(false);
     widget.controller.removeListener(_onTextChanged);
+    _inputFocusNode.removeListener(_onInputFocusChanged);
     HardwareKeyboard.instance.removeHandler(_handleHardwareKey);
     _recordTimer?.cancel();
     final draftPath = _voiceDraftPath;
@@ -3524,10 +3908,21 @@ class _ChatComposerState extends State<ChatComposer> {
     return true;
   }
 
-  void _onTextChanged() => setState(() {});
+  void _onTextChanged() {
+    if (!mounted) return;
+    setState(() {});
+    _notifyTyping();
+  }
+
+  void _onInputFocusChanged() => _notifyTyping();
+
+  void _notifyTyping() => widget.onTypingChanged?.call(
+    _inputFocusNode.hasFocus && widget.controller.text.trim().isNotEmpty,
+  );
 
   void _toggleVoiceMode() {
     if (_recording) return;
+    widget.onTypingChanged?.call(false);
     if (widget.showEmoji) widget.onToggleEmoji();
     if (widget.showAttachments) widget.onToggleAttachments();
     setState(() => _voiceMode = !_voiceMode);
@@ -3841,7 +4236,10 @@ class _ChatComposerState extends State<ChatComposer> {
             AnimatedSize(
               duration: nexaMotionDuration(context),
               child: widget.showAttachments
-                  ? _AttachmentPanel(onSelected: widget.onAttachment)
+                  ? _AttachmentPanel(
+                      onSelected: widget.onAttachment,
+                      allowLiveInteraction: widget.allowLiveInteraction,
+                    )
                   : widget.showEmoji
                   ? _EmojiPanel(
                       controller: widget.controller,
@@ -4069,18 +4467,25 @@ class _ContactPickerSheetState extends State<_ContactPickerSheet> {
 }
 
 class _AttachmentPanel extends StatelessWidget {
-  const _AttachmentPanel({required this.onSelected});
+  const _AttachmentPanel({
+    required this.onSelected,
+    this.allowLiveInteraction = false,
+  });
   final ValueChanged<String> onSelected;
+  final bool allowLiveInteraction;
 
   @override
   Widget build(BuildContext context) {
-    const items = [
+    final items = [
       ('相册', CupertinoIcons.photo_on_rectangle),
       ('拍摄', CupertinoIcons.camera),
       ('视频', CupertinoIcons.video_camera),
       ('文件', CupertinoIcons.doc),
       ('位置', CupertinoIcons.location),
       ('名片', CupertinoIcons.person_crop_rectangle),
+      ('表情', CupertinoIcons.smiley),
+      ('朋友圈', CupertinoIcons.person_2),
+      if (allowLiveInteraction) ('直播互动', CupertinoIcons.heart_circle),
     ];
     return Container(
       width: double.infinity,

@@ -66,9 +66,9 @@ func TestPostgresConversationProjectionAndFanoutAreBounded(t *testing.T) {
 	}
 
 	messageID := "perf_message_" + suffix
-	_, duplicate, events, err := repository.SendMessage(ctx, MessageInput{UserID: userIDs[0], ConversationID: conversationID, ClientMsgID: "perf-client-" + suffix, Type: "text", Body: map[string]any{"text": "bounded fanout"}, MessageID: messageID, CreatedAt: time.Now().UnixMilli()})
-	if err != nil || duplicate || len(events) != 1 {
-		t.Fatalf("send duplicate=%v events=%d err=%v", duplicate, len(events), err)
+	_, duplicate, err := repository.SendMessage(ctx, MessageInput{UserID: userIDs[0], ConversationID: conversationID, ClientMsgID: "perf-client-" + suffix, Type: "text", Body: map[string]any{"text": "bounded fanout"}, MessageID: messageID, CreatedAt: time.Now().UnixMilli()})
+	if err != nil || duplicate {
+		t.Fatalf("send duplicate=%v err=%v", duplicate, err)
 	}
 	for {
 		_, worked, processErr := repository.ProcessMessageFanout(ctx, 3)
@@ -79,14 +79,11 @@ func TestPostgresConversationProjectionAndFanoutAreBounded(t *testing.T) {
 			break
 		}
 	}
-	var syncRows, pushRows int
-	if err = repository.pool.QueryRow(ctx, `SELECT count(*) FROM im_sync_events WHERE event_type='message.created' AND payload->'message'->>'id'=$1`, messageID).Scan(&syncRows); err != nil {
-		t.Fatal(err)
-	}
+	var pushRows int
 	if err = repository.pool.QueryRow(ctx, `SELECT count(*) FROM im_push_outbox WHERE event_type='message.created' AND payload->'message'->>'id'=$1`, messageID).Scan(&pushRows); err != nil {
 		t.Fatal(err)
 	}
-	if syncRows != 12 || pushRows != 11 {
-		t.Fatalf("sync rows=%d push rows=%d", syncRows, pushRows)
+	if pushRows != 11 {
+		t.Fatalf("push rows=%d", pushRows)
 	}
 }

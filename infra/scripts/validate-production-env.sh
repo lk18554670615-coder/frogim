@@ -37,6 +37,10 @@ required=(
   IM_PUSH_PROVIDER IM_OTP_WEBHOOK_URL IM_OTP_WEBHOOK_TOKEN
   TERMS_URL PRIVACY_URL
   MINIO_ROOT_USER MINIO_ROOT_PASSWORD MINIO_APP_USER MINIO_APP_PASSWORD
+  LINLI_DATA_ROOT BACKUP_DIR BACKUP_METRICS_DIR BACKUP_OFFSITE_ENABLED WUKONG_IMAGE IM_WUKONG_MANAGER_TOKEN IM_WUKONG_TOKEN_SECRET IM_WUKONG_POLICY_SECRET
+  IM_WUKONG_PLUGIN_TRUSTED_KEYS IM_WUKONG_PLUGIN_ALLOWLIST IM_WUKONG_PLUGIN_MAX_BYTES
+  IM_WUKONG_TCP_URL IM_WUKONG_WS_URL WUKONG_EXTERNAL_IP
+  LIVEKIT_API_KEY LIVEKIT_API_SECRET IM_LIVEKIT_URL
 )
 
 endpoint_mode="${PRODUCTION_ENDPOINT_MODE:-domain}"
@@ -90,6 +94,174 @@ for key in IM_JWT_SECRET; do
     failed=1
   fi
 done
+
+for key in IM_WUKONG_TOKEN_SECRET IM_WUKONG_POLICY_SECRET LIVEKIT_API_SECRET; do
+  value="${!key:-}"
+  if (( ${#value} < 32 )); then
+    echo "$key must contain at least 32 characters" >&2
+    failed=1
+  fi
+done
+if [[ "${IM_WUKONG_POLICY_SECRET:-}" == "${IM_WUKONG_TOKEN_SECRET:-}" || "${IM_WUKONG_POLICY_SECRET:-}" == "${IM_WUKONG_MANAGER_TOKEN:-}" ]]; then
+  echo "IM_WUKONG_POLICY_SECRET must be independent from WuKongIM token and manager secrets" >&2
+  failed=1
+fi
+manager_token="${IM_WUKONG_MANAGER_TOKEN:-}"
+if (( ${#manager_token} < 24 )); then
+  echo "IM_WUKONG_MANAGER_TOKEN must contain at least 24 characters" >&2
+  failed=1
+fi
+livekit_key="${LIVEKIT_API_KEY:-}"
+if (( ${#livekit_key} < 3 )); then
+  echo "LIVEKIT_API_KEY must contain at least 3 characters" >&2
+  failed=1
+fi
+
+decode_base64() {
+  if base64 --help 2>&1 | grep -q -- '--decode'; then
+    base64 --decode
+  else
+    base64 -D
+  fi
+}
+
+validate_wukong_plugin_trust() {
+  local trusted_keys="${IM_WUKONG_PLUGIN_TRUSTED_KEYS:-}"
+  local allowlist="${IM_WUKONG_PLUGIN_ALLOWLIST:-}"
+  local max_bytes="${IM_WUKONG_PLUGIN_MAX_BYTES:-}"
+  local entry key_id encoded decoded_size plugin_no policy_allowed=0
+  local -a entries plugins
+
+  if [[ ! "$max_bytes" =~ ^[0-9]+$ ]] || (( max_bytes < 1048576 || max_bytes > 536870912 )); then
+    echo "IM_WUKONG_PLUGIN_MAX_BYTES must be an integer between 1048576 and 536870912" >&2
+    failed=1
+  fi
+
+  if [[ "$trusted_keys" == ,* || "$trusted_keys" == *, || "$trusted_keys" == *,,* ]]; then
+    echo "IM_WUKONG_PLUGIN_TRUSTED_KEYS must not contain empty entries" >&2
+    failed=1
+  fi
+  IFS=',' read -r -a entries <<< "$trusted_keys"
+  for entry in "${entries[@]}"; do
+    key_id="${entry%%:*}"
+    encoded="${entry#*:}"
+    if [[ "$entry" != *:* || ! "$key_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$ ]]; then
+      echo "IM_WUKONG_PLUGIN_TRUSTED_KEYS contains an invalid key id or entry" >&2
+      failed=1
+      continue
+    fi
+    if [[ ! "$encoded" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || (( ${#encoded} % 4 != 0 )); then
+      echo "IM_WUKONG_PLUGIN_TRUSTED_KEYS key $key_id is not canonical Base64" >&2
+      failed=1
+      continue
+    fi
+    if ! decoded_size="$(printf '%s' "$encoded" | decode_base64 2>/dev/null | wc -c | tr -d '[:space:]')"; then
+      echo "IM_WUKONG_PLUGIN_TRUSTED_KEYS key $key_id cannot be decoded" >&2
+      failed=1
+    elif [[ "$decoded_size" != "32" ]]; then
+      echo "IM_WUKONG_PLUGIN_TRUSTED_KEYS key $key_id must decode to exactly 32 bytes" >&2
+      failed=1
+    fi
+  done
+
+  if [[ "$allowlist" == ,* || "$allowlist" == *, || "$allowlist" == *,,* ]]; then
+    echo "IM_WUKONG_PLUGIN_ALLOWLIST must not contain empty entries" >&2
+    failed=1
+  fi
+  IFS=',' read -r -a plugins <<< "$allowlist"
+  for plugin_no in "${plugins[@]}"; do
+    if [[ ! "$plugin_no" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$ ]]; then
+      echo "IM_WUKONG_PLUGIN_ALLOWLIST contains an invalid plugin number" >&2
+      failed=1
+    elif [[ "$plugin_no" == "wk.plugin.im-policy" ]]; then
+      policy_allowed=1
+    fi
+  done
+  if (( policy_allowed == 0 )); then
+    echo "IM_WUKONG_PLUGIN_ALLOWLIST must include the mandatory wk.plugin.im-policy plugin" >&2
+    failed=1
+  fi
+}
+
+validate_wukong_plugin_trust
+
+if [[ ! "${IM_WUKONG_TCP_URL:-}" =~ ^tcp://[^[:space:]]+$ ]]; then
+  echo "IM_WUKONG_TCP_URL must be an absolute tcp:// URL" >&2
+  failed=1
+fi
+if [[ ! "${IM_WUKONG_WS_URL:-}" =~ ^wss://[^[:space:]]+$ ]]; then
+  echo "IM_WUKONG_WS_URL must be an absolute wss:// URL" >&2
+  failed=1
+fi
+if [[ ! "${IM_LIVEKIT_URL:-}" =~ ^wss://[^[:space:]]+$ ]]; then
+  echo "IM_LIVEKIT_URL must be an absolute wss:// URL" >&2
+  failed=1
+fi
+if [[ ! "${WUKONG_EXTERNAL_IP:-}" =~ ^[0-9A-Fa-f:.]+$ ]]; then
+  echo "WUKONG_EXTERNAL_IP must be a literal public IP address" >&2
+  failed=1
+fi
+if [[ ! "${WUKONG_IMAGE:-}" =~ ^[^@[:space:]]+@sha256:[0-9a-f]{64}$ ]]; then
+  echo "WUKONG_IMAGE must be an immutable promoted repository@sha256 digest" >&2
+  failed=1
+fi
+
+if [[ "${LINLI_DATA_ROOT:-}" != /* || "${LINLI_DATA_ROOT:-}" == "/" ]]; then
+  echo "LINLI_DATA_ROOT must be an absolute non-root directory" >&2
+  failed=1
+elif [[ ! -d "$LINLI_DATA_ROOT" ]]; then
+  echo "LINLI_DATA_ROOT does not exist: $LINLI_DATA_ROOT" >&2
+  failed=1
+else
+  disk_kib="$(df -Pk "$LINLI_DATA_ROOT" | awk 'NR==2 {print $2}')"
+  if [[ ! "$disk_kib" =~ ^[0-9]+$ ]] || (( disk_kib < 1073741824 )); then
+    echo "the production data filesystem must contain at least 1 TiB before WuKongIM cutover" >&2
+    failed=1
+  fi
+fi
+
+normalized_backup_dir="${BACKUP_DIR:-}"
+normalized_backup_dir="${normalized_backup_dir%/}"
+if [[ "$normalized_backup_dir" != /* || "$normalized_backup_dir" == "/" ]]; then
+  echo "BACKUP_DIR must be an absolute non-root directory" >&2
+  failed=1
+elif [[ "${BACKUP_METRICS_DIR:-}" != "$normalized_backup_dir/.metrics" ]]; then
+  echo "BACKUP_METRICS_DIR must be exactly $normalized_backup_dir/.metrics" >&2
+  failed=1
+fi
+
+case "${BACKUP_OFFSITE_ENABLED:-}" in
+  true)
+    offsite_access_key="${BACKUP_OFFSITE_ACCESS_KEY:-}"
+    offsite_secret_key="${BACKUP_OFFSITE_SECRET_KEY:-}"
+    if [[ ! "${BACKUP_OFFSITE_ENDPOINT:-}" =~ ^https://[^[:space:]]+$ ]]; then
+      echo "BACKUP_OFFSITE_ENDPOINT must use HTTPS when off-site backup is enabled" >&2
+      failed=1
+    fi
+    if (( ${#offsite_access_key} < 8 )); then
+      echo "BACKUP_OFFSITE_ACCESS_KEY must contain at least 8 characters" >&2
+      failed=1
+    fi
+    if (( ${#offsite_secret_key} < 16 )); then
+      echo "BACKUP_OFFSITE_SECRET_KEY must contain at least 16 characters" >&2
+      failed=1
+    fi
+    if [[ ! "${BACKUP_OFFSITE_BUCKET:-}" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then
+      echo "BACKUP_OFFSITE_BUCKET must be a valid lowercase S3 bucket name" >&2
+      failed=1
+    fi
+    offsite_prefix="${BACKUP_OFFSITE_PREFIX:-}"
+    if [[ "$offsite_prefix" == /* || "$offsite_prefix" == */ || "$offsite_prefix" == *..* || ! "$offsite_prefix" =~ ^[A-Za-z0-9._/-]*$ ]]; then
+      echo "BACKUP_OFFSITE_PREFIX must be a relative safe object prefix" >&2
+      failed=1
+    fi
+    ;;
+  false) ;;
+  *)
+    echo "BACKUP_OFFSITE_ENABLED must be true or false" >&2
+    failed=1
+    ;;
+esac
 
 if [[ ! "${IM_ADMIN_EMAIL:-}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; then
   echo "IM_ADMIN_EMAIL must be a valid administrator email address" >&2

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 abstract final class LinliColors {
@@ -29,7 +30,7 @@ Duration nexaMotionDuration(BuildContext context) =>
     ? Duration.zero
     : const Duration(milliseconds: 180);
 
-ThemeData buildLinliTheme(Brightness brightness) {
+ThemeData buildLinliTheme(Brightness brightness, {String? fontFamily}) {
   final dark = brightness == Brightness.dark;
   final label = dark ? LinliColors.darkLabel : LinliColors.label;
   final background = dark ? LinliColors.darkBackground : LinliColors.background;
@@ -54,8 +55,15 @@ ThemeData buildLinliTheme(Brightness brightness) {
     outline: separator,
   );
 
-  const baseText = TextStyle(
-    fontFamilyFallback: ['PingFang SC', 'SF Pro Text', 'system-ui'],
+  final baseText = TextStyle(
+    fontFamily: fontFamily ?? (kIsWeb ? 'NotoSansSC' : null),
+    fontFamilyFallback: [
+      'PingFang SC',
+      'Microsoft YaHei',
+      'Noto Sans CJK SC',
+      'SF Pro Text',
+      'system-ui',
+    ],
     letterSpacing: 0,
   );
   final textTheme = TextTheme(

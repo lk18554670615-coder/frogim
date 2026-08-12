@@ -1,5 +1,5 @@
 # 本地前端连接远程真实资源的专用模式。
-# 此文件故意不定义 server/postgres/redis/minio/coturn，防止误连本地业务资源。
+# 此文件故意不定义 server/postgres/redis/minio/livekit，防止误连本地业务资源。
 name: nexachat-remote-test
 
 x-logging: &default-logging
@@ -35,7 +35,6 @@ services:
       args:
         # 浏览器只访问本地同源路径，由下方 Nginx 安全转发至远程 HTTPS/WSS。
         WEB_API_BASE_URL: http://127.0.0.1:${WEB_PORT:-8090}
-        WEB_WS_URL: ws://127.0.0.1:${WEB_PORT:-8090}/v1/ws
         WEB_BASE_HREF: /
         APP_ENV: staging
         ENABLE_DEMO: "false"
@@ -59,7 +58,7 @@ services:
     build:
       context: ../apps/admin
       args:
-        VITE_ADMIN_API_URL: /api/v1/admin
+        VITE_ADMIN_API_URL: /api/v2/admin
         VITE_ALLOW_DEMO: "false"
     environment:
       REMOTE_SERVER_ORIGIN: ${REMOTE_SERVER_ORIGIN:?请在 .env.remote-test 配置远程 HTTPS 地址}

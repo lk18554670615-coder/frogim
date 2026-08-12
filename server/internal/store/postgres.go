@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/linli/im/server/internal/model"
+	"github.com/linli/im/server/internal/wukong"
 )
 
 //go:embed schema.sql
@@ -23,7 +25,7 @@ var normalizedSchema string
 
 type Postgres struct{ pool *pgxpool.Pool }
 
-const schemaVersion = 25
+const schemaVersion = 45
 
 type PostgresOptions struct {
 	MaxConns          int32
@@ -95,6 +97,10 @@ func NewPostgresWithOptions(ctx context.Context, url string, options PostgresOpt
 		pool.Close()
 		return nil, err
 	}
+	if err = p.recoverWukongWebhookEvents(ctx, 20000); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return p, nil
 }
 
@@ -117,6 +123,23 @@ func (p *Postgres) migrate(ctx context.Context) error {
 	if current < schemaVersion {
 		if _, err = tx.Exec(ctx, normalizedSchema); err != nil {
 			return err
+		}
+		if current < 44 {
+			// Versions before 44 acknowledged these events without consuming all
+			// side effects and retained completed message bodies. This is a
+			// one-time upgrade cleanup; keeping it out of normalizedSchema avoids
+			// discarding a legitimate delayed event on a future schema upgrade.
+			if _, err = tx.Exec(ctx, `
+				UPDATE im_wukong_webhook_events
+				SET status='completed',payload='{}'::jsonb,completed_at=now(),locked_at=NULL,last_error='superseded before schema 44'
+				WHERE event_type IN ('msg.offline','user.onlinestatus','msg.stream')
+				  AND status IN ('pending','processing') AND received_at<now()-interval '5 minutes';
+				UPDATE im_wukong_webhook_events
+				SET payload='{}'::jsonb
+				WHERE status IN ('completed','failed') AND payload<>'{}'::jsonb;
+			`); err != nil {
+				return err
+			}
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO im_schema_migrations(version) VALUES($1) ON CONFLICT DO NOTHING`, schemaVersion); err != nil {
 			return err
@@ -256,24 +279,6 @@ func (p *Postgres) Load(ctx context.Context) (*model.State, error) {
 		s.Messages[m.ConversationID] = append(s.Messages[m.ConversationID], m)
 		s.MessageByID[m.ID] = m
 		s.MessageIdempotency[m.SenderID+":"+m.ClientMsgID] = m.ID
-	}
-	rows.Close()
-	rows, err = p.pool.Query(ctx, `SELECT user_id,user_sync_seq,event_type,payload,created_at FROM im_sync_events ORDER BY user_id,user_sync_seq`)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		e := &model.SyncEvent{}
-		var payload []byte
-		if err = rows.Scan(&e.UserID, &e.Seq, &e.Type, &payload, &e.CreatedAt); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		_ = json.Unmarshal(payload, &e.Payload)
-		s.SyncEvents[e.UserID] = append(s.SyncEvents[e.UserID], e)
-		if e.Seq > s.UserSyncSeq[e.UserID] {
-			s.UserSyncSeq[e.UserID] = e.Seq
-		}
 	}
 	rows.Close()
 	rows, err = p.pool.Query(ctx, `SELECT id,reporter_id,target_type,target_id,reason,details,status,resolution,created_at,updated_at FROM im_reports`)
@@ -444,21 +449,6 @@ func (p *Postgres) Save(ctx context.Context, s *model.State) error {
 		_, err = tx.Exec(ctx, `INSERT INTO im_settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, k, raw)
 		if err != nil {
 			return err
-		}
-	}
-	for uid, seq := range s.UserSyncSeq {
-		_, err = tx.Exec(ctx, `INSERT INTO im_user_cursors(user_id,current_seq) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET current_seq=GREATEST(im_user_cursors.current_seq,excluded.current_seq)`, uid, seq)
-		if err != nil {
-			return err
-		}
-	}
-	for uid, events := range s.SyncEvents {
-		for _, e := range events {
-			raw, _ := json.Marshal(e.Payload)
-			_, err = tx.Exec(ctx, `INSERT INTO im_sync_events(user_id,user_sync_seq,event_type,payload,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, uid, e.Seq, e.Type, raw, e.CreatedAt)
-			if err != nil {
-				return err
-			}
 		}
 	}
 	for _, d := range s.Devices {
@@ -667,6 +657,18 @@ func (p *Postgres) DeleteAccount(ctx context.Context, uid string, at time.Time) 
 	if _, err = tx.Exec(ctx, `UPDATE im_feedback SET contact='' WHERE user_id=$1`, uid); err != nil {
 		return false, err
 	}
+	var wasSystemUser bool
+	if err = tx.QueryRow(ctx, `SELECT COALESCE((SELECT enabled FROM im_wukong_system_users WHERE user_id=$1),false)`, uid).Scan(&wasSystemUser); err != nil {
+		return false, err
+	}
+	if wasSystemUser {
+		if _, err = tx.Exec(ctx, `UPDATE im_wukong_system_users SET enabled=false,updated_by=$1,reason='account deleted',updated_at=$2 WHERE user_id=$1`, uid, at); err != nil {
+			return false, err
+		}
+		if err = enqueueWukongOutbox(ctx, tx, fmt.Sprintf("system-user-delete:%s:%d", uid, at.UnixNano()), wukong.OperationSystemUIDRemove, "system_user", uid, map[string]any{"uids": []string{uid}}); err != nil {
+			return false, err
+		}
+	}
 	if _, err = tx.Exec(ctx, `UPDATE im_users SET
 		phone='deleted_'||md5(id),handle='deleted_'||left(md5(id),16),name='已注销用户',signature='',avatar_media_id=NULL,avatar_url='',
 		password_hash='',password_updated_at=$2,handle_change_count=2,banned=true,deleted_at=$2,updated_at=$2
@@ -675,7 +677,7 @@ func (p *Postgres) DeleteAccount(ctx context.Context, uid string, at time.Time) 
 	}
 	for _, friendID := range friendIDs {
 		payload, _ := json.Marshal(map[string]any{"userId": uid})
-		if err = appendUserSync(ctx, tx, friendID, "friend.account_deleted", payload, at); err != nil {
+		if err = appendUserBusinessEvent(ctx, tx, friendID, "friend.account_deleted", payload, at); err != nil {
 			return false, err
 		}
 	}
@@ -931,17 +933,45 @@ func (p *Postgres) ListAdminAudits(ctx context.Context, q, status, cursor string
 	return items, total, nextPageCursor(offset, len(items), total), nil
 }
 
+const adminMessageUnion = `
+	SELECT message_index.message_id::text AS id,message_index.conversation_id,message_index.sender_id,
+		message_index.client_msg_no AS client_msg_id,message_index.message_seq,
+		CASE message_index.content_type
+			WHEN 1 THEN 'text' WHEN 2 THEN 'image' WHEN 3 THEN 'image' WHEN 4 THEN 'audio'
+			WHEN 5 THEN 'video' WHEN 6 THEN 'location' WHEN 7 THEN 'contact' WHEN 8 THEN 'file'
+			WHEN 1001 THEN 'chat_history' WHEN 1002 THEN 'system' WHEN 1003 THEN 'sticker'
+			WHEN 1004 THEN 'moment' WHEN 1005 THEN 'call' WHEN 1006 THEN 'live'
+			WHEN 1007 THEN 'support' WHEN 1008 THEN 'screenshot' ELSE 'custom'
+		END AS message_type,
+		'{}'::jsonb AS body,NULL::text AS reply_to_id,
+		NULLIF(message_extension.payload->>'recalledAt','')::timestamptz AS recalled_at,
+		message_index.expires_at,
+		COALESCE(message_index.expired_at,CASE WHEN message_index.expires_at<=now() THEN message_index.expires_at END) AS expired_at,
+		NULLIF(message_extension.payload->>'editedAt','')::timestamptz AS edited_at,
+		COALESCE(NULLIF(message_extension.payload->>'editVersion','')::integer,0) AS edit_version,
+		message_index.message_timestamp AS created_at
+	FROM im_wukong_message_index message_index
+	LEFT JOIN im_wukong_message_extensions message_extension ON message_extension.message_id=message_index.message_id
+		AND message_extension.channel_id=message_index.channel_id AND message_extension.channel_type=message_index.channel_type
+	UNION ALL
+	SELECT legacy.id,legacy.conversation_id,legacy.sender_id,legacy.client_msg_id,legacy.conversation_seq,
+		legacy.message_type,'{}'::jsonb,legacy.reply_to_id,legacy.recalled_at,legacy.expires_at,
+		legacy.expired_at,legacy.edited_at,legacy.edit_version,legacy.created_at
+	FROM im_messages legacy
+	WHERE NOT EXISTS(SELECT 1 FROM im_wukong_message_index message_index WHERE message_index.message_id::text=legacy.id)
+`
+
 func (p *Postgres) ListAdminMessages(ctx context.Context, q, messageType, cursor string, limit int) ([]*model.Message, int64, string, error) {
 	offset, limit := pageOffset(cursor, limit)
 	pattern := "%" + q + "%"
 	var total int64
-	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_messages WHERE
+	if err := p.pool.QueryRow(ctx, `WITH all_messages AS (`+adminMessageUnion+`) SELECT count(*) FROM all_messages WHERE
 		($1='' OR id ILIKE $2 OR conversation_id ILIKE $2 OR sender_id ILIKE $2 OR client_msg_id ILIKE $2)
 		AND ($3='' OR message_type=$3)`, q, pattern, messageType).Scan(&total); err != nil {
 		return nil, 0, "", err
 	}
-	rows, err := p.pool.Query(ctx, `SELECT id,conversation_id,sender_id,client_msg_id,conversation_seq,message_type,'{}'::jsonb,reply_to_id,recalled_at,expires_at,expired_at,edited_at,edit_version,created_at
-		FROM im_messages WHERE
+	rows, err := p.pool.Query(ctx, `WITH all_messages AS (`+adminMessageUnion+`) SELECT id,conversation_id,sender_id,client_msg_id,message_seq,message_type,body,reply_to_id,recalled_at,expires_at,expired_at,edited_at,edit_version,created_at
+		FROM all_messages WHERE
 		($1='' OR id ILIKE $2 OR conversation_id ILIKE $2 OR sender_id ILIKE $2 OR client_msg_id ILIKE $2)
 		AND ($3='' OR message_type=$3) ORDER BY created_at DESC,id LIMIT $4 OFFSET $5`, q, pattern, messageType, limit, offset)
 	if err != nil {
@@ -1004,24 +1034,39 @@ func (p *Postgres) ListConversations(ctx context.Context, uid string, limit int)
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
-	rows, err := p.pool.Query(ctx, `SELECT c.id,c.kind,c.title,c.avatar_url,c.current_seq,c.last_message_seq,c.created_at,c.updated_at,
+	rows, err := p.pool.Query(ctx, `SELECT c.id,c.kind,c.title,c.avatar_url,
+		GREATEST(c.current_seq,COALESCE(wk.last_message_seq,0)),
+		GREATEST(c.last_message_seq,COALESCE(wk.last_message_seq,0)),c.created_at,
+		GREATEST(c.updated_at,COALESCE(wk.last_message_at,c.updated_at)),
 		m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.pinned,m.archived,m.notifications_muted,m.manual_unread,m.hidden_until_seq,m.joined_at,
 		COALESCE(mention_stats.unread_count,0),c.member_count,
 		lm.id,lm.conversation_id,lm.sender_id,lm.client_msg_id,lm.conversation_seq,lm.message_type,lm.body,lm.reply_to_id,lm.recalled_at,lm.expires_at,lm.expired_at,lm.edited_at,lm.edit_version,lm.created_at
 		FROM im_members m
 		JOIN im_conversations c ON c.id=m.conversation_id
 		LEFT JOIN LATERAL (
+			SELECT max(message_seq) AS last_message_seq,max(message_timestamp) AS last_message_at
+			FROM im_wukong_message_index WHERE conversation_id=c.id
+		) wk ON true
+		LEFT JOIN LATERAL (
 			SELECT id,conversation_id,sender_id,client_msg_id,conversation_seq,message_type,body,reply_to_id,recalled_at,expires_at,expired_at,edited_at,edit_version,created_at
-			FROM im_messages WHERE conversation_id=c.id ORDER BY conversation_seq DESC LIMIT 1
+			FROM im_messages WHERE conversation_id=c.id
+				AND NOT EXISTS(SELECT 1 FROM im_wukong_message_index WHERE conversation_id=c.id)
+			ORDER BY conversation_seq DESC LIMIT 1
 		) lm ON true
 		LEFT JOIN LATERAL (
-			SELECT count(*)::bigint AS unread_count FROM im_messages mentioned
-			WHERE c.kind='group' AND mentioned.conversation_id=c.id AND mentioned.conversation_seq>m.last_read_seq
-				AND mentioned.sender_id<>m.user_id AND mentioned.message_type='text' AND mentioned.recalled_at IS NULL
-				AND (COALESCE((mentioned.body->>'mentionAll')::boolean,false) OR COALESCE(mentioned.body->'mentions','[]'::jsonb) ? m.user_id)
+			SELECT CASE WHEN EXISTS(SELECT 1 FROM im_wukong_message_index WHERE conversation_id=c.id) THEN (
+				SELECT count(*)::bigint FROM im_wukong_reminders reminder
+				WHERE reminder.user_id=m.user_id AND reminder.conversation_id=c.id
+				  AND reminder.message_seq>m.last_read_seq AND reminder.done=false
+			) ELSE (
+				SELECT count(*)::bigint FROM im_messages mentioned
+				WHERE c.kind='group' AND mentioned.conversation_id=c.id AND mentioned.conversation_seq>m.last_read_seq
+					AND mentioned.sender_id<>m.user_id AND mentioned.message_type='text' AND mentioned.recalled_at IS NULL
+					AND (COALESCE((mentioned.body->>'mentionAll')::boolean,false) OR COALESCE(mentioned.body->'mentions','[]'::jsonb) ? m.user_id)
+			) END AS unread_count
 		) mention_stats ON true
-		WHERE m.user_id=$1 AND (m.hidden_until_seq IS NULL OR c.last_message_seq>m.hidden_until_seq)
-		ORDER BY m.pinned DESC,c.updated_at DESC,c.id LIMIT $2`, uid, limit)
+		WHERE m.user_id=$1 AND (m.hidden_until_seq IS NULL OR GREATEST(c.last_message_seq,COALESCE(wk.last_message_seq,0))>m.hidden_until_seq)
+		ORDER BY m.pinned DESC,GREATEST(c.updated_at,COALESCE(wk.last_message_at,c.updated_at)) DESC,c.id LIMIT $2`, uid, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1127,6 +1172,15 @@ func (p *Postgres) ConversationMemberIDs(ctx context.Context, cid string) ([]str
 		out = append(out, uid)
 	}
 	return out, rows.Err()
+}
+
+func (p *Postgres) ConversationKind(ctx context.Context, cid string) (string, error) {
+	var kind string
+	err := p.pool.QueryRow(ctx, `SELECT kind FROM im_conversations WHERE id=$1`, cid).Scan(&kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return kind, err
 }
 
 func (p *Postgres) ListConversationMembers(ctx context.Context, uid, cid string) ([]*model.ConversationMember, error) {
@@ -1254,66 +1308,17 @@ func (p *Postgres) ListForwardMessages(ctx context.Context, uid string, ids []st
 	return items, nil
 }
 
-func (p *Postgres) ListSync(ctx context.Context, uid string, after int64, limit int) ([]*model.SyncEvent, int64, bool, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 200
-	}
-	var current int64
-	var minimum *int64
-	if err := p.pool.QueryRow(ctx, `SELECT COALESCE((SELECT current_seq FROM im_user_cursors WHERE user_id=$1),0),(SELECT min(user_sync_seq) FROM im_sync_events WHERE user_id=$1)`, uid).Scan(&current, &minimum); err != nil {
-		return nil, 0, false, err
-	}
-	out := make([]*model.SyncEvent, 0, limit+1)
-	queryLimit := limit + 1
-	if after > 0 && current > after && (minimum == nil || *minimum > after+1) {
-		resetSeq := current
-		if minimum != nil {
-			resetSeq = *minimum - 1
-		}
-		out = append(out, &model.SyncEvent{UserID: uid, Seq: resetSeq, Type: "sync.reset_required", Payload: map[string]any{"reason": "retention", "currentSeq": current}, CreatedAt: time.Now()})
-		queryLimit = limit
-	}
-	rows, err := p.pool.Query(ctx, `SELECT user_sync_seq,event_type,payload,created_at FROM im_sync_events WHERE user_id=$1 AND user_sync_seq>$2 ORDER BY user_sync_seq LIMIT $3`, uid, after, queryLimit)
-	if err != nil {
-		return nil, 0, false, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		e := &model.SyncEvent{UserID: uid}
-		var raw []byte
-		if err = rows.Scan(&e.Seq, &e.Type, &raw, &e.CreatedAt); err != nil {
-			return nil, 0, false, err
-		}
-		if err = json.Unmarshal(raw, &e.Payload); err != nil {
-			return nil, 0, false, err
-		}
-		out = append(out, e)
-	}
-	if err = rows.Err(); err != nil {
-		return nil, 0, false, err
-	}
-	more := len(out) > limit
-	if more {
-		out = out[:limit]
-	}
-	cursor := after
-	if len(out) > 0 {
-		cursor = out[len(out)-1].Seq
-	}
-	return out, cursor, more, nil
-}
-
-func (p *Postgres) SendMessage(ctx context.Context, in MessageInput) (*model.Message, bool, []*model.SyncEvent, error) {
+func (p *Postgres) SendMessage(ctx context.Context, in MessageInput) (*model.Message, bool, error) {
 	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return nil, false, nil, err
+		return nil, false, err
 	}
 	defer tx.Rollback(ctx)
 	// Serialize retries for one sender/client key before checking the unique row.
 	// This turns simultaneous retries on different instances into one insert plus
 	// deterministic duplicate ACKs instead of a unique-constraint error.
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, in.UserID+":"+in.ClientMsgID); err != nil {
-		return nil, false, nil, err
+		return nil, false, err
 	}
 	var existing model.Message
 	var body []byte
@@ -1324,10 +1329,10 @@ func (p *Postgres) SendMessage(ctx context.Context, in MessageInput) (*model.Mes
 		if reply != nil {
 			existing.ReplyToID = *reply
 		}
-		return &existing, true, nil, tx.Commit(ctx)
+		return &existing, true, tx.Commit(ctx)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, nil, err
+		return nil, false, err
 	}
 	var muted *time.Time
 	var allMuted, dissolved *time.Time
@@ -1335,20 +1340,20 @@ func (p *Postgres) SendMessage(ctx context.Context, in MessageInput) (*model.Mes
 	var banned bool
 	err = tx.QueryRow(ctx, `SELECT m.muted_until,u.banned,m.role,g.all_muted_until,g.dissolved_at FROM im_members m JOIN im_users u ON u.id=m.user_id LEFT JOIN im_groups g ON g.conversation_id=m.conversation_id WHERE m.conversation_id=$1 AND m.user_id=$2`, in.ConversationID, in.UserID).Scan(&muted, &banned, &memberRole, &allMuted, &dissolved)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, nil, ErrForbidden
+		return nil, false, ErrForbidden
 	}
 	if err != nil {
-		return nil, false, nil, err
+		return nil, false, err
 	}
 	if banned || dissolved != nil || (muted != nil && muted.After(time.Now())) || (allMuted != nil && allMuted.After(time.Now()) && memberRole != "owner" && memberRole != "admin") {
-		return nil, false, nil, ErrForbidden
+		return nil, false, ErrForbidden
 	}
 	var kind string
 	if err = tx.QueryRow(ctx, `SELECT kind FROM im_conversations WHERE id=$1`, in.ConversationID).Scan(&kind); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, false, nil, ErrNotFound
+			return nil, false, ErrNotFound
 		}
-		return nil, false, nil, err
+		return nil, false, err
 	}
 	if kind == "direct" {
 		var blocked bool
@@ -1356,25 +1361,25 @@ func (p *Postgres) SendMessage(ctx context.Context, in MessageInput) (*model.Mes
 			SELECT 1 FROM im_blocks b JOIN im_members other ON other.conversation_id=$1 AND other.user_id<>$2
 			WHERE (b.user_id=$2 AND b.blocked_user_id=other.user_id) OR (b.user_id=other.user_id AND b.blocked_user_id=$2))`, in.ConversationID, in.UserID).Scan(&blocked)
 		if err != nil {
-			return nil, false, nil, err
+			return nil, false, err
 		}
 		if blocked {
-			return nil, false, nil, ErrForbidden
+			return nil, false, ErrForbidden
 		}
 	}
 	if len(in.Mentions) > 0 || in.MentionAll {
 		if in.Type != "text" || kind != "group" {
-			return nil, false, nil, ErrForbidden
+			return nil, false, ErrForbidden
 		}
 		if in.MentionAll && memberRole != "owner" && memberRole != "admin" {
-			return nil, false, nil, ErrForbidden
+			return nil, false, ErrForbidden
 		}
 		var mentionedMembers int
 		if err = tx.QueryRow(ctx, `SELECT count(*) FROM im_members WHERE conversation_id=$1 AND user_id=ANY($2::text[])`, in.ConversationID, in.Mentions).Scan(&mentionedMembers); err != nil {
-			return nil, false, nil, err
+			return nil, false, err
 		}
 		if mentionedMembers != len(in.Mentions) {
-			return nil, false, nil, ErrForbidden
+			return nil, false, ErrForbidden
 		}
 	}
 	if in.Type == "text" {
@@ -1382,29 +1387,29 @@ func (p *Postgres) SendMessage(ctx context.Context, in MessageInput) (*model.Mes
 		var denied bool
 		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_sensitive_words WHERE split_part(value,'|',1)<>'' AND position(lower(split_part(value,'|',1)) in lower($1))>0)`, text).Scan(&denied)
 		if err != nil {
-			return nil, false, nil, err
+			return nil, false, err
 		}
 		if denied {
-			return nil, false, nil, ErrForbidden
+			return nil, false, ErrForbidden
 		}
 	}
 	if in.ReplyToID != "" {
 		var valid bool
 		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_messages WHERE id=$1 AND conversation_id=$2)`, in.ReplyToID, in.ConversationID).Scan(&valid)
 		if err != nil {
-			return nil, false, nil, err
+			return nil, false, err
 		}
 		if !valid {
-			return nil, false, nil, ErrConflict
+			return nil, false, ErrConflict
 		}
 	}
 	var seq int64
 	err = tx.QueryRow(ctx, `UPDATE im_conversations SET current_seq=current_seq+1,last_message_seq=current_seq+1,updated_at=now() WHERE id=$1 RETURNING current_seq`, in.ConversationID).Scan(&seq)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, nil, ErrNotFound
+		return nil, false, ErrNotFound
 	}
 	if err != nil {
-		return nil, false, nil, err
+		return nil, false, err
 	}
 	created := time.UnixMilli(in.CreatedAt)
 	if in.CreatedAt == 0 {
@@ -1417,48 +1422,22 @@ func (p *Postgres) SendMessage(ctx context.Context, in MessageInput) (*model.Mes
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO im_messages(id,conversation_id,sender_id,client_msg_id,conversation_seq,message_type,body,reply_to_id,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, in.MessageID, in.ConversationID, in.UserID, in.ClientMsgID, seq, in.Type, raw, replyValue, in.ExpiresAt, created)
 	if err != nil {
-		return nil, false, nil, err
+		return nil, false, err
 	}
 	m := &model.Message{ID: in.MessageID, ConversationID: in.ConversationID, SenderID: in.UserID, ClientMsgID: in.ClientMsgID, Seq: seq, Type: in.Type, Body: in.Body, ReplyToID: in.ReplyToID, ExpiresAt: in.ExpiresAt, CreatedAt: created}
-	payload, _ := json.Marshal(map[string]any{"message": m})
 	pushPayload, _ := json.Marshal(map[string]any{"message": map[string]any{"id": m.ID, "conversationId": m.ConversationID, "type": m.Type}})
-	// Keep the sender's durable cursor in the acknowledgement transaction, but
-	// expand the other recipients asynchronously. This bounds send latency for
-	// large groups while retaining one durable sync event per user.
-	_, err = tx.Exec(ctx, `INSERT INTO im_user_cursors(user_id,current_seq) VALUES($1,0) ON CONFLICT DO NOTHING`, in.UserID)
-	if err != nil {
-		return nil, false, nil, err
-	}
-	var senderSyncSeq int64
-	err = tx.QueryRow(ctx, `WITH bumped AS (
-		UPDATE im_user_cursors SET current_seq=current_seq+1 WHERE user_id=$1 RETURNING current_seq
-	), synced AS (
-		INSERT INTO im_sync_events(user_id,user_sync_seq,event_type,payload,created_at)
-		SELECT $1,current_seq,'message.created',$2,$3 FROM bumped RETURNING user_sync_seq
-	)
-	SELECT user_sync_seq FROM synced`, in.UserID, payload, created).Scan(&senderSyncSeq)
-	if err != nil {
-		return nil, false, nil, err
-	}
-	events := []*model.SyncEvent{{UserID: in.UserID, Seq: senderSyncSeq, Type: "message.created", Payload: map[string]any{"message": m}, CreatedAt: created}}
+	// This legacy writer is retained only for isolated domain tests. WuKongIM
+	// owns durable message delivery; this fanout only creates offline pushes.
 	_, err = tx.Exec(ctx, `INSERT INTO im_message_fanout(conversation_id,sender_id,event_payload,push_payload,mention_all,mentions,created_at)
-		SELECT $1,$2,$3,$4,$5,COALESCE($6::text[],'{}'::text[]),clock_timestamp()
-		WHERE EXISTS(SELECT 1 FROM im_members WHERE conversation_id=$1 AND user_id<>$2 AND joined_at<=clock_timestamp())`, in.ConversationID, in.UserID, payload, pushPayload, in.MentionAll, in.Mentions)
+		SELECT $1,$2,'{}'::jsonb,$3,$4,COALESCE($5::text[],'{}'::text[]),clock_timestamp()
+		WHERE EXISTS(SELECT 1 FROM im_members WHERE conversation_id=$1 AND user_id<>$2 AND joined_at<=clock_timestamp())`, in.ConversationID, in.UserID, pushPayload, in.MentionAll, in.Mentions)
 	if err != nil {
-		return nil, false, nil, err
-	}
-	var eventID int64
-	err = tx.QueryRow(ctx, `INSERT INTO im_event_outbox(event_type,aggregate_id,payload) VALUES('message.created',$1,$2) RETURNING id`, in.ConversationID, payload).Scan(&eventID)
-	if err != nil {
-		return nil, false, nil, err
-	}
-	if _, err = tx.Exec(ctx, `SELECT pg_notify('im_events',$1)`, strconv.FormatInt(eventID, 10)); err != nil {
-		return nil, false, nil, err
+		return nil, false, err
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return nil, false, nil, err
+		return nil, false, err
 	}
-	return m, false, events, nil
+	return m, false, nil
 }
 
 func (p *Postgres) ProcessMessageFanout(ctx context.Context, batch int) (int, bool, error) {
@@ -1476,13 +1455,13 @@ func (p *Postgres) ProcessMessageFanout(ctx context.Context, batch int) (int, bo
 	}
 	var id int64
 	var conversationID, senderID, lastUserID string
-	var eventPayload, pushPayload []byte
+	var pushPayload []byte
 	var mentionAll bool
 	var mentions []string
 	var createdAt time.Time
-	err = tx.QueryRow(ctx, `SELECT id,conversation_id,sender_id,event_payload,push_payload,mention_all,mentions,last_user_id,created_at
+	err = tx.QueryRow(ctx, `SELECT id,conversation_id,sender_id,push_payload,mention_all,mentions,last_user_id,created_at
 		FROM im_message_fanout WHERE status IN ('pending','processing') ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(
-		&id, &conversationID, &senderID, &eventPayload, &pushPayload, &mentionAll, &mentions, &lastUserID, &createdAt)
+		&id, &conversationID, &senderID, &pushPayload, &mentionAll, &mentions, &lastUserID, &createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, tx.Commit(ctx)
 	}
@@ -1516,24 +1495,19 @@ func (p *Postgres) ProcessMessageFanout(ctx context.Context, batch int) (int, bo
 		userIDs = userIDs[:batch]
 	}
 	if len(userIDs) > 0 {
-		if _, err = tx.Exec(ctx, `INSERT INTO im_user_cursors(user_id,current_seq)
-			SELECT user_id,0 FROM unnest($1::text[]) AS user_id ON CONFLICT DO NOTHING`, userIDs); err != nil {
-			return 0, false, err
-		}
-		var synced int
-		err = tx.QueryRow(ctx, `WITH bumped AS (
-			UPDATE im_user_cursors SET current_seq=current_seq+1 WHERE user_id=ANY($1::text[]) RETURNING user_id,current_seq
-		), synced AS (
-			INSERT INTO im_sync_events(user_id,user_sync_seq,event_type,payload,created_at)
-			SELECT user_id,current_seq,'message.created',$2,$3 FROM bumped RETURNING user_id
-		), pushed AS (
+		var pushed int
+		err = tx.QueryRow(ctx, `WITH pushed AS (
 			INSERT INTO im_push_outbox(user_id,event_type,payload)
-			SELECT user_id,'message.created',$4::jsonb||jsonb_build_object('mentioned',($5::boolean OR user_id=ANY($6::text[]))) FROM bumped
+			SELECT user_id,'message.created',$2::jsonb||jsonb_build_object('mentioned',($3::boolean OR user_id=ANY($4::text[])))
+			FROM unnest($1::text[]) AS user_id
 			RETURNING id
 		)
-		SELECT count(*) FROM synced`, userIDs, eventPayload, createdAt, pushPayload, mentionAll, mentions).Scan(&synced)
+			SELECT count(*) FROM pushed`, userIDs, pushPayload, mentionAll, mentions).Scan(&pushed)
 		if err != nil {
 			return 0, false, err
+		}
+		if pushed != len(userIDs) {
+			return 0, false, fmt.Errorf("push fanout inserted %d of %d recipients", pushed, len(userIDs))
 		}
 		lastUserID = userIDs[len(userIDs)-1]
 	}
@@ -1555,9 +1529,6 @@ func (p *Postgres) CleanupRuntimeData(ctx context.Context, policy RetentionPolic
 	if batch <= 0 || batch > 10000 {
 		batch = 1000
 	}
-	if policy.SyncEvents <= 0 {
-		policy.SyncEvents = 30 * 24 * time.Hour
-	}
 	if policy.Outbox <= 0 {
 		policy.Outbox = 7 * 24 * time.Hour
 	}
@@ -1567,10 +1538,10 @@ func (p *Postgres) CleanupRuntimeData(ctx context.Context, policy RetentionPolic
 	}
 	now := time.Now()
 	jobs := []cleanup{
-		{`WITH expired AS (SELECT user_id,user_sync_seq FROM im_sync_events WHERE created_at<$1 ORDER BY created_at LIMIT $2) DELETE FROM im_sync_events e USING expired x WHERE e.user_id=x.user_id AND e.user_sync_seq=x.user_sync_seq`, now.Add(-policy.SyncEvents)},
 		{`WITH expired AS (SELECT id FROM im_push_outbox WHERE status IN ('sent','failed') AND COALESCE(sent_at,available_at)<$1 ORDER BY id LIMIT $2) DELETE FROM im_push_outbox o USING expired x WHERE o.id=x.id`, now.Add(-policy.Outbox)},
-		{`WITH expired AS (SELECT id FROM im_event_outbox WHERE status='published' AND published_at<$1 ORDER BY id LIMIT $2) DELETE FROM im_event_outbox o USING expired x WHERE o.id=x.id`, now.Add(-policy.Outbox)},
 		{`WITH expired AS (SELECT id FROM im_message_fanout WHERE status='completed' AND completed_at<$1 ORDER BY id LIMIT $2) DELETE FROM im_message_fanout f USING expired x WHERE f.id=x.id`, now.Add(-policy.Outbox)},
+		{`WITH expired AS (SELECT id FROM im_wukong_outbox WHERE status IN ('completed','failed') AND completed_at<$1 ORDER BY id LIMIT $2) DELETE FROM im_wukong_outbox o USING expired x WHERE o.id=x.id`, now.Add(-policy.Outbox)},
+		{`WITH expired AS (SELECT id FROM im_wukong_webhook_events WHERE status IN ('completed','failed') AND completed_at<$1 ORDER BY id LIMIT $2) DELETE FROM im_wukong_webhook_events e USING expired x WHERE e.id=x.id`, now.Add(-policy.Outbox)},
 	}
 	var removed int64
 	for _, job := range jobs {
@@ -1594,129 +1565,18 @@ func (p *Postgres) RuntimeStats(ctx context.Context) (RuntimeStats, error) {
 	err := p.pool.QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM im_push_outbox WHERE status IN ('pending','processing')),
 		COALESCE((SELECT EXTRACT(EPOCH FROM now()-min(created_at)) FROM im_push_outbox WHERE status IN ('pending','processing')),0),
-		(SELECT count(*) FROM im_event_outbox WHERE status IN ('pending','processing')),
-		COALESCE((SELECT EXTRACT(EPOCH FROM now()-min(created_at)) FROM im_event_outbox WHERE status IN ('pending','processing')),0),
 		(SELECT count(*) FROM im_message_fanout WHERE status IN ('pending','processing')),
-		COALESCE((SELECT EXTRACT(EPOCH FROM now()-min(created_at)) FROM im_message_fanout WHERE status IN ('pending','processing')),0)`).Scan(
-		&stats.PushPending, &stats.OldestPushSeconds, &stats.EventPending, &stats.OldestEventSeconds, &stats.FanoutPending, &stats.OldestFanoutSeconds)
+		COALESCE((SELECT EXTRACT(EPOCH FROM now()-min(created_at)) FROM im_message_fanout WHERE status IN ('pending','processing')),0),
+		(SELECT count(*) FROM im_wukong_outbox WHERE status IN ('pending','processing')),
+		COALESCE((SELECT EXTRACT(EPOCH FROM now()-min(created_at)) FROM im_wukong_outbox WHERE status IN ('pending','processing')),0),
+		(SELECT count(*) FROM im_wukong_outbox WHERE status='failed'),
+		(SELECT count(*) FROM im_wukong_webhook_events WHERE status IN ('pending','processing')),
+		COALESCE((SELECT EXTRACT(EPOCH FROM now()-min(received_at)) FROM im_wukong_webhook_events WHERE status IN ('pending','processing')),0),
+		(SELECT count(*) FROM im_wukong_webhook_events WHERE status='failed')`).Scan(
+		&stats.PushPending, &stats.OldestPushSeconds, &stats.FanoutPending, &stats.OldestFanoutSeconds,
+		&stats.WukongOutboxPending, &stats.OldestWukongOutboxSeconds, &stats.WukongOutboxFailed,
+		&stats.WukongWebhookPending, &stats.OldestWukongWebhookSeconds, &stats.WukongWebhookFailed)
 	return stats, err
-}
-
-func (p *Postgres) RunEvents(ctx context.Context, deliver func([]string, string, map[string]any)) error {
-	conn, err := p.pool.Acquire(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Release()
-	if _, err = conn.Exec(ctx, `LISTEN im_events`); err != nil {
-		return err
-	}
-	if err = p.relayPendingEvents(ctx, 100); err != nil && ctx.Err() == nil {
-		return err
-	}
-	for {
-		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		notification, waitErr := conn.Conn().WaitForNotification(waitCtx)
-		cancel()
-		if waitErr != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if errors.Is(waitErr, context.DeadlineExceeded) {
-				if err = p.relayPendingEvents(ctx, 100); err != nil && ctx.Err() == nil {
-					return err
-				}
-				continue
-			}
-			return waitErr
-		}
-		id, parseErr := strconv.ParseInt(notification.Payload, 10, 64)
-		if parseErr != nil {
-			continue
-		}
-		_ = p.deliverEvent(ctx, id, deliver)
-	}
-}
-
-func (p *Postgres) deliverEvent(ctx context.Context, id int64, deliver func([]string, string, map[string]any)) error {
-	var typ, aggregate string
-	var raw []byte
-	if err := p.pool.QueryRow(ctx, `SELECT event_type,aggregate_id,payload FROM im_event_outbox WHERE id=$1`, id).Scan(&typ, &aggregate, &raw); err != nil {
-		return err
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		_, _ = p.pool.Exec(ctx, `UPDATE im_event_outbox SET status='pending',available_at=now()+interval '1 minute',last_error=$2 WHERE id=$1`, id, err.Error())
-		return err
-	}
-	rows, err := p.pool.Query(ctx, `SELECT user_id FROM im_members WHERE conversation_id=$1 ORDER BY user_id`, aggregate)
-	if err != nil {
-		return err
-	}
-	var users []string
-	for rows.Next() {
-		var uid string
-		if err = rows.Scan(&uid); err != nil {
-			rows.Close()
-			return err
-		}
-		users = append(users, uid)
-	}
-	rows.Close()
-	if err = rows.Err(); err != nil {
-		return err
-	}
-	if len(users) > 0 {
-		deliver(users, typ, payload)
-	}
-	_, err = p.pool.Exec(ctx, `UPDATE im_event_outbox SET status='published',published_at=COALESCE(published_at,now()),locked_at=NULL,last_error=NULL WHERE id=$1`, id)
-	return err
-}
-
-// relayPendingEvents recovers events whose original NOTIFY was missed. A short
-// lease and SKIP LOCKED allow many instances to run this loop safely. Publishing
-// the notification before marking the row complete gives at-least-once delivery
-// across a crash; clients deduplicate durable events through their sync cursor.
-func (p *Postgres) relayPendingEvents(ctx context.Context, limit int) error {
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `SELECT id FROM im_event_outbox
-		WHERE available_at<=now() AND (status='pending' OR (status='processing' AND locked_at<now()-interval '30 seconds'))
-		ORDER BY id FOR UPDATE SKIP LOCKED LIMIT $1`, limit)
-	if err != nil {
-		return err
-	}
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err = rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
-		}
-		ids = append(ids, id)
-	}
-	rows.Close()
-	if err = rows.Err(); err != nil {
-		return err
-	}
-	for _, id := range ids {
-		if _, err = tx.Exec(ctx, `UPDATE im_event_outbox SET status='processing',locked_at=now(),attempts=attempts+1 WHERE id=$1`, id); err != nil {
-			return err
-		}
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return err
-	}
-	for _, id := range ids {
-		if _, err = p.pool.Exec(ctx, `SELECT pg_notify('im_events',$1)`, strconv.FormatInt(id, 10)); err != nil {
-			_, _ = p.pool.Exec(ctx, `UPDATE im_event_outbox SET status='pending',locked_at=NULL,available_at=now()+interval '5 seconds',last_error=$2 WHERE id=$1`, id, err.Error())
-			return err
-		}
-	}
-	return nil
 }
 
 func (p *Postgres) RegisterDevice(ctx context.Context, uid string, d Device) error {
@@ -1761,10 +1621,54 @@ func (p *Postgres) CanAccessMedia(ctx context.Context, uid, id string) (bool, er
 				SELECT 1 FROM im_messages message
 				JOIN im_members member ON member.conversation_id=message.conversation_id AND member.user_id=$1
 				WHERE message.body->>'mediaId'=$2
+			) OR EXISTS(
+				SELECT 1 FROM im_wukong_media_channels binding
+				WHERE binding.media_id=$2 AND (
+					(binding.channel_type=1 AND (binding.sender_id=$1 OR binding.channel_id=$1)) OR
+					(binding.channel_type=2 AND EXISTS(
+						SELECT 1 FROM im_members member
+						WHERE member.conversation_id=binding.channel_id AND member.user_id=$1
+					))
+				)
+			) OR EXISTS(
+				SELECT 1 FROM im_moments moment WHERE $2=ANY(moment.media_ids) AND moment.status<>'deleted' AND (
+					moment.author_id=$1 OR (moment.status='published' AND (
+						moment.visibility='public' OR
+						(moment.visibility IN ('friends','excluded') AND EXISTS(
+							SELECT 1 FROM im_friendships friendship
+							WHERE friendship.user_id=$1 AND friendship.friend_user_id=moment.author_id)
+							AND (moment.visibility<>'excluded' OR NOT ($1=ANY(moment.visible_user_ids)))) OR
+						(moment.visibility='selected' AND $1=ANY(moment.visible_user_ids))
+					))
+				)
+			) OR EXISTS(
+				SELECT 1 FROM im_sticker_packs pack WHERE pack.status='published' AND (
+					pack.cover_media_id=$2 OR EXISTS(
+						SELECT 1 FROM im_sticker_items item
+						WHERE item.pack_id=pack.id AND item.media_id=$2 AND item.status='published'
+					)
+				)
 			)
 		)
 	)`, uid, id).Scan(&allowed)
 	return allowed, err
+}
+
+func (p *Postgres) BindMediaChannel(ctx context.Context, binding MediaChannelBinding) error {
+	result, err := p.pool.Exec(ctx, `
+		INSERT INTO im_wukong_media_channels(media_id,channel_id,channel_type,sender_id)
+		SELECT media.id,$2,$3,$4 FROM im_media media
+		WHERE media.id=$1 AND media.owner_id=$4 AND media.status='ready'
+		ON CONFLICT(media_id,channel_id,channel_type) DO NOTHING
+	`, binding.MediaID, binding.ChannelID, binding.ChannelType, binding.SenderID)
+	if err == nil && result.RowsAffected() == 0 {
+		var exists bool
+		err = p.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_wukong_media_channels WHERE media_id=$1 AND channel_id=$2 AND channel_type=$3 AND sender_id=$4)`, binding.MediaID, binding.ChannelID, binding.ChannelType, binding.SenderID).Scan(&exists)
+		if err == nil && !exists {
+			return ErrForbidden
+		}
+	}
+	return err
 }
 
 func (p *Postgres) UpdateUserProfile(ctx context.Context, uid string, update UserProfileUpdate) (*model.User, error) {
@@ -1798,7 +1702,7 @@ func (p *Postgres) UpdateUserProfile(ctx context.Context, uid string, update Use
 			if owner != uid || status != "ready" {
 				return nil, ErrForbidden
 			}
-			url = "/v1/media/" + *update.AvatarMediaID
+			url = "/v2/media/" + *update.AvatarMediaID
 		}
 		avatarURL = &url
 	}
@@ -1860,6 +1764,9 @@ func (p *Postgres) ListUserDevices(ctx context.Context, uid string) ([]*model.De
 }
 
 func (p *Postgres) ListFavorites(ctx context.Context, uid string, limit int) ([]*model.Message, error) {
+	if handled, items, err := p.listWukongFavorites(ctx, uid, limit); handled {
+		return items, err
+	}
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
@@ -1891,6 +1798,9 @@ func (p *Postgres) ListFavorites(ctx context.Context, uid string, limit int) ([]
 }
 
 func (p *Postgres) SetFavorite(ctx context.Context, uid, messageID string, enabled bool) error {
+	if handled, err := p.setWukongFavorite(ctx, uid, messageID, enabled); handled {
+		return err
+	}
 	if !enabled {
 		_, err := p.pool.Exec(ctx, `DELETE FROM im_favorites WHERE user_id=$1 AND message_id=$2`, uid, messageID)
 		return err
@@ -2129,32 +2039,31 @@ func (p *Postgres) RecallMessage(ctx context.Context, id string, at time.Time) e
 	return err
 }
 
-func appendMemberSync(ctx context.Context, tx pgx.Tx, cid, typ string, payload []byte, at time.Time) ([]string, error) {
-	if _, err := tx.Exec(ctx, `INSERT INTO im_user_cursors(user_id,current_seq) SELECT user_id,0 FROM im_members WHERE conversation_id=$1 ON CONFLICT DO NOTHING`, cid); err != nil {
-		return nil, err
-	}
-	rows, err := tx.Query(ctx, `WITH bumped AS (UPDATE im_user_cursors c SET current_seq=c.current_seq+1 FROM im_members m WHERE m.conversation_id=$1 AND m.user_id=c.user_id RETURNING c.user_id,c.current_seq), ins AS (INSERT INTO im_sync_events(user_id,user_sync_seq,event_type,payload,created_at) SELECT user_id,current_seq,$2,$3,$4 FROM bumped RETURNING user_id) SELECT user_id FROM ins`, cid, typ, payload, at)
+func appendMemberBusinessEvent(ctx context.Context, tx pgx.Tx, cid, typ string, payload []byte, _ time.Time) ([]string, error) {
+	rows, err := tx.Query(ctx, `SELECT user_id FROM im_members WHERE conversation_id=$1 ORDER BY user_id`, cid)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var ids []string
+	var recipients []wukongCommandRecipient
 	for rows.Next() {
 		var id string
 		if err = rows.Scan(&id); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		ids = append(ids, id)
+		recipients = append(recipients, wukongCommandRecipient{UserID: id})
 	}
-	return ids, rows.Err()
-}
-func insertRealtimeEvent(ctx context.Context, tx pgx.Tx, cid, typ string, payload []byte) error {
-	var id int64
-	if err := tx.QueryRow(ctx, `INSERT INTO im_event_outbox(event_type,aggregate_id,payload) VALUES($1,$2,$3) RETURNING id`, typ, cid, payload).Scan(&id); err != nil {
-		return err
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return nil, err
 	}
-	_, err := tx.Exec(ctx, `SELECT pg_notify('im_events',$1)`, strconv.FormatInt(id, 10))
-	return err
+	sort.Strings(ids)
+	if err = enqueueWukongBusinessEvent(ctx, tx, "conversation", cid, typ, payload, recipients); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 func (p *Postgres) MarkRead(ctx context.Context, uid, cid string, seq int64, at time.Time) (int64, []string, error) {
@@ -2164,9 +2073,9 @@ func (p *Postgres) MarkRead(ctx context.Context, uid, cid string, seq int64, at 
 	}
 	defer tx.Rollback(ctx)
 	var actual int64
-	err = tx.QueryRow(ctx, `UPDATE im_members m SET last_read_seq=GREATEST(m.last_read_seq,LEAST($3,c.last_message_seq)),manual_unread=false FROM im_conversations c
+	err = tx.QueryRow(ctx, `UPDATE im_members m SET last_read_seq=GREATEST(m.last_read_seq,LEAST($3,GREATEST(c.last_message_seq,COALESCE((SELECT max(message_seq) FROM im_wukong_message_index WHERE conversation_id=c.id),0)))),manual_unread=false FROM im_conversations c
 		WHERE m.conversation_id=$1 AND m.user_id=$2 AND c.id=m.conversation_id
-		AND (m.last_read_seq<LEAST($3,c.last_message_seq) OR m.manual_unread)
+		AND (m.last_read_seq<LEAST($3,GREATEST(c.last_message_seq,COALESCE((SELECT max(message_seq) FROM im_wukong_message_index WHERE conversation_id=c.id),0))) OR m.manual_unread)
 		RETURNING m.last_read_seq`, cid, uid, seq).Scan(&actual)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx, `SELECT last_read_seq FROM im_members WHERE conversation_id=$1 AND user_id=$2`, cid, uid).Scan(&actual)
@@ -2182,11 +2091,45 @@ func (p *Postgres) MarkRead(ctx context.Context, uid, cid string, seq int64, at 
 		return 0, nil, err
 	}
 	payload, _ := json.Marshal(map[string]any{"conversationId": cid, "userId": uid, "seq": actual})
-	ids, err := appendMemberSync(ctx, tx, cid, "message.read", payload, at)
+	ids, err := appendMemberBusinessEvent(ctx, tx, cid, "message.read", payload, at)
 	if err != nil {
 		return 0, nil, err
 	}
-	if err = insertRealtimeEvent(ctx, tx, cid, "message.read", payload); err != nil {
+	if err = tx.Commit(ctx); err != nil {
+		return 0, nil, err
+	}
+	return actual, ids, nil
+}
+
+func (p *Postgres) MarkWukongRead(ctx context.Context, uid, cid string, verifiedSeq int64, at time.Time) (int64, []string, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer tx.Rollback(ctx)
+	var actual int64
+	err = tx.QueryRow(ctx, `
+		UPDATE im_members SET last_read_seq=GREATEST(last_read_seq,$3),manual_unread=false
+		WHERE conversation_id=$1 AND user_id=$2
+			AND (last_read_seq<$3 OR manual_unread)
+		RETURNING last_read_seq
+	`, cid, uid, verifiedSeq).Scan(&actual)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = tx.QueryRow(ctx, `SELECT last_read_seq FROM im_members WHERE conversation_id=$1 AND user_id=$2`, cid, uid).Scan(&actual)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil, ErrForbidden
+		}
+		if err != nil {
+			return 0, nil, err
+		}
+		return actual, nil, tx.Commit(ctx)
+	}
+	if err != nil {
+		return 0, nil, err
+	}
+	payload, _ := json.Marshal(map[string]any{"conversationId": cid, "userId": uid, "seq": actual})
+	ids, err := appendMemberBusinessEvent(ctx, tx, cid, "message.read", payload, at)
+	if err != nil {
 		return 0, nil, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -2202,9 +2145,9 @@ func (p *Postgres) MarkDelivered(ctx context.Context, uid, cid string, seq int64
 	}
 	defer tx.Rollback(ctx)
 	var actual int64
-	err = tx.QueryRow(ctx, `UPDATE im_members m SET last_delivered_seq=GREATEST(m.last_delivered_seq,LEAST($3,c.last_message_seq)) FROM im_conversations c
+	err = tx.QueryRow(ctx, `UPDATE im_members m SET last_delivered_seq=GREATEST(m.last_delivered_seq,LEAST($3,GREATEST(c.last_message_seq,COALESCE((SELECT max(message_seq) FROM im_wukong_message_index WHERE conversation_id=c.id),0)))) FROM im_conversations c
 		WHERE m.conversation_id=$1 AND m.user_id=$2 AND c.id=m.conversation_id
-		AND m.last_delivered_seq<LEAST($3,c.last_message_seq)
+		AND m.last_delivered_seq<LEAST($3,GREATEST(c.last_message_seq,COALESCE((SELECT max(message_seq) FROM im_wukong_message_index WHERE conversation_id=c.id),0)))
 		RETURNING m.last_delivered_seq`, cid, uid, seq).Scan(&actual)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx, `SELECT last_delivered_seq FROM im_members WHERE conversation_id=$1 AND user_id=$2`, cid, uid).Scan(&actual)
@@ -2220,11 +2163,8 @@ func (p *Postgres) MarkDelivered(ctx context.Context, uid, cid string, seq int64
 		return 0, nil, err
 	}
 	payload, _ := json.Marshal(map[string]any{"conversationId": cid, "userId": uid, "seq": actual})
-	ids, err := appendMemberSync(ctx, tx, cid, "message.delivered", payload, at)
+	ids, err := appendMemberBusinessEvent(ctx, tx, cid, "message.delivered", payload, at)
 	if err != nil {
-		return 0, nil, err
-	}
-	if err = insertRealtimeEvent(ctx, tx, cid, "message.delivered", payload); err != nil {
 		return 0, nil, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -2263,14 +2203,16 @@ func (p *Postgres) UpdateConversationPreferences(ctx context.Context, uid, cid s
 		return err
 	}
 	payload, _ := json.Marshal(map[string]any{"conversationId": cid, "pinned": pinned, "archived": archived, "notificationsMuted": muted, "manualUnread": unread})
-	if err = appendUserSync(ctx, tx, uid, "conversation.preferences.updated", payload, time.Now()); err != nil {
+	if err = appendUserBusinessEvent(ctx, tx, uid, "conversation.preferences.updated", payload, time.Now()); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
 func (p *Postgres) HideConversation(ctx context.Context, uid, cid string) error {
-	result, err := p.pool.Exec(ctx, `UPDATE im_members m SET hidden_until_seq=c.last_message_seq,pinned=false,manual_unread=false
+	result, err := p.pool.Exec(ctx, `UPDATE im_members m SET hidden_until_seq=GREATEST(c.last_message_seq,COALESCE((
+		SELECT max(message_seq) FROM im_wukong_message_index WHERE conversation_id=c.id
+	),0)),pinned=false,manual_unread=false
 		FROM im_conversations c WHERE m.conversation_id=$1 AND m.user_id=$2 AND c.id=m.conversation_id`, cid, uid)
 	if err != nil {
 		return err
@@ -2281,6 +2223,9 @@ func (p *Postgres) HideConversation(ctx context.Context, uid, cid string) error 
 	return nil
 }
 func (p *Postgres) RecallAuthorized(ctx context.Context, uid, mid string, at time.Time, window time.Duration) (string, int64, []string, error) {
+	if handled, cid, seq, ids, err := p.recallWukongAuthorized(ctx, uid, mid, at, window); handled {
+		return cid, seq, ids, err
+	}
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return "", 0, nil, err
@@ -2310,11 +2255,8 @@ func (p *Postgres) RecallAuthorized(ctx context.Context, uid, mid string, at tim
 		return "", 0, nil, err
 	}
 	payload, _ := json.Marshal(map[string]any{"messageId": mid, "conversationId": cid, "conversationSeq": seq})
-	ids, err := appendMemberSync(ctx, tx, cid, "message.recalled", payload, at)
+	ids, err := appendMemberBusinessEvent(ctx, tx, cid, "message.recalled", payload, at)
 	if err != nil {
-		return "", 0, nil, err
-	}
-	if err = insertRealtimeEvent(ctx, tx, cid, "message.recalled", payload); err != nil {
 		return "", 0, nil, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -2369,7 +2311,10 @@ func validateEditMentions(ctx context.Context, tx pgx.Tx, cid, uid, kind, role s
 	return nil
 }
 
-func (p *Postgres) EditMessage(ctx context.Context, uid, mid, editID string, body map[string]any, at time.Time, window time.Duration) (*model.Message, bool, error) {
+func (p *Postgres) EditMessage(ctx context.Context, uid, mid, editID string, body, originalBody map[string]any, at time.Time, window time.Duration) (*model.Message, bool, error) {
+	if handled, message, duplicate, err := p.editWukongMessage(ctx, uid, mid, editID, body, originalBody, at, window); handled {
+		return message, duplicate, err
+	}
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return nil, false, err
@@ -2443,10 +2388,7 @@ func (p *Postgres) EditMessage(ctx context.Context, uid, mid, editID string, bod
 		return nil, false, err
 	}
 	payload, _ := json.Marshal(map[string]any{"message": message, "editId": editID})
-	if _, err = appendMemberSync(ctx, tx, message.ConversationID, "message.edited", payload, at); err != nil {
-		return nil, false, err
-	}
-	if err = insertRealtimeEvent(ctx, tx, message.ConversationID, "message.edited", payload); err != nil {
+	if _, err = appendMemberBusinessEvent(ctx, tx, message.ConversationID, "message.edited", payload, at); err != nil {
 		return nil, false, err
 	}
 	metadata, _ := json.Marshal(map[string]any{"editId": editID, "version": newVersion})
@@ -2457,6 +2399,9 @@ func (p *Postgres) EditMessage(ctx context.Context, uid, mid, editID string, bod
 }
 
 func (p *Postgres) ListMessageEdits(ctx context.Context, uid, mid string) ([]*model.MessageEdit, error) {
+	if handled, items, err := p.listWukongMessageEdits(ctx, uid, mid); handled {
+		return items, err
+	}
 	var allowed bool
 	var recalled *time.Time
 	if err := p.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_messages msg JOIN im_members member ON member.conversation_id=msg.conversation_id AND member.user_id=$2 WHERE msg.id=$1),recalled_at FROM im_messages WHERE id=$1`, mid, uid).Scan(&allowed, &recalled); errors.Is(err, pgx.ErrNoRows) {
@@ -2488,6 +2433,9 @@ func (p *Postgres) ListMessageEdits(ctx context.Context, uid, mid string) ([]*mo
 }
 
 func (p *Postgres) SetMessageReaction(ctx context.Context, uid, mid, emoji string, add bool, at time.Time) (model.MessageReactionSummary, bool, error) {
+	if handled, summary, duplicate, err := p.reactWukongMessage(ctx, uid, mid, emoji, add, at); handled {
+		return summary, duplicate, err
+	}
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return model.MessageReactionSummary{}, false, err
@@ -2528,10 +2476,7 @@ func (p *Postgres) SetMessageReaction(ctx context.Context, uid, mid, emoji strin
 	}
 	if changed {
 		payload, _ := json.Marshal(map[string]any{"messageId": mid, "conversationId": cid, "emoji": emoji, "actorId": uid, "added": add, "count": summary.Count})
-		if _, err = appendMemberSync(ctx, tx, cid, "message.reaction.updated", payload, at); err != nil {
-			return model.MessageReactionSummary{}, false, err
-		}
-		if err = insertRealtimeEvent(ctx, tx, cid, "message.reaction.updated", payload); err != nil {
+		if _, err = appendMemberBusinessEvent(ctx, tx, cid, "message.reaction.updated", payload, at); err != nil {
 			return model.MessageReactionSummary{}, false, err
 		}
 	}
@@ -2542,6 +2487,9 @@ func (p *Postgres) SetMessageReaction(ctx context.Context, uid, mid, emoji strin
 }
 
 func (p *Postgres) SetGroupMessagePin(ctx context.Context, uid, cid, mid string, pin bool, at time.Time) (*model.MessagePin, bool, error) {
+	if handled, item, duplicate, err := p.setWukongGroupMessagePin(ctx, uid, cid, mid, pin, at); handled {
+		return item, duplicate, err
+	}
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return nil, false, err
@@ -2582,10 +2530,7 @@ func (p *Postgres) SetGroupMessagePin(ctx context.Context, uid, cid, mid string,
 			event = "group.message.unpinned"
 		}
 		payload, _ := json.Marshal(map[string]any{"conversationId": cid, "messageId": mid, "actorId": uid})
-		if _, err = appendMemberSync(ctx, tx, cid, event, payload, at); err != nil {
-			return nil, false, err
-		}
-		if err = insertRealtimeEvent(ctx, tx, cid, event, payload); err != nil {
+		if _, err = appendMemberBusinessEvent(ctx, tx, cid, event, payload, at); err != nil {
 			return nil, false, err
 		}
 		if err = emitGroupSystem(ctx, tx, cid, uid, event, map[string]any{"messageId": mid}, at); err != nil {
@@ -2599,6 +2544,9 @@ func (p *Postgres) SetGroupMessagePin(ctx context.Context, uid, cid, mid string,
 }
 
 func (p *Postgres) ListGroupMessagePins(ctx context.Context, uid, cid string, before int64, limit int) ([]*model.MessagePin, error) {
+	if handled, items, err := p.listWukongGroupMessagePins(ctx, uid, cid, before, limit); handled {
+		return items, err
+	}
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
@@ -2722,9 +2670,27 @@ func (p *Postgres) CreateReportRecord(ctx context.Context, r *model.Report, a *m
 	case "user":
 		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_users WHERE id=$1)`, r.TargetID).Scan(&targetExists)
 	case "message":
-		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_messages msg JOIN im_members member ON member.conversation_id=msg.conversation_id AND member.user_id=$2 WHERE msg.id=$1)`, r.TargetID, r.ReporterID).Scan(&targetExists)
+		err = tx.QueryRow(ctx, `SELECT EXISTS(
+			SELECT 1 FROM im_wukong_message_index message_index
+			JOIN im_members member ON member.conversation_id=message_index.conversation_id AND member.user_id=$2
+			WHERE message_index.message_id::text=$1
+			UNION ALL
+			SELECT 1 FROM im_messages message
+			JOIN im_members member ON member.conversation_id=message.conversation_id AND member.user_id=$2
+			WHERE message.id=$1
+		)`, r.TargetID, r.ReporterID).Scan(&targetExists)
 	case "group":
 		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_conversations c JOIN im_members member ON member.conversation_id=c.id AND member.user_id=$2 WHERE c.id=$1 AND c.kind='group')`, r.TargetID, r.ReporterID).Scan(&targetExists)
+	case "moment":
+		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_moments moment WHERE moment.id=$1 AND moment.status<>'deleted' AND (
+			moment.author_id=$2 OR (moment.status='published' AND (
+				moment.visibility='public' OR
+				(moment.visibility IN ('friends','excluded') AND EXISTS(
+					SELECT 1 FROM im_friendships friendship WHERE friendship.user_id=$2 AND friendship.friend_user_id=moment.author_id)
+					AND (moment.visibility<>'excluded' OR NOT ($2=ANY(moment.visible_user_ids)))) OR
+				(moment.visibility='selected' AND $2=ANY(moment.visible_user_ids))
+			))
+		))`, r.TargetID, r.ReporterID).Scan(&targetExists)
 	default:
 		return ErrUnsupported
 	}
@@ -2835,26 +2801,50 @@ func (p *Postgres) ResolveReportRecord(ctx context.Context, actor, rid, action, 
 		if targetType != "message" {
 			return "", ErrConflict
 		}
-		var cid string
-		var seq int64
-		err = tx.QueryRow(ctx, `UPDATE im_messages SET body='{}'::jsonb,recalled_at=$2 WHERE id=$1 RETURNING conversation_id,conversation_seq`, targetID, at).Scan(&cid, &seq)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", ErrNotFound
-		}
-		if err != nil {
+		meta := wukongMutationMeta{MessageID: targetID, Extension: map[string]any{}}
+		var extension []byte
+		err = tx.QueryRow(ctx, `
+			SELECT message_index.conversation_id,message_index.sender_id,message_index.channel_id,message_index.channel_type,
+				message_index.message_seq,message_index.content_type,message_index.message_timestamp,
+				COALESCE(message_extension.payload,'{}'::jsonb)
+			FROM im_wukong_message_index message_index
+			LEFT JOIN im_wukong_message_extensions message_extension ON message_extension.message_id=message_index.message_id
+				AND message_extension.channel_id=message_index.channel_id AND message_extension.channel_type=message_index.channel_type
+			WHERE message_index.message_id::text=$1 FOR UPDATE OF message_index
+		`, targetID).Scan(&meta.ConversationID, &meta.SenderID, &meta.ChannelID, &meta.ChannelType, &meta.MessageSeq, &meta.ContentType, &meta.MessageAt, &extension)
+		if err == nil {
+			if err = json.Unmarshal(extension, &meta.Extension); err != nil {
+				return "", err
+			}
+			if meta.Extension["recalledAt"] == nil {
+				meta.Extension["recalledAt"] = at.UTC().Format(time.RFC3339Nano)
+				meta.Extension["moderatedBy"] = actor
+				if err = saveWukongMessageExtension(ctx, tx, meta, actor, meta.Extension, at); err != nil {
+					return "", err
+				}
+			}
+		} else if errors.Is(err, pgx.ErrNoRows) {
+			err = tx.QueryRow(ctx, `UPDATE im_messages SET body='{}'::jsonb,recalled_at=$2 WHERE id=$1 RETURNING conversation_id,conversation_seq`, targetID, at).Scan(&meta.ConversationID, &meta.MessageSeq)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return "", ErrNotFound
+			}
+			if err != nil {
+				return "", err
+			}
+		} else {
 			return "", err
 		}
-		payload, _ := json.Marshal(map[string]any{"messageId": targetID, "conversationId": cid, "conversationSeq": seq})
-		if _, err = appendMemberSync(ctx, tx, cid, "message.recalled", payload, at); err != nil {
-			return "", err
-		}
-		if err = insertRealtimeEvent(ctx, tx, cid, "message.recalled", payload); err != nil {
+		payload, _ := json.Marshal(map[string]any{"messageId": targetID, "conversationId": meta.ConversationID, "conversationSeq": meta.MessageSeq})
+		if _, err = appendMemberBusinessEvent(ctx, tx, meta.ConversationID, "message.recalled", payload, at); err != nil {
 			return "", err
 		}
 	case "ban_user":
 		userID := targetID
 		if targetType == "message" {
-			if err = tx.QueryRow(ctx, `SELECT sender_id FROM im_messages WHERE id=$1`, targetID).Scan(&userID); err != nil {
+			if err = tx.QueryRow(ctx, `
+				SELECT sender_id FROM im_wukong_message_index WHERE message_id::text=$1
+				UNION ALL SELECT sender_id FROM im_messages WHERE id=$1 LIMIT 1
+			`, targetID).Scan(&userID); err != nil {
 				return "", ErrNotFound
 			}
 		} else if targetType != "user" {
@@ -2886,16 +2876,81 @@ func (p *Postgres) ResolveReportRecord(ctx context.Context, actor, rid, action, 
 	return result, nil
 }
 
-const callSelectColumns = `id,conversation_id,caller_id,callee_id,media_type,status,end_reason,ended_by,invited_at,expires_at,accepted_at,ended_at,
+const callSelectColumns = `id,conversation_id,call_kind,caller_id,callee_id,participant_ids,joined_user_ids,declined_user_ids,left_user_ids,media_type,status,end_reason,ended_by,invited_at,expires_at,accepted_at,ended_at,
 	CASE WHEN accepted_at IS NULL THEN 0 ELSE GREATEST(0,EXTRACT(EPOCH FROM (COALESCE(ended_at,now())-accepted_at)))::bigint END,updated_at`
 
 type callRow interface{ Scan(...any) error }
 
 func scanCall(row callRow) (*model.CallSession, error) {
 	c := &model.CallSession{}
-	err := row.Scan(&c.ID, &c.ConversationID, &c.CallerID, &c.CalleeID, &c.MediaType, &c.Status, &c.EndReason, &c.EndedBy,
+	var calleeID *string
+	err := row.Scan(&c.ID, &c.ConversationID, &c.Kind, &c.CallerID, &calleeID, &c.ParticipantIDs, &c.JoinedUserIDs, &c.DeclinedUserIDs, &c.LeftUserIDs, &c.MediaType, &c.Status, &c.EndReason, &c.EndedBy,
 		&c.InvitedAt, &c.ExpiresAt, &c.AcceptedAt, &c.EndedAt, &c.DurationSeconds, &c.UpdatedAt)
+	if calleeID != nil {
+		c.CalleeID = *calleeID
+	}
+	if c.ParticipantIDs == nil {
+		c.ParticipantIDs = []string{}
+	}
+	if c.JoinedUserIDs == nil {
+		c.JoinedUserIDs = []string{}
+	}
+	if c.DeclinedUserIDs == nil {
+		c.DeclinedUserIDs = []string{}
+	}
+	if c.LeftUserIDs == nil {
+		c.LeftUserIDs = []string{}
+	}
 	return c, err
+}
+
+func callHasUser(users []string, userID string) bool {
+	for _, candidate := range users {
+		if candidate == userID {
+			return true
+		}
+	}
+	return false
+}
+
+func callWithoutUser(users []string, userID string) []string {
+	result := make([]string, 0, len(users))
+	for _, candidate := range users {
+		if candidate != userID {
+			result = append(result, candidate)
+		}
+	}
+	return result
+}
+
+func equalStringSlices(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func appendCallUser(users []string, userID string) []string {
+	if callHasUser(users, userID) {
+		return users
+	}
+	result := append(append([]string(nil), users...), userID)
+	sort.Strings(result)
+	return result
+}
+
+func allCallInviteesDeclined(c *model.CallSession, declined []string) bool {
+	for _, participantID := range c.ParticipantIDs {
+		if participantID != c.CallerID && !callHasUser(declined, participantID) {
+			return false
+		}
+	}
+	return true
 }
 
 func callStateEvent(status string) string {
@@ -2915,26 +2970,30 @@ func callStateEvent(status string) string {
 	}
 }
 
-func appendCallStateSync(ctx context.Context, tx pgx.Tx, c *model.CallSession, at time.Time) error {
+func appendCallStateEvent(ctx context.Context, tx pgx.Tx, c *model.CallSession, at time.Time) error {
 	event := callStateEvent(c.Status)
 	if event == "" {
 		return nil
 	}
+	return appendCallCommandEvent(ctx, tx, c, event, at)
+}
+
+func appendCallCommandEvent(ctx context.Context, tx pgx.Tx, c *model.CallSession, event string, at time.Time) error {
 	payload, err := json.Marshal(map[string]any{
 		"call": c, "callId": c.ID, "conversationId": c.ConversationID,
-		"status": c.Status, "endReason": c.EndReason,
+		"status": c.Status, "endReason": c.EndReason, "event": event,
 	})
 	if err != nil {
 		return err
 	}
-	participants := []string{c.CallerID, c.CalleeID}
+	participants := append([]string(nil), c.ParticipantIDs...)
 	sort.Strings(participants)
 	for _, userID := range participants {
-		if err = appendUserSync(ctx, tx, userID, event, payload, at); err != nil {
+		if err = appendUserBusinessEvent(ctx, tx, userID, event, payload, at); err != nil {
 			return err
 		}
 	}
-	return nil
+	return enqueueWukongCallEvent(ctx, tx, c, event, participants)
 }
 
 func (p *Postgres) InviteCall(ctx context.Context, in CallInvite) (*model.CallSession, bool, error) {
@@ -2946,16 +3005,6 @@ func (p *Postgres) InviteCall(ctx context.Context, in CallInvite) (*model.CallSe
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "call:"+in.ConversationID); err != nil {
 		return nil, false, err
 	}
-	existing, scanErr := scanCall(tx.QueryRow(ctx, `SELECT `+callSelectColumns+` FROM im_call_sessions WHERE id=$1`, in.ID))
-	if scanErr == nil {
-		if existing.ConversationID != in.ConversationID || existing.CallerID != in.CallerID || existing.CalleeID != in.CalleeID || existing.MediaType != in.MediaType {
-			return nil, false, ErrConflict
-		}
-		return existing, true, tx.Commit(ctx)
-	}
-	if !errors.Is(scanErr, pgx.ErrNoRows) {
-		return nil, false, scanErr
-	}
 	var kind string
 	var members []string
 	if err = tx.QueryRow(ctx, `SELECT c.kind,array_agg(m.user_id ORDER BY m.user_id) FROM im_conversations c JOIN im_members m ON m.conversation_id=c.id WHERE c.id=$1 GROUP BY c.kind`, in.ConversationID).Scan(&kind, &members); err != nil {
@@ -2964,7 +3013,7 @@ func (p *Postgres) InviteCall(ctx context.Context, in CallInvite) (*model.CallSe
 		}
 		return nil, false, err
 	}
-	if kind != "direct" || len(members) != 2 || in.CallerID == in.CalleeID {
+	if (kind != "direct" && kind != "group") || (in.Kind != "" && in.Kind != kind) || len(members) < 2 || len(members) > 9 {
 		return nil, false, ErrConflict
 	}
 	seenCaller, seenCallee := false, false
@@ -2972,8 +3021,26 @@ func (p *Postgres) InviteCall(ctx context.Context, in CallInvite) (*model.CallSe
 		seenCaller = seenCaller || member == in.CallerID
 		seenCallee = seenCallee || member == in.CalleeID
 	}
-	if !seenCaller || !seenCallee {
+	if !seenCaller {
 		return nil, false, ErrForbidden
+	}
+	if kind == "direct" && (len(members) != 2 || in.CallerID == in.CalleeID || !seenCallee) {
+		return nil, false, ErrForbidden
+	}
+	if kind == "group" && in.CalleeID != "" {
+		return nil, false, ErrConflict
+	}
+	in.Kind = kind
+	in.ParticipantIDs = append([]string(nil), members...)
+	existing, scanErr := scanCall(tx.QueryRow(ctx, `SELECT `+callSelectColumns+` FROM im_call_sessions WHERE id=$1`, in.ID))
+	if scanErr == nil {
+		if existing.ConversationID != in.ConversationID || existing.Kind != in.Kind || existing.CallerID != in.CallerID || existing.CalleeID != in.CalleeID || existing.MediaType != in.MediaType || !equalStringSlices(existing.ParticipantIDs, in.ParticipantIDs) {
+			return nil, false, ErrConflict
+		}
+		return existing, true, tx.Commit(ctx)
+	}
+	if !errors.Is(scanErr, pgx.ErrNoRows) {
+		return nil, false, scanErr
 	}
 	expiredRows, err := tx.Query(ctx, `UPDATE im_call_sessions SET status='missed',ended_at=expires_at,end_reason='timeout',updated_at=$2 WHERE conversation_id=$1 AND status='invited' AND expires_at<=$2 RETURNING `+callSelectColumns, in.ConversationID, in.InvitedAt)
 	if err != nil {
@@ -2994,7 +3061,7 @@ func (p *Postgres) InviteCall(ctx context.Context, in CallInvite) (*model.CallSe
 	}
 	expiredRows.Close()
 	for _, expired := range expiredCalls {
-		if err = appendCallStateSync(ctx, tx, expired, in.InvitedAt); err != nil {
+		if err = appendCallStateEvent(ctx, tx, expired, in.InvitedAt); err != nil {
 			return nil, false, err
 		}
 	}
@@ -3005,8 +3072,12 @@ func (p *Postgres) InviteCall(ctx context.Context, in CallInvite) (*model.CallSe
 	if active {
 		return nil, false, ErrConflict
 	}
-	c, err := scanCall(tx.QueryRow(ctx, `INSERT INTO im_call_sessions(id,conversation_id,caller_id,callee_id,media_type,status,invited_at,expires_at,updated_at)
-		VALUES($1,$2,$3,$4,$5,'invited',$6,$7,$6) RETURNING `+callSelectColumns, in.ID, in.ConversationID, in.CallerID, in.CalleeID, in.MediaType, in.InvitedAt, in.ExpiresAt))
+	var calleeID any
+	if in.CalleeID != "" {
+		calleeID = in.CalleeID
+	}
+	c, err := scanCall(tx.QueryRow(ctx, `INSERT INTO im_call_sessions(id,conversation_id,call_kind,caller_id,callee_id,participant_ids,joined_user_ids,media_type,status,invited_at,expires_at,updated_at)
+		VALUES($1,$2,$3,$4,$5,$6,ARRAY[$4]::text[],$7,'invited',$8,$9,$8) RETURNING `+callSelectColumns, in.ID, in.ConversationID, in.Kind, in.CallerID, calleeID, in.ParticipantIDs, in.MediaType, in.InvitedAt, in.ExpiresAt))
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -3014,12 +3085,18 @@ func (p *Postgres) InviteCall(ctx context.Context, in CallInvite) (*model.CallSe
 		}
 		return nil, false, err
 	}
+	invitees := callWithoutUser(c.ParticipantIDs, c.CallerID)
 	payload, _ := json.Marshal(map[string]any{"call": c, "callId": c.ID, "conversationId": c.ConversationID, "mediaType": c.MediaType})
-	if err = appendUserSync(ctx, tx, c.CalleeID, "call.invited", payload, c.InvitedAt); err != nil {
-		return nil, false, err
-	}
 	pushPayload, _ := json.Marshal(map[string]any{"callId": c.ID, "conversationId": c.ConversationID, "mediaType": c.MediaType})
-	if err = insertPrivatePush(ctx, tx, c.CalleeID, "call.invited", pushPayload); err != nil {
+	for _, inviteeID := range invitees {
+		if err = appendUserBusinessEvent(ctx, tx, inviteeID, "call.invited", payload, c.InvitedAt); err != nil {
+			return nil, false, err
+		}
+		if err = insertPrivatePush(ctx, tx, inviteeID, "call.invited", pushPayload); err != nil {
+			return nil, false, err
+		}
+	}
+	if err = enqueueWukongCallEvent(ctx, tx, c, "call.invited", invitees); err != nil {
 		return nil, false, err
 	}
 	return c, false, tx.Commit(ctx)
@@ -3038,7 +3115,7 @@ func (p *Postgres) TransitionCall(ctx context.Context, id, uid, action, reason s
 	if err != nil {
 		return nil, false, err
 	}
-	if uid != c.CallerID && uid != c.CalleeID {
+	if !callHasUser(c.ParticipantIDs, uid) {
 		return nil, false, ErrForbidden
 	}
 	if c.Status == "invited" && !at.Before(c.ExpiresAt) {
@@ -3046,7 +3123,7 @@ func (p *Postgres) TransitionCall(ctx context.Context, id, uid, action, reason s
 		if err != nil {
 			return nil, false, err
 		}
-		if err = appendCallStateSync(ctx, tx, c, at); err != nil {
+		if err = appendCallStateEvent(ctx, tx, c, at); err != nil {
 			return nil, false, err
 		}
 		if err = tx.Commit(ctx); err != nil {
@@ -3054,69 +3131,130 @@ func (p *Postgres) TransitionCall(ctx context.Context, id, uid, action, reason s
 		}
 		return c, false, ErrConflict
 	}
-	target, endedBy := "", ""
-	switch action {
-	case "accept":
-		if c.Status == "accepted" && uid == c.CalleeID {
-			return c, true, tx.Commit(ctx)
-		}
-		if c.Status != "invited" || uid != c.CalleeID {
-			return nil, false, ErrConflict
-		}
-		target = "accepted"
-	case "reject":
-		if c.Status == "rejected" && uid == c.CalleeID {
-			return c, true, tx.Commit(ctx)
-		}
-		if c.Status != "invited" || uid != c.CalleeID {
-			return nil, false, ErrConflict
-		}
-		target, endedBy = "rejected", uid
-	case "cancel":
-		if c.Status == "cancelled" && uid == c.CallerID {
-			return c, true, tx.Commit(ctx)
-		}
-		if c.Status != "invited" || uid != c.CallerID {
-			return nil, false, ErrConflict
-		}
-		target, endedBy = "cancelled", uid
-	case "hangup":
-		if c.Status == "ended" {
-			return c, true, tx.Commit(ctx)
-		}
-		if c.Status != "accepted" {
-			return nil, false, ErrConflict
-		}
-		target, endedBy = "ended", uid
-	case "end":
-		if c.Status == "ended" || c.Status == "cancelled" || c.Status == "rejected" {
-			return c, true, tx.Commit(ctx)
-		}
-		if c.Status == "accepted" {
-			target, endedBy = "ended", uid
-		} else if c.Status == "invited" && uid == c.CallerID {
-			target, endedBy = "cancelled", uid
-		} else if c.Status == "invited" && uid == c.CalleeID {
-			target, endedBy = "rejected", uid
-		} else {
-			return nil, false, ErrConflict
-		}
-	default:
-		return nil, false, ErrUnsupported
-	}
+	target, event, endedBy := c.Status, "", ""
+	joined := append([]string{}, c.JoinedUserIDs...)
+	declined := append([]string{}, c.DeclinedUserIDs...)
+	left := append([]string{}, c.LeftUserIDs...)
 	acceptedAt, endedAt := c.AcceptedAt, c.EndedAt
-	if target == "accepted" {
-		acceptedAt = &at
+	terminal := false
+
+	if c.Kind == "group" {
+		switch action {
+		case "accept":
+			if callHasUser(joined, uid) && uid != c.CallerID {
+				return c, true, tx.Commit(ctx)
+			}
+			if uid == c.CallerID || (c.Status != "invited" && c.Status != "accepted") || callHasUser(declined, uid) || callHasUser(left, uid) {
+				return nil, false, ErrConflict
+			}
+			joined = appendCallUser(joined, uid)
+			target, event = "accepted", "call.accepted"
+			if acceptedAt == nil {
+				acceptedAt = &at
+			}
+		case "reject":
+			if callHasUser(declined, uid) {
+				return c, true, tx.Commit(ctx)
+			}
+			if uid == c.CallerID || (c.Status != "invited" && c.Status != "accepted") || callHasUser(joined, uid) {
+				return nil, false, ErrConflict
+			}
+			declined = appendCallUser(declined, uid)
+			event = "call.participant_declined"
+			if c.Status == "invited" && allCallInviteesDeclined(c, declined) {
+				target, event, endedBy, terminal = "rejected", "call.rejected", uid, true
+			}
+		case "cancel":
+			if c.Status == "cancelled" && uid == c.CallerID {
+				return c, true, tx.Commit(ctx)
+			}
+			if c.Status != "invited" || uid != c.CallerID {
+				return nil, false, ErrConflict
+			}
+			target, event, endedBy, terminal = "cancelled", "call.cancelled", uid, true
+		case "hangup", "end":
+			if callHasUser(left, uid) || c.Status == "ended" {
+				return c, true, tx.Commit(ctx)
+			}
+			if c.Status == "invited" && action == "end" {
+				if uid == c.CallerID {
+					target, event, endedBy, terminal = "cancelled", "call.cancelled", uid, true
+				} else {
+					declined = appendCallUser(declined, uid)
+					event = "call.participant_declined"
+					if allCallInviteesDeclined(c, declined) {
+						target, event, endedBy, terminal = "rejected", "call.rejected", uid, true
+					}
+				}
+			} else {
+				if c.Status != "accepted" || !callHasUser(joined, uid) {
+					return nil, false, ErrConflict
+				}
+				left = appendCallUser(left, uid)
+				event = "call.participant_left"
+				if uid == c.CallerID {
+					target, event, endedBy, terminal = "ended", "call.ended", uid, true
+				}
+			}
+		default:
+			return nil, false, ErrUnsupported
+		}
+	} else {
+		switch action {
+		case "accept":
+			if c.Status == "accepted" && uid == c.CalleeID {
+				return c, true, tx.Commit(ctx)
+			}
+			if c.Status != "invited" || uid != c.CalleeID {
+				return nil, false, ErrConflict
+			}
+			joined = appendCallUser(joined, uid)
+			target, event, acceptedAt = "accepted", "call.accepted", &at
+		case "reject":
+			if c.Status == "rejected" && uid == c.CalleeID {
+				return c, true, tx.Commit(ctx)
+			}
+			if c.Status != "invited" || uid != c.CalleeID {
+				return nil, false, ErrConflict
+			}
+			declined = appendCallUser(declined, uid)
+			target, event, endedBy, terminal = "rejected", "call.rejected", uid, true
+		case "cancel":
+			if c.Status == "cancelled" && uid == c.CallerID {
+				return c, true, tx.Commit(ctx)
+			}
+			if c.Status != "invited" || uid != c.CallerID {
+				return nil, false, ErrConflict
+			}
+			target, event, endedBy, terminal = "cancelled", "call.cancelled", uid, true
+		case "hangup", "end":
+			if c.Status == "ended" || c.Status == "cancelled" || c.Status == "rejected" {
+				return c, true, tx.Commit(ctx)
+			}
+			if c.Status == "accepted" {
+				left = appendCallUser(left, uid)
+				target, event, endedBy, terminal = "ended", "call.ended", uid, true
+			} else if action == "end" && c.Status == "invited" && uid == c.CallerID {
+				target, event, endedBy, terminal = "cancelled", "call.cancelled", uid, true
+			} else if action == "end" && c.Status == "invited" && uid == c.CalleeID {
+				declined = appendCallUser(declined, uid)
+				target, event, endedBy, terminal = "rejected", "call.rejected", uid, true
+			} else {
+				return nil, false, ErrConflict
+			}
+		default:
+			return nil, false, ErrUnsupported
+		}
 	}
-	if target != "accepted" {
+	if terminal {
 		endedAt = &at
 	}
-	c, err = scanCall(tx.QueryRow(ctx, `UPDATE im_call_sessions SET status=$2,accepted_at=$3,ended_at=$4,ended_by=$5,end_reason=$6,updated_at=$7 WHERE id=$1 RETURNING `+callSelectColumns,
-		id, target, acceptedAt, endedAt, endedBy, reason, at))
+	c, err = scanCall(tx.QueryRow(ctx, `UPDATE im_call_sessions SET status=$2,joined_user_ids=$3,declined_user_ids=$4,left_user_ids=$5,accepted_at=$6,ended_at=$7,ended_by=$8,end_reason=$9,updated_at=$10 WHERE id=$1 RETURNING `+callSelectColumns,
+		id, target, joined, declined, left, acceptedAt, endedAt, endedBy, reason, at))
 	if err != nil {
 		return nil, false, err
 	}
-	if err = appendCallStateSync(ctx, tx, c, at); err != nil {
+	if err = appendCallCommandEvent(ctx, tx, c, event, at); err != nil {
 		return nil, false, err
 	}
 	return c, false, tx.Commit(ctx)
@@ -3128,7 +3266,7 @@ func (p *Postgres) GetCall(ctx context.Context, id, uid string, at time.Time) (*
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	c, err := scanCall(tx.QueryRow(ctx, `SELECT `+callSelectColumns+` FROM im_call_sessions WHERE id=$1 AND ($2='' OR caller_id=$2 OR callee_id=$2) FOR UPDATE`, id, uid))
+	c, err := scanCall(tx.QueryRow(ctx, `SELECT `+callSelectColumns+` FROM im_call_sessions WHERE id=$1 AND ($2='' OR $2=ANY(participant_ids)) FOR UPDATE`, id, uid))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -3140,7 +3278,7 @@ func (p *Postgres) GetCall(ctx context.Context, id, uid string, at time.Time) (*
 		if err != nil {
 			return nil, err
 		}
-		if err = appendCallStateSync(ctx, tx, c, at); err != nil {
+		if err = appendCallStateEvent(ctx, tx, c, at); err != nil {
 			return nil, err
 		}
 	}
@@ -3162,7 +3300,7 @@ func (p *Postgres) ExpireCalls(ctx context.Context, at time.Time, limit int) ([]
 	rows, err := tx.Query(ctx, `WITH expired AS (
 		SELECT id FROM im_call_sessions WHERE status='invited' AND expires_at<=$1 ORDER BY expires_at FOR UPDATE SKIP LOCKED LIMIT $2
 	) UPDATE im_call_sessions c SET status='missed',ended_at=c.expires_at,end_reason='timeout',updated_at=$1 FROM expired WHERE c.id=expired.id
-	RETURNING c.id,c.conversation_id,c.caller_id,c.callee_id,c.media_type,c.status,c.end_reason,c.ended_by,c.invited_at,c.expires_at,c.accepted_at,c.ended_at,0::bigint,c.updated_at`, at, limit)
+	RETURNING c.id,c.conversation_id,c.call_kind,c.caller_id,c.callee_id,c.participant_ids,c.joined_user_ids,c.declined_user_ids,c.left_user_ids,c.media_type,c.status,c.end_reason,c.ended_by,c.invited_at,c.expires_at,c.accepted_at,c.ended_at,0::bigint,c.updated_at`, at, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -3181,7 +3319,7 @@ func (p *Postgres) ExpireCalls(ctx context.Context, at time.Time, limit int) ([]
 	}
 	rows.Close()
 	for _, call := range out {
-		if err = appendCallStateSync(ctx, tx, call, at); err != nil {
+		if err = appendCallStateEvent(ctx, tx, call, at); err != nil {
 			return nil, err
 		}
 	}
@@ -3196,11 +3334,11 @@ func (p *Postgres) ListAdminCalls(ctx context.Context, q, status, cursor string,
 	pattern := "%" + q + "%"
 	var total int64
 	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_call_sessions WHERE ($1='' OR status=$1) AND
-		($2='' OR id ILIKE $3 OR conversation_id ILIKE $3 OR caller_id ILIKE $3 OR callee_id ILIKE $3)`, status, q, pattern).Scan(&total); err != nil {
+		($2='' OR id ILIKE $3 OR conversation_id ILIKE $3 OR caller_id ILIKE $3 OR COALESCE(callee_id,'') ILIKE $3 OR array_to_string(participant_ids,',') ILIKE $3)`, status, q, pattern).Scan(&total); err != nil {
 		return nil, 0, "", err
 	}
 	rows, err := p.pool.Query(ctx, `SELECT `+callSelectColumns+` FROM im_call_sessions WHERE ($1='' OR status=$1) AND
-		($2='' OR id ILIKE $3 OR conversation_id ILIKE $3 OR caller_id ILIKE $3 OR callee_id ILIKE $3)
+		($2='' OR id ILIKE $3 OR conversation_id ILIKE $3 OR caller_id ILIKE $3 OR COALESCE(callee_id,'') ILIKE $3 OR array_to_string(participant_ids,',') ILIKE $3)
 		ORDER BY invited_at DESC,id LIMIT $4 OFFSET $5`, status, q, pattern, limit, offset)
 	if err != nil {
 		return nil, 0, "", err
@@ -3220,13 +3358,8 @@ func (p *Postgres) ListAdminCalls(ctx context.Context, q, status, cursor string,
 	return items, total, nextPageCursor(offset, len(items), total), nil
 }
 
-func appendUserSync(ctx context.Context, tx pgx.Tx, uid, typ string, payload []byte, at time.Time) error {
-	if _, err := tx.Exec(ctx, `INSERT INTO im_user_cursors(user_id,current_seq) VALUES($1,0) ON CONFLICT DO NOTHING`, uid); err != nil {
-		return err
-	}
-	_, err := tx.Exec(ctx, `WITH bumped AS (UPDATE im_user_cursors SET current_seq=current_seq+1 WHERE user_id=$1 RETURNING current_seq)
-		INSERT INTO im_sync_events(user_id,user_sync_seq,event_type,payload,created_at) SELECT $1,current_seq,$2,$3,$4 FROM bumped`, uid, typ, payload, at)
-	return err
+func appendUserBusinessEvent(ctx context.Context, tx pgx.Tx, uid, typ string, payload []byte, _ time.Time) error {
+	return enqueueWukongBusinessEvent(ctx, tx, "user", uid, typ, payload, []wukongCommandRecipient{{UserID: uid}})
 }
 
 func insertPrivatePush(ctx context.Context, tx pgx.Tx, uid, typ string, payload []byte) error {
@@ -3315,10 +3448,10 @@ func (p *Postgres) CreateFriendRequest(ctx context.Context, request *model.Frien
 	}
 	senderPayload, _ := json.Marshal(map[string]any{"requestId": created.ID, "userId": created.ToUserID, "status": "pending"})
 	receiverPayload, _ := json.Marshal(map[string]any{"request": created})
-	if err = appendUserSync(ctx, tx, created.FromUserID, "friend.request.sent", senderPayload, created.CreatedAt); err != nil {
+	if err = appendUserBusinessEvent(ctx, tx, created.FromUserID, "friend.request.sent", senderPayload, created.CreatedAt); err != nil {
 		return nil, false, err
 	}
-	if err = appendUserSync(ctx, tx, created.ToUserID, "friend.request", receiverPayload, created.CreatedAt); err != nil {
+	if err = appendUserBusinessEvent(ctx, tx, created.ToUserID, "friend.request", receiverPayload, created.CreatedAt); err != nil {
 		return nil, false, err
 	}
 	pushPayload, _ := json.Marshal(map[string]any{"requestId": created.ID, "fromUserId": created.FromUserID})
@@ -3348,10 +3481,10 @@ func (p *Postgres) TransitionFriendRequest(ctx context.Context, id, uid, action 
 		}
 		fromPayload, _ := json.Marshal(map[string]any{"requestId": r.ID, "userId": r.ToUserID, "status": "expired"})
 		toPayload, _ := json.Marshal(map[string]any{"requestId": r.ID, "userId": r.FromUserID, "status": "expired"})
-		if err = appendUserSync(ctx, tx, r.FromUserID, "friend.request.updated", fromPayload, at); err != nil {
+		if err = appendUserBusinessEvent(ctx, tx, r.FromUserID, "friend.request.updated", fromPayload, at); err != nil {
 			return nil, false, err
 		}
-		if err = appendUserSync(ctx, tx, r.ToUserID, "friend.request.updated", toPayload, at); err != nil {
+		if err = appendUserBusinessEvent(ctx, tx, r.ToUserID, "friend.request.updated", toPayload, at); err != nil {
 			return nil, false, err
 		}
 		pushPayload, _ := json.Marshal(map[string]any{"requestId": r.ID, "status": "expired"})
@@ -3388,6 +3521,9 @@ func (p *Postgres) TransitionFriendRequest(ctx context.Context, id, uid, action 
 		if _, err = tx.Exec(ctx, `INSERT INTO im_friendships(user_id,friend_user_id) VALUES($1,$2),($2,$1) ON CONFLICT DO NOTHING`, r.FromUserID, r.ToUserID); err != nil {
 			return nil, false, err
 		}
+		if err = enqueueWukongOutbox(ctx, tx, "friend-allow:"+r.ID, wukong.OperationFriendAllow, "friendship", friendPairKey(r.FromUserID, r.ToUserID), map[string]string{"user_id": r.FromUserID, "friend_id": r.ToUserID}); err != nil {
+			return nil, false, err
+		}
 	}
 	r, err = scanFriendRequest(tx.QueryRow(ctx, `UPDATE im_friend_requests SET status=$2,resolved_at=$3,updated_at=$3 WHERE id=$1 RETURNING `+friendRequestColumns(""), id, target, at))
 	if err != nil {
@@ -3399,10 +3535,10 @@ func (p *Postgres) TransitionFriendRequest(ctx context.Context, id, uid, action 
 	}
 	fromPayload, _ := json.Marshal(map[string]any{"requestId": id, "userId": r.ToUserID, "status": target})
 	toPayload, _ := json.Marshal(map[string]any{"requestId": id, "userId": r.FromUserID, "status": target})
-	if err = appendUserSync(ctx, tx, r.FromUserID, typ, fromPayload, at); err != nil {
+	if err = appendUserBusinessEvent(ctx, tx, r.FromUserID, typ, fromPayload, at); err != nil {
 		return nil, false, err
 	}
-	if err = appendUserSync(ctx, tx, r.ToUserID, typ, toPayload, at); err != nil {
+	if err = appendUserBusinessEvent(ctx, tx, r.ToUserID, typ, toPayload, at); err != nil {
 		return nil, false, err
 	}
 	notifyUser := r.FromUserID
@@ -3434,10 +3570,13 @@ func (p *Postgres) DeleteFriend(ctx context.Context, uid, target string, at time
 	}
 	aPayload, _ := json.Marshal(map[string]any{"userId": target})
 	bPayload, _ := json.Marshal(map[string]any{"userId": uid})
-	if err = appendUserSync(ctx, tx, uid, "friend.removed", aPayload, at); err != nil {
+	if err = appendUserBusinessEvent(ctx, tx, uid, "friend.removed", aPayload, at); err != nil {
 		return err
 	}
-	if err = appendUserSync(ctx, tx, target, "friend.removed", bPayload, at); err != nil {
+	if err = appendUserBusinessEvent(ctx, tx, target, "friend.removed", bPayload, at); err != nil {
+		return err
+	}
+	if err = enqueueWukongOutbox(ctx, tx, fmt.Sprintf("friend-remove:%s:%d", friendPairKey(uid, target), at.UnixNano()), wukong.OperationFriendRemove, "friendship", friendPairKey(uid, target), map[string]string{"user_id": uid, "friend_id": target}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -3457,7 +3596,7 @@ func (p *Postgres) UpdateFriendMetadata(ctx context.Context, uid, target string,
 		return ErrNotFound
 	}
 	payload, _ := json.Marshal(map[string]any{"userId": target, "remark": metadata.Remark, "tags": metadata.Tags})
-	if err = appendUserSync(ctx, tx, uid, "friend.metadata.updated", payload, at); err != nil {
+	if err = appendUserBusinessEvent(ctx, tx, uid, "friend.metadata.updated", payload, at); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -3489,15 +3628,22 @@ func (p *Postgres) SetFriendBlock(ctx context.Context, uid, target string, block
 		}
 		if tag.RowsAffected() > 0 {
 			payload, _ := json.Marshal(map[string]any{"userId": uid})
-			if e = appendUserSync(ctx, tx, target, "friend.removed", payload, at); e != nil {
+			if e = appendUserBusinessEvent(ctx, tx, target, "friend.removed", payload, at); e != nil {
 				return e
 			}
 		}
 	} else if _, err = tx.Exec(ctx, `DELETE FROM im_blocks WHERE user_id=$1 AND blocked_user_id=$2`, uid, target); err != nil {
 		return err
 	}
+	operation := wukong.OperationFriendUnblock
+	if blocked {
+		operation = wukong.OperationFriendBlock
+	}
+	if err = enqueueWukongOutbox(ctx, tx, fmt.Sprintf("%s:%s:%d", operation, friendPairKey(uid, target), at.UnixNano()), operation, "friendship", friendPairKey(uid, target), map[string]string{"user_id": uid, "friend_id": target}); err != nil {
+		return err
+	}
 	payload, _ := json.Marshal(map[string]any{"userId": target, "blocked": blocked})
-	if err = appendUserSync(ctx, tx, uid, "block.updated", payload, at); err != nil {
+	if err = appendUserBusinessEvent(ctx, tx, uid, "block.updated", payload, at); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -3533,10 +3679,10 @@ func (p *Postgres) ExpireFriendRequests(ctx context.Context, at time.Time, limit
 	for _, r := range items {
 		fromPayload, _ := json.Marshal(map[string]any{"requestId": r.ID, "userId": r.ToUserID, "status": "expired"})
 		toPayload, _ := json.Marshal(map[string]any{"requestId": r.ID, "userId": r.FromUserID, "status": "expired"})
-		if err = appendUserSync(ctx, tx, r.FromUserID, "friend.request.updated", fromPayload, at); err != nil {
+		if err = appendUserBusinessEvent(ctx, tx, r.FromUserID, "friend.request.updated", fromPayload, at); err != nil {
 			return nil, err
 		}
-		if err = appendUserSync(ctx, tx, r.ToUserID, "friend.request.updated", toPayload, at); err != nil {
+		if err = appendUserBusinessEvent(ctx, tx, r.ToUserID, "friend.request.updated", toPayload, at); err != nil {
 			return nil, err
 		}
 		pushPayload, _ := json.Marshal(map[string]any{"requestId": r.ID, "status": "expired"})
@@ -3575,36 +3721,100 @@ func groupActor(ctx context.Context, tx pgx.Tx, cid, uid string) (string, string
 	return role, owner, dissolved, err
 }
 func emitGroupSystem(ctx context.Context, tx pgx.Tx, cid, actor, event string, data map[string]any, at time.Time) error {
-	messageBody := map[string]any{"event": event, "actorId": actor, "data": data}
 	payload, _ := json.Marshal(map[string]any{"conversationId": cid, "event": event, "actorId": actor, "data": data})
 	var actorExists bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_users WHERE id=$1)`, actor).Scan(&actorExists); err != nil {
 		return err
 	}
 	if actorExists {
-		var seq int64
-		if err := tx.QueryRow(ctx, `UPDATE im_conversations SET current_seq=current_seq+1,last_message_seq=current_seq+1,updated_at=$2 WHERE id=$1 RETURNING current_seq`, cid, at).Scan(&seq); err != nil {
-			return err
-		}
-		messageID, err := secureOpaqueToken("gmsg_")
+		clientMsgNo, err := secureOpaqueToken("group-system-")
 		if err != nil {
 			return err
 		}
-		body, _ := json.Marshal(messageBody)
-		if _, err = tx.Exec(ctx, `INSERT INTO im_messages(id,conversation_id,sender_id,client_msg_id,conversation_seq,message_type,body,created_at) VALUES($1,$2,$3,$4,$5,'system',$6,$7)`, messageID, cid, actor, "group-system-"+messageID, seq, body, at); err != nil {
-			return err
-		}
-		messagePayload, _ := json.Marshal(map[string]any{"id": messageID, "conversationId": cid, "senderId": actor, "conversationSeq": seq, "messageType": "system", "body": messageBody, "createdAt": at})
-		if _, err = appendMemberSync(ctx, tx, cid, "message.created", messagePayload, at); err != nil {
+		if err = enqueueWukongOutbox(ctx, tx, "stored-message:"+clientMsgNo, wukong.OperationStoredMessage, "group_message", clientMsgNo, wukong.StoredMessageRequest{
+			ClientMsgNo: clientMsgNo, FromUID: actor, ChannelID: cid, ChannelType: wukong.ChannelGroup,
+			Payload: map[string]any{
+				"type": wukong.ContentTypeSystemEvent, "schemaVersion": 1,
+				"event": event, "actorId": actor, "data": data, "digest": "[群系统消息]",
+			},
+		}); err != nil {
 			return err
 		}
 	}
-	if _, err := appendMemberSync(ctx, tx, cid, "group.system", payload, at); err != nil {
+	if _, err := appendMemberBusinessEvent(ctx, tx, cid, "group.system", payload, at); err != nil {
 		return err
 	}
 	meta, _ := json.Marshal(data)
 	_, err := tx.Exec(ctx, `INSERT INTO im_audits(id,actor_id,action,target_type,target_id,metadata,created_at) VALUES($1,$2,$3,'group',$4,$5,$6)`, "aud_group_"+strconv.FormatInt(at.UnixNano(), 36), actor, event, cid, meta, at)
 	return err
+}
+
+func (p *Postgres) GetOrCreateDirectConversation(ctx context.Context, uid, other, conversationID string, at time.Time) (*model.Conversation, bool, error) {
+	uid, other = strings.TrimSpace(uid), strings.TrimSpace(other)
+	if uid == "" || other == "" || uid == other || strings.TrimSpace(conversationID) == "" {
+		return nil, false, ErrConflict
+	}
+	left, right := uid, other
+	if left > right {
+		left, right = right, left
+	}
+	pairKey := left + ":" + right
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "direct:"+pairKey); err != nil {
+		return nil, false, err
+	}
+	conversation := &model.Conversation{}
+	err = tx.QueryRow(ctx, `SELECT conversation.id,conversation.kind,conversation.title,conversation.avatar_url,
+		conversation.current_seq,conversation.last_message_seq,conversation.created_at,conversation.updated_at
+		FROM im_direct_index direct_index JOIN im_conversations conversation ON conversation.id=direct_index.conversation_id
+		WHERE direct_index.pair_key=$1`, pairKey).Scan(
+		&conversation.ID, &conversation.Type, &conversation.Title, &conversation.AvatarURL,
+		&conversation.Seq, &conversation.LastMessageSeq, &conversation.CreatedAt, &conversation.UpdatedAt,
+	)
+	if err == nil {
+		return conversation, false, tx.Commit(ctx)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, err
+	}
+	var validUsers int
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM im_users WHERE id=ANY($1::text[]) AND deleted_at IS NULL AND NOT banned`, []string{uid, other}).Scan(&validUsers); err != nil {
+		return nil, false, err
+	}
+	if validUsers != 2 {
+		return nil, false, ErrNotFound
+	}
+	var blocked bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_blocks WHERE (user_id=$1 AND blocked_user_id=$2) OR (user_id=$2 AND blocked_user_id=$1))`, uid, other).Scan(&blocked); err != nil {
+		return nil, false, err
+	}
+	if blocked {
+		return nil, false, ErrForbidden
+	}
+	conversation = &model.Conversation{ID: conversationID, Type: "direct", CreatedAt: at, UpdatedAt: at}
+	if _, err = tx.Exec(ctx, `INSERT INTO im_conversations(id,kind,created_at,updated_at) VALUES($1,'direct',$2,$2)`, conversationID, at); err != nil {
+		return nil, false, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO im_direct_index(pair_key,conversation_id) VALUES($1,$2)`, pairKey, conversationID); err != nil {
+		return nil, false, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,joined_at) VALUES($1,$2,'member',$4),($1,$3,'member',$4)`, conversationID, uid, other, at); err != nil {
+		return nil, false, err
+	}
+	payload, _ := json.Marshal(map[string]any{"conversation": conversation})
+	for _, userID := range []string{uid, other} {
+		if err = appendUserBusinessEvent(ctx, tx, userID, "conversation.created", payload, at); err != nil {
+			return nil, false, err
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, false, err
+	}
+	return conversation, true, nil
 }
 
 func (p *Postgres) CreateGroupRecord(ctx context.Context, cid, owner, name string, members []string, at time.Time) (*model.Conversation, error) {
@@ -3625,7 +3835,10 @@ func (p *Postgres) CreateGroupRecord(ctx context.Context, cid, owner, name strin
 		return nil, err
 	}
 	raw, _ := json.Marshal(map[string]any{"conversation": c})
-	if _, err = appendMemberSync(ctx, tx, cid, "group.created", raw, at); err != nil {
+	if _, err = appendMemberBusinessEvent(ctx, tx, cid, "group.created", raw, at); err != nil {
+		return nil, err
+	}
+	if err = enqueueWukongChannelReconcile(ctx, tx, cid, "created", at); err != nil {
 		return nil, err
 	}
 	return c, tx.Commit(ctx)
@@ -3672,7 +3885,7 @@ func (p *Postgres) UpdateGroupProfile(ctx context.Context, actor, cid string, u 
 			if !strings.HasPrefix(strings.ToLower(mime), "image/") {
 				return nil, ErrUnsupported
 			}
-			value = "/v1/media/" + *u.AvatarMediaID
+			value = "/v2/media/" + *u.AvatarMediaID
 		}
 		avatarURL = &value
 	}
@@ -3767,7 +3980,7 @@ func (p *Postgres) CreateGroupInvite(ctx context.Context, i *model.GroupInvite) 
 		return nil, false, err
 	}
 	payload, _ := json.Marshal(map[string]any{"inviteId": i.ID, "conversationId": i.ConversationID, "inviterId": i.InviterID})
-	if err = appendUserSync(ctx, tx, i.InviteeID, "group.invite", payload, i.CreatedAt); err != nil {
+	if err = appendUserBusinessEvent(ctx, tx, i.InviteeID, "group.invite", payload, i.CreatedAt); err != nil {
 		return nil, false, err
 	}
 	if err = insertPrivatePush(ctx, tx, i.InviteeID, "group.invite", payload); err != nil {
@@ -3805,6 +4018,9 @@ func (p *Postgres) TransitionGroupInvite(ctx context.Context, id, uid, action st
 		if _, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,joined_at)VALUES($1,$2,'member',$3)ON CONFLICT DO NOTHING`, i.ConversationID, i.InviteeID, at); err != nil {
 			return nil, false, err
 		}
+		if err = enqueueWukongChannelReconcile(ctx, tx, i.ConversationID, "invite-accepted", at); err != nil {
+			return nil, false, err
+		}
 	}
 	i, err = scanGroupInvite(tx.QueryRow(ctx, `UPDATE im_group_invites SET status=$2,resolved_at=$3,updated_at=$3 WHERE id=$1 RETURNING `+groupInviteColumns(""), id, target, at))
 	if err != nil {
@@ -3839,6 +4055,9 @@ func (p *Postgres) JoinGroupByQR(ctx context.Context, uid, token string, at time
 	if err = emitGroupSystem(ctx, tx, cid, uid, "group.member.joined", map[string]any{"userId": uid, "source": "qr"}, at); err != nil {
 		return err
 	}
+	if err = enqueueWukongChannelReconcile(ctx, tx, cid, "qr-joined", at); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 func (p *Postgres) AddGroupMembers(ctx context.Context, actor, cid string, ids []string, at time.Time) error {
@@ -3861,6 +4080,9 @@ func (p *Postgres) AddGroupMembers(ctx context.Context, actor, cid string, ids [
 		return err
 	}
 	if err = emitGroupSystem(ctx, tx, cid, actor, "group.members.added", map[string]any{"userIds": ids}, at); err != nil {
+		return err
+	}
+	if err = enqueueWukongChannelReconcile(ctx, tx, cid, "members-added", at); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -3932,6 +4154,11 @@ func (p *Postgres) ApplyGroupMemberAction(ctx context.Context, a GroupMemberActi
 	if err = emitGroupSystem(ctx, tx, a.ConversationID, a.ActorID, "group.member."+a.Action, map[string]any{"userId": a.TargetID, "role": a.Role}, a.At); err != nil {
 		return err
 	}
+	if a.Action == "leave" || a.Action == "remove" {
+		if err = enqueueWukongChannelReconcile(ctx, tx, a.ConversationID, "member-"+a.Action, a.At); err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
 }
 func (p *Postgres) DisbandGroupRecord(ctx context.Context, actor, cid, reason string, at time.Time) error {
@@ -3959,6 +4186,9 @@ func (p *Postgres) DisbandGroupRecord(ctx context.Context, actor, cid, reason st
 		return err
 	}
 	if _, err = tx.Exec(ctx, `DELETE FROM im_members WHERE conversation_id=$1`, cid); err != nil {
+		return err
+	}
+	if err = enqueueWukongChannelReconcile(ctx, tx, cid, "disbanded", at); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -4021,6 +4251,9 @@ func promoteScheduledAnnouncements(ctx context.Context, tx pgx.Tx, at time.Time)
 			}
 		}
 		if err = insertAnnouncementAudit(ctx, tx, "system", "announcement.published", a.ID, map[string]any{"scheduled": true, "push": a.PushOnPublish, "sequence": index}, at.Add(time.Duration(index)*time.Nanosecond)); err != nil {
+			return 0, err
+		}
+		if err = appendAnnouncementAudienceEvent(ctx, tx, a, "announcement.published", at); err != nil {
 			return 0, err
 		}
 	}
@@ -4197,6 +4430,9 @@ func (p *Postgres) PublishAnnouncement(ctx context.Context, id, actor string, pu
 	if err = insertAnnouncementAudit(ctx, tx, actor, "announcement.published", id, map[string]any{"push": push}, at); err != nil {
 		return nil, err
 	}
+	if err = appendAnnouncementAudienceEvent(ctx, tx, a, "announcement.published", at); err != nil {
+		return nil, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -4216,6 +4452,9 @@ func (p *Postgres) WithdrawAnnouncement(ctx context.Context, id, actor string, a
 		return nil, err
 	}
 	if err = insertAnnouncementAudit(ctx, tx, actor, "announcement.withdrawn", id, map[string]any{}, at); err != nil {
+		return nil, err
+	}
+	if err = appendAnnouncementAudienceEvent(ctx, tx, a, "announcement.withdrawn", at); err != nil {
 		return nil, err
 	}
 	return a, tx.Commit(ctx)

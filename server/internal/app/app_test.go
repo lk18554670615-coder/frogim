@@ -2,24 +2,12 @@ package app
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/linli/im/server/internal/store"
 )
 
-type failingEphemeralStore struct{ store.Memory }
-
-func (failingEphemeralStore) PublishEphemeral(context.Context, []string, string, map[string]any) error {
-	return errors.New("redis unavailable")
-}
-func (failingEphemeralStore) RunEphemeral(context.Context, func([]string, string, map[string]any)) error {
-	return nil
-}
-
-func TestMessageIdempotencySequenceAndSync(t *testing.T) {
+func TestMessageIdempotencyAndConversationSequence(t *testing.T) {
 	a, err := New(context.Background(), store.Memory{})
 	if err != nil {
 		t.Fatal(err)
@@ -46,18 +34,9 @@ func TestMessageIdempotencySequenceAndSync(t *testing.T) {
 	if err != nil || second.Seq != 2 {
 		t.Fatalf("second sequence=%d err=%v", second.Seq, err)
 	}
-	events, cursor, more := a.Sync("usr_bob", 0, 100)
-	if len(events) != 3 || cursor != 3 || more {
-		t.Fatalf("sync len=%d cursor=%d more=%v", len(events), cursor, more)
-	}
-	for i := 1; i < len(events); i++ {
-		if events[i].Seq != events[i-1].Seq+1 {
-			t.Fatalf("non-contiguous sync seq: %+v", events)
-		}
-	}
 }
 
-func TestSyncPaginationCursorNeverSkipsEvents(t *testing.T) {
+func TestMessageTransportOwnsPersistentMessageWhenInstalled(t *testing.T) {
 	a, err := New(context.Background(), store.Memory{})
 	if err != nil {
 		t.Fatal(err)
@@ -65,35 +44,54 @@ func TestSyncPaginationCursorNeverSkipsEvents(t *testing.T) {
 	if err = a.SeedDemo(); err != nil {
 		t.Fatal(err)
 	}
-	c, err := a.DirectConversation("usr_alice", "usr_bob")
+	conversation, err := a.DirectConversation("usr_alice", "usr_bob")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 5; i++ {
-		if _, _, err = a.SendMessage("usr_alice", c.ID, fmt.Sprintf("page-%d", i), "text", map[string]any{"text": "x"}, ""); err != nil {
-			t.Fatal(err)
-		}
+	var received MessageTransportRequest
+	a.SetMessageTransport(func(_ context.Context, request MessageTransportRequest) (MessageTransportResult, error) {
+		received = request
+		return MessageTransportResult{MessageID: "987654321", ClientMsgID: request.ClientMsgID, MessageSeq: 7}, nil
+	})
+	message, duplicate, err := a.SendMessage("usr_alice", conversation.ID, "wk-client-1", "text", map[string]any{"text": "hello", "mentions": []string{"usr_bob"}}, "")
+	if err != nil || duplicate {
+		t.Fatalf("send duplicate=%v err=%v", duplicate, err)
 	}
+	if message.ID != "987654321" || message.Seq != 7 || received.Body["text"] != "hello" || len(received.Mentions) != 1 {
+		t.Fatalf("unexpected transport result=%+v request=%+v", message, received)
+	}
+	history, err := a.History("usr_alice", conversation.ID, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 0 {
+		t.Fatalf("transport message leaked into legacy message store: %+v", history)
+	}
+}
 
-	after := int64(0)
-	var seen []int64
-	for {
-		events, cursor, more := a.Sync("usr_bob", after, 2)
-		if len(events) > 0 && cursor != events[len(events)-1].Seq {
-			t.Fatalf("cursor=%d last=%d", cursor, events[len(events)-1].Seq)
-		}
-		for _, event := range events {
-			seen = append(seen, event.Seq)
-		}
-		after = cursor
-		if !more {
-			break
-		}
+func TestBindMediaChannelAllowsAuthorizedForwardButRejectsOutsider(t *testing.T) {
+	a, err := New(context.Background(), store.Memory{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for i := 1; i < len(seen); i++ {
-		if seen[i] != seen[i-1]+1 {
-			t.Fatalf("sync skipped events: %v", seen)
-		}
+	owner, _ := a.Login("13800009001", "Owner")
+	recipient, _ := a.Login("13800009002", "Recipient")
+	forwardTarget, _ := a.Login("13800009003", "Forward target")
+	outsider, _ := a.Login("13800009004", "Outsider")
+	if err = a.CreateMedia(store.Media{ID: "media-forward", OwnerID: owner.ID, ObjectKey: "objects/media-forward", MIME: "image/png", Size: 10, Status: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.BindMediaChannel(store.MediaChannelBinding{MediaID: "media-forward", ChannelID: recipient.ID, ChannelType: 1, SenderID: owner.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.BindMediaChannel(store.MediaChannelBinding{MediaID: "media-forward", ChannelID: forwardTarget.ID, ChannelType: 1, SenderID: recipient.ID}); err != nil {
+		t.Fatalf("authorized forward binding failed: %v", err)
+	}
+	if allowed, _ := a.CanAccessMedia(forwardTarget.ID, "media-forward"); !allowed {
+		t.Fatal("forward target did not receive media access")
+	}
+	if err = a.BindMediaChannel(store.MediaChannelBinding{MediaID: "media-forward", ChannelID: forwardTarget.ID, ChannelType: 1, SenderID: outsider.ID}); err != ErrForbidden {
+		t.Fatalf("outsider binding error=%v", err)
 	}
 }
 
@@ -152,31 +150,6 @@ func TestUserCannotSendSystemMessage(t *testing.T) {
 	}
 	if _, _, err = a.SendMessage("usr_alice", c.ID, "forged-system", "system", map[string]any{"text": "管理员已封禁对方"}, ""); err != ErrInvalid {
 		t.Fatalf("forged system message err=%v", err)
-	}
-}
-
-func TestCallSignalFailsClosedWhenCrossNodePublishFails(t *testing.T) {
-	a, err := New(context.Background(), failingEphemeralStore{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = a.SeedDemo(); err != nil {
-		t.Fatal(err)
-	}
-	conversation, err := a.DirectConversation("usr_alice", "usr_bob")
-	if err != nil {
-		t.Fatal(err)
-	}
-	call, _, err := a.InviteCall("usr_alice", conversation.ID, "usr_bob", "call-fail-closed", "audio")
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = a.SignalCall("usr_alice", conversation.ID, "call.ice", map[string]any{
-		"callId":    call.ID,
-		"candidate": map[string]any{"candidate": "candidate:1 1 UDP 1 127.0.0.1 9 typ host"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "publish realtime call signal") {
-		t.Fatalf("signal must fail closed, err=%v", err)
 	}
 }
 

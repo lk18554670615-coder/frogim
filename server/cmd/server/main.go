@@ -16,6 +16,7 @@ import (
 	"github.com/linli/im/server/internal/httpapi"
 	"github.com/linli/im/server/internal/push"
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/wukong"
 )
 
 func main() {
@@ -71,35 +72,74 @@ func main() {
 		}
 	}
 	api := httpapi.New(cfg, application)
+	var webhookServer *wukong.WebhookGRPCServer
+	if cfg.WukongEnabled {
+		webhookStore, ok := persistence.(wukong.WebhookEventStore)
+		if !ok {
+			if cfg.Mode == "full" {
+				slog.Error("persistent WuKongIM webhook store is unavailable")
+				os.Exit(1)
+			}
+			webhookStore = wukong.NewMemoryWebhookStore()
+		}
+		webhookServer, err = wukong.ListenWebhookGRPC(cfg.WukongGRPCAddr, webhookStore)
+		if err != nil {
+			slog.Error("WuKongIM webhook listener unavailable", "error", err)
+			os.Exit(1)
+		}
+		go func() {
+			slog.Info("WuKongIM gRPC webhook started", "event", "wukong.webhook.started", "addr", cfg.WukongGRPCAddr)
+			if serveErr := webhookServer.Serve(); serveErr != nil {
+				slog.Error("WuKongIM webhook server failed", "error", serveErr)
+				os.Exit(1)
+			}
+		}()
+		outboxStore, ok := persistence.(wukong.OutboxStore)
+		if !ok {
+			if cfg.Mode == "full" {
+				slog.Error("persistent WuKongIM outbox store is unavailable")
+				os.Exit(1)
+			}
+		} else {
+			wukongClient, clientErr := wukong.NewClient(wukong.Config{
+				APIURL: cfg.WukongAPIURL, ManagerURL: cfg.WukongManagerURL,
+				ManagerToken: cfg.WukongManagerToken, Timeout: 5 * time.Second, MaxRetries: 2,
+			})
+			if clientErr != nil {
+				slog.Error("WuKongIM outbox client unavailable", "error", clientErr)
+				os.Exit(1)
+			}
+			worker, workerErr := wukong.NewOutboxWorker(outboxStore, wukongClient)
+			if workerErr != nil {
+				slog.Error("WuKongIM outbox worker unavailable", "error", workerErr)
+				os.Exit(1)
+			}
+			go worker.Run(workerCtx)
+			reconcileStore, reconcileOK := persistence.(wukong.ReconcileStore)
+			if !reconcileOK {
+				slog.Error("persistent WuKongIM reconcile store is unavailable")
+				os.Exit(1)
+			}
+			reconciler, reconcileErr := wukong.NewReconciler(reconcileStore, wukongClient)
+			if reconcileErr != nil {
+				slog.Error("WuKongIM reconciler unavailable", "error", reconcileErr)
+				os.Exit(1)
+			}
+			go reconciler.Run(workerCtx)
+		}
+	}
 	go api.RunMediaCleanup(workerCtx)
 	go application.RunCallTimeouts(workerCtx)
 	go application.RunFriendRequestTimeouts(workerCtx)
 	go application.RunAnnouncementScheduler(workerCtx)
 	go application.RunScheduledMessages(workerCtx)
 	go application.RunMessageExpirations(workerCtx)
-	go application.RunMessageFanout(workerCtx, cfg.MessageFanoutBatchSize)
-	go application.RunRuntimeCleanup(workerCtx, cfg.RuntimeCleanupInterval, store.RetentionPolicy{SyncEvents: cfg.SyncRetention, Outbox: cfg.OutboxRetention})
+	if cfg.Mode == "memory" && !cfg.WukongEnabled {
+		go application.RunMessageFanout(workerCtx, cfg.MessageFanoutBatchSize)
+	}
+	go application.RunRuntimeCleanup(workerCtx, cfg.RuntimeCleanupInterval, store.RetentionPolicy{Outbox: cfg.OutboxRetention})
+	go application.RunBusinessMembershipExpirations(workerCtx)
 	go application.RunBanExpirations(workerCtx)
-	if events, ok := persistence.(store.EventSubscriber); ok {
-		go func() {
-			for workerCtx.Err() == nil {
-				if err := events.RunEvents(workerCtx, application.Deliver); err != nil && workerCtx.Err() == nil {
-					slog.Warn("realtime event subscriber stopped", "error", err)
-					time.Sleep(time.Second)
-				}
-			}
-		}()
-	}
-	if bus, ok := persistence.(store.EphemeralBus); ok {
-		go func() {
-			for workerCtx.Err() == nil {
-				if err := bus.RunEphemeral(workerCtx, application.Deliver); err != nil && workerCtx.Err() == nil {
-					slog.Warn("ephemeral event subscriber stopped", "error", err)
-					time.Sleep(time.Second)
-				}
-			}
-		}()
-	}
 	server := &http.Server{Addr: cfg.Addr, Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 75 * time.Second, MaxHeaderBytes: 1 << 20}
 	go func() {
 		slog.Info("IM 服务已启动", "event", "server.started", "addr", cfg.Addr, "mode", cfg.Mode)
@@ -111,6 +151,9 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
+	if webhookServer != nil {
+		webhookServer.Stop()
+	}
 	shutdown, cancelShutdown := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelShutdown()
 	if err := server.Shutdown(shutdown); err != nil {

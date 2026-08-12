@@ -18,7 +18,7 @@ void main() {
     final requests = <String>[];
     final client = MockClient((request) async {
       requests.add('${request.method} ${request.url.path}');
-      if (request.url.path == '/v1/auth/login') {
+      if (request.url.path == '/v2/auth/login') {
         return _json({
           'accessToken': 'access',
           'refreshToken': 'refresh',
@@ -31,7 +31,7 @@ void main() {
           },
         });
       }
-      if (request.url.path == '/v1/media/presign') {
+      if (request.url.path == '/v2/media/presign') {
         return _json({
           'uploadUrl': 'https://upload.example/avatar',
           'mediaId': 'media-avatar-1',
@@ -42,12 +42,12 @@ void main() {
         expect(request.bodyBytes, Uint8List.fromList([1, 2, 3]));
         return http.Response('', 200);
       }
-      if (request.url.path == '/v1/media/media-avatar-1/complete') {
+      if (request.url.path == '/v2/media/media-avatar-1/complete') {
         final body = jsonDecode(request.body) as Map<String, Object?>;
         expect(body['checksum'], isNotEmpty);
         return _json({});
       }
-      if (request.url.path == '/v1/users/me' && request.method == 'PATCH') {
+      if (request.url.path == '/v2/users/me' && request.method == 'PATCH') {
         final body = jsonDecode(request.body) as Map<String, Object?>;
         expect(body['avatarMediaId'], 'media-avatar-1');
         expect(body['name'], '新昵称');
@@ -59,7 +59,7 @@ void main() {
           'handle': body['handle'],
           'signature': body['signature'],
           'avatarMediaId': body['avatarMediaId'],
-          'avatarUrl': '/v1/media/media-avatar-1',
+          'avatarUrl': '/v2/media/media-avatar-1',
         });
       }
       return http.Response('not found', 404);
@@ -67,7 +67,6 @@ void main() {
     final repository = LiveImRepository(
       client: client,
       apiBaseUrl: 'https://api.example',
-      wsUrl: 'wss://api.example/v1/ws',
     );
     final controller = AppController(repository);
     addTearDown(controller.dispose);
@@ -90,11 +89,11 @@ void main() {
     expect(
       requests,
       containsAllInOrder([
-        'POST /v1/auth/login',
-        'POST /v1/media/presign',
+        'POST /v2/auth/login',
+        'POST /v2/media/presign',
         'PUT /avatar',
-        'POST /v1/media/media-avatar-1/complete',
-        'PATCH /v1/users/me',
+        'POST /v2/media/media-avatar-1/complete',
+        'PATCH /v2/users/me',
       ]),
     );
   });

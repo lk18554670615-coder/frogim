@@ -6,10 +6,10 @@
 
 | 层级 | 修改入口 | 生效方式 | 示例 |
 |---|---|---|---|
-| 客户端构建参数 | Flutter `--dart-define` | 重新构建 App | API、WS、个推客户端参数 |
+| 客户端构建参数 | Flutter `--dart-define` | 重新构建 App | 业务 API、WuKongIM 连接、个推客户端参数 |
 | 业务运行策略 | 运营后台“系统设置” | 保存后热更新 | 注册、撤回、群规模、好友、公告、通话、风控 |
-| 基础设施参数 | `.env.production` / 密钥服务 | 校验后滚动重启 | 数据库、Redis、S3、JWT、连接上限 |
-| 外部平台配置 | 云厂商/苹果/个推/TURN 控制台 | 平台发布或凭据轮换 | APNs、Android 厂商通道、短信、TURN |
+| 基础设施参数 | `.env.production` / 密钥服务 | 校验后滚动重启 | 数据库、Redis、S3、JWT、WuKongIM 与 LiveKit |
+| 外部平台配置 | 云厂商/苹果/个推控制台 | 平台发布或凭据轮换 | APNs、Android 厂商通道、短信、推送 |
 
 ## 移动端构建参数
 
@@ -17,7 +17,7 @@
 |---|---|---|
 | `APP_ENV` | 构建环境 | `development`、`staging`、`production` |
 | `API_BASE_URL` | HTTPS 接口地址 | 生产必须以 `https://` 开头 |
-| `WS_URL` | WebSocket 地址 | 生产必须以 `wss://` 开头 |
+| `WS_URL` | WuKongIM WebSocket 地址 | Web/macOS 使用；生产必须以 `wss://` 开头 |
 | `ENABLE_DEMO` | 演示数据开关 | 生产强制为 `false` |
 | `MEDIA_MAX_BYTES` | 客户端单文件上限 | 不得高于服务端 `IM_MEDIA_MAX_BYTES` |
 | `GETUI_ENABLED` | 个推开关 | 正式包按平台接入状态设置 |
@@ -34,35 +34,60 @@
 | 参数 | 中文说明 | 要求 |
 |---|---|---|
 | `IM_ENV` | 服务环境 | 生产设为 `production`，需重启 |
-| `IM_MODE` | `memory` 或 `full` | 生产必须为 `full` |
-| `IM_ADDR` | HTTP/WS 监听地址 | 由网关和容器网络决定 |
+| `IM_MODE` | `memory` 或 `full` | 部署必须为 `full`，且强制要求 `IM_WUKONG_ENABLED=true`；`memory` 仅用于单元/本地无持久化测试 |
+| `IM_ADDR` | 业务 HTTP 监听地址 | 由网关和容器网络决定 |
 | `IM_DATABASE_URL` | PostgreSQL 连接串 | 密钥项，需重启 |
 | `IM_REDIS_URL` | Redis 连接串 | 密钥项，需重启 |
 | `IM_JWT_SECRET` | 用户令牌签名密钥 | 至少 32 字节，轮换会影响会话 |
 | `IM_ACCESS_TTL` | 访问令牌有效期 | 默认 `15m`，需重启 |
 | `IM_REFRESH_TTL` | 刷新令牌有效期 | 默认 `720h`，需重启 |
 | `IM_TRUST_PROXY` | 信任反向代理来源地址 | 仅在受控网关后开启 |
-| `IM_ALLOWED_ORIGINS` | WebSocket 允许来源 | 逗号分隔，需重启 |
-| `IM_WS_MAX_PER_USER` | 单用户 WS 上限 | 1–20，需重启 |
-| `IM_WS_MAX_PER_IP` | 单 IP WS 上限 | 1–200，需重启 |
-| `IM_WS_MAX_CONNECTIONS` | 单服务实例 WS 总上限 | 默认 10000，需按实例内存压测后调整 |
+| `IM_ALLOWED_ORIGINS` | 业务 HTTP 允许来源 | 逗号分隔，需重启 |
 | `IM_DB_MAX_CONNS` / `IM_DB_MIN_CONNS` | 单实例 PostgreSQL 连接池 | 默认 20/2；所有实例之和必须低于数据库连接预算 |
 | `IM_DB_MAX_CONN_LIFETIME` / `IM_DB_MAX_CONN_IDLE_TIME` | 数据库连接生命周期 | 默认 `1h`/`15m` |
 | `IM_DB_STATEMENT_TIMEOUT` | 单条数据库语句硬超时 | 默认 `15s`，防止异常查询长期占池 |
 | `IM_PUSH_WORKERS` / `IM_PUSH_BATCH_SIZE` | 推送并发与领取批次 | 默认 16/200，需结合提供商限流调整 |
 | `IM_MESSAGE_FANOUT_BATCH_SIZE` | 消息同步扇出批次 | 默认 500，范围 10–5000 |
-| `IM_SYNC_RETENTION` / `IM_OUTBOX_RETENTION` | 同步事件与 outbox 保留时间 | 默认 `720h`/`168h`；超期客户端收到全量刷新提示 |
+| `IM_OUTBOX_RETENTION` | 推送与任务 outbox 保留时间 | 默认 `168h`；WuKongIM 负责消息和会话同步 |
 | `IM_HTTP_LOG_SUCCESS_SAMPLE_RATE` | 成功请求日志采样率 | 默认 0.01；慢请求与错误始终记录 |
+| `IM_WUKONG_INTERNAL_RATE_LIMIT_PER_MINUTE` | WuKongIM 内部 DataSource/策略接口每来源 IP 的独立分钟配额 | 默认 120000，允许 60000–600000；与公网 300 次/分钟配额隔离，正式 1000 消息/秒门槛不得低于 60000 |
 | `IM_ADMIN_EMAIL` | 管理员邮箱 | 生产必填 |
 | `IM_ADMIN_PASSWORD_HASH` | 管理员 bcrypt 哈希 | 禁止保存明文 |
 | `IM_ADMIN_TOTP_SECRET` | 管理员 TOTP 密钥 | 仅服务端，不回显 |
 | `IM_ADMIN_ROLE` | 管理员角色 | 默认 `platform_admin` |
+| `WUKONG_IMAGE` | 生产 WuKongIM 镜像 | 必须是已发布到受控仓库的 `repository@sha256:<64位摘要>`；生产 Compose 不现场构建或接受标签 |
+| `IM_WUKONG_MANAGER_TOKEN` | WuKong 5001/5300内部管理Token | Compose映射为固定源码要求的`WK_MANAGERTOKEN`；仅服务端内网使用，至少24字符 |
+| `IM_WUKONG_PLUGIN_TRUSTED_KEYS` | 插件发布 Ed25519 公钥 | `key-id:Base64公钥`，多把用逗号分隔；每把必须解码为 32 字节 |
+| `IM_WUKONG_PLUGIN_ALLOWLIST` | 可发布插件编号白名单 | 逗号分隔，必须包含 `wk.plugin.im-policy` |
+| `IM_WUKONG_PLUGIN_MAX_BYTES` | 单个 `.wkp` 包体硬上限 | 1–512 MiB，默认 64 MiB |
+| `BACKUP_DIR` | 完整本地备份根目录 | 生产必须是绝对非根路径 |
+| `BACKUP_METRICS_DIR` | 备份 textfile 指标目录 | 必须严格等于 `BACKUP_DIR/.metrics`，由 exporter 只读挂载 |
+| `BACKUP_OFFSITE_ENABLED` | 是否把完整代次复制到异地 | `true`时异地失败会使整次任务失败；未选供应商前保持`false` |
+| `BACKUP_OFFSITE_ENDPOINT` | S3兼容异地端点 | 启用时必须是HTTPS，不得指向本机 |
+| `BACKUP_OFFSITE_ACCESS_KEY` / `BACKUP_OFFSITE_SECRET_KEY` | 异地备份身份 | 仅授予指定备份桶/前缀，不能复用应用或MinIO root凭据 |
+| `BACKUP_OFFSITE_BUCKET` / `BACKUP_OFFSITE_PREFIX` | 已存在的目标桶与安全前缀 | 桶使用小写S3命名；前缀不得含`..`或首尾斜线 |
 
 `IM_DEV_MODE` 与 `IM_DEV_OTP_CODE` 只允许本地开发。生产验证码使用 `IM_OTP_WEBHOOK_URL` 和 `IM_OTP_WEBHOOK_TOKEN`，URL 必须为 HTTPS，令牌不得进入日志或客户端。
 
 生产 Compose 还通过 `SERVER_CPU_LIMIT`、`SERVER_MEMORY_LIMIT`、`SERVER_GO_MEMORY_LIMIT`、`POSTGRES_CPU_LIMIT`、`POSTGRES_MEMORY_LIMIT`、`REDIS_CPU_LIMIT`、`REDIS_MEMORY_LIMIT`、`REDIS_MAXMEMORY` 和统一 PID/no-file 上限约束资源。修改这些值前必须同时检查宿主机容量、PostgreSQL `max_connections` 和实际压测结果。
 
-用户 REST 接口只从 `Authorization: Bearer <accessToken>` 读取访问令牌，不接受 query、请求体或 Cookie 回退。WebSocket 不接受 Access Token：客户端必须先用上述 REST 鉴权调用 `POST /v1/ws/ticket`，再以 30 秒、一次性 `ticket` 建连；生产 Redis 无法原子消费票据时连接失败关闭。
+用户 REST 接口只从 `Authorization: Bearer <accessToken>` 读取访问令牌，不接受 query、请求体或 Cookie 回退。客户端通过业务登录接口取得短期业务令牌和 `ImSession`；WuKongIM 连接只使用该会话中的用户 ID、设备标识和 IM Token，不使用 REST Access Token。
+
+## WuKongIM 插件发布信任链
+
+后台只能发布白名单内、由受信任 Ed25519 私钥签名的 Linux/amd64 `.wkp` 可执行文件。签名覆盖原始 manifest 字节；manifest 固定包含 `schemaVersion: 1`、`pluginNo`、`name`、`fileName`、`version`、`methods`、`os`、`arch`、`sha256`、`size` 和 `keyId`。服务端在写入共享插件目录前会校验签名、文件大小、SHA-256、文件名和允许的方法，再使用原子重命名发布；WuKongIM 启动插件后，业务服务还会从 Manager API 核验实际编号、名称、版本、方法和运行状态，不一致即自动回滚。
+
+生产公钥示例（示例值不能直接使用）：
+
+```dotenv
+IM_WUKONG_PLUGIN_TRUSTED_KEYS=release-2026:REPLACE_WITH_BASE64_ED25519_PUBLIC_KEY
+IM_WUKONG_PLUGIN_ALLOWLIST=wk.plugin.im-policy,wk.plugin.example
+IM_WUKONG_PLUGIN_MAX_BYTES=67108864
+```
+
+管理后台的安装、升级、启用、停用、配置和卸载全部要求二次确认、填写原因并写 PostgreSQL 生命周期事件及管理员审计。内置 `wk.plugin.im-policy` 不能停用或卸载；带 `Receive` 方法的 AI 插件会被拒绝。`.wkp` 是 WuKongIM 直接启动的可执行文件，不是压缩包。发布私钥不得进入服务器、镜像、Git、环境变量或后台；服务器只保存公钥。
+
+项目使用固定提交`a888f895`及仓库内可审计补丁构建`v2.2.5-20260422-linli.3`。补丁提供认证的插件stdout/stderr有界内存尾部日志，并禁止连接字符串、认证失败、消息验签、消息发送、Token更新和首帧错误日志输出Token、AES密钥/IV、签名、消息正文、订阅者列表或原始协议帧；业务服务只读代理不会把Manager Token返回浏览器。后台把“运行日志”和持久化“生命周期/审计事件”分开展示；运行日志会在WuKongIM进程重启后清空，不作为长期审计存储。
 
 ## 业务运行策略
 
@@ -118,23 +143,23 @@ infra/scripts/validate-production-env.sh .env.production
 | 参数 | 中文说明 | 要求 |
 |---|---|---|
 | `IM_S3_ENDPOINT` / `IM_S3_PUBLIC_ENDPOINT` | S3/MinIO 内外网地址 | 需重启 |
+| `IM_S3_ANDROID_PUBLIC_ENDPOINT` | 仅开发环境：Android 模拟器访问宿主机的预签名端点（例如 `10.0.2.2:9000`）；Web/macOS 继续使用 `IM_S3_PUBLIC_ENDPOINT`，生产环境禁止配置 | 需重启 |
 | `IM_S3_ACCESS_KEY` / `IM_S3_SECRET_KEY` | 对象存储密钥 | 仅服务端，不回显 |
 | `IM_S3_BUCKET` / `IM_S3_REGION` | 存储桶与区域 | 兼容存储桶不可直接重命名 |
 | `IM_MEDIA_MAX_BYTES` | 服务端单文件上限 | 1 MiB–2 GiB，需重启 |
 | `IM_CALL_INVITE_TTL` | 来电邀请超时 | 15 秒–2 分钟，需重启 |
-| `IM_RTC_STUN_URLS` | STUN 地址 | 生产必填 |
-| `IM_RTC_TURN_URLS` | TURN/TURNS 地址 | 生产真实通话必填 |
-| `IM_RTC_TURN_USERNAME` / `IM_RTC_TURN_CREDENTIAL` | TURN 凭据 | 仅服务端，不回显 |
+| `IM_LIVEKIT_URL` / `IM_LIVEKIT_TOKEN_TTL` | LiveKit 客户端信令地址与短期 Token 有效期 | URL 生产必须使用 WSS；TTL 为 1–15 分钟 |
+| `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | LiveKit 服务端管理凭据 | 仅服务端，不回显；Secret 至少 32 字节 |
 
-使用仓库内自建 Coturn 时，系统防火墙与云安全组必须同时放行 3478 TCP/UDP 和 49160–49200 UDP；若使用外部托管 TURN，则只开放该服务商明确要求的端口，不应额外暴露应用数据服务。
+LiveKit 统一承载音视频协商、UDP/TCP 回退和屏幕共享。云防火墙按 `infra/livekit/livekit.yaml` 开放信令、TCP 与 UDP 媒体端口；旧 Coturn、3478 和 49160–49200 端口不再属于本项目部署面。
 
 生产 Compose 不把 MinIO root 凭据交给应用服务。`minio-init` 使用 root 凭据创建独立的 `MINIO_APP_USER` / `MINIO_APP_PASSWORD`，并只授予指定 `IM_S3_BUCKET` 的定位、列举、读取、写入和 multipart 必需权限；应用容器的 `IM_S3_ACCESS_KEY` / `IM_S3_SECRET_KEY` 来自这组最小权限凭据。root 仅用于初始化、备份和受控管理，两组密码必须不同并独立轮换。
 
-`POST /v1/media/{id}/complete` 会读取对象并核验预声明 size、完整 SHA-256 和文件 magic MIME，全部一致后才标记 `ready`。这能拦截传输损坏和常见类型伪装，但不是恶意内容扫描：通用文件的杀毒、压缩包递归检查、媒体安全审核和隔离流程仍须接入外部扫描服务，属于正式开放任意文件前的上线依赖。
+`POST /v2/media/{id}/complete` 会读取对象并核验预声明 size、完整 SHA-256 和文件 magic MIME，全部一致后才标记 `ready`。这能拦截传输损坏和常见类型伪装，但不是恶意内容扫描：通用文件的杀毒、压缩包递归检查、媒体安全审核和隔离流程仍须接入外部扫描服务，属于正式开放任意文件前的上线依赖。
 
 会话文本搜索使用 PostgreSQL `pg_trgm` 与 `lower(body->>'text')` 部分 GIN 索引。自建 Compose 会由 schema 初始化扩展；托管 PostgreSQL 上线前必须由数据库管理员预先允许并安装 `pg_trgm`，否则 schema 升级应失败关闭，不能静默退回无索引全表扫描。
 
-通话 SDP/ICE 只经 WebSocket 与 Redis Pub/Sub 在线转发，不写入 PostgreSQL，也不存在服务端 replay。Redis 跨节点发布失败时服务端 fail-closed 并向发送端返回错误；Flutter 端为每条信令生成 `signalId`，在收到对端确认前定时重试，并对已接收的 `signalId` 去重。该重试降低瞬时丢包影响，但不能替代持久信令存储。通话的 accepted/rejected/cancelled/ended/timeout 状态不含 SDP/ICE，会在数据库状态事务内同步写入双方 `userSyncSeq`，供客户端重连收敛。
+群音视频的媒体协商、重连与实时传输由 LiveKit SDK/Server 负责；业务服务不接收或保存 SDP/ICE。业务服务只签发短期房间 Token，并在 PostgreSQL 保存邀请、成员状态、开始/结束时间和结束原因，通过 WuKongIM CMD 通知客户端重新同步。LiveKit API Secret 永不返回浏览器或 Flutter 客户端。
 
 ## 修改流程
 

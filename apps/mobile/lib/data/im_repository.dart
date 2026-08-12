@@ -38,6 +38,7 @@ abstract interface class ImRepository {
   Future<void> requestAccountDeletionCode();
   Future<void> deleteAccount(String code);
   Future<List<UserDevice>> userDevices();
+  Future<List<ImDeviceSession>> imDeviceSessions();
   Future<void> registerDevice({
     required String deviceId,
     required String platform,
@@ -49,6 +50,7 @@ abstract interface class ImRepository {
     required bool vibrationEnabled,
   });
   Future<void> removeUserDevice(String deviceId);
+  Future<void> quitImDeviceSession(int deviceFlag);
   Future<List<ChatMessage>> favorites();
   Future<void> submitFeedback({
     required String category,
@@ -148,6 +150,7 @@ abstract interface class ImRepository {
   Future<void> removeFavorite(ChatMessage message);
   Future<void> markRead(String conversationId, int sequence);
   Future<void> markDelivered(String conversationId, int sequence);
+  Future<void> setTyping(String conversationId, bool typing);
   Future<void> updateConversationPreferences(
     String conversationId, {
     bool? pinned,

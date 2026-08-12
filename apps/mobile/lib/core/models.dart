@@ -12,7 +12,11 @@ enum MessageContentKind {
   contact,
   location,
   chatHistory,
+  sticker,
+  momentShare,
+  liveEvent,
   system,
+  screenshotNotice,
   unsupported,
 }
 
@@ -29,6 +33,7 @@ enum ImEventType {
   friendChanged,
   groupInvitationChanged,
   announcementChanged,
+  scheduledChanged,
   typing,
   unknown,
 }
@@ -164,6 +169,22 @@ class UserDevice {
   final DateTime updatedAt;
 }
 
+class ImDeviceSession {
+  const ImDeviceSession({
+    required this.deviceFlag,
+    required this.deviceLevel,
+    required this.connectionCount,
+    required this.updatedAt,
+  });
+
+  final int deviceFlag;
+  final int deviceLevel;
+  final int connectionCount;
+  final DateTime updatedAt;
+
+  bool get isOnline => connectionCount > 0;
+}
+
 class UserSearchCapabilities {
   const UserSearchCapabilities({
     required this.allowSearchByHandle,
@@ -189,6 +210,10 @@ class ChatMessage {
     this.kind = MessageContentKind.text,
     this.mediaUrl,
     this.mediaId,
+    this.stickerId,
+    this.momentId,
+    this.event,
+    this.eventData = const {},
     this.fileName,
     this.mimeType,
     this.durationSeconds,
@@ -227,6 +252,10 @@ class ChatMessage {
   final MessageContentKind kind;
   final String? mediaUrl;
   final String? mediaId;
+  final String? stickerId;
+  final String? momentId;
+  final String? event;
+  final Map<String, Object?> eventData;
   final String? fileName;
   final String? mimeType;
   final int? durationSeconds;
@@ -253,12 +282,17 @@ class ChatMessage {
 
   ChatMessage copyWith({
     String? id,
+    String? clientMessageId,
     String? text,
     MessageStatus? status,
     int? conversationSeq,
     MessageContentKind? kind,
     String? mediaUrl,
     String? mediaId,
+    String? stickerId,
+    String? momentId,
+    String? event,
+    Map<String, Object?>? eventData,
     String? fileName,
     String? mimeType,
     int? durationSeconds,
@@ -284,7 +318,7 @@ class ChatMessage {
     LinkPreview? linkPreview,
   }) => ChatMessage(
     id: id ?? this.id,
-    clientMessageId: clientMessageId,
+    clientMessageId: clientMessageId ?? this.clientMessageId,
     conversationId: conversationId,
     senderId: senderId,
     senderName: senderName,
@@ -296,6 +330,10 @@ class ChatMessage {
     kind: kind ?? this.kind,
     mediaUrl: mediaUrl ?? this.mediaUrl,
     mediaId: mediaId ?? this.mediaId,
+    stickerId: stickerId ?? this.stickerId,
+    momentId: momentId ?? this.momentId,
+    event: event ?? this.event,
+    eventData: eventData ?? this.eventData,
     fileName: fileName ?? this.fileName,
     mimeType: mimeType ?? this.mimeType,
     durationSeconds: durationSeconds ?? this.durationSeconds,
@@ -335,6 +373,10 @@ class ChatMessage {
     'kind': kind.name,
     'mediaUrl': mediaUrl,
     'mediaId': mediaId,
+    'stickerId': stickerId,
+    'momentId': momentId,
+    'event': event,
+    'eventData': eventData,
     'fileName': fileName,
     'mimeType': mimeType,
     'durationSeconds': durationSeconds,
@@ -377,6 +419,12 @@ class ChatMessage {
     ),
     mediaUrl: json['mediaUrl'] as String?,
     mediaId: json['mediaId'] as String?,
+    stickerId: json['stickerId'] as String?,
+    momentId: json['momentId'] as String?,
+    event: json['event'] as String?,
+    eventData: json['eventData'] is Map
+        ? Map<String, Object?>.from(json['eventData']! as Map)
+        : const {},
     fileName: json['fileName'] as String?,
     mimeType: json['mimeType'] as String?,
     durationSeconds: (json['durationSeconds'] as num?)?.toInt(),
@@ -503,6 +551,8 @@ class Conversation {
     required this.subtitle,
     required this.updatedAt,
     required this.kind,
+    this.channelId,
+    this.channelType = 0,
     this.avatarUrl,
     this.unread = 0,
     this.muted = false,
@@ -520,6 +570,8 @@ class Conversation {
   final String subtitle;
   final DateTime updatedAt;
   final ConversationKind kind;
+  final String? channelId;
+  final int channelType;
   final String? avatarUrl;
   final int unread;
   final bool muted;
@@ -533,6 +585,7 @@ class Conversation {
   final int? mentionUnreadCount;
   final List<AppUser> members;
   final int memberCount;
+  bool get isBusinessChannel => channelType > 2;
 
   Conversation copyWith({
     String? title,
@@ -548,12 +601,16 @@ class Conversation {
     int? mentionUnreadCount,
     List<AppUser>? members,
     int? memberCount,
+    String? channelId,
+    int? channelType,
   }) => Conversation(
     id: id,
     title: title ?? this.title,
     subtitle: subtitle ?? this.subtitle,
     updatedAt: updatedAt ?? this.updatedAt,
     kind: kind,
+    channelId: channelId ?? this.channelId,
+    channelType: channelType ?? this.channelType,
     avatarUrl: avatarUrl ?? this.avatarUrl,
     unread: unread ?? this.unread,
     muted: muted ?? this.muted,

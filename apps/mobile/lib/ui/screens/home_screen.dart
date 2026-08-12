@@ -8,10 +8,13 @@ import '../../core/app_theme.dart';
 import '../../core/models.dart';
 import '../widgets/linli_widgets.dart';
 import 'announcement_screens.dart';
+import 'business_channel_screens.dart';
 import 'chat_screen.dart';
+import 'moments_screen.dart';
 import 'people_screens.dart';
 import 'qr_tools_screen.dart';
 import 'settings_screens.dart';
+import 'sticker_store_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -610,6 +613,33 @@ class _DesktopToolsWorkspace extends StatelessWidget {
           title: '全局搜索',
           subtitle: '搜索联系人、群组和已同步消息',
           onTap: () => _push(context, SearchScreen(controller: controller)),
+        ),
+        _DesktopAction(
+          icon: CupertinoIcons.person_2_fill,
+          title: '朋友圈',
+          subtitle: '发布动态并查看好友互动',
+          onTap: () => _push(context, MomentsScreen(controller: controller)),
+        ),
+        _DesktopAction(
+          icon: CupertinoIcons.smiley_fill,
+          title: '表情商店',
+          subtitle: '浏览、收藏和管理聊天表情',
+          onTap: () =>
+              _push(context, StickerStoreScreen(controller: controller)),
+        ),
+        _DesktopAction(
+          icon: CupertinoIcons.globe,
+          title: '社区与频道',
+          subtitle: '社区、话题、资讯和直播互动',
+          onTap: () =>
+              _push(context, BusinessChannelHubScreen(controller: controller)),
+        ),
+        _DesktopAction(
+          icon: CupertinoIcons.chat_bubble_2_fill,
+          title: '在线客服',
+          subtitle: '咨询、排队与客服工作台',
+          onTap: () =>
+              _push(context, SupportCenterScreen(controller: controller)),
         ),
         _DesktopAction(
           icon: CupertinoIcons.person_badge_plus,
@@ -2202,6 +2232,47 @@ class DiscoverTab extends StatelessWidget {
                 ),
               ),
             ),
+            SettingTile(
+              icon: CupertinoIcons.person_2_fill,
+              title: '朋友圈',
+              subtitle: '发布动态并查看好友互动',
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => MomentsScreen(controller: controller),
+                ),
+              ),
+            ),
+            SettingTile(
+              icon: CupertinoIcons.smiley_fill,
+              title: '表情商店',
+              subtitle: '浏览、收藏和管理聊天表情',
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => StickerStoreScreen(controller: controller),
+                ),
+              ),
+            ),
+            SettingTile(
+              icon: CupertinoIcons.globe,
+              title: '社区与频道',
+              subtitle: '社区、话题、资讯与直播',
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) =>
+                      BusinessChannelHubScreen(controller: controller),
+                ),
+              ),
+            ),
+            SettingTile(
+              icon: CupertinoIcons.chat_bubble_2_fill,
+              title: '在线客服',
+              subtitle: '联系人工客服或进入工作台',
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => SupportCenterScreen(controller: controller),
+                ),
+              ),
+            ),
           ],
         ),
       ],
@@ -2248,15 +2319,13 @@ class MeTab extends StatelessWidget {
                     MaterialPageRoute(
                       builder: (_) => MyQrCodeScreen(controller: controller),
                     ),
-                    ),
-                    icon: const Icon(CupertinoIcons.qrcode),
-                    style: IconButton.styleFrom(
-                      backgroundColor: LinliColors.yellow.withValues(
-                        alpha: .2,
-                      ),
-                      foregroundColor: LinliColors.navy,
-                    ),
                   ),
+                  icon: const Icon(CupertinoIcons.qrcode),
+                  style: IconButton.styleFrom(
+                    backgroundColor: LinliColors.yellow.withValues(alpha: .2),
+                    foregroundColor: LinliColors.navy,
+                  ),
+                ),
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) => EditProfileScreen(controller: controller),
