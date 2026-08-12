@@ -90,3 +90,10 @@ for service in wukongim livekit; do
     exit 1
   fi
 done
+
+for caddyfile in infra/Caddyfile infra/Caddyfile.ip; do
+  if ! grep -Fq '@retired_api path /v1 /v1/*' "$ROOT_DIR/$caddyfile"; then
+    echo "$caddyfile must return an explicit 404 for the retired v1 API" >&2
+    exit 1
+  fi
+done

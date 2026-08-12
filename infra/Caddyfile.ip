@@ -29,6 +29,14 @@
 		}
 	}
 
+	# The retired HTTP/WebSocket transport must fail explicitly at the edge.
+	# Without this matcher the admin SPA fallback returns index.html with 200,
+	# which makes an obsolete client look connected even though no v1 API runs.
+	@retired_api path /v1 /v1/*
+	handle @retired_api {
+		respond `{"error":{"code":"NOT_FOUND","message":"endpoint not found"}}` 404
+	}
+
 	@wukong_ws path /im /im/*
 	handle @wukong_ws {
 		uri strip_prefix /im
