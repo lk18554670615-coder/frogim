@@ -115,6 +115,10 @@ if ! grep -Fq '.imSession.sdk == "wukongimfluttersdk"' "$ROOT_DIR/infra/scripts/
   echo "remote E2E must validate the pinned Flutter SDK identifier" >&2
   exit 1
 fi
+if ! grep -Fq '\"channelId\":\"$user_b\",\"channelType\":1' "$ROOT_DIR/infra/scripts/remote-e2e.sh"; then
+  echo "remote E2E must use the peer UID as the WuKong person-channel id" >&2
+  exit 1
+fi
 if find "$ROOT_DIR/server/migrations" -type f -print -quit 2>/dev/null | grep -q .; then
   echo "retired hand-applied SQL migration chain must remain removed; use the embedded schema" >&2
   exit 1
