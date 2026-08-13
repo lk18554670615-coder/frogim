@@ -114,4 +114,6 @@ fvm flutter build apk --debug
 flutter widget-preview start
 ```
 
-测试覆盖登录退出、四端会话/消息映射、并发 401 单飞续签、WuKong 连接状态、引用消息、媒体上传顺序、图片编辑、小视频、群聊/群通话页面和深浅主题。Windows/Skia 像素基线另覆盖移动登录、会话、群聊、桌面双栏和图片编辑器；基线使用固定消息时间与显式字体加载，只有确认设计变更后才使用 `fvm flutter test test/visual_regression_test.dart --update-goldens` 更新。当前全量共 173 项测试。生产范围与外部验收门槛见 `PRODUCT_SCOPE.md`。
+正式四端构建统一入口见 [Flutter 四端构建入口](../../docs/FLUTTER_BUILD_AUTOMATION.md)。
+
+测试覆盖登录退出、四端会话/消息映射、并发 401 单飞续签、WuKong 连接状态、引用消息、媒体上传顺序、图片编辑、小视频、群聊/群通话页面和深浅主题。Windows/Skia 像素基线另覆盖移动登录、会话、群聊、桌面双栏和图片编辑器；基线使用固定消息时间与显式字体加载，只有确认设计变更后才使用 `fvm flutter test test/visual_regression_test.dart --update-goldens` 更新。当前全量共 199 项测试。生产范围与外部验收门槛见 `PRODUCT_SCOPE.md`。

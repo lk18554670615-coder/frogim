@@ -150,8 +150,8 @@
 | APNs/FCM | 外部依赖 | 真机 token、到达率、失败回收 |
 | HTTPS/WSS | 外部依赖 | 可信证书、TLS、源站限制 |
 | 崩溃与性能监控 | 完成 | schema 48保存30天有界诊断元数据；Flutter捕获错误指纹、启动耗时与WuKong连接失败，只发送白名单字段，不上传错误正文、堆栈、Token或聊天内容。后台展示24小时崩溃/连接/通话计数与性能P95；生产两台Android冷启动回读4个启动样本、P95 68ms、崩溃0且修正后无未认证诊断请求 |
-| 无障碍、深色、200% 字体 | 进行中 | 主流程自动化已覆盖；仍需 iOS/Android/Web 真机逐页验收 |
-| iOS、Android、Web 自动构建 | 进行中 | Analyze、测试、原生构建、Web 构建 |
+| 无障碍、深色、200% 字体 | 完成 | 主流程组件自动化覆盖移动消息、编辑器、桌面双栏、通话失败、消息协作、设置及上下文菜单；2026-08-13按简化回归策略定向8项全部通过，Android正式包双模拟器无布局致命异常 |
+| iOS、Android、Web、macOS 自动构建 | 外部依赖 | Android固定PowerShell入口和Web固定Dockerfile已真实生成正式产物；Apple固定脚本校验macOS、FVM 3.44.8、HTTPS与法务页面并执行Release构建，语法/非macOS拒绝测试通过，实际iOS/macOS构建需要macOS/Xcode运行器 |
 
 ## 对照来源
 
