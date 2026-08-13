@@ -2093,6 +2093,21 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<bool> setGroupMemberMuted(
+    String conversationId,
+    AppUser user,
+    DateTime? until,
+  ) async {
+    try {
+      await repository.setGroupMemberMuted(conversationId, user.id, until);
+      return true;
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '群成员禁言设置失败');
+      notifyListeners();
+      return false;
+    }
+  }
+
   Future<bool> transferGroupOwner(String conversationId, AppUser user) async {
     try {
       await repository.transferGroupOwner(conversationId, user.id);

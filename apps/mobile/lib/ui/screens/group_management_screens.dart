@@ -894,7 +894,11 @@ class _GroupMembersManagementScreenState
     title: Text(
       member.groupNickname.isNotEmpty ? member.groupNickname : member.user.name,
     ),
-    subtitle: Text(_roleLabel(member.role)),
+    subtitle: Text(
+      member.isMuted
+          ? '${_roleLabel(member.role)} · 已禁言'
+          : _roleLabel(member.role),
+    ),
     trailing: _canManage(member)
         ? IconButton(
             tooltip: '管理成员',
@@ -988,6 +992,16 @@ class _GroupMembersManagementScreenState
                 onTap: () => Navigator.pop(context, 'transfer'),
               ),
             ListTile(
+              leading: Icon(
+                member.isMuted
+                    ? CupertinoIcons.speaker_2
+                    : CupertinoIcons.speaker_slash,
+              ),
+              title: Text(member.isMuted ? '解除禁言' : '禁言 1 小时'),
+              onTap: () =>
+                  Navigator.pop(context, member.isMuted ? 'unmute' : 'mute'),
+            ),
+            ListTile(
               leading: const Icon(
                 CupertinoIcons.person_crop_circle_badge_minus,
                 color: LinliColors.systemRed,
@@ -1034,6 +1048,16 @@ class _GroupMembersManagementScreenState
       'remove' => await widget.controller.removeGroupMember(
         widget.conversationId,
         member.user,
+      ),
+      'mute' => await widget.controller.setGroupMemberMuted(
+        widget.conversationId,
+        member.user,
+        DateTime.now().add(const Duration(hours: 1)),
+      ),
+      'unmute' => await widget.controller.setGroupMemberMuted(
+        widget.conversationId,
+        member.user,
+        null,
       ),
       _ => await widget.controller.setGroupRole(
         widget.conversationId,

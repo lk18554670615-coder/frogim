@@ -111,6 +111,11 @@ abstract interface class ImRepository {
   Future<void> joinGroupByQr(String token);
   Future<void> removeGroupMember(String conversationId, String userId);
   Future<void> setGroupRole(String conversationId, String userId, String role);
+  Future<void> setGroupMemberMuted(
+    String conversationId,
+    String userId,
+    DateTime? until,
+  );
   Future<void> transferGroupOwner(String conversationId, String userId);
   Future<void> setGroupNickname(String conversationId, String nickname);
   Future<GroupProfile> setGroupAllMuted(String conversationId, bool muted);

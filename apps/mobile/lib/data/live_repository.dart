@@ -1986,6 +1986,17 @@ class LiveImRepository
   ).then((_) {});
 
   @override
+  Future<void> setGroupMemberMuted(
+    String conversationId,
+    String userId,
+    DateTime? until,
+  ) => _sendRequest(
+    'PUT',
+    '/v2/channels/groups/$conversationId/members/$userId/mute',
+    {'until': until?.toUtc().toIso8601String()},
+  ).then((_) {});
+
+  @override
   Future<void> transferGroupOwner(String conversationId, String userId) =>
       _sendRequest(
         'POST',
@@ -3493,6 +3504,12 @@ class ResilientImRepository
     String userId,
     String role,
   ) => _active.setGroupRole(conversationId, userId, role);
+  @override
+  Future<void> setGroupMemberMuted(
+    String conversationId,
+    String userId,
+    DateTime? until,
+  ) => _active.setGroupMemberMuted(conversationId, userId, until);
   @override
   Future<void> transferGroupOwner(String conversationId, String userId) =>
       _active.transferGroupOwner(conversationId, userId);

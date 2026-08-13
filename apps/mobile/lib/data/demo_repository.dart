@@ -674,10 +674,31 @@ class DemoImRepository implements ImRepository {
         user: old.user,
         role: role,
         joinedAt: old.joinedAt,
+        mutedUntil: old.mutedUntil,
         groupNickname: old.groupNickname,
       );
       _groupMemberState[conversationId] = members;
     }
+  }
+
+  @override
+  Future<void> setGroupMemberMuted(
+    String conversationId,
+    String userId,
+    DateTime? until,
+  ) async {
+    final members = await groupMembers(conversationId);
+    final index = members.indexWhere((member) => member.user.id == userId);
+    if (index < 0) return;
+    final old = members[index];
+    members[index] = GroupMember(
+      user: old.user,
+      role: old.role,
+      joinedAt: old.joinedAt,
+      mutedUntil: until,
+      groupNickname: old.groupNickname,
+    );
+    _groupMemberState[conversationId] = members;
   }
 
   @override

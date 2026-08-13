@@ -782,6 +782,7 @@ class GroupMember {
 
   bool get isOwner => role == 'owner';
   bool get isAdmin => role == 'admin';
+  bool get isMuted => mutedUntil != null && mutedUntil!.isAfter(DateTime.now());
 }
 
 class GroupInvitation {
