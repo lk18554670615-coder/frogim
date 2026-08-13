@@ -247,6 +247,25 @@ class UserSearchCapabilities {
   final bool allowSearchByPhone;
 }
 
+class MessageEditRevision {
+  const MessageEditRevision({
+    required this.messageId,
+    required this.version,
+    required this.editorId,
+    required this.body,
+    required this.editedAt,
+  });
+
+  final String messageId;
+  final int version;
+  final String editorId;
+  final Map<String, Object?> body;
+  final DateTime editedAt;
+
+  String get text => body['text']?.toString() ?? '';
+  bool get isOriginal => version == 0;
+}
+
 class ChatMessage {
   const ChatMessage({
     required this.id,

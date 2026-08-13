@@ -15,6 +15,7 @@ class DemoImRepository implements ImRepository {
   final _connection = StreamController<bool>.broadcast();
   final _events = StreamController<ImEvent>.broadcast();
   final Map<String, List<ChatMessage>> _cachedMessages = {};
+  final Map<String, List<MessageEditRevision>> _messageEditRevisions = {};
   final Map<String, List<ScheduledMessage>> _scheduledMessages = {};
   final Map<String, GroupProfile> _groupProfiles = {};
   final Map<String, List<GroupMember>> _groupMemberState = {};
@@ -847,9 +848,40 @@ class DemoImRepository implements ImRepository {
     await Future<void>.delayed(latency);
     final found = _findMessage(messageId);
     if (found == null) throw StateError('message not found');
-    final edited = found.$2.copyWith(text: text, editedAt: DateTime.now());
+    final now = DateTime.now();
+    final revisions = _messageEditRevisions.putIfAbsent(
+      messageId,
+      () => [
+        MessageEditRevision(
+          messageId: messageId,
+          version: 0,
+          editorId: found.$2.senderId,
+          body: {'text': found.$2.text},
+          editedAt: found.$2.sentAt,
+        ),
+      ],
+    );
+    revisions.add(
+      MessageEditRevision(
+        messageId: messageId,
+        version: revisions.length,
+        editorId: found.$2.senderId,
+        body: {'text': text},
+        editedAt: now,
+      ),
+    );
+    final edited = found.$2.copyWith(text: text, editedAt: now);
     found.$1[found.$3] = edited;
     return edited;
+  }
+
+  @override
+  Future<List<MessageEditRevision>> messageEditHistory(String messageId) async {
+    await Future<void>.delayed(latency);
+    if (_findMessage(messageId) == null) throw StateError('message not found');
+    return List.unmodifiable(
+      _messageEditRevisions[messageId] ?? const <MessageEditRevision>[],
+    );
   }
 
   @override

@@ -1262,6 +1262,21 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<List<MessageEditRevision>?> loadMessageEditHistory(
+    ChatMessage message,
+  ) async {
+    if (message.id.startsWith('local-') || message.editedAt == null) {
+      return const [];
+    }
+    try {
+      return await repository.messageEditHistory(message.id);
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '编辑记录加载失败，请稍后重试');
+      notifyListeners();
+      return null;
+    }
+  }
+
   Future<bool> toggleReaction(ChatMessage message, String emoji) async {
     if (message.id.startsWith('local-') ||
         message.status == MessageStatus.recalled) {

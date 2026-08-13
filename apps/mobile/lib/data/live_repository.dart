@@ -2352,6 +2352,28 @@ class LiveImRepository
   }
 
   @override
+  Future<List<MessageEditRevision>> messageEditHistory(String messageId) async {
+    final data = await _get('/v2/messages/$messageId/edits');
+    return (data['items'] as List<Object?>? ?? const [])
+        .whereType<Map<String, Object?>>()
+        .map((item) {
+          final rawBody = item['body'];
+          return MessageEditRevision(
+            messageId: item['messageId'] as String? ?? messageId,
+            version: (item['version'] as num?)?.toInt() ?? 0,
+            editorId: item['editorId'] as String? ?? '',
+            body: rawBody is Map
+                ? Map<String, Object?>.from(rawBody)
+                : const <String, Object?>{},
+            editedAt:
+                _tryDate(item['editedAt']) ??
+                DateTime.fromMillisecondsSinceEpoch(0),
+          );
+        })
+        .toList(growable: false);
+  }
+
+  @override
   Future<ChatMessage> setMessageReaction(
     String messageId,
     String emoji, {
@@ -3533,6 +3555,9 @@ class ResilientImRepository
   @override
   Future<ChatMessage> editMessage(String messageId, String text) =>
       _active.editMessage(messageId, text);
+  @override
+  Future<List<MessageEditRevision>> messageEditHistory(String messageId) =>
+      _active.messageEditHistory(messageId);
   @override
   Future<ChatMessage> setMessageReaction(
     String messageId,

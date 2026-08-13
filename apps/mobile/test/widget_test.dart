@@ -691,6 +691,48 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('已编辑消息可以查看服务端版本记录', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+    final group = controller.conversations.first;
+    await tester.runAsync(() => controller.loadMessages(group.id));
+    final original = controller
+        .messagesFor(group.id)
+        .firstWhere(
+          (message) =>
+              message.isMine && message.kind == MessageContentKind.reply,
+        );
+    expect(
+      await tester.runAsync(() => controller.editMessage(original, '二次编辑后的内容')),
+      isTrue,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: ChatScreen(controller: controller, conversation: group),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.longPress(find.text('二次编辑后的内容'));
+    await tester.pumpAndSettle();
+    expect(find.text('编辑记录'), findsOneWidget);
+
+    await tester.tap(find.text('编辑记录'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('message-edit-history-list')), findsOneWidget);
+    expect(find.text('原始内容'), findsOneWidget);
+    expect(find.text('很不错，刚把新版本的体验走了一遍。'), findsOneWidget);
+    expect(find.text('第 1 次编辑'), findsOneWidget);
+    expect(find.text('二次编辑后的内容'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('消息首页支持深色与 200% 动态字体且无布局异常', (tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;

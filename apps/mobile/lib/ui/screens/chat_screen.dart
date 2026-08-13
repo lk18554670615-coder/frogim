@@ -1418,6 +1418,8 @@ class _ChatScreenState extends State<ChatScreen> {
         await _showReactionPicker(message);
       case _MessageMenuAction.edit:
         await _editMessage(message);
+      case _MessageMenuAction.editHistory:
+        await _showMessageEditHistory(message);
       case _MessageMenuAction.copy:
         await Clipboard.setData(ClipboardData(text: message.text));
       case _MessageMenuAction.forward:
@@ -1456,6 +1458,20 @@ class _ChatScreenState extends State<ChatScreen> {
         );
     }
   }
+
+  Future<void> _showMessageEditHistory(ChatMessage message) =>
+      showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        showDragHandle: false,
+        builder: (sheetContext) => FractionallySizedBox(
+          heightFactor: .72,
+          child: _MessageEditHistorySheet(
+            controller: widget.controller,
+            message: message,
+          ),
+        ),
+      );
 
   Future<void> _openChatInfo() async {
     unawaited(HapticFeedback.lightImpact());
@@ -1641,6 +1657,7 @@ enum _MessageMenuAction {
   reply,
   react,
   edit,
+  editHistory,
   copy,
   forward,
   favorite,
@@ -1684,6 +1701,8 @@ class _MessageContextMenu extends StatelessWidget {
         !message.id.startsWith('local-') &&
         message.status != MessageStatus.recalled &&
         canCopy;
+    final canViewEditHistory =
+        message.editedAt != null && !message.id.startsWith('local-');
     final primary = <_ContextActionSpec>[
       const _ContextActionSpec(
         action: _MessageMenuAction.reply,
@@ -1700,6 +1719,12 @@ class _MessageContextMenu extends StatelessWidget {
           action: _MessageMenuAction.edit,
           icon: CupertinoIcons.pencil,
           label: '编辑',
+        ),
+      if (canViewEditHistory)
+        const _ContextActionSpec(
+          action: _MessageMenuAction.editHistory,
+          icon: CupertinoIcons.time,
+          label: '编辑记录',
         ),
       if (canCopy)
         const _ContextActionSpec(
@@ -1820,6 +1845,157 @@ class _MessageContextMenu extends StatelessWidget {
       ),
     );
   }
+}
+
+class _MessageEditHistorySheet extends StatefulWidget {
+  const _MessageEditHistorySheet({
+    required this.controller,
+    required this.message,
+  });
+
+  final AppController controller;
+  final ChatMessage message;
+
+  @override
+  State<_MessageEditHistorySheet> createState() =>
+      _MessageEditHistorySheetState();
+}
+
+class _MessageEditHistorySheetState extends State<_MessageEditHistorySheet> {
+  late Future<List<MessageEditRevision>?> revisions;
+
+  @override
+  void initState() {
+    super.initState();
+    revisions = widget.controller.loadMessageEditHistory(widget.message);
+  }
+
+  void _retry() {
+    setState(() {
+      revisions = widget.controller.loadMessageEditHistory(widget.message);
+    });
+  }
+
+  String _time(DateTime value) {
+    final local = value.toLocal();
+    String two(int number) => number.toString().padLeft(2, '0');
+    return '${local.year}-${two(local.month)}-${two(local.day)} '
+        '${two(local.hour)}:${two(local.minute)}';
+  }
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    child: Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 14, 12, 10),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '编辑记录',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              ),
+              IconButton(
+                tooltip: '关闭',
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(CupertinoIcons.xmark_circle_fill),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: FutureBuilder<List<MessageEditRevision>?>(
+            future: revisions,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return const Center(
+                  child: CircularProgressIndicator(
+                    key: Key('message-edit-history-loading'),
+                  ),
+                );
+              }
+              final items = snapshot.data;
+              if (items == null) {
+                return Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('编辑记录加载失败'),
+                      const SizedBox(height: 10),
+                      OutlinedButton(
+                        key: const Key('retry-message-edit-history'),
+                        onPressed: _retry,
+                        child: const Text('重新加载'),
+                      ),
+                    ],
+                  ),
+                );
+              }
+              if (items.isEmpty) {
+                return const Center(child: Text('暂无编辑记录'));
+              }
+              return ListView.separated(
+                key: const Key('message-edit-history-list'),
+                padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
+                itemCount: items.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 12),
+                itemBuilder: (context, index) {
+                  final revision = items[index];
+                  final title = revision.isOriginal
+                      ? '原始内容'
+                      : '第 ${revision.version} 次编辑';
+                  return Semantics(
+                    label:
+                        '$title，${revision.text}，${_time(revision.editedAt)}',
+                    child: Container(
+                      key: Key('message-edit-revision-${revision.version}'),
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.surfaceContainerLow,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  title,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                _time(revision.editedAt),
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          SelectableText(
+                            revision.text.isEmpty ? '[非文本内容]' : revision.text,
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 class _MessageContextPreview extends StatelessWidget {

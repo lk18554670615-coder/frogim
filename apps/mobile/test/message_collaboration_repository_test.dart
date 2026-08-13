@@ -76,7 +76,7 @@ void main() {
     await repository.close();
   });
 
-  test('编辑和回应以服务端返回消息作为唯一成功状态', () async {
+  test('编辑、编辑记录和回应以服务端返回状态为准', () async {
     final requests = <http.Request>[];
     final repository = _repository(
       MockClient((request) async {
@@ -90,6 +90,28 @@ void main() {
                 body: {'text': '修改后的消息'},
                 editedAt: '2026-08-01T08:30:00Z',
               ),
+            },
+          });
+        }
+        if (request.url.path == '/v2/messages/message-1/edits') {
+          return _jsonResponse({
+            'data': {
+              'items': [
+                {
+                  'messageId': 'message-1',
+                  'version': 0,
+                  'editorId': 'user-1',
+                  'body': {'text': '原始消息'},
+                  'editedAt': '2026-08-01T08:00:00Z',
+                },
+                {
+                  'messageId': 'message-1',
+                  'version': 1,
+                  'editorId': 'user-1',
+                  'body': {'text': '修改后的消息'},
+                  'editedAt': '2026-08-01T08:30:00Z',
+                },
+              ],
             },
           });
         }
@@ -129,6 +151,7 @@ void main() {
       '👍',
       active: false,
     );
+    final history = await repository.messageEditHistory('message-1');
 
     expect(requests[0].method, 'PATCH');
     expect(jsonDecode(requests[0].body), {'text': '修改后的消息'});
@@ -138,6 +161,12 @@ void main() {
     expect(added.reactions.single.reactedByMe, isTrue);
     expect(added.reactions.single.count, 2);
     expect(removed.reactions.single.reactedByMe, isFalse);
+    expect(requests[3].method, 'GET');
+    expect(requests[3].url.path, '/v2/messages/message-1/edits');
+    expect(history.map((item) => item.version), [0, 1]);
+    expect(history.first.isOriginal, isTrue);
+    expect(history.last.text, '修改后的消息');
+    expect(history.last.editedAt, DateTime.parse('2026-08-01T08:30:00Z'));
     await repository.close();
   });
 

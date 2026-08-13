@@ -129,6 +129,7 @@ abstract interface class ImRepository {
     void Function(double progress)? onProgress,
   });
   Future<ChatMessage> editMessage(String messageId, String text);
+  Future<List<MessageEditRevision>> messageEditHistory(String messageId);
   Future<ChatMessage> setMessageReaction(
     String messageId,
     String emoji, {
