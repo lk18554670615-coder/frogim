@@ -117,7 +117,7 @@
 | 会话/聊天双栏 | 完成 | 840px 以上保持会话列表并在右侧打开聊天 |
 | 桌面拖放和粘贴文件 | 完成 | 拖放/剪贴板读取、最多 10 个、大小与类型校验、真实分块上传进度和失败重试 |
 | 网页打开期间浏览器通知和多标签同步 | 完成 | Notification 权限、BroadcastChannel 标签同步、竞选与 24 小时重复通知抑制 |
-| 浏览器关闭后的后台 Web Push | 外部依赖 | 需要 VAPID、Push Subscription、服务端推送和专用 Service Worker；当前不伪装支持 |
+| 浏览器关闭后的后台 Web Push | 外部依赖 | 提交`59b49d2`已实现并部署VAPID公开配置、严格订阅校验、耐久队列加密投递、404/410自动停用、窄作用域Service Worker和点击回会话；生产VAPID已启用，Worker返回`no-store`及正确作用域头，Go定向测试、Flutter分析/组件测试、Web Release和Wasm dry-run通过。当前受控Edge环境不暴露Notification/ServiceWorker API，最终仅待普通浏览器由用户授予通知权限后完成“关闭网页→到达→点击回会话”验收 |
 | 音视频 LiveKit | 外部依赖 | Flutter LiveKit SDK 负责采集、音视频、屏幕共享、活动发言人和重连；真实房间、双方短期Token和清理探针已通过，Android 15双模拟器进一步通过公网UDP媒体、MediaProjection整屏共享、9秒断网后恢复及后台/安全锁屏接听，剩余验收仅需Android/iOS实体真机权限、推送杀进程和iOS媒体环境 |
 
 ## 管理端
