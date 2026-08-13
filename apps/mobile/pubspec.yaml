@@ -129,12 +129,16 @@ flutter:
     - assets/brand/
     - assets/avatars/
     - assets/fonts/OFL.txt
+    - assets/fonts/NotoColorEmoji-OFL.txt
     - assets/fonts/THIRD_PARTY.md
 
   fonts:
     - family: NotoSansSC
       fonts:
         - asset: assets/fonts/NotoSansSC-Regular.otf
+    - family: NotoColorEmoji
+      fonts:
+        - asset: assets/fonts/NotoColorEmoji.ttf
 
   # To add assets to your application, add an assets section, like this:
   # assets:

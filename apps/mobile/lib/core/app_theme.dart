@@ -58,6 +58,7 @@ ThemeData buildLinliTheme(Brightness brightness, {String? fontFamily}) {
   final baseText = TextStyle(
     fontFamily: fontFamily ?? (kIsWeb ? 'NotoSansSC' : null),
     fontFamilyFallback: [
+      if (kIsWeb) 'NotoColorEmoji',
       'PingFang SC',
       'Microsoft YaHei',
       'Noto Sans CJK SC',
