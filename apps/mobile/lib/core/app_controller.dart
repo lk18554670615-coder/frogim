@@ -870,6 +870,53 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<bool> updateScheduledMessage(
+    ScheduledMessage message, {
+    required String text,
+    required DateTime scheduledAt,
+  }) async {
+    final normalized = text.trim();
+    if (normalized.isEmpty) {
+      scheduledMessageErrors[message.conversationId] = '定时消息内容不能为空';
+      notifyListeners();
+      return false;
+    }
+    if (!scheduledAt.isAfter(DateTime.now().add(const Duration(seconds: 20)))) {
+      scheduledMessageErrors[message.conversationId] = '定时发送时间至少晚于当前时间 20 秒';
+      notifyListeners();
+      return false;
+    }
+    try {
+      final updated = await repository.updateScheduledMessage(
+        message.id,
+        text: normalized,
+        scheduledAt: scheduledAt,
+        expiresInSeconds: message.expiresInSeconds,
+      );
+      final list = _scheduledMessages.putIfAbsent(
+        message.conversationId,
+        () => [],
+      );
+      final index = list.indexWhere((item) => item.id == message.id);
+      if (index < 0) {
+        list.add(updated);
+      } else {
+        list[index] = updated;
+      }
+      list.sort((a, b) => a.scheduledAt.compareTo(b.scheduledAt));
+      scheduledMessageErrors.remove(message.conversationId);
+      notifyListeners();
+      return true;
+    } catch (exception) {
+      scheduledMessageErrors[message.conversationId] = _messageFor(
+        exception,
+        fallback: '定时消息修改失败，请检查网络后重试',
+      );
+      notifyListeners();
+      return false;
+    }
+  }
+
   Future<bool> retryScheduledMessage(ScheduledMessage message) async {
     if (!message.canRetry) return false;
     final created = await scheduleMessage(

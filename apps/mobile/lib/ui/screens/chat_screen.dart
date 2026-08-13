@@ -4240,6 +4240,13 @@ class _ScheduledMessagesSheet extends StatelessWidget {
                                   icon: const Icon(CupertinoIcons.refresh),
                                 ),
                               IconButton(
+                                key: Key('edit-scheduled-${item.id}'),
+                                tooltip: '修改定时消息',
+                                onPressed: () =>
+                                    _editScheduledMessage(context, item),
+                                icon: const Icon(CupertinoIcons.pencil),
+                              ),
+                              IconButton(
                                 key: Key('cancel-scheduled-${item.id}'),
                                 tooltip: '取消定时消息',
                                 onPressed: () =>
@@ -4261,8 +4268,140 @@ class _ScheduledMessagesSheet extends StatelessWidget {
     ),
   );
 
+  Future<void> _editScheduledMessage(
+    BuildContext context,
+    ScheduledMessage message,
+  ) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final minimumDate = DateTime.now().add(const Duration(minutes: 1));
+    final initialDate = message.scheduledAt.isAfter(minimumDate)
+        ? message.scheduledAt
+        : DateTime.now().add(const Duration(minutes: 10));
+    final result =
+        await showModalBottomSheet<({String text, DateTime scheduledAt})>(
+          context: context,
+          useSafeArea: true,
+          isScrollControlled: true,
+          builder: (_) => _ScheduledMessageEditor(
+            message: message,
+            minimumDate: minimumDate,
+            initialDate: initialDate,
+          ),
+        );
+    if (result == null) return;
+    final success = await controller.updateScheduledMessage(
+      message,
+      text: result.text,
+      scheduledAt: result.scheduledAt,
+    );
+    if (!success) {
+      messenger?.showSnackBar(
+        SnackBar(
+          content: Text(
+            controller.scheduledMessageErrors[conversationId] ?? '定时消息修改失败',
+          ),
+        ),
+      );
+      return;
+    }
+    messenger?.showSnackBar(const SnackBar(content: Text('定时消息已更新')));
+  }
+
   static String _scheduledTime(DateTime date) =>
       '${date.month}月${date.day}日 ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')} 发送';
+}
+
+class _ScheduledMessageEditor extends StatefulWidget {
+  const _ScheduledMessageEditor({
+    required this.message,
+    required this.minimumDate,
+    required this.initialDate,
+  });
+
+  final ScheduledMessage message;
+  final DateTime minimumDate;
+  final DateTime initialDate;
+
+  @override
+  State<_ScheduledMessageEditor> createState() =>
+      _ScheduledMessageEditorState();
+}
+
+class _ScheduledMessageEditorState extends State<_ScheduledMessageEditor> {
+  late final TextEditingController textController;
+  late DateTime selected;
+
+  @override
+  void initState() {
+    super.initState();
+    textController = TextEditingController(text: widget.message.text);
+    selected = widget.initialDate;
+  }
+
+  @override
+  void dispose() {
+    textController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+    child: LayoutBuilder(
+      builder: (context, constraints) => SizedBox(
+        height: constraints.maxHeight > 460 ? 460 : constraints.maxHeight,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 12, 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '修改定时消息',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                  ),
+                  TextButton(
+                    key: Key('confirm-edit-scheduled-${widget.message.id}'),
+                    onPressed: () => Navigator.pop(context, (
+                      text: textController.text,
+                      scheduledAt: selected,
+                    )),
+                    child: const Text('保存'),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+              child: TextField(
+                key: Key('edit-scheduled-text-${widget.message.id}'),
+                controller: textController,
+                autofocus: true,
+                maxLength: 8000,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  labelText: '消息内容',
+                  hintText: '输入定时发送的内容',
+                ),
+              ),
+            ),
+            Expanded(
+              child: CupertinoDatePicker(
+                key: Key('edit-scheduled-time-${widget.message.id}'),
+                mode: CupertinoDatePickerMode.dateAndTime,
+                minimumDate: widget.minimumDate,
+                initialDateTime: selected,
+                use24hFormat: true,
+                onDateTimeChanged: (value) => selected = value,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }
 
 String? businessChannelSendRestriction(BusinessChannelSummary channel) {

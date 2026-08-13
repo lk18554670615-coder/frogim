@@ -60,7 +60,8 @@ void main() {
       }
       if (request.url.path == '/v2/channels/conversations/c1/preferences' ||
           request.url.path == '/v2/channels/conversations/c1/delivered' ||
-          request.url.path == '/v2/messages/scheduled/scheduled-1') {
+          (request.url.path == '/v2/messages/scheduled/scheduled-1' &&
+              request.method == 'DELETE')) {
         return http.Response('', 204);
       }
       if (request.url.path == '/v2/messages/scheduled' &&
@@ -73,6 +74,19 @@ void main() {
       }
       if (request.url.path == '/v2/messages/scheduled' &&
           request.method == 'POST') {
+        final body = jsonDecode(request.body) as Map<String, Object?>;
+        return _json({
+          'data': {
+            'scheduledMessage': {
+              ..._scheduledJson(DateTime.parse(body['scheduledAt']! as String)),
+              'body': body['body'],
+              'expiresInSeconds': body['expiresInSeconds'],
+            },
+          },
+        });
+      }
+      if (request.url.path == '/v2/messages/scheduled/scheduled-1' &&
+          request.method == 'PATCH') {
         final body = jsonDecode(request.body) as Map<String, Object?>;
         return _json({
           'data': {
@@ -138,6 +152,13 @@ void main() {
       scheduledAt,
       expiresInSeconds: 3600,
     );
+    final updatedAt = scheduledAt.add(const Duration(hours: 1));
+    final updated = await repository.updateScheduledMessage(
+      created.id,
+      text: '修改后的提醒',
+      scheduledAt: updatedAt,
+      expiresInSeconds: 3600,
+    );
     await repository.cancelScheduledMessage(created.id);
     final preview = await repository.linkPreview('https://example.com/a');
     await repository.send(
@@ -155,6 +176,8 @@ void main() {
     );
 
     expect(scheduled.single.id, 'scheduled-1');
+    expect(updated.text, '修改后的提醒');
+    expect(updated.scheduledAt, updatedAt);
     expect(preview?.title, '服务端标题');
     final archiveRequest = requests.singleWhere(
       (request) => request.url.path.endsWith('/preferences'),
@@ -178,6 +201,16 @@ void main() {
       jsonDecode(createRequest.body),
       containsPair('conversationId', 'c1'),
     );
+    final updateRequest = requests.singleWhere(
+      (request) =>
+          request.url.path == '/v2/messages/scheduled/scheduled-1' &&
+          request.method == 'PATCH',
+    );
+    expect(jsonDecode(updateRequest.body), {
+      'body': {'text': '修改后的提醒'},
+      'scheduledAt': updatedAt.toUtc().toIso8601String(),
+      'expiresInSeconds': 3600,
+    });
     final listRequest = requests.singleWhere(
       (request) =>
           request.url.path == '/v2/messages/scheduled' &&
@@ -591,6 +624,25 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('晚上提醒我提交评审'), findsOneWidget);
     final item = controller.scheduledMessagesFor(conversation.id).single;
+    final edit = find.byKey(Key('edit-scheduled-${item.id}'));
+    expect(tester.getSize(edit).height, greaterThanOrEqualTo(44));
+    await tester.tap(edit);
+    await tester.pumpAndSettle();
+    expect(find.text('修改定时消息'), findsOneWidget);
+    await tester.enterText(
+      find.byKey(Key('edit-scheduled-text-${item.id}')),
+      '修改后的定时提醒',
+    );
+    tester.testTextInput.hide();
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.tap(find.byKey(Key('confirm-edit-scheduled-${item.id}')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 800));
+    expect(
+      controller.scheduledMessagesFor(conversation.id).single.text,
+      '修改后的定时提醒',
+    );
+    expect(find.text('修改后的定时提醒'), findsOneWidget);
     final cancel = find.byKey(Key('cancel-scheduled-${item.id}'));
     expect(tester.getSize(cancel).height, greaterThanOrEqualTo(44));
   });

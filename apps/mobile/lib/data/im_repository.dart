@@ -172,6 +172,12 @@ abstract interface class ImRepository {
     String? replyToId,
     int? expiresInSeconds,
   });
+  Future<ScheduledMessage> updateScheduledMessage(
+    String scheduledMessageId, {
+    required String text,
+    required DateTime scheduledAt,
+    int? expiresInSeconds,
+  });
   Future<void> cancelScheduledMessage(String scheduledMessageId);
   Future<LinkPreview?> linkPreview(String url);
   Future<void> hideConversation(String conversationId);

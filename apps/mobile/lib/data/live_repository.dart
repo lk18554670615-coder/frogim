@@ -2693,10 +2693,32 @@ class LiveImRepository
   }
 
   @override
+  Future<ScheduledMessage> updateScheduledMessage(
+    String scheduledMessageId, {
+    required String text,
+    required DateTime scheduledAt,
+    int? expiresInSeconds,
+  }) async {
+    final data = await _sendRequest(
+      'PATCH',
+      '/v2/messages/scheduled/${Uri.encodeComponent(scheduledMessageId)}',
+      {
+        'body': {'text': text},
+        'scheduledAt': scheduledAt.toUtc().toIso8601String(),
+        'expiresInSeconds': ?expiresInSeconds,
+      },
+    );
+    final raw = data['scheduledMessage'] is Map<String, Object?>
+        ? data['scheduledMessage']! as Map<String, Object?>
+        : data;
+    return ScheduledMessage.fromJson(raw);
+  }
+
+  @override
   Future<void> cancelScheduledMessage(String scheduledMessageId) =>
       _sendRequest(
         'DELETE',
-        '/v2/messages/scheduled/$scheduledMessageId',
+        '/v2/messages/scheduled/${Uri.encodeComponent(scheduledMessageId)}',
       ).then((_) {});
 
   @override
@@ -3649,6 +3671,18 @@ class ResilientImRepository
     text,
     scheduledAt,
     replyToId: replyToId,
+    expiresInSeconds: expiresInSeconds,
+  );
+  @override
+  Future<ScheduledMessage> updateScheduledMessage(
+    String scheduledMessageId, {
+    required String text,
+    required DateTime scheduledAt,
+    int? expiresInSeconds,
+  }) => _active.updateScheduledMessage(
+    scheduledMessageId,
+    text: text,
+    scheduledAt: scheduledAt,
     expiresInSeconds: expiresInSeconds,
   );
   @override

@@ -1167,6 +1167,38 @@ class DemoImRepository implements ImRepository {
   }
 
   @override
+  Future<ScheduledMessage> updateScheduledMessage(
+    String scheduledMessageId, {
+    required String text,
+    required DateTime scheduledAt,
+    int? expiresInSeconds,
+  }) async {
+    await Future<void>.delayed(latency);
+    if (scheduledAt.isBefore(DateTime.now())) {
+      throw const FormatException('发送时间必须晚于当前时间');
+    }
+    for (final entry in _scheduledMessages.entries) {
+      final index = entry.value.indexWhere(
+        (item) => item.id == scheduledMessageId,
+      );
+      if (index < 0) continue;
+      final current = entry.value[index];
+      final updated = ScheduledMessage(
+        id: current.id,
+        conversationId: current.conversationId,
+        text: text,
+        scheduledAt: scheduledAt,
+        status: current.status,
+        expiresInSeconds: expiresInSeconds ?? current.expiresInSeconds,
+        errorMessage: current.errorMessage,
+      );
+      entry.value[index] = updated;
+      return updated;
+    }
+    throw StateError('scheduled message not found');
+  }
+
+  @override
   Future<void> cancelScheduledMessage(String scheduledMessageId) async {
     await Future<void>.delayed(latency);
     for (final items in _scheduledMessages.values) {
