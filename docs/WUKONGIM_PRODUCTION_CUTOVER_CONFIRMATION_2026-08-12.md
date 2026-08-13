@@ -1,5 +1,7 @@
 # WuKongIM 正式切换确认单（2026-08-12）
 
+> 最新复核（2026-08-13）：服务器源码指针已更新为提交 `7e68f33e5c1dcbce3626582b5dc4869341033fa2`；Go 与 Flutter Web 运行提交 `59b49d25358a64f2ac6b73a2272741720c6c61e6` 镜像，管理后台继续运行已验收的 `08d160dfd6553a6bec6d8858e33629ed2fe7f6c2` 镜像，全部容器健康。Web Push 的 VAPID、耐久投递和 Service Worker 已上线，但普通浏览器尚未由用户手势授予通知权限，设备表也尚无原生推送注册。运行栈仍按开发阶段要求使用 `IM_PUSH_PROVIDER=log`；服务器配置没有个推或 APNs VoIP 凭据。`/legal/terms` 与 `/legal/privacy` 均返回 200，但正文明确限定为开发测试说明，不能代替运营主体/法务正式文本。异地备份实现和恢复门禁已完成，实际 `BACKUP_OFFSITE_ENABLED=false`，仍需外部 S3 目标。当前 Windows 环境没有 Xcode、iOS/macOS 目标设备或 Android 实体真机，因此这些目标端与杀进程推送验收不能由本机自动化代替。用户已明确暂缓 1 TiB 磁盘门槛、正式数据清空确认和额外安全加固，这三项不再作为本开发阶段替换的阻断项。
+
 > 执行状态（2026-08-12 18:30 CST）：用户已明确授权开发阶段完全替换旧项目，本确认单中的旧栈清理与新栈部署已经执行。服务器源码发布目录已更新到提交 `908f5d6`，运行时另已应用并验证 `30e8b0d` 的旧 `/v1/*` 边缘404规则；Compose 项目仍名为 `nexachat-ip`（仅为兼容既有运维路径），但运行内容已经全部替换为 WuKongIM、LiveKit、Go 业务服务、Flutter Web、React 后台、PostgreSQL、Redis、MinIO、Prometheus 和网关。旧 Coturn、旧容器、旧镜像、旧发布目录和旧运行数据目录均已删除，不再存在双栈或回退流量。
 >
 > 最终旧栈备份位于 `/data/linli-im/backups/pre-wukong-cutover-20260812T072345Z`，SHA-256 全量校验通过，隔离恢复与源数据计数一致。新栈备份位于 `/data/linli-im/backups/20260812T080118Z`，隔离恢复得到 63 张表、7 张关键表、schema 45、342 项约束和 155 个 WuKong 文件。以下“切换前事实”与操作清单保留作审计记录，不再描述当前运行状态。
