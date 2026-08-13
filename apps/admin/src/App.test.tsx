@@ -38,6 +38,16 @@ describe('邻里通讯管理后台', () => {
     expect(await screen.findByText('江宁')).toBeInTheDocument();
   });
 
+  it('消息治理可以筛选全部内置和自定义消息类型', () => {
+    window.history.replaceState({}, '', '/messages');
+    render(<App />);
+    const typeFilter = screen.getByLabelText('消息类型');
+    expect(within(typeFilter).getAllByRole('option').map((option) => option.textContent)).toEqual([
+      '全部类型', '文本', '图片 / GIF', '语音', '视频', '位置', '名片', '文件', '合并聊天记录',
+      '系统事件', '商店表情', '朋友圈分享', '通话事件', '直播互动', '客服事件', '截屏提示',
+    ]);
+  });
+
   it('兼容服务端扁平 dashboard 响应', async () => {
     localStorage.setItem('nexachat_data_mode', 'live');
     sessionStorage.setItem('nexachat_admin_session', JSON.stringify(session));

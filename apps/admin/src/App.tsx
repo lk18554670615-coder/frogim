@@ -337,13 +337,21 @@ function messageLifecycle(message: MessageRecord) {
   return { value: 'active', label: '有效', detail: `序号 ${message.conversationSeq}` };
 }
 
+const messageTypeLabels: Record<string, string> = {
+  text: '文本', image: '图片 / GIF', audio: '语音', video: '视频', location: '位置', contact: '名片', file: '文件',
+  chat_history: '合并聊天记录', system: '系统事件', sticker: '商店表情', moment: '朋友圈分享', call: '通话事件',
+  live: '直播互动', support: '客服事件', screenshot: '截屏提示', custom: '其他自定义消息',
+};
+
+const messageTypeOptions = Object.entries(messageTypeLabels).filter(([value]) => value !== 'custom');
+
 function MessagesPage() {
   const { api, mode } = useApi(); const [query, setQuery] = useState(''), deferredQuery = useDebouncedValue(query); const [type, setType] = useState(''), [page, setPage] = useState(1); const [cursors, setCursors] = useState<Record<number, string>>({ 1: '' });
   useEffect(() => { setPage(1); setCursors({ 1: '' }); }, [deferredQuery, type]);
   const state = useResource(() => api.getMessages(deferredQuery, type, page, 20, cursors[page] ?? ''), [api, mode, deferredQuery, type, page, cursors]);
   const paginate = (nextPage: number) => { if (nextPage > page && state.data?.nextCursor) setCursors((current) => ({ ...current, [nextPage]: state.data?.nextCursor ?? '' })); setPage(nextPage); };
-  return <><PageHeader title="消息治理索引" description="依法治理仅检索消息元数据；私聊正文不会在后台任意展示或搜索，内容处置必须从举报证据链进入。" /><Toolbar query={query} setQuery={setQuery} placeholder="搜索消息 ID、会话 ID、发送人或客户端消息 ID"><select className="select-control" aria-label="消息类型" value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option><option value="text">文本</option><option value="image">图片</option><option value="audio">语音</option><option value="video">视频</option><option value="file">文件</option></select></Toolbar>
-    <DataPanel loading={state.loading} error={state.error} retry={state.reload} empty={!state.data?.items.length} emptyTitle="没有匹配的消息元数据" emptyDetail="调整消息 ID、会话、发送人或类型后重试。"><div className="table-wrap"><table><thead><tr><th>时间</th><th>类型</th><th>消息标识</th><th>发送人</th><th>会话 / 序号</th><th>生命周期</th></tr></thead><tbody>{state.data?.items.map((message: MessageRecord) => { const lifecycle = messageLifecycle(message); return <tr key={message.id}><td>{message.createdAt}</td><td>{message.type}</td><td><div><strong>内容受保护</strong><small className="mono">{message.id}</small><small className="mono">{message.clientMsgId || '无客户端标识'}</small></div></td><td className="mono">{message.senderId}</td><td><div><strong className="mono">{message.conversationId}</strong><small>序号 {message.conversationSeq}</small></div></td><td><Badge value={lifecycle.value} label={lifecycle.label} /><small>{lifecycle.detail}</small></td></tr>; })}</tbody></table></div><Pagination data={state.data} onPage={paginate} /></DataPanel>
+  return <><PageHeader title="消息治理索引" description="依法治理仅检索消息元数据；私聊正文不会在后台任意展示或搜索，内容处置必须从举报证据链进入。" /><Toolbar query={query} setQuery={setQuery} placeholder="搜索消息 ID、会话 ID、发送人或客户端消息 ID"><select className="select-control" aria-label="消息类型" value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option>{messageTypeOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Toolbar>
+    <DataPanel loading={state.loading} error={state.error} retry={state.reload} empty={!state.data?.items.length} emptyTitle="没有匹配的消息元数据" emptyDetail="调整消息 ID、会话、发送人或类型后重试。"><div className="table-wrap"><table><thead><tr><th>时间</th><th>类型</th><th>消息标识</th><th>发送人</th><th>会话 / 序号</th><th>生命周期</th></tr></thead><tbody>{state.data?.items.map((message: MessageRecord) => { const lifecycle = messageLifecycle(message); return <tr key={message.id}><td>{message.createdAt}</td><td>{messageTypeLabels[message.type] ?? messageTypeLabels.custom}</td><td><div><strong>内容受保护</strong><small className="mono">{message.id}</small><small className="mono">{message.clientMsgId || '无客户端标识'}</small></div></td><td className="mono">{message.senderId}</td><td><div><strong className="mono">{message.conversationId}</strong><small>序号 {message.conversationSeq}</small></div></td><td><Badge value={lifecycle.value} label={lifecycle.label} /><small>{lifecycle.detail}</small></td></tr>; })}</tbody></table></div><Pagination data={state.data} onPage={paginate} /></DataPanel>
   </>;
 }
 
