@@ -155,11 +155,17 @@ export type AnnouncementInput = Pick<AnnouncementRecord, 'title' | 'content' | '
 export interface CallRecord {
   id: string;
   conversationId: string;
+  kind: 'direct' | 'group';
   callerId: string;
   calleeId: string;
+  participantIds: string[];
+  joinedUserIds: string[];
+  declinedUserIds: string[];
+  leftUserIds: string[];
   mediaType: 'audio' | 'video';
   status: string;
   endReason: string;
+  endedBy: string;
   invitedAt: string;
   acceptedAt?: string;
   endedAt?: string;

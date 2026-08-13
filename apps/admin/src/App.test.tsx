@@ -258,6 +258,26 @@ describe('邻里通讯管理后台', () => {
     expect(JSON.parse(String(write?.[1]?.body))).toEqual(expect.objectContaining({ reason: '发布单 REL-1024', confirmed: true }));
   });
 
+  it('群通话记录展示完整参与状态和友好失败原因', async () => {
+    localStorage.setItem('nexachat_data_mode', 'live');
+    sessionStorage.setItem('nexachat_admin_session', JSON.stringify(session));
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, status: 200, headers: new Headers(),
+      json: async () => ({ items: [{
+        id: 'call_group_1', conversationId: 'group_1', kind: 'group', callerId: 'u_1', participantIds: ['u_1', 'u_2', 'u_3'],
+        joinedUserIds: ['u_1', 'u_2'], declinedUserIds: ['u_3'], leftUserIds: ['u_2'], mediaType: 'video', status: 'ended',
+        endReason: 'media_failed', endedBy: 'u_2', invitedAt: '2026-08-13T00:00:00Z', durationSeconds: 12,
+      }], total: 1 }),
+    })));
+    window.history.replaceState({}, '', '/calls');
+    render(<App />);
+    expect(await screen.findByText('3 人群通话')).toBeInTheDocument();
+    expect(screen.getByText('u_1、u_2、u_3')).toBeInTheDocument();
+    expect(screen.getByText('已加入 2 · 已拒绝 1 · 已离开 1')).toBeInTheDocument();
+    expect(screen.getByText('媒体连接失败')).toBeInTheDocument();
+    expect(screen.getByText('结束人 u_2')).toBeInTheDocument();
+  });
+
   it('统一展示 WuKongIM 节点并可切换到 LiveKit 房间', async () => {
     window.history.replaceState({}, '', '/im-infrastructure');
     render(<App />);

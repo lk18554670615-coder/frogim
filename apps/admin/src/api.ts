@@ -422,9 +422,13 @@ function adaptAnnouncement(value: unknown): AnnouncementRecord {
 
 function adaptCall(value: unknown): CallRecord {
   const raw = object(value);
+  const userIds = (value: unknown) => list(value).filter((id): id is string => typeof id === 'string' && Boolean(id));
   return {
-    id: string(raw.id), conversationId: string(raw.conversationId), callerId: string(raw.callerId), calleeId: string(raw.calleeId),
+    id: string(raw.id), conversationId: string(raw.conversationId), kind: raw.kind === 'group' ? 'group' : 'direct',
+    callerId: string(raw.callerId), calleeId: string(raw.calleeId), participantIds: userIds(raw.participantIds),
+    joinedUserIds: userIds(raw.joinedUserIds), declinedUserIds: userIds(raw.declinedUserIds), leftUserIds: userIds(raw.leftUserIds),
     mediaType: raw.mediaType === 'video' ? 'video' : 'audio', status: string(raw.status, 'unknown'), endReason: string(raw.endReason),
+    endedBy: string(raw.endedBy),
     invitedAt: string(raw.invitedAt), acceptedAt: string(raw.acceptedAt) || undefined, endedAt: string(raw.endedAt) || undefined,
     durationSeconds: number(raw.durationSeconds),
   };
