@@ -109,6 +109,22 @@ func TestMessageSummaryForContactAndLocationDoesNotExposeBody(t *testing.T) {
 	}
 }
 
+func TestMessageSummaryCoversWukongCustomContentWithoutExposingBody(t *testing.T) {
+	for _, tc := range []struct {
+		typ, want string
+	}{
+		{"chat_history", "你收到一条聊天记录"}, {"system", "你收到一条系统消息"},
+		{"sticker", "你收到一个表情"}, {"moment", "你收到一条朋友圈分享"},
+		{"call", "你有一条通话记录"}, {"live", "你收到一条直播互动"},
+		{"support", "你收到一条客服消息"}, {"screenshot", "你收到一条截屏提示"},
+	} {
+		title, summary, navigation := getuiNotification(store.OutboxItem{EventType: "message.created", Payload: map[string]any{"message": map[string]any{"id": "m1", "conversationId": "c1", "type": tc.typ, "body": map[string]any{"content": "private content", "digest": "private digest"}}}})
+		if title != "邻里通讯" || summary != tc.want || navigation["content"] != nil || navigation["digest"] != nil {
+			t.Fatalf("type=%s title=%q summary=%q navigation=%v", tc.typ, title, summary, navigation)
+		}
+	}
+}
+
 func TestCallInviteNavigationUsesCanonicalEventAndRoutingFields(t *testing.T) {
 	title, summary, navigation := getuiNotification(store.OutboxItem{EventType: "call.invited", Payload: map[string]any{"callId": "call-1", "conversationId": "conv-1", "mediaType": "video"}})
 	if title != "视频通话" || summary != "你收到一个视频通话邀请" || navigation["type"] != "call.invited" || navigation["callId"] != "call-1" || navigation["conversationId"] != "conv-1" || navigation["mediaType"] != "video" {

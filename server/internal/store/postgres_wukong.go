@@ -2067,7 +2067,7 @@ func wukongOfflineRecipients(message wukongOfflineNotification) ([]string, error
 
 func wukongPushMessageType(contentType int) string {
 	switch contentType {
-	case wukong.ContentTypeImage, wukong.ContentTypeGIF, wukong.ContentTypeStoreSticker:
+	case wukong.ContentTypeImage, wukong.ContentTypeGIF:
 		return "image"
 	case wukong.ContentTypeVoice:
 		return "audio"
@@ -2079,6 +2079,22 @@ func wukongPushMessageType(contentType int) string {
 		return "contact"
 	case wukong.ContentTypeFile:
 		return "file"
+	case wukong.ContentTypeMergedHistory:
+		return "chat_history"
+	case wukong.ContentTypeSystemEvent:
+		return "system"
+	case wukong.ContentTypeStoreSticker:
+		return "sticker"
+	case wukong.ContentTypeMomentShare:
+		return "moment"
+	case wukong.ContentTypeCallEvent:
+		return "call"
+	case wukong.ContentTypeLiveEvent:
+		return "live"
+	case wukong.ContentTypeSupportEvent:
+		return "support"
+	case wukong.ContentTypeScreenshot:
+		return "screenshot"
 	default:
 		return "text"
 	}

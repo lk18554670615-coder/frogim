@@ -217,6 +217,22 @@ func messageSummary(value any) string {
 		return "你收到一个位置"
 	case "contact":
 		return "你收到一张联系人名片"
+	case "chat_history":
+		return "你收到一条聊天记录"
+	case "system":
+		return "你收到一条系统消息"
+	case "sticker":
+		return "你收到一个表情"
+	case "moment":
+		return "你收到一条朋友圈分享"
+	case "call":
+		return "你有一条通话记录"
+	case "live":
+		return "你收到一条直播互动"
+	case "support":
+		return "你收到一条客服消息"
+	case "screenshot":
+		return "你收到一条截屏提示"
 	default:
 		return "你收到一条新消息"
 	}
