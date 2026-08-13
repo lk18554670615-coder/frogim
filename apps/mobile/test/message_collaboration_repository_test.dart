@@ -83,11 +83,12 @@ void main() {
         if (request.url.path == '/v2/auth/login') return _loginResponse();
         requests.add(request);
         if (request.url.path == '/v2/messages/message-1') {
+          final requestBody = jsonDecode(request.body) as Map<String, Object?>;
           return _jsonResponse({
             'data': {
               'message': _message(
                 id: 'message-1',
-                body: {'text': '修改后的消息'},
+                body: {'text': requestBody['text']},
                 editedAt: '2026-08-01T08:30:00Z',
               ),
             },
@@ -110,6 +111,13 @@ void main() {
                   'editorId': 'user-1',
                   'body': {'text': '修改后的消息'},
                   'editedAt': '2026-08-01T08:30:00Z',
+                },
+                {
+                  'messageId': 'message-1',
+                  'version': 2,
+                  'editorId': 'user-1',
+                  'body': {'text': '第二次修改'},
+                  'editedAt': '2026-08-01T08:31:00Z',
                 },
               ],
             },
@@ -141,6 +149,7 @@ void main() {
     await repository.login('13800138000', '123456');
 
     final edited = await repository.editMessage('message-1', '修改后的消息');
+    final editedAgain = await repository.editMessage('message-1', '第二次修改');
     final added = await repository.setMessageReaction(
       'message-1',
       '👍',
@@ -154,19 +163,26 @@ void main() {
     final history = await repository.messageEditHistory('message-1');
 
     expect(requests[0].method, 'PATCH');
-    expect(jsonDecode(requests[0].body), {'text': '修改后的消息'});
+    final firstEditBody = jsonDecode(requests[0].body) as Map<String, Object?>;
+    final secondEditBody = jsonDecode(requests[1].body) as Map<String, Object?>;
+    expect(firstEditBody['text'], '修改后的消息');
+    expect(secondEditBody['text'], '第二次修改');
+    expect(firstEditBody['editId'], isNotEmpty);
+    expect(secondEditBody['editId'], isNotEmpty);
+    expect(secondEditBody['editId'], isNot(firstEditBody['editId']));
     expect(edited.editedAt, DateTime.parse('2026-08-01T08:30:00Z'));
-    expect(requests[1].method, 'PUT');
-    expect(requests[2].method, 'DELETE');
+    expect(editedAgain.text, '第二次修改');
+    expect(requests[2].method, 'PUT');
+    expect(requests[3].method, 'DELETE');
     expect(added.reactions.single.reactedByMe, isTrue);
     expect(added.reactions.single.count, 2);
     expect(removed.reactions.single.reactedByMe, isFalse);
-    expect(requests[3].method, 'GET');
-    expect(requests[3].url.path, '/v2/messages/message-1/edits');
-    expect(history.map((item) => item.version), [0, 1]);
+    expect(requests[4].method, 'GET');
+    expect(requests[4].url.path, '/v2/messages/message-1/edits');
+    expect(history.map((item) => item.version), [0, 1, 2]);
     expect(history.first.isOriginal, isTrue);
-    expect(history.last.text, '修改后的消息');
-    expect(history.last.editedAt, DateTime.parse('2026-08-01T08:30:00Z'));
+    expect(history.last.text, '第二次修改');
+    expect(history.last.editedAt, DateTime.parse('2026-08-01T08:31:00Z'));
     await repository.close();
   });
 

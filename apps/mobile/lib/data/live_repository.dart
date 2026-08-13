@@ -105,6 +105,7 @@ class LiveImRepository
   Future<void> _wukongEventSerial = Future<void>.value();
   final Map<String, List<Map<String, Object?>>> _pendingWukongMessageEvents =
       {};
+  int _mutationSequence = 0;
   bool _closed = false;
   Future<bool>? _refreshInFlight;
 
@@ -133,6 +134,12 @@ class LiveImRepository
   };
 
   Uri _uri(String path) => Uri.parse('$_apiBaseUrl$path');
+
+  String _newMutationId(String prefix) {
+    _mutationSequence = (_mutationSequence + 1) & 0x7fffffff;
+    return '$prefix-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}-'
+        '${_mutationSequence.toRadixString(36)}';
+  }
 
   Future<Map<String, Object?>> _get(String path) => _request('GET', path);
 
@@ -2345,6 +2352,7 @@ class LiveImRepository
   @override
   Future<ChatMessage> editMessage(String messageId, String text) async {
     final data = await _sendRequest('PATCH', '/v2/messages/$messageId', {
+      'editId': _newMutationId('edit'),
       'text': text,
     });
     final raw = data['message'] as Map<String, Object?>? ?? data;
