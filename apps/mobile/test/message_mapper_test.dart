@@ -349,4 +349,38 @@ void main() {
     expect(received.eventData['count'], 1);
     expect(received.text, '❤️ 点赞了直播');
   });
+
+  test('maps support events to friendly status text', () {
+    final expected = <String, String>{
+      'support.session.queued': '已进入客服队列，请稍候',
+      'support.session.assigned': '客服已接入会话',
+      'support.session.transferred': '客服会话已转接',
+      'support.session.ended': '客服会话已结束',
+      'support.session.rated': '已提交客服评价',
+    };
+    for (final entry in expected.entries) {
+      final received = mapper.toChatMessage(
+        WukongMessage(
+          messageId: 'support-${entry.key}',
+          messageSeq: 1,
+          clientMsgNo: 'client-${entry.key}',
+          clientSeq: 0,
+          fromUid: '____system',
+          channel: const WukongChannel(id: 'support-1', type: 10),
+          timestamp: DateTime.utc(2026, 8, 13),
+          payload: {
+            'type': WukongContentType.supportEvent,
+            'schemaVersion': 1,
+            'event': entry.key,
+          },
+          state: WukongMessageState.sent,
+        ),
+        currentUserId: 'usr_a',
+        conversationId: 'support-1:10',
+      );
+      expect(received.kind, MessageContentKind.system);
+      expect(received.event, entry.key);
+      expect(received.text, entry.value);
+    }
+  });
 }

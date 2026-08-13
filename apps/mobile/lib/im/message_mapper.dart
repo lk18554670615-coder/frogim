@@ -256,21 +256,43 @@ class MessageMapper {
     MessageContentKind kind, {
     required bool isMine,
     required String senderName,
-  }) => switch (kind) {
-    MessageContentKind.text ||
-    MessageContentKind.reply => payload['content'] as String? ?? '',
-    MessageContentKind.contact => payload['name'] as String? ?? '[名片]',
-    MessageContentKind.location => payload['name'] as String? ?? '[位置]',
-    MessageContentKind.sticker => payload['digest'] as String? ?? '[表情]',
-    MessageContentKind.momentShare => payload['content'] as String? ?? '[朋友圈]',
-    MessageContentKind.liveEvent =>
-      payload['digest'] as String? ?? payload['content'] as String? ?? '[直播互动]',
-    MessageContentKind.screenshotNotice =>
-      isMine
-          ? '你截取了聊天界面'
-          : senderName.trim().isEmpty
-          ? '对方截取了聊天界面'
-          : '${senderName.trim()} 截取了聊天界面',
-    _ => payload['content'] as String? ?? registry.digest(payload),
-  };
+  }) {
+    if ((payload['type'] as num?)?.toInt() == WukongContentType.supportEvent) {
+      return _supportEventText(payload);
+    }
+    return switch (kind) {
+      MessageContentKind.text ||
+      MessageContentKind.reply => payload['content'] as String? ?? '',
+      MessageContentKind.contact => payload['name'] as String? ?? '[名片]',
+      MessageContentKind.location => payload['name'] as String? ?? '[位置]',
+      MessageContentKind.sticker => payload['digest'] as String? ?? '[表情]',
+      MessageContentKind.momentShare =>
+        payload['content'] as String? ?? '[朋友圈]',
+      MessageContentKind.liveEvent =>
+        payload['digest'] as String? ??
+            payload['content'] as String? ??
+            '[直播互动]',
+      MessageContentKind.screenshotNotice =>
+        isMine
+            ? '你截取了聊天界面'
+            : senderName.trim().isEmpty
+            ? '对方截取了聊天界面'
+            : '${senderName.trim()} 截取了聊天界面',
+      _ => payload['content'] as String? ?? registry.digest(payload),
+    };
+  }
+
+  String _supportEventText(Map<String, Object?> payload) {
+    final digest = (payload['digest'] as String? ?? '').trim();
+    if (digest.isNotEmpty && digest != '[客服消息]') return digest;
+    return switch (payload['event']) {
+      'support.session.queued' => '已进入客服队列，请稍候',
+      'support.session.assigned' => '客服已接入会话',
+      'support.session.transferred' => '客服会话已转接',
+      'support.session.ended' => '客服会话已结束',
+      'support.session.rated' => '已提交客服评价',
+      'support.session.updated' => '客服会话状态已更新',
+      _ => '[客服消息]',
+    };
+  }
 }

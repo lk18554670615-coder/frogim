@@ -16,6 +16,26 @@ void main() {
     }
   });
 
+  test('客服结束事件会立即关闭输入区，其他频道不受影响', () {
+    final messages = [
+      ChatMessage(
+        id: 'support-ended',
+        conversationId: 'support_1',
+        senderId: '____system',
+        senderName: '系统',
+        text: '客服会话已结束',
+        sentAt: DateTime.utc(2026, 8, 13),
+        isMine: false,
+        kind: MessageContentKind.system,
+        event: 'support.session.ended',
+      ),
+    ];
+    expect(supportSessionSendRestriction(10, messages), '客服会话已结束，如需帮助请重新发起咨询。');
+    expect(supportSessionSendRestriction(3, messages), isNotNull);
+    expect(supportSessionSendRestriction(9, messages), isNull);
+    expect(supportSessionSendRestriction(10, const []), isNull);
+  });
+
   test('资讯频道的普通订阅者不会获得发布权限', () {
     expect(
       businessChannelSendRestriction(_channel()),

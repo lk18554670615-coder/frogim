@@ -78,6 +78,13 @@ class _ChatScreenState extends State<ChatScreen> {
           ? 'assets/brand/linli-im-icon.png'
           : peer?.avatarUrl);
 
+  String? get _effectiveSendRestriction =>
+      supportSessionSendRestriction(
+        widget.conversation.channelType,
+        widget.controller.messagesFor(widget.conversation.id),
+      ) ??
+      _sendRestriction;
+
   @override
   void initState() {
     super.initState();
@@ -160,7 +167,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _handleScreenshot(DateTime occurredAt) {
-    if (!mounted) return;
+    if (!mounted || _effectiveSendRestriction != null) return;
     final previous = _lastScreenshotNotice;
     if (previous != null &&
         occurredAt.difference(previous).abs().inSeconds < 2) {
@@ -355,7 +362,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         message: '正在确认频道发言权限…',
                         loading: true,
                       )
-                    else if (_sendRestriction case final restriction?)
+                    else if (_effectiveSendRestriction case final restriction?)
                       ChannelSendRestrictionBar(
                         message: restriction,
                         onRetry: _sendCapabilityFailed
@@ -435,6 +442,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _sendWebFiles(List<WebPickedFile> files) async {
+    if (_effectiveSendRestriction case final restriction?) {
+      _showError(restriction);
+      return;
+    }
     if (files.length > 10) {
       _showError('一次最多发送 10 个文件');
       return;
@@ -563,7 +574,8 @@ class _ChatScreenState extends State<ChatScreen> {
               showGroupReceipt:
                   widget.conversation.kind == ConversationKind.group &&
                   message.id == latestMineId,
-              onRetry: _sendRestriction == null && !_loadingSendCapability
+              onRetry:
+                  _effectiveSendRestriction == null && !_loadingSendCapability
                   ? () => widget.controller.retryMessage(message)
                   : null,
               selectionMode: selecting,
@@ -583,6 +595,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _send([int? expiresInSeconds]) async {
+    if (_effectiveSendRestriction != null) return;
     final text = textController.text;
     if (text.trim().isEmpty) return;
     final reply = replyingTo;
@@ -2372,6 +2385,16 @@ class _TimeDivider extends StatelessWidget {
     }
     return '${date.month}月${date.day}日 $clock';
   }
+}
+
+String? supportSessionSendRestriction(
+  int channelType,
+  Iterable<ChatMessage> messages,
+) {
+  if (!const {3, 10}.contains(channelType)) return null;
+  return messages.any((message) => message.event == 'support.session.ended')
+      ? '客服会话已结束，如需帮助请重新发起咨询。'
+      : null;
 }
 
 class MessageBubble extends StatelessWidget {
