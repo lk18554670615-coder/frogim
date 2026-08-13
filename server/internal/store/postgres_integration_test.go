@@ -1251,6 +1251,24 @@ func TestPostgresCallLifecycleTimeoutAndAdminMetadata(t *testing.T) {
 			t.Fatalf("WuKong call outbox event=%s call=%s count=%d payload=%s err=%v", expected.event, expected.callID, count, payload, err)
 		}
 	}
+	for _, expected := range []struct {
+		callID, event, digest string
+	}{
+		{callID: callID, event: "call.ended", digest: "视频通话已结束"},
+		{callID: expiredID, event: "call.timeout", digest: "语音通话未接通"},
+		{callID: lazyExpiredID, event: "call.timeout", digest: "语音通话未接通"},
+	} {
+		var count int
+		var payload string
+		if err = p.pool.QueryRow(ctx, `SELECT count(*),COALESCE(max(payload::text),'')
+			FROM im_wukong_outbox WHERE operation=$1 AND aggregate_type='call_history' AND aggregate_id=$2
+			AND payload->'payload'->>'type'=$3 AND payload->'payload'->>'event'=$4`,
+			wukong.OperationStoredMessage, expected.callID, strconv.Itoa(wukong.ContentTypeCallEvent), expected.event,
+		).Scan(&count, &payload); err != nil || count != 1 || !strings.Contains(payload, expected.digest) ||
+			!strings.Contains(payload, `"channel_type": 1`) || !strings.Contains(payload, `"from_uid": "`+u1+`"`) {
+			t.Fatalf("stored call event=%s call=%s count=%d payload=%s err=%v", expected.event, expected.callID, count, payload, err)
+		}
+	}
 	items, total, _, err := p.ListAdminCalls(ctx, suffix, "", "", 10)
 	if err != nil || total != 3 || len(items) != 3 {
 		t.Fatalf("admin calls len=%d total=%d err=%v", len(items), total, err)
@@ -1335,6 +1353,18 @@ func TestPostgresGroupCallPersistsIndependentParticipantState(t *testing.T) {
 		if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_wukong_outbox WHERE operation=$1 AND aggregate_id=$2 AND payload->>'event'=$3`, wukong.OperationCallEvent, callID, event).Scan(&outboxCount); err != nil || outboxCount != expectedCount {
 			t.Fatalf("group event=%s outbox=%d want=%d err=%v", event, outboxCount, expectedCount, err)
 		}
+	}
+	var storedCount int
+	var storedPayload string
+	if err = p.pool.QueryRow(ctx, `SELECT count(*),COALESCE(max(payload::text),'') FROM im_wukong_outbox
+		WHERE operation=$1 AND aggregate_type='call_history' AND aggregate_id=$2
+		AND payload->'payload'->>'type'=$3 AND payload->'payload'->>'event'='call.ended'`,
+		wukong.OperationStoredMessage, callID, strconv.Itoa(wukong.ContentTypeCallEvent),
+	).Scan(&storedCount, &storedPayload); err != nil || storedCount != 1 ||
+		!strings.Contains(storedPayload, `"channel_id": "`+cid+`"`) ||
+		!strings.Contains(storedPayload, `"channel_type": 2`) ||
+		!strings.Contains(storedPayload, "视频通话已结束") {
+		t.Fatalf("stored group call count=%d payload=%s err=%v", storedCount, storedPayload, err)
 	}
 }
 

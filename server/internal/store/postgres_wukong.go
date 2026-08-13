@@ -1609,7 +1609,7 @@ func enqueueWukongCallEvent(ctx context.Context, tx pgx.Tx, call *model.CallSess
 	if call == nil || event == "" || len(recipients) == 0 {
 		return nil
 	}
-	return enqueueWukongOutbox(
+	if err := enqueueWukongOutbox(
 		ctx,
 		tx,
 		fmt.Sprintf("call-event:%s:%s:%d", call.ID, event, call.UpdatedAt.UnixNano()),
@@ -1631,7 +1631,104 @@ func enqueueWukongCallEvent(ctx context.Context, tx pgx.Tx, call *model.CallSess
 				"endReason":      call.EndReason,
 			},
 		},
-	)
+	); err != nil {
+		return err
+	}
+	switch event {
+	case "call.rejected", "call.cancelled", "call.timeout", "call.ended":
+		return enqueueWukongCallHistoryEvent(ctx, tx, call, event)
+	default:
+		return nil
+	}
+}
+
+func enqueueWukongCallHistoryEvent(ctx context.Context, tx pgx.Tx, call *model.CallSession, event string) error {
+	var conversationKind string
+	if err := tx.QueryRow(ctx, `
+		SELECT conversation.kind FROM im_conversations conversation
+		JOIN im_members caller ON caller.conversation_id=conversation.id AND caller.user_id=$2
+		WHERE conversation.id=$1
+	`, call.ConversationID, call.CallerID).Scan(&conversationKind); err != nil {
+		return err
+	}
+	channelID, channelType := call.ConversationID, wukong.ChannelGroup
+	if conversationKind == "direct" {
+		var peerCount int
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(min(user_id),''),count(*) FROM im_members
+			WHERE conversation_id=$1 AND user_id<>$2
+		`, call.ConversationID, call.CallerID).Scan(&channelID, &peerCount); err != nil {
+			return err
+		}
+		if peerCount != 1 || channelID == "" {
+			return ErrConflict
+		}
+		channelType = wukong.ChannelPerson
+	} else if conversationKind != "group" {
+		return ErrUnsupported
+	}
+
+	digest := callHistoryDigest(call)
+	clientHash := sha256.Sum256([]byte(call.ID))
+	clientMsgNo := fmt.Sprintf("call_record_%x", clientHash[:12])
+	data := map[string]any{
+		"callId":          call.ID,
+		"conversationId":  call.ConversationID,
+		"callerId":        call.CallerID,
+		"mediaType":       call.MediaType,
+		"status":          call.Status,
+		"endReason":       call.EndReason,
+		"endedBy":         call.EndedBy,
+		"durationSeconds": call.DurationSeconds,
+	}
+	return enqueueWukongOutbox(ctx, tx, "call-history:"+call.ID, wukong.OperationStoredMessage,
+		"call_history", call.ID, wukong.StoredMessageRequest{
+			ClientMsgNo: clientMsgNo,
+			FromUID:     call.CallerID,
+			ChannelID:   channelID,
+			ChannelType: channelType,
+			Payload: map[string]any{
+				"type": wukong.ContentTypeCallEvent, "schemaVersion": 1,
+				"event": event, "callId": call.ID, "conversationId": call.ConversationID,
+				"callerId": call.CallerID, "mediaType": call.MediaType, "status": call.Status,
+				"endReason": call.EndReason, "endedBy": call.EndedBy,
+				"durationSeconds": call.DurationSeconds, "digest": digest, "content": digest,
+				"data": data,
+			},
+		})
+}
+
+func callHistoryDigest(call *model.CallSession) string {
+	label := "语音通话"
+	if call.MediaType == "video" {
+		label = "视频通话"
+	}
+	switch call.Status {
+	case "rejected":
+		return label + "已拒绝"
+	case "cancelled":
+		return label + "已取消"
+	case "missed":
+		return label + "未接通"
+	case "ended":
+		if call.DurationSeconds > 0 {
+			return label + "已结束 · " + callHistoryDuration(call.DurationSeconds)
+		}
+		return label + "已结束"
+	default:
+		return "[通话]"
+	}
+}
+
+func callHistoryDuration(seconds int64) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	hours, minutes, remainder := seconds/3600, (seconds%3600)/60, seconds%60
+	if hours > 0 {
+		return fmt.Sprintf("%02d:%02d:%02d", hours, minutes, remainder)
+	}
+	return fmt.Sprintf("%02d:%02d", minutes, remainder)
 }
 
 func enqueueWukongOutbox(ctx context.Context, tx pgx.Tx, idempotencyKey, operation, aggregateType, aggregateID string, payload any) error {

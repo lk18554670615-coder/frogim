@@ -1,5 +1,6 @@
 import '../core/models.dart';
 import 'message_content_registry.dart';
+import 'structured_event_text.dart';
 import 'wukong_gateway_contract.dart';
 
 class MessageMapper {
@@ -263,8 +264,12 @@ class MessageMapper {
     required bool isMine,
     required String senderName,
   }) {
-    if ((payload['type'] as num?)?.toInt() == WukongContentType.supportEvent) {
-      return _supportEventText(payload);
+    final contentType = (payload['type'] as num?)?.toInt();
+    if (contentType == WukongContentType.callEvent) {
+      return callEventDisplayText(payload);
+    }
+    if (contentType == WukongContentType.supportEvent) {
+      return supportEventDisplayText(payload);
     }
     return switch (kind) {
       MessageContentKind.text ||
@@ -285,20 +290,6 @@ class MessageMapper {
             ? '对方截取了聊天界面'
             : '${senderName.trim()} 截取了聊天界面',
       _ => payload['content'] as String? ?? registry.digest(payload),
-    };
-  }
-
-  String _supportEventText(Map<String, Object?> payload) {
-    final digest = (payload['digest'] as String? ?? '').trim();
-    if (digest.isNotEmpty && digest != '[客服消息]') return digest;
-    return switch (payload['event']) {
-      'support.session.queued' => '已进入客服队列，请稍候',
-      'support.session.assigned' => '客服已接入会话',
-      'support.session.transferred' => '客服会话已转接',
-      'support.session.ended' => '客服会话已结束',
-      'support.session.rated' => '已提交客服评价',
-      'support.session.updated' => '客服会话状态已更新',
-      _ => '[客服消息]',
     };
   }
 }

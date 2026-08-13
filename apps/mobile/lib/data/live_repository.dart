@@ -15,6 +15,7 @@ import '../im/business_features.dart';
 import '../im/local_conversation_cache.dart';
 import '../im/message_content_registry.dart';
 import '../im/message_mapper.dart';
+import '../im/structured_event_text.dart';
 import '../im/wukong_gateway.dart';
 import 'demo_repository.dart';
 import 'im_repository.dart';
@@ -2133,7 +2134,11 @@ class LiveImRepository
       'sticker' || 'store_sticker' => MessageContentKind.sticker,
       'moment' || 'moment_share' => MessageContentKind.momentShare,
       'live' || 'live_event' => MessageContentKind.liveEvent,
-      'system' => MessageContentKind.system,
+      'system' ||
+      'call' ||
+      'call_event' ||
+      'support' ||
+      'support_event' => MessageContentKind.system,
       'screenshot' ||
       'screenshot_notice' => MessageContentKind.screenshotNotice,
       null || 'text' =>
@@ -2161,6 +2166,10 @@ class LiveImRepository
           ? isMine
                 ? '你截取了聊天界面'
                 : '$senderName 截取了聊天界面'
+          : kindName == 'call' || kindName == 'call_event'
+          ? callEventDisplayText(body)
+          : kindName == 'support' || kindName == 'support_event'
+          ? supportEventDisplayText(body)
           : _messageText(item),
       kind: kind,
       mediaUrl:
@@ -2277,6 +2286,16 @@ class LiveImRepository
       'contact' => '[名片] ${body?['name'] as String? ?? ''}'.trim(),
       'location' => '[位置] ${body?['name'] as String? ?? ''}'.trim(),
       'chat_history' => _chatHistorySummary(body),
+      'sticker' || 'store_sticker' =>
+        body?['digest'] as String? ?? body?['content'] as String? ?? '[表情]',
+      'moment' || 'moment_share' =>
+        body?['content'] as String? ?? body?['digest'] as String? ?? '[朋友圈]',
+      'live' || 'live_event' =>
+        body?['digest'] as String? ?? body?['content'] as String? ?? '[直播互动]',
+      'system' =>
+        body?['digest'] as String? ?? body?['content'] as String? ?? '[系统消息]',
+      'call' || 'call_event' => callEventDisplayText(body ?? const {}),
+      'support' || 'support_event' => supportEventDisplayText(body ?? const {}),
       null || 'text' => '',
       _ => '[当前版本暂不支持此消息]',
     };

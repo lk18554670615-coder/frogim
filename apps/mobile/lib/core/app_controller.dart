@@ -9,6 +9,7 @@ import '../calls/call_controller.dart';
 import '../calls/call_repository.dart';
 import '../data/im_repository.dart';
 import '../im/business_features.dart';
+import '../im/structured_event_text.dart';
 import 'client_message_id.dart';
 import 'models.dart';
 
@@ -2681,8 +2682,14 @@ class AppController extends ChangeNotifier {
       'contact' => MessageContentKind.contact,
       'location' => MessageContentKind.location,
       'chat_history' => MessageContentKind.chatHistory,
+      'sticker' || 'store_sticker' => MessageContentKind.sticker,
+      'moment' || 'moment_share' => MessageContentKind.momentShare,
       'live' || 'live_event' => MessageContentKind.liveEvent,
-      'system' => MessageContentKind.system,
+      'system' ||
+      'call' ||
+      'call_event' ||
+      'support' ||
+      'support_event' => MessageContentKind.system,
       'screenshot' ||
       'screenshot_notice' => MessageContentKind.screenshotNotice,
       null || 'text' =>
@@ -2709,10 +2716,22 @@ class AppController extends ChangeNotifier {
             'contact' => '[名片] ${body['name'] as String? ?? ''}'.trim(),
             'location' => '[位置] ${body['name'] as String? ?? ''}'.trim(),
             'chat_history' => _chatHistoryEventSummary(body),
+            'sticker' || 'store_sticker' =>
+              body['digest'] as String? ?? body['content'] as String? ?? '[表情]',
+            'moment' || 'moment_share' =>
+              body['content'] as String? ??
+                  body['digest'] as String? ??
+                  '[朋友圈]',
             'live' || 'live_event' =>
               body['digest'] as String? ??
                   body['content'] as String? ??
                   '[直播互动]',
+            'system' =>
+              body['digest'] as String? ??
+                  body['content'] as String? ??
+                  '[系统消息]',
+            'call' || 'call_event' => callEventDisplayText(body),
+            'support' || 'support_event' => supportEventDisplayText(body),
             'screenshot' || 'screenshot_notice' =>
               senderId == currentUser?.id ? '你截取了聊天界面' : '对方截取了聊天界面',
             null || 'text' => '',

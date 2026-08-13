@@ -434,4 +434,36 @@ void main() {
       expect(received.text, entry.value);
     }
   });
+
+  test('maps persisted call events to durable friendly status text', () {
+    final received = mapper.toChatMessage(
+      WukongMessage(
+        messageId: 'call-message-1',
+        messageSeq: 9,
+        clientMsgNo: 'call-record-1',
+        clientSeq: 0,
+        fromUid: 'usr_a',
+        channel: const WukongChannel(id: 'usr_b', type: 1),
+        timestamp: DateTime.utc(2026, 8, 13),
+        payload: const {
+          'type': WukongContentType.callEvent,
+          'schemaVersion': 1,
+          'event': 'call.ended',
+          'mediaType': 'video',
+          'status': 'ended',
+          'durationSeconds': 65,
+          'data': {'callId': 'call-1'},
+        },
+        state: WukongMessageState.sent,
+      ),
+      currentUserId: 'usr_b',
+      conversationId: 'conversation-1',
+      senderName: 'Alice',
+    );
+
+    expect(received.kind, MessageContentKind.system);
+    expect(received.event, 'call.ended');
+    expect(received.eventData['callId'], 'call-1');
+    expect(received.text, '视频通话已结束 · 01:05');
+  });
 }

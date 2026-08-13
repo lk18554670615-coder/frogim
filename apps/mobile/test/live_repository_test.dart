@@ -422,6 +422,56 @@ void main() {
     await repository.close();
   });
 
+  test('收藏列表可恢复持久通话与客服事件文案', () async {
+    final client = MockClient((request) async {
+      if (request.url.path == '/v2/auth/login') return _loginResponse();
+      if (request.url.path == '/v2/messages/favorites') {
+        return _jsonResponse({
+          'data': {
+            'items': [
+              {
+                'id': 'call-message-1',
+                'conversationId': 'c1',
+                'senderId': 'user-2',
+                'senderName': 'Friend',
+                'type': 'call',
+                'createdAt': '2026-08-13T00:00:00Z',
+                'body': {
+                  'event': 'call.ended',
+                  'mediaType': 'video',
+                  'durationSeconds': 65,
+                },
+              },
+              {
+                'id': 'support-message-1',
+                'conversationId': 'support-1',
+                'senderId': '____system',
+                'type': 'support',
+                'createdAt': '2026-08-13T00:01:00Z',
+                'body': {'event': 'support.session.ended'},
+              },
+            ],
+          },
+        });
+      }
+      return http.Response('{}', 404);
+    });
+    final repository = _repository(client);
+    await repository.login('13800138000', '123456');
+
+    final messages = await repository.favorites();
+
+    expect(messages.map((message) => message.kind), [
+      MessageContentKind.system,
+      MessageContentKind.system,
+    ]);
+    expect(messages.map((message) => message.text), [
+      '视频通话已结束 · 01:05',
+      '客服会话已结束',
+    ]);
+    await repository.close();
+  });
+
   test('媒体发送依次完成预签名、PUT、确认与消息落库', () async {
     final paths = <String>[];
     final gateway = FakeWukongGateway()
