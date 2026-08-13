@@ -53,12 +53,25 @@ describe('邻里通讯管理后台', () => {
     sessionStorage.setItem('nexachat_admin_session', JSON.stringify(session));
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true, status: 200, headers: new Headers(),
-      json: async () => ({ users: 11, bannedUsers: 1, conversations: 5, messages: 133, pendingReports: 2, wukongConnections: 7, wukongStatus: 'ok' }),
+      json: async () => ({
+        users: 11, bannedUsers: 1, conversations: 5, messages: 133, pendingReports: 2, wukongConnections: 7, wukongStatus: 'ok',
+        messageTrend: [
+          { time: '2026-08-13T04:00:00Z', count: 3 },
+          { time: '2026-08-13T05:00:00Z', count: 7 },
+        ],
+        channelMix: [{ kind: 'direct', count: 7 }, { kind: 'group', count: 3 }],
+        activity: [{ id: 'audit-1', actorId: 'admin-1', action: 'settings.updated', targetType: 'settings', targetId: 'global', result: 'success', createdAt: '2026-08-13T05:00:00Z' }],
+      }),
     })));
     render(<App />);
     expect(await screen.findByText('用户总数')).toBeInTheDocument();
     expect(screen.getByText('11')).toBeInTheDocument();
     expect(screen.getByText('7')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: '消息量趋势' })).toBeInTheDocument();
+    expect(screen.getByText('单聊')).toBeInTheDocument();
+    expect(screen.getByText('70%')).toBeInTheDocument();
+    expect(screen.getByText('2 条举报等待处理')).toBeInTheDocument();
+    expect(screen.getByText('settings.updated')).toBeInTheDocument();
   });
 
   it('解析嵌套接口错误并停留在登录页', async () => {

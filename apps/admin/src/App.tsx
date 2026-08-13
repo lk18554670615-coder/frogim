@@ -242,10 +242,21 @@ function Shell() {
 }
 
 function TrendChart({ data }: { data: DashboardData['messageTrend'] }) {
-  if (data.length < 2 || Math.max(...data.map((point) => point.count)) <= 0) return <div className="chart-empty"><Activity size={20} /><span>服务端尚未提供分时趋势</span></div>;
+  if (data.length < 2 || Math.max(...data.map((point) => point.count)) <= 0) return <div className="chart-empty"><Activity size={20} /><span>最近 12 小时暂无消息</span></div>;
   const width = 700, height = 190, padding = 14, max = Math.max(...data.map((point) => point.count));
   const coordinates = data.map((point, index) => ({ x: padding + index * ((width - padding * 2) / (data.length - 1)), y: height - padding - (point.count / max) * (height - padding * 2), point }));
   return <div className="chart-wrap"><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="消息量趋势"><line x1="0" y1="160" x2={width} y2="160" className="grid-line" /><line x1="0" y1="110" x2={width} y2="110" className="grid-line" /><line x1="0" y1="60" x2={width} y2="60" className="grid-line" /><polyline points={coordinates.map(({ x, y }) => `${x},${y}`).join(' ')} className="trend-line" />{coordinates.map(({ x, y, point }) => <circle key={point.time} cx={x} cy={y} r="3" className="trend-point"><title>{point.time}，{point.count} 条</title></circle>)}</svg><div className="chart-labels">{data.filter((_, index) => index % 2 === 0).map((point) => <span key={point.time}>{point.time}</span>)}</div></div>;
+}
+
+function channelMixGradient(data: DashboardData['channelMix']) {
+  let offset = 0;
+  const segments = data.map((item, index) => {
+    const start = offset;
+    offset += item.value;
+    const end = index === data.length - 1 ? 100 : Math.min(100, offset);
+    return `${item.color} ${start}% ${end}%`;
+  });
+  return segments.length ? `conic-gradient(${segments.join(', ')})` : 'none';
 }
 
 function OverviewPage() {
@@ -256,7 +267,7 @@ function OverviewPage() {
       <section className="metric-strip" aria-label="核心指标">{state.data.metrics.map((item) => <div className="metric" key={item.label}><div><span>{item.label}</span><Badge value={item.tone} label={item.tone === 'warning' ? '需关注' : '正常'} /></div><strong>{item.value}</strong><p>{item.delta}</p></div>)}</section>
       <section className="dashboard-grid">
         <div className="panel trend-panel"><div className="panel-heading"><div><h2>消息流量</h2><p>服务端可用的最新分时统计</p></div></div><TrendChart data={state.data.messageTrend} /></div>
-        <div className="panel mix-panel"><div className="panel-heading"><div><h2>消息构成</h2><p>按会话类型统计</p></div></div>{state.data.channelMix.length ? <><div className="donut" style={{ '--segments': 'conic-gradient(var(--primary) 0 68%, var(--info) 68% 95%, var(--warning) 95% 100%)' } as React.CSSProperties}><div><strong>{state.data.channelMix.reduce((sum, item) => sum + item.value, 0)}%</strong><span>已分类</span></div></div><div className="mix-legend">{state.data.channelMix.map((item) => <div key={item.label}><span style={{ background: item.color }} /><b>{item.label}</b><strong>{item.value}%</strong></div>)}</div></> : <div className="panel-empty">暂无构成数据</div>}</div>
+        <div className="panel mix-panel"><div className="panel-heading"><div><h2>消息构成</h2><p>按会话类型统计</p></div></div>{state.data.channelMix.length ? <><div className="donut" style={{ '--segments': channelMixGradient(state.data.channelMix) } as React.CSSProperties}><div><strong>{Math.round(state.data.channelMix.reduce((sum, item) => sum + item.value, 0))}%</strong><span>已分类</span></div></div><div className="mix-legend">{state.data.channelMix.map((item) => <div key={item.label}><span style={{ background: item.color }} /><b>{item.label}</b><strong>{item.value}%</strong></div>)}</div></> : <div className="panel-empty">暂无构成数据</div>}</div>
         <div className="panel alert-panel"><div className="panel-heading"><div><h2>需要处理</h2><p>按风险和等待时间排序</p></div></div>{state.data.alerts.length ? state.data.alerts.map((alert) => <div className={`alert-row ${alert.severity}`} key={alert.id}><AlertTriangle size={18} /><div><strong>{alert.title}</strong><p>{alert.detail}</p></div><time>{alert.time}</time></div>) : <div className="panel-empty">当前没有服务端告警</div>}</div>
         <div className="panel activity-panel"><div className="panel-heading"><div><h2>最新操作</h2><p>敏感动作审计记录</p></div></div>{state.data.activity.length ? state.data.activity.map((log) => <div className="activity-row" key={log.id}><div className="activity-icon"><ShieldCheck size={16} /></div><div><strong>{log.action}</strong><p>{log.actor} · {log.target}</p></div><time>{log.createdAt}</time></div>) : <div className="panel-empty">暂无可展示的审计记录</div>}</div>
       </section>

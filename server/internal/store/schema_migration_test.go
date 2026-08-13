@@ -142,6 +142,15 @@ func TestLegacyMessagePayloadTableIsRemovedAtSchemaVersion46(t *testing.T) {
 	}
 }
 
+func TestDashboardMessageTrendIndexIsVersioned(t *testing.T) {
+	if schemaVersion < 47 {
+		t.Fatalf("dashboard message trend index requires schema version 47 or newer, got %d", schemaVersion)
+	}
+	if !strings.Contains(normalizedSchema, "im_wukong_message_index_timestamp_idx") {
+		t.Fatal("dashboard message trend index is missing")
+	}
+}
+
 func TestTemporaryBusinessMembershipSchemaIsVersioned(t *testing.T) {
 	if schemaVersion < 39 {
 		t.Fatalf("temporary business membership requires schema version 39 or newer, got %d", schemaVersion)

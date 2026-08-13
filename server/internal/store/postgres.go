@@ -25,7 +25,7 @@ var normalizedSchema string
 
 type Postgres struct{ pool *pgxpool.Pool }
 
-const schemaVersion = 46
+const schemaVersion = 47
 
 type PostgresOptions struct {
 	MaxConns          int32

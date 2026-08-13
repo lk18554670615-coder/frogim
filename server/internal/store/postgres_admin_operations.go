@@ -20,9 +20,90 @@ func (p *Postgres) AdminStats(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	messageTrend := make([]map[string]any, 0, 12)
+	rows, err := p.pool.Query(ctx, `WITH buckets AS (
+		SELECT generate_series(
+			date_trunc('hour', now())-interval '11 hours',
+			date_trunc('hour', now()),
+			interval '1 hour'
+		) AS bucket
+	)
+	SELECT bucket,count(message_index.message_id)
+	FROM buckets
+	LEFT JOIN im_wukong_message_index message_index
+		ON message_index.message_timestamp>=bucket
+		AND message_index.message_timestamp<bucket+interval '1 hour'
+	GROUP BY bucket ORDER BY bucket`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var bucket time.Time
+		var count int64
+		if err = rows.Scan(&bucket, &count); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		messageTrend = append(messageTrend, map[string]any{"time": bucket, "count": count})
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	channelMix := make([]map[string]any, 0, 3)
+	rows, err = p.pool.Query(ctx, `SELECT
+		CASE channel_type WHEN 1 THEN 'direct' WHEN 2 THEN 'group' ELSE 'other' END AS kind,
+		count(*)
+	FROM im_wukong_message_index
+	GROUP BY kind ORDER BY kind`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var kind string
+		var count int64
+		if err = rows.Scan(&kind, &count); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		channelMix = append(channelMix, map[string]any{"kind": kind, "count": count})
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	activity := make([]map[string]any, 0, 5)
+	rows, err = p.pool.Query(ctx, `SELECT id,actor_id,action,target_type,target_id,COALESCE(result,'success'),COALESCE(ip,''),created_at
+		FROM im_audits ORDER BY created_at DESC,id DESC LIMIT 5`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id, actorID, action, targetType, targetID, result, ip string
+		var createdAt time.Time
+		if err = rows.Scan(&id, &actorID, &action, &targetType, &targetID, &result, &ip, &createdAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		activity = append(activity, map[string]any{
+			"id": id, "actorId": actorID, "action": action, "targetType": targetType,
+			"targetId": targetID, "result": result, "ip": ip, "createdAt": createdAt,
+		})
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
 	return map[string]any{
 		"users": users, "bannedUsers": bannedUsers, "conversations": conversations,
-		"messages": messages, "pendingReports": pendingReports,
+		"messages": messages, "pendingReports": pendingReports, "messageTrend": messageTrend,
+		"channelMix": channelMix, "activity": activity,
 	}, nil
 }
 

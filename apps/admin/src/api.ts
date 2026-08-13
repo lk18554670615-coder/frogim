@@ -447,6 +447,41 @@ function adaptDashboard(payload: unknown): DashboardData {
   const messages = number(raw.messages);
   const reports = number(raw.pendingReports);
   const sockets = number(raw.wukongConnections);
+  const messageTrend = list(raw.messageTrend).map((value) => {
+    const point = object(value);
+    const rawTime = string(point.time);
+    const parsed = new Date(rawTime);
+    return {
+      time: rawTime && !Number.isNaN(parsed.valueOf())
+        ? parsed.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+        : rawTime,
+      count: Math.max(0, number(point.count)),
+    };
+  }).filter((point) => point.time);
+  const rawMix = list(raw.channelMix).map((value) => object(value));
+  const mixTotal = rawMix.reduce((sum, item) => sum + Math.max(0, number(item.count, number(item.value))), 0);
+  const mixLabels: Record<string, { label: string; color: string }> = {
+    direct: { label: '单聊', color: 'var(--primary)' },
+    group: { label: '群聊', color: 'var(--info)' },
+    other: { label: '扩展频道', color: 'var(--warning)' },
+  };
+  const channelMix = rawMix.map((item) => {
+    const kind = string(item.kind, 'other');
+    const presentation = mixLabels[kind] ?? mixLabels.other;
+    const amount = Math.max(0, number(item.count, number(item.value)));
+    return {
+      label: string(item.label, presentation.label),
+      value: mixTotal > 0 ? Math.round((amount * 1000) / mixTotal) / 10 : 0,
+      color: string(item.color, presentation.color),
+    };
+  }).filter((item) => item.value > 0);
+  const alerts: DashboardData['alerts'] = list(raw.alerts) as DashboardData['alerts'];
+  if (!alerts.length && reports > 0) alerts.push({
+    id: 'pending-reports', title: '存在待审举报', detail: `${reports} 条举报等待处理`, severity: reports >= 10 ? 'critical' : 'warning', time: '现在',
+  });
+  if (raw.wukongStatus !== 'ok') alerts.push({
+    id: 'wukong-unavailable', title: 'WuKongIM 状态不可用', detail: '请检查节点连接和服务健康状态', severity: 'critical', time: '现在',
+  });
   return {
     metrics: [
       { label: '用户总数', value: users.toLocaleString(), delta: `${number(raw.bannedUsers)} 个封禁账号`, tone: 'info' },
@@ -454,7 +489,7 @@ function adaptDashboard(payload: unknown): DashboardData {
       { label: '待审举报', value: reports.toLocaleString(), delta: reports > 0 ? '请及时处理' : '当前队列为空', tone: reports > 0 ? 'warning' : 'success' },
       { label: 'WuKong 连接', value: sockets.toLocaleString(), delta: raw.wukongStatus === 'ok' ? `${number(raw.conversations)} 个业务会话` : 'WuKong 状态不可用', tone: raw.wukongStatus === 'ok' ? 'info' : 'warning' },
     ],
-    messageTrend: [], channelMix: [], alerts: [], activity: [],
+    messageTrend, channelMix, alerts, activity: list(raw.activity).map(adaptAudit),
   };
 }
 

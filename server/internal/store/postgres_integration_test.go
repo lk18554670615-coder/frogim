@@ -47,6 +47,83 @@ func insertTestWukongMessage(t *testing.T, p *Postgres, ctx context.Context, mes
 	return &model.Message{ID: strconv.FormatInt(messageID, 10), ClientMsgID: clientMsgNo, ConversationID: conversationID, SenderID: senderID, Seq: messageSeq, Type: messageType, ExpiresAt: expiresAt, CreatedAt: at}
 }
 
+func TestAdminStatsExposeRealDashboardSeries(t *testing.T) {
+	url := os.Getenv("IM_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("IM_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	p, err := NewPostgres(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	userID := "dashboard_user_" + suffix
+	directID := "dashboard_direct_" + suffix
+	groupID := "dashboard_group_" + suffix
+	auditID := "dashboard_audit_" + suffix
+	now := time.Now().UTC().Truncate(time.Second)
+	messageIDs := []int64{now.UnixNano(), now.UnixNano() + 1}
+	defer func() {
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_wukong_message_index WHERE message_id=ANY($1::bigint[])`, messageIDs)
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_audits WHERE id=$1`, auditID)
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_conversations WHERE id=ANY($1::text[])`, []string{directID, groupID})
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_users WHERE id=$1`, userID)
+	}()
+	if _, err = p.pool.Exec(ctx, `INSERT INTO im_users(id,phone,name,created_at,updated_at) VALUES($1,$2,'Dashboard user',$3,$3)`, userID, "dashboard_phone_"+suffix, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = p.pool.Exec(ctx, `INSERT INTO im_conversations(id,kind,title,created_at,updated_at) VALUES
+		($1,'direct','Dashboard direct',$3,$3),($2,'group','Dashboard group',$3,$3)`, directID, groupID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = p.pool.Exec(ctx, `INSERT INTO im_wukong_message_index(
+		message_id,client_msg_no,conversation_id,sender_id,channel_id,channel_type,message_seq,
+		content_type,payload_sha256,message_timestamp,indexed_at) VALUES
+		($1,$2,$3,$7,$7,1,1,1,$8,$9,$9),
+		($4,$5,$6,$7,$6,2,1,1,$8,$9,$9)`,
+		messageIDs[0], "dashboard-direct-"+suffix, directID,
+		messageIDs[1], "dashboard-group-"+suffix, groupID,
+		userID, strings.Repeat("d", 64), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = p.pool.Exec(ctx, `INSERT INTO im_audits(id,actor_id,action,target_type,target_id,metadata,result,ip,created_at)
+		VALUES($1,$2,'dashboard.test','dashboard',$3,'{}'::jsonb,'success','127.0.0.1',$4)`, auditID, userID, groupID, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := p.AdminStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trend, ok := stats["messageTrend"].([]map[string]any)
+	if !ok || len(trend) != 12 {
+		t.Fatalf("message trend=%#v", stats["messageTrend"])
+	}
+	if count, ok := trend[len(trend)-1]["count"].(int64); !ok || count < 2 {
+		t.Fatalf("latest trend bucket=%#v", trend[len(trend)-1])
+	}
+	mix, ok := stats["channelMix"].([]map[string]any)
+	if !ok {
+		t.Fatalf("channel mix=%#v", stats["channelMix"])
+	}
+	counts := map[string]int64{}
+	for _, item := range mix {
+		kind, _ := item["kind"].(string)
+		count, _ := item["count"].(int64)
+		counts[kind] = count
+	}
+	if counts["direct"] < 1 || counts["group"] < 1 {
+		t.Fatalf("channel counts=%#v", counts)
+	}
+	activity, ok := stats["activity"].([]map[string]any)
+	if !ok || len(activity) == 0 || activity[0]["id"] != auditID {
+		t.Fatalf("activity=%#v", stats["activity"])
+	}
+}
+
 func TestSupportWorkflowUsesExactWukongVisitorAndCustomerChannels(t *testing.T) {
 	url := os.Getenv("IM_TEST_DATABASE_URL")
 	if url == "" {

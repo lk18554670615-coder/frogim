@@ -490,6 +490,7 @@ CREATE TABLE IF NOT EXISTS im_wukong_message_index(
 CREATE UNIQUE INDEX IF NOT EXISTS im_wukong_message_index_client_idx ON im_wukong_message_index(sender_id,client_msg_no) WHERE client_msg_no<>'';
 CREATE INDEX IF NOT EXISTS im_wukong_message_index_conversation_idx ON im_wukong_message_index(conversation_id,message_seq DESC,message_id DESC);
 CREATE INDEX IF NOT EXISTS im_wukong_message_index_channel_idx ON im_wukong_message_index(channel_id,channel_type,message_seq DESC);
+CREATE INDEX IF NOT EXISTS im_wukong_message_index_timestamp_idx ON im_wukong_message_index(message_timestamp DESC);
 ALTER TABLE im_wukong_message_index ADD COLUMN IF NOT EXISTS media_id text NOT NULL DEFAULT '';
 ALTER TABLE im_wukong_message_index ADD COLUMN IF NOT EXISTS expires_at timestamptz;
 ALTER TABLE im_wukong_message_index ADD COLUMN IF NOT EXISTS expired_at timestamptz;
