@@ -2,7 +2,7 @@
 
 ## 结论
 
-Flutter 客户端已经达到“首发代码候选版”状态。2026-08-13增量复核中，静态检查、197项自动化测试、生产Web构建、Android Debug构建以及当前提交的Android Release APK/AAB均已验证；生产配置和签名缺失时会主动失败，不再静默生成Demo或Debug签名的正式包。
+Flutter 客户端已经达到“首发代码候选版”状态。2026-08-13增量复核中，静态检查、198项自动化测试、生产Web构建、Android Debug构建以及当前提交的Android Release APK/AAB均已验证；生产配置和签名缺失时会主动失败，不再静默生成Demo或Debug签名的正式包。
 
 当前仓库仍不能直接宣称“商店正式版已发布”。当前Android包已使用独立4096位RSA发布密钥和目标服务器地址构建，APK v2/v3签名验证通过，不再是Debug证书；但密钥归属/异地备份、法务页面、iOS/macOS签名、生产推送/短信/对象存储凭据及实体真机验收仍属于发布方必须完成的外部条件。
 
@@ -47,10 +47,10 @@ Flutter 客户端已经达到“首发代码候选版”状态。2026-08-13增�
 | 验证项 | 结果 |
 |---|---|
 | `fvm flutter analyze` | 通过，0 issue |
-| `fvm flutter test --reporter compact` | 通过，197/197 |
+| `fvm flutter test --reporter compact` | 通过，198/198 |
 | Android Debug APK（真实本地后端参数、Demo 关闭） | 通过 |
-| Android Release APK | 通过，提交`a60ee61fb97f3359c3f176f474d1bd07f8da7e16`、目标服务器配置，153,097,416字节，SHA-256 `9a6d0d31846bf4a42c24330919509ce1779701dc198ef73d3d254da4db097bbe`；两台API 35模拟器覆盖安装后保留登录态，强制/可选升级回归仍成立，并在标准群真实页面完成成员禁言、状态刷新、解除禁言闭环；公网版本化地址与latest地址全量字节流校验一致 |
-| Android Release AAB | 通过，与APK同为提交`a60ee61fb97f3359c3f176f474d1bd07f8da7e16`和目标服务器配置，125,848,528字节，SHA-256 `9dccd3464df06378623e1b9743a6458ca6e7c5371513f98cd71f1d12567c94f8`；公网版本化地址与latest地址全量字节流校验一致 |
+| Android Release APK | 通过，提交`0c42c9ab08e8f80031f031734f4915bf92118a99`、目标服务器配置，153,228,485字节，SHA-256 `7dcfabab4df594163844b931950e55fa0198cbf33a7ce7f8cedfeb52e3d62531`；两台API 35模拟器覆盖安装后保留登录态，标准群成员禁言及消息连续编辑、编辑历史入口和原文/版本卡片目标端闭环通过；服务器文件哈希、公网Content-Length与发布清单一致 |
+| Android Release AAB | 通过，与APK同为提交`0c42c9ab08e8f80031f031734f4915bf92118a99`和目标服务器配置，125,876,339字节，SHA-256 `4bb3d1f8263f6919fb56683cc5579029b08648410a435ef9cbce296f61d67079`；服务器文件哈希、公网Content-Length与发布清单一致 |
 | Android Release 合并 Manifest | `allowBackup=false`、`fullBackupContent=false`、`usesCleartextTraffic=false`、非 debuggable |
 | Android Release 签名验证 | APK Signature Scheme v2/v3通过；4096位RSA发布证书SHA-256为`11fcd730e1fcf1e1fcdb7947b615a51179a4794d30e59000c38a19106a43072e` |
 | 缺少 Release 签名时构建 | 按设计失败并给出明确错误 |
