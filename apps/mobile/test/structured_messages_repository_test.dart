@@ -307,6 +307,11 @@ void main() {
     expect(forwarded.single.kind, MessageContentKind.chatHistory);
     expect(forwarded.single.text, contains('第一条消息'));
     expect(forwarded.single.text, contains('[图片]'));
+    expect(forwarded.single.chatHistoryEntries, hasLength(2));
+    expect(forwarded.single.chatHistoryEntries.map((entry) => entry.summary), [
+      '第一条消息',
+      '[图片]',
+    ]);
     await repository.close();
   });
 

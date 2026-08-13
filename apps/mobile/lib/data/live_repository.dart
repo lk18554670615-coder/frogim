@@ -2174,6 +2174,7 @@ class LiveImRepository
       eventData: body['data'] is Map
           ? Map<String, Object?>.from(body['data']! as Map)
           : const {},
+      chatHistoryEntries: chatHistoryEntriesFrom(body['entries']),
       fileName: body['fileName'] as String?,
       mimeType: body['mime'] as String? ?? body['mimeType'] as String?,
       durationSeconds: (body['duration'] as num?)?.toInt(),

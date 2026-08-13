@@ -2909,6 +2909,11 @@ class _MessageContent extends StatelessWidget {
           message: message,
           color: textColor,
         ),
+        MessageContentKind.chatHistory => _ChatHistoryMessageCard(
+          message: message,
+          controller: controller,
+          color: textColor,
+        ),
         MessageContentKind.momentShare => _MomentShareMessageCard(
           message: message,
           controller: controller,
@@ -2918,6 +2923,208 @@ class _MessageContent extends StatelessWidget {
       },
     );
   }
+}
+
+class _ChatHistoryMessageCard extends StatelessWidget {
+  const _ChatHistoryMessageCard({
+    required this.message,
+    required this.controller,
+    required this.color,
+  });
+
+  final ChatMessage message;
+  final AppController? controller;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final entries = message.chatHistoryEntries;
+    return Semantics(
+      button: entries.isNotEmpty,
+      label: '合并聊天记录，共 ${entries.length} 条',
+      child: InkWell(
+        key: Key('chat-history-${message.clientMessageId}'),
+        onTap: entries.isEmpty
+            ? null
+            : () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => _ChatHistoryDetailScreen(
+                    message: message,
+                    controller: controller,
+                  ),
+                ),
+              ),
+        borderRadius: BorderRadius.circular(10),
+        child: SizedBox(
+          width: 230,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    CupertinoIcons.chat_bubble_2_fill,
+                    size: 18,
+                    color: color,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '聊天记录',
+                      style: TextStyle(
+                        color: color,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  if (entries.isNotEmpty)
+                    Icon(
+                      CupertinoIcons.chevron_right,
+                      size: 15,
+                      color: color.withValues(alpha: .65),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              if (entries.isEmpty)
+                Text(
+                  '记录明细暂不可用',
+                  style: TextStyle(
+                    color: color.withValues(alpha: .72),
+                    fontSize: 12,
+                  ),
+                )
+              else
+                for (final entry in entries.take(3))
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 3),
+                    child: Text(
+                      '${_chatHistorySender(controller, message, entry)}：${entry.summary}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: color.withValues(alpha: .78),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+              const SizedBox(height: 7),
+              Text(
+                entries.isEmpty ? '合并转发' : '共 ${entries.length} 条消息',
+                style: TextStyle(
+                  color: color.withValues(alpha: .58),
+                  fontSize: 11,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ChatHistoryDetailScreen extends StatelessWidget {
+  const _ChatHistoryDetailScreen({required this.message, this.controller});
+
+  final ChatMessage message;
+  final AppController? controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final entries = message.chatHistoryEntries;
+    return Scaffold(
+      appBar: AppBar(title: const Text('聊天记录')),
+      body: SafeArea(
+        child: ListView.separated(
+          key: const Key('chat-history-detail-list'),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+          itemCount: entries.length,
+          separatorBuilder: (_, _) => const Divider(height: 1, indent: 48),
+          itemBuilder: (context, index) {
+            final entry = entries[index];
+            return ListTile(
+              key: Key('chat-history-entry-${entry.sourceMessageId}'),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 4,
+                vertical: 5,
+              ),
+              leading: CircleAvatar(
+                backgroundColor: LinliColors.yellow.withValues(alpha: .22),
+                foregroundColor: LinliColors.navy,
+                child: Icon(_chatHistoryIcon(entry.type), size: 18),
+              ),
+              title: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _chatHistorySender(controller, message, entry),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                  ),
+                  Text(
+                    _chatHistoryTime(entry.createdAt),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+              subtitle: Padding(
+                padding: const EdgeInsets.only(top: 5),
+                child: Text(
+                  entry.summary,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+String _chatHistorySender(
+  AppController? controller,
+  ChatMessage message,
+  ChatHistoryEntry entry,
+) {
+  if (entry.senderId.isEmpty) return '未知用户';
+  if (entry.senderId == controller?.currentUser?.id) {
+    return controller?.currentUser?.name ?? '我';
+  }
+  for (final contact in controller?.contacts ?? const <AppUser>[]) {
+    if (contact.id == entry.senderId) return contact.name;
+  }
+  for (final conversation
+      in controller?.conversations ?? const <Conversation>[]) {
+    if (conversation.id != message.conversationId) continue;
+    for (final member in conversation.members) {
+      if (member.id == entry.senderId) return member.name;
+    }
+  }
+  return entry.senderId;
+}
+
+IconData _chatHistoryIcon(String type) => switch (type) {
+  'image' => CupertinoIcons.photo_fill,
+  'audio' || 'voice' => CupertinoIcons.waveform,
+  'video' => CupertinoIcons.video_camera_solid,
+  'file' => CupertinoIcons.doc_fill,
+  'location' => CupertinoIcons.location_solid,
+  'contact' => CupertinoIcons.person_crop_rectangle_fill,
+  _ => CupertinoIcons.chat_bubble_text_fill,
+};
+
+String _chatHistoryTime(DateTime value) {
+  final local = value.toLocal();
+  String two(int number) => number.toString().padLeft(2, '0');
+  return '${local.year}-${two(local.month)}-${two(local.day)} '
+      '${two(local.hour)}:${two(local.minute)}';
 }
 
 class _MomentShareMessageCard extends StatelessWidget {

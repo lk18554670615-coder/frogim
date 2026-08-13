@@ -2723,6 +2723,7 @@ class AppController extends ChangeNotifier {
       eventData: body['data'] is Map
           ? Map<String, Object?>.from(body['data']! as Map)
           : const {},
+      chatHistoryEntries: chatHistoryEntriesFrom(body['entries']),
       mediaUrl: body['url'] as String? ?? body['downloadUrl'] as String?,
       mediaId: body['mediaId'] as String?,
       fileName: body['fileName'] as String?,

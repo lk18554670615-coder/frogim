@@ -71,6 +71,57 @@ void main() {
     expect(mapped.isMine, isFalse);
   });
 
+  test(
+    'preserves merged history snapshot entries from WuKong content 1001',
+    () {
+      final mapped = mapper.toChatMessage(
+        WukongMessage(
+          messageId: 'history-1',
+          messageSeq: 12,
+          clientMsgNo: 'history-client-1',
+          clientSeq: 0,
+          fromUid: 'usr_b',
+          channel: const WukongChannel(id: 'usr_b', type: 1),
+          timestamp: DateTime.utc(2026, 8, 13),
+          payload: const {
+            'type': WukongContentType.mergedHistory,
+            'schemaVersion': 1,
+            'digest': '[聊天记录]',
+            'entries': [
+              {
+                'sourceMessageId': 'source-1',
+                'senderId': 'usr_a',
+                'summary': '第一条消息',
+                'createdAt': '2026-08-13T01:02:03Z',
+                'type': 'text',
+              },
+              {
+                'sourceMessageId': 'source-2',
+                'senderId': 'usr_b',
+                'summary': '[图片]',
+                'createdAt': 1786583045000,
+                'type': 'image',
+              },
+            ],
+          },
+          state: WukongMessageState.sent,
+        ),
+        currentUserId: 'usr_a',
+        conversationId: 'conversation-1',
+        senderName: 'Bob',
+      );
+
+      expect(mapped.kind, MessageContentKind.chatHistory);
+      expect(mapped.chatHistoryEntries, hasLength(2));
+      expect(mapped.chatHistoryEntries.first.sourceMessageId, 'source-1');
+      expect(mapped.chatHistoryEntries.last.type, 'image');
+
+      final restored = ChatMessage.fromJson(mapped.toJson());
+      expect(restored.chatHistoryEntries, hasLength(2));
+      expect(restored.chatHistoryEntries.first.summary, '第一条消息');
+    },
+  );
+
   test('encodes GIF media with the pinned built-in content type 3', () {
     final outgoing = mapper.toOutgoing(
       ChatMessage(

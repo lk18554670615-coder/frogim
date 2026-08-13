@@ -1463,6 +1463,17 @@ func TestForwardMessagesSeparateMergedAndIdempotent(t *testing.T) {
 	if len(forwarded.Messages) != 1 || forwarded.Messages[0].Type != "chat_history" || forwarded.Messages[0].SenderID != "usr_alice" {
 		t.Fatalf("merged forward=%+v", forwarded)
 	}
+	entries, ok := forwarded.Messages[0].Body["entries"].([]any)
+	if !ok || len(entries) != 2 {
+		t.Fatalf("merged entries=%T %+v", forwarded.Messages[0].Body["entries"], forwarded.Messages[0].Body["entries"])
+	}
+	firstEntry, ok := entries[0].(map[string]any)
+	if !ok || firstEntry["sourceMessageId"] != first.ID || firstEntry["senderId"] != "usr_alice" || firstEntry["type"] != "text" || firstEntry["summary"] != "hello" {
+		t.Fatalf("merged first entry=%T %+v", entries[0], entries[0])
+	}
+	if _, exists := firstEntry["body"]; exists {
+		t.Fatal("merged entry contains source message body")
+	}
 	if _, exists := forwarded.Messages[0].Body["sdp"]; exists {
 		t.Fatal("merged forward contains untrusted transport data")
 	}

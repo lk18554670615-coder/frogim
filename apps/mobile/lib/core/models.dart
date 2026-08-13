@@ -85,6 +85,58 @@ class MessageReaction {
       );
 }
 
+class ChatHistoryEntry {
+  const ChatHistoryEntry({
+    required this.sourceMessageId,
+    required this.senderId,
+    required this.summary,
+    required this.createdAt,
+    this.type = 'text',
+  });
+
+  final String sourceMessageId;
+  final String senderId;
+  final String summary;
+  final DateTime createdAt;
+  final String type;
+
+  Map<String, Object?> toJson() => {
+    'sourceMessageId': sourceMessageId,
+    'senderId': senderId,
+    'summary': summary,
+    'createdAt': createdAt.toUtc().toIso8601String(),
+    'type': type,
+  };
+
+  factory ChatHistoryEntry.fromJson(Map<String, Object?> json) {
+    final rawCreatedAt = json['createdAt'];
+    final createdAt = rawCreatedAt is String
+        ? DateTime.tryParse(rawCreatedAt)
+        : rawCreatedAt is num
+        ? DateTime.fromMillisecondsSinceEpoch(rawCreatedAt.toInt(), isUtc: true)
+        : null;
+    return ChatHistoryEntry(
+      sourceMessageId: json['sourceMessageId'] as String? ?? '',
+      senderId: json['senderId'] as String? ?? '',
+      summary: json['summary'] as String? ?? '[消息]',
+      createdAt:
+          (createdAt ?? DateTime.fromMillisecondsSinceEpoch(0, isUtc: true))
+              .toLocal(),
+      type: json['type'] as String? ?? 'text',
+    );
+  }
+}
+
+List<ChatHistoryEntry> chatHistoryEntriesFrom(Object? value) {
+  if (value is! List) return const [];
+  return value
+      .whereType<Map>()
+      .map(
+        (entry) => ChatHistoryEntry.fromJson(Map<String, Object?>.from(entry)),
+      )
+      .toList(growable: false);
+}
+
 class AppUser {
   const AppUser({
     required this.id,
@@ -214,6 +266,7 @@ class ChatMessage {
     this.momentId,
     this.event,
     this.eventData = const {},
+    this.chatHistoryEntries = const [],
     this.fileName,
     this.mimeType,
     this.durationSeconds,
@@ -256,6 +309,7 @@ class ChatMessage {
   final String? momentId;
   final String? event;
   final Map<String, Object?> eventData;
+  final List<ChatHistoryEntry> chatHistoryEntries;
   final String? fileName;
   final String? mimeType;
   final int? durationSeconds;
@@ -293,6 +347,7 @@ class ChatMessage {
     String? momentId,
     String? event,
     Map<String, Object?>? eventData,
+    List<ChatHistoryEntry>? chatHistoryEntries,
     String? fileName,
     String? mimeType,
     int? durationSeconds,
@@ -334,6 +389,7 @@ class ChatMessage {
     momentId: momentId ?? this.momentId,
     event: event ?? this.event,
     eventData: eventData ?? this.eventData,
+    chatHistoryEntries: chatHistoryEntries ?? this.chatHistoryEntries,
     fileName: fileName ?? this.fileName,
     mimeType: mimeType ?? this.mimeType,
     durationSeconds: durationSeconds ?? this.durationSeconds,
@@ -377,6 +433,9 @@ class ChatMessage {
     'momentId': momentId,
     'event': event,
     'eventData': eventData,
+    'chatHistoryEntries': chatHistoryEntries
+        .map((entry) => entry.toJson())
+        .toList(),
     'fileName': fileName,
     'mimeType': mimeType,
     'durationSeconds': durationSeconds,
@@ -425,6 +484,7 @@ class ChatMessage {
     eventData: json['eventData'] is Map
         ? Map<String, Object?>.from(json['eventData']! as Map)
         : const {},
+    chatHistoryEntries: chatHistoryEntriesFrom(json['chatHistoryEntries']),
     fileName: json['fileName'] as String?,
     mimeType: json['mimeType'] as String?,
     durationSeconds: (json['durationSeconds'] as num?)?.toInt(),

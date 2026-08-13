@@ -950,6 +950,17 @@ class DemoImRepository implements ImRepository {
           isMine: true,
           conversationSeq: DateTime.now().millisecondsSinceEpoch,
           status: MessageStatus.sent,
+          kind: MessageContentKind.chatHistory,
+          chatHistoryEntries: [
+            for (final source in sources)
+              ChatHistoryEntry(
+                sourceMessageId: source.id,
+                senderId: source.senderId,
+                summary: source.text,
+                createdAt: source.sentAt,
+                type: source.kind.name,
+              ),
+          ],
         ),
       ];
     }

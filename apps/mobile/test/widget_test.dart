@@ -534,6 +534,42 @@ void main() {
     expect(find.text('我 ❤️ 点赞了直播'), findsOneWidget);
   });
 
+  testWidgets('合并聊天记录显示摘要并可查看完整快照', (tester) async {
+    tester.view.physicalSize = const Size(375, 812);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = AppController(ChatHistoryRepository());
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+    final conversation = controller.conversations.first;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: ChatScreen(controller: controller, conversation: conversation),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final card = find.byKey(const Key('chat-history-history-client-1'));
+    expect(card, findsOneWidget);
+    expect(find.text('共 2 条消息'), findsOneWidget);
+    await tester.tap(card);
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('chat-history-detail-list')), findsOneWidget);
+    expect(find.text('聊天记录'), findsWidgets);
+    expect(
+      find.byKey(const Key('chat-history-entry-source-1')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('chat-history-entry-source-2')),
+      findsOneWidget,
+    );
+  });
+
   test('普通会话不能发送直播互动', () async {
     final controller = AppController(DemoImRepository(latency: Duration.zero));
     await controller.loginAsDemo();
@@ -547,6 +583,24 @@ void main() {
       ),
       throwsFormatException,
     );
+  });
+
+  test('演示仓库合并转发保留结构化聊天记录类型', () async {
+    final repository = DemoImRepository(latency: Duration.zero);
+    addTearDown(repository.close);
+    await repository.enterDemo();
+    final conversations = await repository.conversations();
+    final source = await repository.messages(conversations.first.id);
+
+    final forwarded = await repository.forwardMessages(
+      conversations.first.id,
+      source.take(2).map((message) => message.id).toList(),
+      mode: 'merged',
+      clientBatchId: 'demo-merged-contract',
+    );
+
+    expect(forwarded.single.kind, MessageContentKind.chatHistory);
+    expect(forwarded.single.chatHistoryEntries, hasLength(2));
   });
 
   testWidgets('群主可从群资料页修改群头像', (tester) async {
@@ -763,6 +817,40 @@ class NoMentionRepository extends DemoImRepository {
       updatedAt: DateTime.now(),
       kind: ConversationKind.direct,
       unread: 1,
+    ),
+  ];
+}
+
+class ChatHistoryRepository extends DemoImRepository {
+  ChatHistoryRepository() : super(latency: Duration.zero);
+
+  @override
+  Future<List<ChatMessage>> messages(String conversationId) async => [
+    ChatMessage(
+      id: 'history-1',
+      clientMessageId: 'history-client-1',
+      conversationId: conversationId,
+      senderId: 'u1',
+      senderName: '林屿',
+      text: '聊天记录\n第一条消息\n[图片]',
+      sentAt: DateTime(2026, 8, 13, 10),
+      isMine: false,
+      kind: MessageContentKind.chatHistory,
+      chatHistoryEntries: [
+        ChatHistoryEntry(
+          sourceMessageId: 'source-1',
+          senderId: 'u1',
+          summary: '第一条消息',
+          createdAt: DateTime(2026, 8, 13, 9, 58),
+        ),
+        ChatHistoryEntry(
+          sourceMessageId: 'source-2',
+          senderId: currentUser?.id ?? 'demo-user',
+          summary: '[图片]',
+          createdAt: DateTime(2026, 8, 13, 9, 59),
+          type: 'image',
+        ),
+      ],
     ),
   ];
 }

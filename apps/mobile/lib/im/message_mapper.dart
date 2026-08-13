@@ -105,6 +105,7 @@ class MessageMapper {
       eventData: payload['data'] is Map
           ? wukongObjectMap(payload['data'])
           : const {},
+      chatHistoryEntries: chatHistoryEntriesFrom(payload['entries']),
       fileName: payload['fileName'] as String?,
       mimeType: payload['mime'] as String? ?? payload['mimeType'] as String?,
       durationSeconds: (payload['duration'] as num?)?.toInt(),
@@ -220,9 +221,14 @@ class MessageMapper {
       'name': message.locationName,
       'address': message.locationAddress,
     },
-    MessageContentKind.chatHistory ||
-    MessageContentKind.system ||
-    MessageContentKind.screenshotNotice => {
+    MessageContentKind.chatHistory => {
+      'content': message.text,
+      'digest': message.text,
+      'entries': message.chatHistoryEntries
+          .map((entry) => entry.toJson())
+          .toList(),
+    },
+    MessageContentKind.system || MessageContentKind.screenshotNotice => {
       'content': message.text,
       'digest': message.text,
       if (message.kind == MessageContentKind.screenshotNotice)
