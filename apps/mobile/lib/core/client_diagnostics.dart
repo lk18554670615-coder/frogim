@@ -84,7 +84,14 @@ class ClientDiagnostics {
   Future<void> flush([ImRepository? repository]) async {
     if (repository != null) _repository = repository;
     final target = _repository;
-    if (target == null || _flushing || _pending.isEmpty) return;
+    // Startup capture happens before session restoration. Keep it in memory
+    // until authentication succeeds instead of generating an expected 401.
+    if (target == null ||
+        target.currentUser == null ||
+        _flushing ||
+        _pending.isEmpty) {
+      return;
+    }
     _flushing = true;
     try {
       _appVersion ??= await _loadAppVersion();
