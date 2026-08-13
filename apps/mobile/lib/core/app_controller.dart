@@ -2613,7 +2613,15 @@ class AppController extends ChangeNotifier {
     final readCount = (payload['readCount'] as num?)?.toInt();
     for (var i = 0; i < list.length; i++) {
       final message = list[i];
-      if (!message.isMine || message.conversationSeq > sequence) continue;
+      if (!message.isMine ||
+          message.conversationSeq <= 0 ||
+          message.conversationSeq > sequence ||
+          message.status == MessageStatus.sending ||
+          message.status == MessageStatus.failed ||
+          message.status == MessageStatus.recalled ||
+          message.status == MessageStatus.expired) {
+        continue;
+      }
       list[i] = message.copyWith(
         status: delivered && message.status == MessageStatus.read
             ? MessageStatus.read

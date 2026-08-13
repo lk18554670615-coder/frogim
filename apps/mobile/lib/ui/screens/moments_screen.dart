@@ -241,6 +241,8 @@ class _MomentsScreenState extends State<MomentsScreen> {
               label: const Text('加载失败，点击重试'),
             ),
           )
+        : items.isEmpty
+        ? MomentsEmptyState(onRefresh: _load, onPublish: _publish)
         : RefreshIndicator(
             onRefresh: _load,
             child: ListView.builder(
@@ -283,6 +285,37 @@ class _MomentsScreenState extends State<MomentsScreen> {
               },
             ),
           ),
+  );
+}
+
+class MomentsEmptyState extends StatelessWidget {
+  const MomentsEmptyState({
+    super.key,
+    required this.onRefresh,
+    required this.onPublish,
+  });
+
+  final Future<void> Function() onRefresh;
+  final VoidCallback onPublish;
+
+  @override
+  Widget build(BuildContext context) => RefreshIndicator(
+    onRefresh: onRefresh,
+    child: CustomScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      slivers: [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: StatePanel(
+            icon: CupertinoIcons.person_2_square_stack,
+            title: '还没有朋友圈动态',
+            body: '发布此刻的想法、照片或视频，好友的互动也会显示在这里。',
+            actionLabel: '发布第一条动态',
+            onAction: onPublish,
+          ),
+        ),
+      ],
+    ),
   );
 }
 

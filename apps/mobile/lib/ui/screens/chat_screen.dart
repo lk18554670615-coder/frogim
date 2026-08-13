@@ -23,6 +23,7 @@ import '../../core/media_opener.dart';
 import '../../core/models.dart';
 import '../../core/screenshot_detection.dart';
 import '../../core/web_drop_paste.dart';
+import '../../im/business_features.dart';
 import '../widgets/linli_widgets.dart';
 import '../widgets/media_send_widgets.dart';
 import 'moments_screen.dart';
@@ -64,6 +65,9 @@ class _ChatScreenState extends State<ChatScreen> {
   ChatMessage? replyingTo;
   Timer? _draftTimer;
   bool _draftReady = false;
+  bool _loadingSendCapability = false;
+  bool _sendCapabilityFailed = false;
+  String? _sendRestriction;
   late final StreamSubscription<DateTime> _screenshotEvents;
   DateTime? _lastScreenshotNotice;
 
@@ -81,6 +85,11 @@ class _ChatScreenState extends State<ChatScreen> {
     _screenshotEvents = ScreenshotDetection.instance.events.listen(
       _handleScreenshot,
     );
+    if (widget.conversation.isBusinessChannel &&
+        widget.controller.supportsBusinessFeatures) {
+      _loadingSendCapability = true;
+      unawaited(_loadSendCapability());
+    }
     unawaited(_restoreDraft());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -90,6 +99,37 @@ class _ChatScreenState extends State<ChatScreen> {
           .loadMessages(widget.conversation.id)
           .then((_) => _scrollToInitialMessage());
     });
+  }
+
+  Future<void> _loadSendCapability() async {
+    if (!widget.conversation.isBusinessChannel ||
+        !widget.controller.supportsBusinessFeatures) {
+      return;
+    }
+    if (mounted) {
+      setState(() {
+        _loadingSendCapability = true;
+        _sendCapabilityFailed = false;
+      });
+    }
+    try {
+      final channel = await widget.controller.loadBusinessChannel(
+        widget.conversation.channelId ?? widget.conversation.id,
+        widget.conversation.channelType,
+      );
+      if (!mounted) return;
+      setState(() {
+        _sendRestriction = businessChannelSendRestriction(channel);
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _sendCapabilityFailed = true;
+        _sendRestriction = '暂时无法确认发言权限，请重试后再发送。';
+      });
+    } finally {
+      if (mounted) setState(() => _loadingSendCapability = false);
+    }
   }
 
   @override
@@ -310,6 +350,18 @@ class _ChatScreenState extends State<ChatScreen> {
                             ? null
                             : () => _chooseForwardMode(_selectedMessages),
                       )
+                    else if (_loadingSendCapability)
+                      const ChannelSendRestrictionBar(
+                        message: '正在确认频道发言权限…',
+                        loading: true,
+                      )
+                    else if (_sendRestriction case final restriction?)
+                      ChannelSendRestrictionBar(
+                        message: restriction,
+                        onRetry: _sendCapabilityFailed
+                            ? _loadSendCapability
+                            : null,
+                      )
                     else
                       ChatComposer(
                         controller: textController,
@@ -511,7 +563,9 @@ class _ChatScreenState extends State<ChatScreen> {
               showGroupReceipt:
                   widget.conversation.kind == ConversationKind.group &&
                   message.id == latestMineId,
-              onRetry: () => widget.controller.retryMessage(message),
+              onRetry: _sendRestriction == null && !_loadingSendCapability
+                  ? () => widget.controller.retryMessage(message)
+                  : null,
               selectionMode: selecting,
               selected: selectedMessageIds.contains(message.clientMessageId),
               onSelect: () => _toggleSelection(message),
@@ -2558,18 +2612,18 @@ class MessageBubble extends StatelessWidget {
                             if (message.status == MessageStatus.failed)
                               GestureDetector(
                                 onTap: onRetry,
-                                child: const Row(
+                                child: Row(
                                   children: [
-                                    Icon(
+                                    const Icon(
                                       CupertinoIcons
                                           .exclamationmark_circle_fill,
                                       size: 13,
                                       color: LinliColors.systemRed,
                                     ),
-                                    SizedBox(width: 3),
+                                    const SizedBox(width: 3),
                                     Text(
-                                      '发送失败，点此重试',
-                                      style: TextStyle(
+                                      onRetry == null ? '发送失败' : '发送失败，点此重试',
+                                      style: const TextStyle(
                                         color: LinliColors.systemRed,
                                         fontSize: 10,
                                       ),
@@ -3803,6 +3857,72 @@ class _ScheduledMessagesSheet extends StatelessWidget {
 
   static String _scheduledTime(DateTime date) =>
       '${date.month}月${date.day}日 ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')} 发送';
+}
+
+String? businessChannelSendRestriction(BusinessChannelSummary channel) {
+  if (channel.disband) return '频道已解散，历史消息仅供查看。';
+  if (channel.ban) return '频道已被封禁，当前不能发送消息。';
+  if (!channel.subscribed) return '加入频道后才能发送消息。';
+  if (channel.sendBan) return '频道当前为全员禁言，你仍可浏览和接收更新。';
+  const operatorRoles = {'owner', 'admin', 'moderator'};
+  if (channel.postingPolicy == 'operators' &&
+      !operatorRoles.contains(channel.role)) {
+    return channel.channelType == 6
+        ? '该资讯频道仅管理员可发布，你仍可浏览和接收更新。'
+        : '该频道仅管理员可发布，你仍可浏览和接收更新。';
+  }
+  return null;
+}
+
+class ChannelSendRestrictionBar extends StatelessWidget {
+  const ChannelSendRestrictionBar({
+    super.key,
+    required this.message,
+    this.loading = false,
+    this.onRetry,
+  });
+
+  final String message;
+  final bool loading;
+  final Future<void> Function()? onRetry;
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    top: false,
+    child: Container(
+      key: const Key('channel-send-restriction'),
+      width: double.infinity,
+      constraints: const BoxConstraints(minHeight: 62),
+      padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainer,
+        border: Border(
+          top: BorderSide(color: Theme.of(context).colorScheme.outline),
+        ),
+      ),
+      child: Row(
+        children: [
+          if (loading)
+            const SizedBox.square(
+              dimension: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          else
+            Icon(
+              CupertinoIcons.lock_fill,
+              size: 20,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(message, style: Theme.of(context).textTheme.bodyMedium),
+          ),
+          if (onRetry != null)
+            TextButton(onPressed: onRetry, child: const Text('重试')),
+        ],
+      ),
+    ),
+  );
 }
 
 class ChatComposer extends StatefulWidget {

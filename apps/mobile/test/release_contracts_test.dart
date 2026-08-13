@@ -241,6 +241,23 @@ void main() {
         payload: {'message': mappedSending.toJson()},
       ),
     );
+    final mappedFailed = ChatMessage(
+      id: 'local-client-failed',
+      clientMessageId: 'client-failed',
+      conversationId: 'c-linyu',
+      senderId: controller.currentUser!.id,
+      senderName: controller.currentUser!.name,
+      text: '未发送成功',
+      sentAt: DateTime.utc(2026, 8, 1, 10, 2),
+      isMine: true,
+      status: MessageStatus.failed,
+    );
+    repository.emit(
+      ImEvent(
+        type: ImEventType.messageCreated,
+        payload: {'message': mappedFailed.toJson()},
+      ),
+    );
     await Future<void>.delayed(Duration.zero);
     expect(
       controller
@@ -257,8 +274,26 @@ void main() {
     );
     await Future<void>.delayed(Duration.zero);
     expect(
-      controller.messagesFor('c-linyu').last.status,
+      controller
+          .messagesFor('c-linyu')
+          .singleWhere((message) => message.id == 'mine-6')
+          .status,
       MessageStatus.delivered,
+    );
+    expect(
+      controller
+          .messagesFor('c-linyu')
+          .singleWhere((message) => message.id == 'wk-client-7')
+          .status,
+      MessageStatus.sending,
+      reason: '没有服务端序号的本地消息不得被其他消息的回执改写',
+    );
+    expect(
+      controller
+          .messagesFor('c-linyu')
+          .singleWhere((message) => message.id == 'local-client-failed')
+          .status,
+      MessageStatus.failed,
     );
 
     repository.emit(
