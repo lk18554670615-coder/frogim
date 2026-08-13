@@ -2458,7 +2458,7 @@ class MessageBubble extends StatelessWidget {
               borderRadius: BorderRadius.circular(999),
             ),
             child: Text(
-              '${message.isMine ? '我' : message.senderName} ${message.text.replaceFirst(RegExp(r'^[❤️👏⭐]\s*'), '')}',
+              '${message.isMine ? '我' : message.senderName} ${message.text}',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.labelMedium?.copyWith(
                 color: LinliColors.navy,

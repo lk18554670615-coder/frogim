@@ -531,6 +531,7 @@ void main() {
       find.byKey(Key('live-event-${sent.clientMessageId}')),
       findsOneWidget,
     );
+    expect(find.text('我 ❤️ 点赞了直播'), findsOneWidget);
   });
 
   test('普通会话不能发送直播互动', () async {
