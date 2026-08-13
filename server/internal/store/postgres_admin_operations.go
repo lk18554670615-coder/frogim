@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/linli/im/server/internal/model"
@@ -165,6 +166,41 @@ func (p *Postgres) AdminTaskStatus(ctx context.Context) (map[string]any, error) 
 	}
 	result["scheduledMessages"] = map[string]any{"pending": scheduledPending, "processing": scheduledProcessing, "failed": scheduledFailed}
 	result["messageExpiry"] = map[string]any{"waiting": expiring}
+	var outboxPending, outboxProcessing, outboxFailed, reconcilePending, reconcileCompleted, reconcileFailed int64
+	var outboxOldestSeconds float64
+	var outboxLastCompleted *time.Time
+	if err := p.pool.QueryRow(ctx, `SELECT
+		count(*) FILTER(WHERE status='pending'),count(*) FILTER(WHERE status='processing'),count(*) FILTER(WHERE status='failed'),
+		count(*) FILTER(WHERE operation='channel.reconcile' AND status IN ('pending','processing')),
+		count(*) FILTER(WHERE operation='channel.reconcile' AND status='completed'),
+		count(*) FILTER(WHERE operation='channel.reconcile' AND status='failed'),
+		COALESCE(EXTRACT(EPOCH FROM (now()-min(created_at) FILTER(WHERE status IN ('pending','processing')))),0),
+		max(completed_at) FROM im_wukong_outbox`).Scan(
+		&outboxPending, &outboxProcessing, &outboxFailed, &reconcilePending, &reconcileCompleted, &reconcileFailed,
+		&outboxOldestSeconds, &outboxLastCompleted,
+	); err != nil {
+		return nil, err
+	}
+	result["wukongOutbox"] = map[string]any{
+		"pending": outboxPending, "processing": outboxProcessing, "failed": outboxFailed,
+		"oldestPendingSeconds": outboxOldestSeconds, "lastCompletedAt": outboxLastCompleted,
+		"reconcilePending": reconcilePending, "reconcileCompleted": reconcileCompleted, "reconcileFailed": reconcileFailed,
+	}
+	var webhookPending, webhookProcessing, webhookFailed int64
+	var webhookOldestSeconds float64
+	var webhookLastCompleted *time.Time
+	if err := p.pool.QueryRow(ctx, `SELECT
+		count(*) FILTER(WHERE status='pending'),count(*) FILTER(WHERE status='processing'),count(*) FILTER(WHERE status='failed'),
+		COALESCE(EXTRACT(EPOCH FROM (now()-min(received_at) FILTER(WHERE status IN ('pending','processing')))),0),
+		max(completed_at) FROM im_wukong_webhook_events`).Scan(
+		&webhookPending, &webhookProcessing, &webhookFailed, &webhookOldestSeconds, &webhookLastCompleted,
+	); err != nil {
+		return nil, err
+	}
+	result["wukongWebhook"] = map[string]any{
+		"pending": webhookPending, "processing": webhookProcessing, "failed": webhookFailed,
+		"oldestPendingSeconds": webhookOldestSeconds, "lastCompletedAt": webhookLastCompleted,
+	}
 	return result, nil
 }
 

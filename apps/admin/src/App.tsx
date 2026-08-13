@@ -378,8 +378,8 @@ function RelationshipsPage() {
   </>;
 }
 
-const taskLabels:Record<string,string>={scheduledMessages:'定时消息',messageExpiry:'消息过期',mediaCleanup:'媒体清理',pending:'待处理',processing:'处理中',failed:'失败',waiting:'等待到期',status:'状态',lastRun:'最近执行'};
-function taskSummary(value:unknown){if(!value||typeof value!=='object')return String(value??'暂无');return Object.entries(value as Record<string,unknown>).map(([key,item])=>`${taskLabels[key]??key}：${String(item)}`).join(' · ');}
+const taskLabels:Record<string,string>={scheduledMessages:'定时消息',messageExpiry:'消息过期',mediaCleanup:'媒体清理',wukongOutbox:'WuKong 同步队列',wukongWebhook:'WuKong Webhook 队列',pending:'待处理',processing:'处理中',failed:'失败',waiting:'等待到期',status:'状态',lastRun:'最近执行',oldestPendingSeconds:'最老积压（秒）',lastCompletedAt:'最近完成',reconcilePending:'待对账',reconcileCompleted:'已对账',reconcileFailed:'对账失败'};
+function taskSummary(value:unknown){if(!value||typeof value!=='object')return String(value??'暂无');return Object.entries(value as Record<string,unknown>).map(([key,item])=>`${taskLabels[key]??key}：${item===null?'暂无':String(item)}`).join(' · ');}
 function OperationsPage(){
   const {api,mode}=useApi(); const state=useResource(()=>api.getOperationsStatus(),[api,mode]);
   if(state.loading)return <><PageHeader title="推送、任务与权限" description="只读运行视图。"/><Skeleton rows={7}/></>;
@@ -388,7 +388,7 @@ function OperationsPage(){
   return <><PageHeader title="推送、任务与权限" description="查看推送设备和队列、后台任务积压、当前管理员与角色边界；页面不提供命令执行或手动清理。" actions={<button className="button secondary" onClick={()=>void state.reload()}><RefreshCcw size={15}/>刷新</button>}/>
     <div className="operations-grid"><section className="panel section-panel"><div className="panel-heading"><div><h2>推送通道</h2><p>已登记设备与禁用设备。</p></div></div>{data.push.providers.length?data.push.providers.map(item=><div className="ops-row" key={item.provider}><strong>{item.provider}</strong><span>{item.activeDevices} 台启用 · {item.disabledDevices} 台禁用</span></div>):<div className="panel-empty">暂无推送设备</div>}</section>
     <section className="panel section-panel"><div className="panel-heading"><div><h2>推送队列</h2><p>发送状态与累计尝试次数。</p></div></div>{data.push.queue.length?data.push.queue.map(item=><div className="ops-row" key={item.status}><Badge value={item.status==='sent'?'success':item.status==='failed'?'failed':'pending'} label={({pending:'待发送',processing:'处理中',sent:'已发送',failed:'失败'} as Record<string,string>)[item.status]??item.status}/><span>{item.count} 条 · 尝试 {item.attempts} 次</span></div>):<div className="panel-empty">队列为空</div>}</section>
-    <section className="panel section-panel"><div className="panel-heading"><div><h2>后台任务</h2><p>定时消息、消息过期和媒体清理的只读状态。</p></div></div>{taskEntries.length?taskEntries.map(([name,value])=><div className="ops-row stacked" key={name}><strong>{taskLabels[name]??name}</strong><span>{taskSummary(value)}</span></div>):<div className="panel-empty">暂无后台任务状态</div>}</section>
+    <section className="panel section-panel"><div className="panel-heading"><div><h2>后台任务</h2><p>定时消息、消息过期、媒体清理以及 WuKong 同步/对账队列的只读状态。</p></div></div>{taskEntries.length?taskEntries.map(([name,value])=><div className="ops-row stacked" key={name}><strong>{taskLabels[name]??name}</strong><span>{taskSummary(value)}</span></div>):<div className="panel-empty">暂无后台任务状态</div>}</section>
     <section className="panel section-panel"><div className="panel-heading"><div><h2>管理员与角色</h2><p>{data.access.note}</p></div></div>{data.access.administrators.map(item=><div className="ops-row" key={item.id}><div><strong>{item.id}</strong><small>{item.source} · {item.mutable?'可管理':'只读配置'}</small></div><Badge value="active" label={roleLabels[item.role]}/></div>)}{data.access.roles.map(role=><div className="role-row" key={role.id}><strong>{roleLabels[role.id]}</strong><span>{role.permissions.join(' · ')}</span></div>)}</section></div>
   </>;
 }

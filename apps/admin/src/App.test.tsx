@@ -285,6 +285,16 @@ describe('邻里通讯管理后台', () => {
     expect(screen.getByRole('button', { name: '设为系统账号' })).toBeEnabled();
   });
 
+  it('后台任务展示 WuKong 同步、Webhook 与对账状态', async () => {
+    window.history.replaceState({}, '', '/operations');
+    render(<App />);
+    expect(screen.getByRole('heading', { name: '推送、任务与权限' })).toBeInTheDocument();
+    expect(await screen.findByText('WuKong 同步队列')).toBeInTheDocument();
+    expect(screen.getByText('WuKong Webhook 队列')).toBeInTheDocument();
+    expect(screen.getByText(/已对账：12/)).toBeInTheDocument();
+    expect(screen.getAllByText(/最老积压（秒）：0/)).toHaveLength(2);
+  });
+
   it('频道运营覆盖成员、临时订阅与黑白名单入口', async () => {
     window.history.replaceState({}, '', '/business-channels');
     render(<App />);

@@ -240,6 +240,37 @@ func TestRuntimeStatsExposePermanentWukongFailures(t *testing.T) {
 	}
 }
 
+func TestAdminTaskStatusExposesWukongQueuesAndReconciliation(t *testing.T) {
+	p := newIsolatedWukongStore(t)
+	ctx := t.Context()
+	if _, err := p.pool.Exec(ctx, `
+		INSERT INTO im_wukong_outbox(idempotency_key,operation,aggregate_type,aggregate_id,payload,status,created_at)
+		VALUES('admin-reconcile-pending','channel.reconcile','channel','2:g1','{}','pending',now()-interval '30 seconds');
+		INSERT INTO im_wukong_outbox(idempotency_key,operation,aggregate_type,aggregate_id,payload,status,completed_at)
+		VALUES('admin-reconcile-completed','channel.reconcile','channel','2:g2','{}','completed',now());
+		INSERT INTO im_wukong_outbox(idempotency_key,operation,aggregate_type,aggregate_id,payload,status,last_error)
+		VALUES('admin-reconcile-failed','channel.reconcile','channel','2:g3','{}','failed','sanitized failure');
+		INSERT INTO im_wukong_webhook_events(id,event_type,payload,status,received_at)
+		VALUES('admin-webhook-processing','msg.notify','{}','processing',now()-interval '20 seconds');
+		INSERT INTO im_wukong_webhook_events(id,event_type,payload,status,last_error,received_at)
+		VALUES('admin-webhook-failed','msg.offline','{}','failed','sanitized failure',now());
+	`); err != nil {
+		t.Fatal(err)
+	}
+	status, err := p.AdminTaskStatus(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbox := status["wukongOutbox"].(map[string]any)
+	webhook := status["wukongWebhook"].(map[string]any)
+	if outbox["pending"] != int64(1) || outbox["failed"] != int64(1) || outbox["reconcilePending"] != int64(1) || outbox["reconcileCompleted"] != int64(1) || outbox["reconcileFailed"] != int64(1) || outbox["lastCompletedAt"] == nil || outbox["oldestPendingSeconds"].(float64) < 29 {
+		t.Fatalf("outbox status=%+v", outbox)
+	}
+	if webhook["processing"] != int64(1) || webhook["failed"] != int64(1) || webhook["oldestPendingSeconds"].(float64) < 19 {
+		t.Fatalf("webhook status=%+v", webhook)
+	}
+}
+
 func waitForWukongOutboxState(t *testing.T, p *Postgres, id int64, wantStatus string, wantAttempts int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
