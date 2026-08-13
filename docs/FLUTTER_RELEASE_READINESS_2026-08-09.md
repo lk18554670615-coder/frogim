@@ -2,7 +2,7 @@
 
 ## 结论
 
-Flutter 客户端已经达到“首发代码候选版”状态。2026-08-13增量复核中，静态检查、178项自动化测试、生产Web构建、Android Debug构建和Android Release APK/AAB均已验证；生产配置和签名缺失时会主动失败，不再静默生成Demo或Debug签名的正式包。
+Flutter 客户端已经达到“首发代码候选版”状态。2026-08-13增量复核中，静态检查、187项自动化测试、生产Web构建、Android Debug构建和Android Release APK/AAB均已验证；生产配置和签名缺失时会主动失败，不再静默生成Demo或Debug签名的正式包。
 
 当前仓库仍不能直接宣称“商店正式版已发布”。当前Android包已使用独立4096位RSA发布密钥和目标服务器地址构建，APK v2/v3签名验证通过，不再是Debug证书；但密钥归属/异地备份、法务页面、iOS/macOS签名、生产推送/短信/对象存储凭据及实体真机验收仍属于发布方必须完成的外部条件。
 
@@ -47,10 +47,10 @@ Flutter 客户端已经达到“首发代码候选版”状态。2026-08-13增�
 | 验证项 | 结果 |
 |---|---|
 | `fvm flutter analyze` | 通过，0 issue |
-| `fvm flutter test --reporter compact` | 通过，178/178 |
+| `fvm flutter test --reporter compact` | 通过，187/187 |
 | Android Debug APK（真实本地后端参数、Demo 关闭） | 通过 |
-| Android Release APK | 通过，目标服务器配置，143,135,376字节，SHA-256 `078c7a10cc7290caa6e90659ddcea663581ce076febc1ab72497cc9c70bcec9a` |
-| Android Release AAB | 通过，目标服务器配置，115,845,967字节，SHA-256 `b518afe824e2226ec2ef2d12145a73732f8109989dbb0a547998c90ebb390925` |
+| Android Release APK | 通过，提交`d29593c81d4453d0e0833a511443d84701d673a3`、目标服务器配置，153,080,739字节，SHA-256 `7a7c7b4ba3395dc0bb427e4882083b5deb15432ef581cfcfa3790a253cd14ae6`；两台API 35模拟器覆盖安装后保留登录态并进入真实消息首页，公网版本化地址与latest地址流式校验一致 |
+| Android Release AAB | 上一轮完整构建通过，目标服务器配置，115,845,967字节，SHA-256 `b518afe824e2226ec2ef2d12145a73732f8109989dbb0a547998c90ebb390925`；正式商店提交前应从最终提交重新生成 |
 | Android Release 合并 Manifest | `allowBackup=false`、`fullBackupContent=false`、`usesCleartextTraffic=false`、非 debuggable |
 | Android Release 签名验证 | APK Signature Scheme v2/v3通过；4096位RSA发布证书SHA-256为`11fcd730e1fcf1e1fcdb7947b615a51179a4794d30e59000c38a19106a43072e` |
 | 缺少 Release 签名时构建 | 按设计失败并给出明确错误 |
@@ -59,7 +59,7 @@ Flutter 客户端已经达到“首发代码候选版”状态。2026-08-13增�
 | `bash -n infra/scripts/*.sh` | 通过 |
 | 本地、域名生产、IP 生产 Compose 配置解析 | 均通过 |
 
-当前Android Release APK约136.5 MiB，AAB约110.5 MiB。商店按ABI/设备拆分后的下载大小会更小，但仍应在真实上传后以商店报告为准。
+当前Android Release APK约146.0 MiB；上一轮AAB约110.5 MiB。APK增加了固定版本的Web Emoji字体资产，商店按ABI/设备拆分后的下载大小会更小，但仍应从最终提交重建AAB并以商店报告为准。
 
 ## 正式发布前的硬阻断项
 
