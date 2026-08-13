@@ -44,6 +44,7 @@ import type {
   WukongPluginLogEntry,
   LiveKitRoom,
   LiveKitParticipant,
+  LiveKitMetrics,
   BusinessChannelRecord,
   BusinessChannelMemberRecord,
   BusinessChannelAccessRecord,
@@ -374,6 +375,17 @@ function adaptLiveKitParticipant(value: unknown): LiveKitParticipant {
   return { sid: string(raw.sid), identity: string(raw.identity), name: string(raw.name), state: string(raw.state), joinedAt: formatDate(raw.joinedAt), trackCount: tracks.length, screenSharing: tracks.some((track) => string(track.source).startsWith('SCREEN_SHARE')) };
 }
 
+function adaptLiveKitMetrics(value: unknown): LiveKitMetrics {
+  const raw = object(value);
+  return {
+    healthy: boolean(raw.healthy), activeRooms: number(raw.activeRooms), activeParticipants: number(raw.activeParticipants),
+    cpuPercent: number(raw.cpuPercent), residentMemoryBytes: number(raw.residentMemoryBytes),
+    networkReceiveBytesPerSecond: number(raw.networkReceiveBytesPerSecond), networkTransmitBytesPerSecond: number(raw.networkTransmitBytesPerSecond),
+    packetLossPercent: number(raw.packetLossPercent), participantJoinsLastHour: number(raw.participantJoinsLastHour), roomsCompletedLastHour: number(raw.roomsCompletedLastHour),
+    sampledAt: string(raw.sampledAt),
+  };
+}
+
 function adaptMessage(value: unknown): MessageRecord {
   const raw = object(value); const body = object(raw.body);
   const preview = string(body.text, string(body.fileName, string(body.caption, JSON.stringify(body))));
@@ -583,6 +595,7 @@ const demoApi: AdminApi = {
   async updateWukongPluginConfig() { await wait(); },
   async uninstallWukongPlugin() { await wait(); },
   async getLiveKitRooms() { await wait(); return [{ sid: 'RM_demo', name: 'call_demo', createdAt: '刚刚', participantCount: 2, publisherCount: 2, maxParticipants: 9, activeRecording: false }]; },
+  async getLiveKitMetrics() { await wait(); return { healthy: true, activeRooms: 1, activeParticipants: 2, cpuPercent: 2.4, residentMemoryBytes: 96 * 1024 * 1024, networkReceiveBytesPerSecond: 2048, networkTransmitBytesPerSecond: 4096, packetLossPercent: 0, participantJoinsLastHour: 8, roomsCompletedLastHour: 3, sampledAt: new Date().toISOString() }; },
   async getLiveKitParticipants() { await wait(); return [{ sid: 'PA_demo', identity: 'u_demo', name: '演示用户', state: 'ACTIVE', joinedAt: '刚刚', trackCount: 2, screenSharing: false }]; },
   async removeLiveKitParticipant() { await wait(); },
   async deleteLiveKitRoom() { await wait(); },
@@ -691,6 +704,7 @@ function liveApi(token: string): AdminApi {
     async updateWukongPluginConfig(no, nodeId, config, reason) { await request(`/wukong/plugins/${encodeURIComponent(no)}/config`, token, { method: 'PUT', body: JSON.stringify({ nodeId, config, reason, confirmed: true }) }); },
     async uninstallWukongPlugin(no, nodeId, reason) { await request(`/wukong/plugins/${encodeURIComponent(no)}`, token, { method: 'DELETE', body: JSON.stringify({ nodeId, reason, confirmed: true }) }); },
     async getLiveKitRooms() { return unwrapItems(await request('/livekit/rooms', token)).items.map(adaptLiveKitRoom); },
+    async getLiveKitMetrics() { return adaptLiveKitMetrics(await request('/livekit/metrics', token)); },
     async getLiveKitParticipants(room) { return unwrapItems(await request(`/livekit/rooms/${encodeURIComponent(room)}/participants`, token)).items.map(adaptLiveKitParticipant); },
     async removeLiveKitParticipant(room, identity, reason) { await request(`/livekit/rooms/${encodeURIComponent(room)}/participants/${encodeURIComponent(identity)}`, token, { method: 'DELETE', body: JSON.stringify({ reason, confirmed: true }) }); },
     async deleteLiveKitRoom(room, reason) { await request(`/livekit/rooms/${encodeURIComponent(room)}`, token, { method: 'DELETE', body: JSON.stringify({ reason, confirmed: true }) }); },

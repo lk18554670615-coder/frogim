@@ -148,6 +148,7 @@ infra/scripts/validate-production-env.sh .env.production
 | `IM_CALL_INVITE_TTL` | 来电邀请超时 | 15 秒–2 分钟，需重启 |
 | `IM_LIVEKIT_URL` / `IM_LIVEKIT_TOKEN_TTL` | LiveKit 客户端信令地址与短期 Token 有效期 | URL 生产必须使用 WSS；TTL 为 1–15 分钟 |
 | `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | LiveKit 服务端管理凭据 | 仅服务端，不回显；Secret 至少 32 字节 |
+| `IM_PROMETHEUS_URL` | 业务服务读取 LiveKit 资源指标的内部 Prometheus 地址 | 仅容器内网使用，不返回浏览器；未配置时后台指标接口不可用 |
 
 LiveKit 统一承载音视频协商、UDP/TCP 回退和屏幕共享。云防火墙按 `infra/livekit/livekit.yaml` 开放信令、TCP 与 UDP 媒体端口；旧 Coturn、3478 和 49160–49200 端口不再属于本项目部署面。
 

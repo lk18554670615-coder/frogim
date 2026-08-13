@@ -165,7 +165,7 @@ func New(cfg config.Config, a *app.App) *API {
 		x.livekit, x.livekitSetupErr = livekitcontrol.NewControl(livekitcontrol.Config{
 			URL: cfg.LiveKitURL, APIURL: cfg.LiveKitAPIURL,
 			APIKey: cfg.LiveKitAPIKey, APISecret: cfg.LiveKitAPISecret,
-			TokenTTL: cfg.LiveKitTokenTTL,
+			PrometheusURL: cfg.PrometheusURL, TokenTTL: cfg.LiveKitTokenTTL,
 		})
 	}
 	if cfg.DevMode {
@@ -447,6 +447,7 @@ func (x *API) registerWukongAdminRoutes(prefix string) {
 	x.mux.Handle("PUT "+prefix+"/wukong/plugins/{no}/config", x.requireAdmin(http.HandlerFunc(x.updateWukongPluginConfig)))
 	x.mux.Handle("DELETE "+prefix+"/wukong/plugins/{no}", x.requireAdmin(http.HandlerFunc(x.uninstallWukongPlugin)))
 	x.mux.Handle("GET "+prefix+"/livekit/rooms", x.requireAdmin(http.HandlerFunc(x.adminLiveKitRooms)))
+	x.mux.Handle("GET "+prefix+"/livekit/metrics", x.requireAdmin(http.HandlerFunc(x.adminLiveKitMetrics)))
 	x.mux.Handle("DELETE "+prefix+"/livekit/rooms/{room}", x.requireAdmin(http.HandlerFunc(x.deleteLiveKitRoom)))
 	x.mux.Handle("GET "+prefix+"/livekit/rooms/{room}/participants", x.requireAdmin(http.HandlerFunc(x.adminLiveKitParticipants)))
 	x.mux.Handle("DELETE "+prefix+"/livekit/rooms/{room}/participants/{identity}", x.requireAdmin(http.HandlerFunc(x.removeLiveKitParticipant)))

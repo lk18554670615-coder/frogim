@@ -2,6 +2,7 @@ package livekit
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -110,10 +111,47 @@ func TestNewControlRejectsUnsafeConfiguration(t *testing.T) {
 		{URL: "ws://livekit", APIURL: "tcp://wrong", APIKey: "key", APISecret: testSecret},
 		{URL: "ws://livekit", APIURL: "http://livekit", APIKey: "key", APISecret: "short"},
 		{URL: "ws://livekit", APIURL: "http://livekit", APIKey: "key", APISecret: testSecret, TokenTTL: 30 * time.Second},
+		{URL: "ws://livekit", APIURL: "http://livekit", APIKey: "key", APISecret: testSecret, PrometheusURL: "file:///metrics"},
 	} {
 		if _, err := NewControl(cfg); err == nil {
 			t.Fatalf("expected rejection for %+v", cfg)
 		}
+	}
+}
+
+func TestControlReadsLiveKitResourceMetricsFromPrometheus(t *testing.T) {
+	values := map[string]string{
+		`max(up{job="livekit"})`:                                             "1",
+		`sum(livekit_room_total{job="livekit"})`:                             "2",
+		`sum(livekit_participant_total{job="livekit"})`:                      "5",
+		`sum(rate(process_cpu_seconds_total{job="livekit"}[5m])) * 100`:      "12.5",
+		`sum(process_resident_memory_bytes{job="livekit"})`:                  "104857600",
+		`sum(rate(process_network_receive_bytes_total{job="livekit"}[5m]))`:  "2048.5",
+		`sum(rate(process_network_transmit_bytes_total{job="livekit"}[5m]))`: "4096.25",
+		`100 * sum(rate(livekit_packet_loss_total{job="livekit"}[5m])) / clamp_min(sum(rate(livekit_packet_total{job="livekit"}[5m])), 1)`: "0.125",
+		`sum(increase(livekit_participant_join_total{job="livekit"}[1h]))`:                                                                 "19.6",
+		`sum(increase(livekit_room_duration_seconds_count{job="livekit"}[1h]))`:                                                            "7.4",
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		value, ok := values[r.URL.Query().Get("query")]
+		if r.URL.Path != "/api/v1/query" || !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1700000000,%q]}]}}`, value)
+	}))
+	defer server.Close()
+	control, err := NewControl(Config{URL: "wss://chat.example.test/rtc", APIURL: server.URL, APIKey: "devkey", APISecret: testSecret, PrometheusURL: server.URL, TokenTTL: 2 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics, err := control.Metrics(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !metrics.Healthy || metrics.ActiveRooms != 2 || metrics.ActiveParticipants != 5 || metrics.CPUPercent != 12.5 || metrics.ResidentMemoryBytes != 104857600 || metrics.NetworkReceiveBytesPerSec != 2048.5 || metrics.NetworkTransmitBytesPerSec != 4096.25 || metrics.PacketLossPercent != 0.125 || metrics.ParticipantJoinsLastHour != 20 || metrics.RoomsCompletedLastHour != 7 || metrics.SampledAt.IsZero() {
+		t.Fatalf("metrics=%+v", metrics)
 	}
 }
 

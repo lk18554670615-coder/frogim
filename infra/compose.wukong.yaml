@@ -20,6 +20,7 @@ services:
       IM_LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
       IM_LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-local-livekit-secret-change-me-123456}
       IM_LIVEKIT_TOKEN_TTL: ${IM_LIVEKIT_TOKEN_TTL:-5m}
+      IM_PROMETHEUS_URL: http://prometheus:9090
     expose:
       - "6970"
     volumes:

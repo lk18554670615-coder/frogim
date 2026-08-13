@@ -439,6 +439,20 @@ export interface LiveKitParticipant {
   screenSharing: boolean;
 }
 
+export interface LiveKitMetrics {
+  healthy: boolean;
+  activeRooms: number;
+  activeParticipants: number;
+  cpuPercent: number;
+  residentMemoryBytes: number;
+  networkReceiveBytesPerSecond: number;
+  networkTransmitBytesPerSecond: number;
+  packetLossPercent: number;
+  participantJoinsLastHour: number;
+  roomsCompletedLastHour: number;
+  sampledAt: string;
+}
+
 export interface BusinessChannelRecord {
   id: string;
   channelType: 4 | 5 | 6 | 9;
@@ -606,6 +620,7 @@ export interface AdminApi {
   updateWukongPluginConfig(no: string, nodeId: number, config: Record<string, unknown>, reason: string): Promise<void>;
   uninstallWukongPlugin(no: string, nodeId: number, reason: string): Promise<void>;
   getLiveKitRooms(): Promise<LiveKitRoom[]>;
+  getLiveKitMetrics(): Promise<LiveKitMetrics>;
   getLiveKitParticipants(room: string): Promise<LiveKitParticipant[]>;
   removeLiveKitParticipant(room: string, identity: string, reason: string): Promise<void>;
   deleteLiveKitRoom(room: string, reason: string): Promise<void>;

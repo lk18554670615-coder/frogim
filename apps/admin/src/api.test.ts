@@ -119,6 +119,7 @@ describe('live API adapter', () => {
       if (url.includes('/wukong/nodes')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ data: [{ id: 1, online: 1, is_leader: 1, slot_count: 64, slot_leader_count: 64 }] }) };
       if (url.includes('/wukong/devices')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ data: [{ uid: 'u1', device_flag: 1, device_level: 1, token_on: 1 }] }) };
       if (url.includes('/wukong/system-users')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ userId: 'u_notice', name: '系统通知', enabled: true, syncStatus: 'synced', updatedBy: 'ops', reason: '通知账号', updatedAt: '2026-08-12T00:00:00Z' }] }) };
+      if (url.includes('/livekit/metrics')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ healthy: true, activeRooms: 1, activeParticipants: 2, cpuPercent: 3.5, residentMemoryBytes: 104857600, networkReceiveBytesPerSecond: 2048, networkTransmitBytesPerSecond: 4096, packetLossPercent: 0.25, participantJoinsLastHour: 12, roomsCompletedLastHour: 4, sampledAt: '2026-08-13T00:00:00Z' }) };
       if (url.includes('/livekit/rooms')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ sid: 'RM_1', name: 'call_1', participantCount: 2, publisherCount: 1, maxParticipants: 9, activeRecording: false }] }) };
       return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [] }) };
     });
@@ -130,6 +131,7 @@ describe('live API adapter', () => {
     expect(await api.getWukongDevices('u1', 1)).toEqual([expect.objectContaining({ uid: 'u1', deviceFlag: 1, tokenPresent: true })]);
     expect(await api.getWukongSystemUsers()).toEqual([expect.objectContaining({ userId: 'u_notice', enabled: true, syncStatus: 'synced' })]);
     expect(await api.getLiveKitRooms()).toEqual([expect.objectContaining({ name: 'call_1', participantCount: 2, maxParticipants: 9 })]);
+    expect(await api.getLiveKitMetrics()).toEqual(expect.objectContaining({ healthy: true, activeRooms: 1, activeParticipants: 2, cpuPercent: 3.5, packetLossPercent: 0.25 }));
     await api.quitWukongDevice('u1', 1, '安全处置');
     expect(await api.setWukongSystemUser('u_notice', false, '改回普通账号')).toEqual(expect.objectContaining({ userId: 'u_notice', enabled: false, syncStatus: 'pending' }));
     await api.removeLiveKitParticipant('call_1', 'u1', '异常连接');

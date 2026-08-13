@@ -259,6 +259,9 @@ describe('邻里通讯管理后台', () => {
     expect(screen.getByText('压力测试模式')).toBeInTheDocument();
     const user = userEvent.setup();
     await user.click(screen.getByRole('tab', { name: '音视频房间' }));
+    expect(await screen.findByLabelText('LiveKit 资源指标')).toBeInTheDocument();
+    expect(screen.getByText('媒体进程资源')).toBeInTheDocument();
+    expect(screen.getByText('近 5 分钟丢包')).toBeInTheDocument();
     expect(await screen.findByText('call_demo')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '关闭房间' })).toBeEnabled();
     await user.click(screen.getByRole('tab', { name: '插件' }));

@@ -51,6 +51,7 @@ type Config struct {
 	WukongPluginMaxBytes                                               int64
 	LiveKitEnabled                                                     bool
 	LiveKitURL, LiveKitAPIURL, LiveKitAPIKey, LiveKitAPISecret         string
+	PrometheusURL                                                      string
 }
 
 func Load() Config {
@@ -77,7 +78,7 @@ func Load() Config {
 		WukongEnabled: boolValue("IM_WUKONG_ENABLED", false), WukongAPIURL: os.Getenv("IM_WUKONG_API_URL"), WukongManagerURL: os.Getenv("IM_WUKONG_MANAGER_URL"), WukongManagerToken: os.Getenv("IM_WUKONG_MANAGER_TOKEN"),
 		WukongTokenSecret: os.Getenv("IM_WUKONG_TOKEN_SECRET"), WukongPolicySecret: os.Getenv("IM_WUKONG_POLICY_SECRET"), WukongGRPCAddr: value("IM_WUKONG_GRPC_ADDR", ":6970"), WukongTCPURL: os.Getenv("IM_WUKONG_TCP_URL"), WukongWSURL: os.Getenv("IM_WUKONG_WS_URL"),
 		WukongPluginDir: os.Getenv("IM_WUKONG_PLUGIN_DIR"), WukongPluginTrustedKeys: os.Getenv("IM_WUKONG_PLUGIN_TRUSTED_KEYS"), WukongPluginAllowlist: os.Getenv("IM_WUKONG_PLUGIN_ALLOWLIST"), WukongPluginMaxBytes: int64Value("IM_WUKONG_PLUGIN_MAX_BYTES", 64<<20),
-		LiveKitEnabled: boolValue("IM_LIVEKIT_ENABLED", false), LiveKitURL: os.Getenv("IM_LIVEKIT_URL"), LiveKitAPIURL: os.Getenv("IM_LIVEKIT_API_URL"), LiveKitAPIKey: os.Getenv("IM_LIVEKIT_API_KEY"), LiveKitAPISecret: os.Getenv("IM_LIVEKIT_API_SECRET"), LiveKitTokenTTL: duration("IM_LIVEKIT_TOKEN_TTL", 5*time.Minute),
+		LiveKitEnabled: boolValue("IM_LIVEKIT_ENABLED", false), LiveKitURL: os.Getenv("IM_LIVEKIT_URL"), LiveKitAPIURL: os.Getenv("IM_LIVEKIT_API_URL"), LiveKitAPIKey: os.Getenv("IM_LIVEKIT_API_KEY"), LiveKitAPISecret: os.Getenv("IM_LIVEKIT_API_SECRET"), LiveKitTokenTTL: duration("IM_LIVEKIT_TOKEN_TTL", 5*time.Minute), PrometheusURL: os.Getenv("IM_PROMETHEUS_URL"),
 	}
 }
 
@@ -255,6 +256,9 @@ func (c Config) Validate() error {
 		}
 		if c.LiveKitTokenTTL < time.Minute || c.LiveKitTokenTTL > 15*time.Minute {
 			return errors.New("IM_LIVEKIT_TOKEN_TTL must be between 1m and 15m")
+		}
+		if c.PrometheusURL != "" && !isHTTPURL(c.PrometheusURL) {
+			return errors.New("IM_PROMETHEUS_URL must use http or https")
 		}
 	}
 	if !c.DevMode && !c.LiveKitEnabled {

@@ -166,6 +166,7 @@ type fakeLiveKitControl struct {
 	issued  []string
 	rooms   []livekitcontrol.RoomSummary
 	members map[string][]livekitcontrol.ParticipantSummary
+	metrics livekitcontrol.MetricsSummary
 	removed []string
 	err     error
 }
@@ -195,6 +196,9 @@ func (f *fakeLiveKitControl) ListRooms(context.Context) ([]livekitcontrol.RoomSu
 }
 func (f *fakeLiveKitControl) ListParticipants(_ context.Context, room string) ([]livekitcontrol.ParticipantSummary, error) {
 	return f.members[room], f.err
+}
+func (f *fakeLiveKitControl) Metrics(context.Context) (livekitcontrol.MetricsSummary, error) {
+	return f.metrics, f.err
 }
 func (f *fakeLiveKitControl) RemoveParticipant(_ context.Context, room, identity string) error {
 	f.removed = append(f.removed, room+"/"+identity)
@@ -769,6 +773,7 @@ func TestLiveKitAdminRoomsParticipantsAndConfirmedRemoval(t *testing.T) {
 	fake := &fakeLiveKitControl{
 		rooms:   []livekitcontrol.RoomSummary{{SID: "RM_1", Name: "call_1", ParticipantCount: 1, MaxParticipants: 9}},
 		members: map[string][]livekitcontrol.ParticipantSummary{"call_1": {{SID: "PA_1", Identity: "u1", State: "ACTIVE", Tracks: []livekitcontrol.ParticipantTrack{}}}},
+		metrics: livekitcontrol.MetricsSummary{Healthy: true, ActiveRooms: 1, ActiveParticipants: 1, CPUPercent: 12.5, ResidentMemoryBytes: 1024},
 	}
 	api.livekit, api.livekitSetupErr = fake, nil
 	ts := httptest.NewServer(api.Handler())
@@ -782,6 +787,13 @@ func TestLiveKitAdminRoomsParticipantsAndConfirmedRemoval(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK || len(rooms.Items) != 1 || rooms.Items[0].Name != "call_1" {
 		t.Fatalf("rooms status=%d body=%+v", res.StatusCode, rooms)
+	}
+	res = adminKeyRequest(t, http.MethodGet, ts.URL+"/v2/admin/livekit/metrics", adminKey, "")
+	var metrics livekitcontrol.MetricsSummary
+	_ = json.NewDecoder(res.Body).Decode(&metrics)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || !metrics.Healthy || metrics.ActiveRooms != 1 || metrics.CPUPercent != 12.5 {
+		t.Fatalf("metrics status=%d body=%+v", res.StatusCode, metrics)
 	}
 	res = adminKeyRequest(t, http.MethodGet, ts.URL+"/v2/admin/livekit/rooms/call_1/participants", adminKey, "")
 	var participants struct {

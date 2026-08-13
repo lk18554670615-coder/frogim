@@ -12,6 +12,7 @@ import (
 type livekitAdminControl interface {
 	ListRooms(context.Context) ([]livekitcontrol.RoomSummary, error)
 	ListParticipants(context.Context, string) ([]livekitcontrol.ParticipantSummary, error)
+	Metrics(context.Context) (livekitcontrol.MetricsSummary, error)
 	RemoveParticipant(context.Context, string, string) error
 	DeleteRoom(context.Context, string) error
 }
@@ -23,6 +24,19 @@ func (x *API) requireLiveKitAdmin(w http.ResponseWriter) (livekitAdminControl, b
 		return nil, false
 	}
 	return admin, true
+}
+
+func (x *API) adminLiveKitMetrics(w http.ResponseWriter, r *http.Request) {
+	admin, ok := x.requireLiveKitAdmin(w)
+	if !ok {
+		return
+	}
+	metrics, err := admin.Metrics(r.Context())
+	if err != nil {
+		x.writeLiveKitAdminError(w, r, err)
+		return
+	}
+	write(w, http.StatusOK, metrics)
 }
 
 func (x *API) adminLiveKitRooms(w http.ResponseWriter, r *http.Request) {
