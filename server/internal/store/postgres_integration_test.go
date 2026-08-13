@@ -138,6 +138,11 @@ func TestSupportWorkflowUsesExactWukongVisitorAndCustomerChannels(t *testing.T) 
 	if err = p.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_members WHERE conversation_id=$1 AND user_id=$2)`, visitor1, agent2).Scan(&newMember); err != nil || newMember {
 		t.Fatalf("ended agent remains subscribed=%v err=%v", newMember, err)
 	}
+	if _, err = p.AuthorizeWukongClientMessage(ctx, WukongClientMessageInput{
+		UserID: visitor1, ChannelID: visitor1, ChannelType: wukong.ChannelVisitor, Type: "text", Text: "after end",
+	}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("ended visitor session still accepts messages err=%v", err)
+	}
 	rated, err := p.RateSupportSession(ctx, visitor1, session1ID, 5, "解决很快", time.Now())
 	if err != nil || rated.Rating != 5 || rated.RatingComment != "解决很快" || rated.RatedAt == nil {
 		t.Fatalf("rate session: item=%#v err=%v", rated, err)

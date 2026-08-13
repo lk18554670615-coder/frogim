@@ -562,6 +562,19 @@ func (p *Postgres) AuthorizeBusinessChannelSend(ctx context.Context, userID, cha
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if channelType == int(wukong.ChannelCustomer) || channelType == int(wukong.ChannelVisitor) {
+		var activeParticipant bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_support_sessions session
+			WHERE session.channel_id=$1 AND session.channel_type=$2
+			AND session.status IN ('queued','active','transferring')
+			AND (session.visitor_id=$3 OR session.assigned_agent_id=$3))`,
+			channelID, channelType, userID).Scan(&activeParticipant); err != nil {
+			return err
+		}
+		if !activeParticipant {
+			return ErrForbidden
+		}
+	}
 	var role, postingPolicy string
 	var mutedUntil *time.Time
 	var slowMode int

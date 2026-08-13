@@ -85,7 +85,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _screenshotEvents = ScreenshotDetection.instance.events.listen(
       _handleScreenshot,
     );
-    if (widget.conversation.isBusinessChannel &&
+    if (usesManagedBusinessChannelSendPolicy(widget.conversation) &&
         widget.controller.supportsBusinessFeatures) {
       _loadingSendCapability = true;
       unawaited(_loadSendCapability());
@@ -102,7 +102,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _loadSendCapability() async {
-    if (!widget.conversation.isBusinessChannel ||
+    if (!usesManagedBusinessChannelSendPolicy(widget.conversation) ||
         !widget.controller.supportsBusinessFeatures) {
       return;
     }
@@ -3873,6 +3873,9 @@ String? businessChannelSendRestriction(BusinessChannelSummary channel) {
   }
   return null;
 }
+
+bool usesManagedBusinessChannelSendPolicy(Conversation conversation) =>
+    const {4, 5, 6, 9}.contains(conversation.channelType);
 
 class ChannelSendRestrictionBar extends StatelessWidget {
   const ChannelSendRestrictionBar({

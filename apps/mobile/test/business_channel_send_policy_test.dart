@@ -5,6 +5,17 @@ import 'package:linli_im/im/business_features.dart';
 import 'package:linli_im/ui/screens/chat_screen.dart';
 
 void main() {
+  test('客服会话使用客服状态而不是公开频道资料确认发言权限', () {
+    expect(usesManagedBusinessChannelSendPolicy(_conversation(10)), isFalse);
+    expect(usesManagedBusinessChannelSendPolicy(_conversation(3)), isFalse);
+    for (final channelType in const [4, 5, 6, 9]) {
+      expect(
+        usesManagedBusinessChannelSendPolicy(_conversation(channelType)),
+        isTrue,
+      );
+    }
+  });
+
   test('资讯频道的普通订阅者不会获得发布权限', () {
     expect(
       businessChannelSendRestriction(_channel()),
@@ -70,6 +81,16 @@ void main() {
     expect(find.text('发送失败，点此重试'), findsNothing);
   });
 }
+
+Conversation _conversation(int channelType) => Conversation(
+  id: 'channel_$channelType',
+  title: '频道',
+  subtitle: '',
+  updatedAt: DateTime.utc(2026, 8, 13),
+  kind: ConversationKind.group,
+  channelId: 'channel_$channelType',
+  channelType: channelType,
+);
 
 BusinessChannelSummary _channel({
   String role = 'member',
