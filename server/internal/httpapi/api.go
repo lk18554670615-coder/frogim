@@ -382,6 +382,7 @@ func (x *API) routes() {
 	x.mux.Handle("GET /v2/admin/messages", x.requireAdmin(http.HandlerFunc(x.adminMessages)))
 	x.mux.Handle("GET /v2/admin/tasks/media-cleanup", x.requireAdmin(http.HandlerFunc(x.adminMediaCleanupStatus)))
 	x.mux.Handle("GET /v2/admin/tasks", x.requireAdmin(http.HandlerFunc(x.adminTasks)))
+	x.mux.Handle("GET /v2/admin/backups", x.requireAdmin(http.HandlerFunc(x.adminBackups)))
 	x.mux.Handle("GET /v2/admin/friendships", x.requireAdmin(http.HandlerFunc(x.adminFriendships)))
 	x.mux.Handle("GET /v2/admin/feedback", x.requireAdmin(http.HandlerFunc(x.adminFeedback)))
 	x.mux.Handle("GET /v2/admin/push", x.requireAdmin(http.HandlerFunc(x.adminPushStatus)))

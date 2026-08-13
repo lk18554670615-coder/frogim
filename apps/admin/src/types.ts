@@ -133,7 +133,24 @@ export interface OnlineRecord {
 }
 export interface FriendshipRecord { userId: string; friendUserId: string; userName: string; friendName: string; createdAt: string; updatedAt: string; }
 export interface FeedbackRecord { id: string; userId: string; userName: string; category: string; content: string; contact: string; createdAt: string; }
-export interface OperationsStatus { push: { providers: Array<{ provider: string; activeDevices: number; disabledDevices: number }>; queue: Array<{ status: string; count: number; attempts: number }> }; tasks: Record<string, unknown>; access: { current: { id: string; role: AdminRole }; administrators: Array<{ id: string; role: AdminRole; source: string; mutable: boolean }>; roles: Array<{ id: AdminRole; permissions: string[] }>; note: string } }
+export interface BackupStatus {
+  configured: boolean;
+  available: boolean;
+  status: 'healthy' | 'running' | 'never' | 'failed' | 'warning' | 'stale' | 'unavailable' | 'unconfigured';
+  lastStatus: boolean;
+  running: boolean;
+  lastDurationSeconds: number;
+  incompleteGenerations: number;
+  offsiteEnabled: boolean;
+  lastAttemptAt?: string;
+  lastSuccessAt?: string;
+}
+export interface OperationsStatus {
+  push: { providers: Array<{ provider: string; activeDevices: number; disabledDevices: number }>; queue: Array<{ status: string; count: number; attempts: number }> };
+  backups: BackupStatus;
+  tasks: Record<string, unknown>;
+  access: { current: { id: string; role: AdminRole }; administrators: Array<{ id: string; role: AdminRole; source: string; mutable: boolean }>; roles: Array<{ id: AdminRole; permissions: string[] }>; note: string };
+}
 
 export interface AnnouncementRecord {
   id: string;

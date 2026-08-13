@@ -82,6 +82,24 @@ const formatDate = (value: unknown) => {
 };
 const initial = (name: string) => [...name][0] || '用';
 const reportResolutionActions: ReportResolutionAction[] = ['dismiss', 'no_violation', 'delete_message', 'ban_user'];
+const backupStatuses: OperationsStatus['backups']['status'][] = ['healthy', 'running', 'never', 'failed', 'warning', 'stale', 'unavailable', 'unconfigured'];
+
+function adaptBackupStatus(value: unknown): OperationsStatus['backups'] {
+  const raw = object(value);
+  const candidate = string(raw.status, 'unavailable') as OperationsStatus['backups']['status'];
+  return {
+    configured: boolean(raw.configured),
+    available: boolean(raw.available),
+    status: backupStatuses.includes(candidate) ? candidate : 'unavailable',
+    lastStatus: boolean(raw.lastStatus),
+    running: boolean(raw.running),
+    lastDurationSeconds: Math.max(0, number(raw.lastDurationSeconds)),
+    incompleteGenerations: Math.max(0, number(raw.incompleteGenerations)),
+    offsiteEnabled: boolean(raw.offsiteEnabled),
+    lastAttemptAt: string(raw.lastAttemptAt) || undefined,
+    lastSuccessAt: string(raw.lastSuccessAt) || undefined,
+  };
+}
 
 function demoPageResult<T>(items: T[], page = 1, pageSize = 20): PageResult<T> {
   const safePage = Math.max(1, page);
@@ -595,7 +613,7 @@ const demoApi: AdminApi = {
   async getOnline() { await wait(); return [] as OnlineRecord[]; },
   async getFriendships(query='',page=1,pageSize=20){await wait();const sample:FriendshipRecord[]=[{userId:'u_10134',friendUserId:'u_10826',userName:'林知夏',friendName:'周与安',createdAt:'2026-07-28 09:24',updatedAt:'2026-07-31 18:12'},{userId:'u_10942',friendUserId:'u_11703',userName:'陈默',friendName:'沈清禾',createdAt:'2026-07-26 14:08',updatedAt:'2026-07-30 21:46'}];const needle=query.toLowerCase();return demoPageResult(sample.filter(item=>!needle||`${item.userId}${item.friendUserId}${item.userName}${item.friendName}`.toLowerCase().includes(needle)),page,pageSize);},
   async getFeedback(query='',category='',page=1,pageSize=20){await wait();const sample:FeedbackRecord[]=[{id:'fb_7031',userId:'u_10826',userName:'周与安',category:'bug',content:'切换网络后图片发送状态停留在处理中。',contact:'应用内回复',createdAt:'2026-07-31 20:18'},{id:'fb_7026',userId:'u_11703',userName:'沈清禾',category:'feature',content:'希望群公告支持置顶和已读人数。',contact:'未提供',createdAt:'2026-07-31 16:42'}];const needle=query.toLowerCase();return demoPageResult(sample.filter(item=>(!needle||`${item.userId}${item.userName}${item.content}${item.contact}`.toLowerCase().includes(needle))&&(!category||item.category===category)),page,pageSize);},
-  async getOperationsStatus(){await wait();return {push:{providers:[{provider:'getui',activeDevices:8342,disabledDevices:126},{provider:'apns_voip',activeDevices:6128,disabledDevices:84}],queue:[{status:'pending',count:18,attempts:20},{status:'sent',count:42861,attempts:43102}]},tasks:{scheduledMessages:{pending:7,processing:0,failed:0},messageExpiry:{waiting:124},mediaCleanup:{status:'healthy',lastRun:'2026-08-01 01:45'},wukongOutbox:{pending:0,processing:0,failed:0,oldestPendingSeconds:0,lastCompletedAt:'2026-08-13T00:00:00Z',reconcilePending:0,reconcileCompleted:12,reconcileFailed:0},wukongWebhook:{pending:0,processing:0,failed:0,oldestPendingSeconds:0,lastCompletedAt:'2026-08-13T00:00:00Z'}},access:{current:{id:'demo',role:'platform_admin'},administrators:[{id:'demo',role:'platform_admin',source:'演示环境',mutable:false}],roles:[{id:'platform_admin',permissions:['全部管理权限']},{id:'system_operator',permissions:['系统运维','版本策略']},{id:'moderator',permissions:['用户处置','举报处置','内容审核']},{id:'content_operator',permissions:['内容运营','公告']},{id:'support_agent',permissions:['客服工作台']},{id:'support',permissions:['只读']}],note:'角色权限由服务端强制执行，管理员凭据不会在页面回显。'}} satisfies OperationsStatus;},
+  async getOperationsStatus(){await wait();return {push:{providers:[{provider:'getui',activeDevices:8342,disabledDevices:126},{provider:'apns_voip',activeDevices:6128,disabledDevices:84}],queue:[{status:'pending',count:18,attempts:20},{status:'sent',count:42861,attempts:43102}]},backups:{configured:true,available:true,status:'healthy',lastStatus:true,running:false,lastDurationSeconds:37,incompleteGenerations:0,offsiteEnabled:false,lastAttemptAt:'2026-08-13T02:00:00Z',lastSuccessAt:'2026-08-13T02:00:00Z'},tasks:{scheduledMessages:{pending:7,processing:0,failed:0},messageExpiry:{waiting:124},mediaCleanup:{status:'healthy',lastRun:'2026-08-01 01:45'},wukongOutbox:{pending:0,processing:0,failed:0,oldestPendingSeconds:0,lastCompletedAt:'2026-08-13T00:00:00Z',reconcilePending:0,reconcileCompleted:12,reconcileFailed:0},wukongWebhook:{pending:0,processing:0,failed:0,oldestPendingSeconds:0,lastCompletedAt:'2026-08-13T00:00:00Z'}},access:{current:{id:'demo',role:'platform_admin'},administrators:[{id:'demo',role:'platform_admin',source:'演示环境',mutable:false}],roles:[{id:'platform_admin',permissions:['全部管理权限']},{id:'system_operator',permissions:['系统运维','版本策略']},{id:'moderator',permissions:['用户处置','举报处置','内容审核']},{id:'content_operator',permissions:['内容运营','公告']},{id:'support_agent',permissions:['客服工作台']},{id:'support',permissions:['只读']}],note:'角色权限由服务端强制执行，管理员凭据不会在页面回显。'}} satisfies OperationsStatus;},
   async getAnnouncements(query = '', status = '', page = 1, pageSize = 20) { await wait(); const needle = query.toLowerCase(); return demoPageResult(announcements.filter((item) => (!needle || `${item.id}${item.title}${item.content}`.toLowerCase().includes(needle)) && (!status || item.status === status)), page, pageSize); },
   async createAnnouncement(input: AnnouncementInput) { await wait(); const item: AnnouncementRecord = { ...input, id: `announcement_${Date.now()}`, createdBy: 'demo_admin', createdAt: new Date().toISOString() }; announcements = [item, ...announcements]; return item; },
   async updateAnnouncement(id, input) { await wait(); const item = announcements.find((value) => value.id === id); if (!item) throw new ApiError('公告不存在', 404, 'NOT_FOUND'); Object.assign(item, input); return { ...item }; },
@@ -704,7 +722,7 @@ function liveApi(token: string): AdminApi {
     async getOnline() { return unwrapItems(await request('/online', token)).items.map(adaptOnline); },
     async getFriendships(q='',page=1,pageSize=20,cursor=''){const payload=await request(`/friendships?q=${encodeURIComponent(q)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`,token);return serverPage(payload,adaptFriendship,page,pageSize);},
     async getFeedback(q='',category='',page=1,pageSize=20,cursor=''){const payload=await request(`/feedback?q=${encodeURIComponent(q)}&category=${encodeURIComponent(category)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`,token);return serverPage(payload,adaptFeedback,page,pageSize);},
-    async getOperationsStatus(){const [push,tasks,access]=await Promise.all([request('/push',token),request('/tasks',token),request('/access',token)]);return {push:object(push) as OperationsStatus['push'],tasks:object(object(tasks).tasks),access:object(access) as unknown as OperationsStatus['access']};},
+    async getOperationsStatus(){const [push,backups,tasks,access]=await Promise.all([request('/push',token),request('/backups',token),request('/tasks',token),request('/access',token)]);return {push:object(push) as OperationsStatus['push'],backups:adaptBackupStatus(backups),tasks:object(object(tasks).tasks),access:object(access) as unknown as OperationsStatus['access']};},
     async getAnnouncements(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/announcements?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptAnnouncement, page, pageSize); },
     async createAnnouncement(input, reason) { return adaptAnnouncement(await request('/announcements', token, { method: 'POST', body: JSON.stringify({ ...input, reason, confirmed: true }) })); },
     async updateAnnouncement(id, input, reason) { return adaptAnnouncement(await request(`/announcements/${encodeURIComponent(id)}`, token, { method: 'PUT', body: JSON.stringify({ ...input, reason, confirmed: true }) })); },
