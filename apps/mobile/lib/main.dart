@@ -33,6 +33,7 @@ class LinliApp extends StatefulWidget {
 }
 
 class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
+  final navigatorKey = GlobalKey<NavigatorState>();
   late final AppController controller;
   late final PushCoordinator pushCoordinator;
   late final ClientUpgradeService upgradeService;
@@ -76,6 +77,7 @@ class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) => MaterialApp(
+    navigatorKey: navigatorKey,
     title: '邻里通讯',
     debugShowCheckedModeBanner: false,
     theme: buildLinliTheme(Brightness.light),
@@ -124,9 +126,11 @@ class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
       if (decision?.updateAvailable == true &&
           decision?.forceUpdate == false &&
           promptedUpgradeKey != decision!.policyKey) {
-        promptedUpgradeKey = decision.policyKey;
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) unawaited(showOptionalUpgradeDialog(context, decision));
+          final dialogContext = navigatorKey.currentContext;
+          if (!mounted || dialogContext == null) return;
+          promptedUpgradeKey = decision.policyKey;
+          unawaited(showOptionalUpgradeDialog(dialogContext, decision));
         });
       }
     } catch (_) {

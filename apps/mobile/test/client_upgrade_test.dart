@@ -100,6 +100,44 @@ void main() {
     expect(find.text('立即更新'), findsOneWidget);
     expect(find.text('手机号登录'), findsNothing);
   });
+
+  testWidgets(
+    'optional update uses the application navigator and is dismissible',
+    (tester) async {
+      const decision = ClientUpgradeDecision(
+        platform: 'android',
+        currentVersion: '1.0.0',
+        minimumVersion: '1.0.0',
+        latestVersion: '1.1.0',
+        updateAvailable: true,
+        forceUpdate: false,
+        rolloutEligible: true,
+        rolloutPercentage: 100,
+        releaseNotes: '可选稳定性更新。',
+        downloadUrl: 'https://downloads.example.com/app.apk',
+      );
+      await tester.pumpWidget(
+        LinliApp(
+          repository: DemoImRepository(latency: Duration.zero),
+          upgradeService: _FakeUpgradeService(decision),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('发现新版本'), findsOneWidget);
+      expect(find.text('最新版本 1.1.0'), findsOneWidget);
+      expect(find.text('可选稳定性更新。'), findsOneWidget);
+      expect(find.text('去更新'), findsOneWidget);
+      expect(find.text('稍后'), findsOneWidget);
+
+      await tester.tap(find.text('稍后'));
+      await tester.pumpAndSettle();
+      expect(find.text('发现新版本'), findsNothing);
+      expect(tester.takeException(), isNull);
+      expect(find.byType(LinliApp), findsOneWidget);
+    },
+  );
 }
 
 class _FakeUpgradeService extends ClientUpgradeService {
