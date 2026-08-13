@@ -2,7 +2,7 @@
 
 ## 结论
 
-Flutter 客户端已经达到“首发代码候选版”状态。2026-08-13增量复核中，静态检查、198项自动化测试、生产Web构建、Android Debug构建以及当前提交的Android Release APK/AAB均已验证；生产配置和签名缺失时会主动失败，不再静默生成Demo或Debug签名的正式包。
+Flutter 客户端已经达到“首发代码候选版”状态。2026-08-13增量复核中，静态检查、199项自动化测试、生产Web构建、Android Debug构建以及当前提交的Android Release APK/AAB均已验证；生产配置和签名缺失时会主动失败，不再静默生成Demo或Debug签名的正式包。
 
 当前仓库仍不能直接宣称“商店正式版已发布”。当前Android包已使用独立4096位RSA发布密钥和目标服务器地址构建，APK v2/v3签名验证通过，不再是Debug证书；但密钥归属/异地备份、法务页面、iOS/macOS签名、生产推送/短信/对象存储凭据及实体真机验收仍属于发布方必须完成的外部条件。
 
@@ -47,10 +47,10 @@ Flutter 客户端已经达到“首发代码候选版”状态。2026-08-13增�
 | 验证项 | 结果 |
 |---|---|
 | `fvm flutter analyze` | 通过，0 issue |
-| `fvm flutter test --reporter compact` | 通过，198/198 |
+| `fvm flutter test --reporter compact` | 通过，199/199 |
 | Android Debug APK（真实本地后端参数、Demo 关闭） | 通过 |
-| Android Release APK | 通过，提交`0c42c9ab08e8f80031f031734f4915bf92118a99`、目标服务器配置，153,228,485字节，SHA-256 `7dcfabab4df594163844b931950e55fa0198cbf33a7ce7f8cedfeb52e3d62531`；两台API 35模拟器覆盖安装后保留登录态，标准群成员禁言及消息连续编辑、编辑历史入口和原文/版本卡片目标端闭环通过；服务器文件哈希、公网Content-Length与发布清单一致 |
-| Android Release AAB | 通过，与APK同为提交`0c42c9ab08e8f80031f031734f4915bf92118a99`和目标服务器配置，125,876,339字节，SHA-256 `4bb3d1f8263f6919fb56683cc5579029b08648410a435ef9cbce296f61d67079`；服务器文件哈希、公网Content-Length与发布清单一致 |
+| Android Release APK | 通过，提交`c83f24dde475388e572c18fbe19bb196f995f180`、目标服务器配置，153,326,783字节，SHA-256 `c5bcd63cfebe0eff7732663b997a6e7421f3376abc1991971a19fc628baa1f82`；两台API 35模拟器覆盖安装后均保留登录态，冷启动进入消息首页且无Flutter未处理异常/Android致命异常。消息收藏筛选和定时消息编辑已由定向组件测试、生产API精确闭环及本批正式包启动冒烟分层验证；服务器文件哈希、公网Content-Length与发布清单一致 |
+| Android Release AAB | 通过，与APK同为提交`c83f24dde475388e572c18fbe19bb196f995f180`和目标服务器配置，125,907,341字节，SHA-256 `f212e16f2f1514e88f2a60e2ac0ee035245336628fcaf5b574a8e2fa468ebfbb`；服务器文件哈希、公网Content-Length与发布清单一致 |
 | Android Release 合并 Manifest | `allowBackup=false`、`fullBackupContent=false`、`usesCleartextTraffic=false`、非 debuggable |
 | Android Release 签名验证 | APK Signature Scheme v2/v3通过；4096位RSA发布证书SHA-256为`11fcd730e1fcf1e1fcdb7947b615a51179a4794d30e59000c38a19106a43072e` |
 | 缺少 Release 签名时构建 | 按设计失败并给出明确错误 |
@@ -59,7 +59,7 @@ Flutter 客户端已经达到“首发代码候选版”状态。2026-08-13增�
 | `bash -n infra/scripts/*.sh` | 通过 |
 | 本地、域名生产、IP 生产 Compose 配置解析 | 均通过 |
 
-当前Android Release APK约146.0 MiB，AAB约120.0 MiB。APK增加了固定版本的Web Emoji字体资产，商店按ABI/设备拆分后的下载大小会更小，实际下载大小仍应以商店报告为准。
+当前Android Release APK约146.2 MiB，AAB约120.1 MiB。APK增加了固定版本的Web Emoji字体资产，商店按ABI/设备拆分后的下载大小会更小，实际下载大小仍应以商店报告为准。
 
 ## 正式发布前的硬阻断项
 
