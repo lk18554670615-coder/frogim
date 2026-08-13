@@ -32,6 +32,8 @@ var (
 
 var handlePattern = regexp.MustCompile(`^[a-z0-9_]{6,24}$`)
 var callIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`)
+var diagnosticNamePattern = regexp.MustCompile(`^[a-z0-9_.-]{1,64}$`)
+var diagnosticFingerprintPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 var allowedMessageReactions = map[string]bool{"👍": true, "❤️": true, "😂": true, "😮": true, "😢": true, "😡": true, "👏": true, "🎉": true, "🙏": true}
 
 var reservedHandles = map[string]struct{}{
@@ -1379,6 +1381,33 @@ func (a *App) CreateFeedback(uid, category, content, contact string) (string, er
 		}
 	}
 	return id, nil
+}
+
+func (a *App) RecordClientDiagnostic(uid string, item store.ClientDiagnostic) error {
+	item.UserID = uid
+	item.Name = strings.TrimSpace(strings.ToLower(item.Name))
+	item.Fingerprint = strings.TrimSpace(strings.ToLower(item.Fingerprint))
+	item.Platform = strings.TrimSpace(strings.ToLower(item.Platform))
+	item.AppVersion = strings.TrimSpace(item.AppVersion)
+	validKind := item.Kind == "crash" || item.Kind == "performance" || item.Kind == "connection" || item.Kind == "call"
+	validPlatform := item.Platform == "android" || item.Platform == "ios" || item.Platform == "web" || item.Platform == "macos" || item.Platform == "unknown"
+	if !validKind || !validPlatform || !diagnosticNamePattern.MatchString(item.Name) || !diagnosticFingerprintPattern.MatchString(item.Fingerprint) || item.AppVersion == "" || len(item.AppVersion) > 40 {
+		return ErrInvalid
+	}
+	if item.DurationMS != nil && (*item.DurationMS < 0 || *item.DurationMS > 600000) {
+		return ErrInvalid
+	}
+	if item.Kind == "performance" && item.DurationMS == nil {
+		return ErrInvalid
+	}
+	item.ID = id("diagnostic")
+	item.OccurredAt = time.Now().UTC()
+	if s, ok := a.persistence.(store.ClientDiagnosticsStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		return s.RecordClientDiagnostic(ctx, item)
+	}
+	return store.ErrUnsupported
 }
 func (a *App) SearchUsers(query string) []*model.User {
 	if q, ok := a.persistence.(store.QueryStore); ok {
@@ -3926,6 +3955,14 @@ func (a *App) AdminFeedbackPage(q, category, cursor string, limit int) ([]store.
 		return s.ListAdminFeedback(ctx, q, category, cursor, limit)
 	}
 	return nil, 0, "", store.ErrUnsupported
+}
+func (a *App) AdminClientDiagnostics(kind, platform string, limit int) ([]store.ClientDiagnostic, map[string]any, error) {
+	if s, ok := a.persistence.(store.ClientDiagnosticsStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return s.ListAdminClientDiagnostics(ctx, strings.TrimSpace(kind), strings.TrimSpace(platform), limit)
+	}
+	return nil, nil, store.ErrUnsupported
 }
 func (a *App) AdminPushStatus() (map[string]any, error) {
 	if s, ok := a.persistence.(store.AdminOperationsStore); ok {

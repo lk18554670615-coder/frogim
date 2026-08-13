@@ -302,6 +302,16 @@ class DemoImRepository implements ImRepository {
   }
 
   @override
+  Future<void> reportClientDiagnostic({
+    required String kind,
+    required String name,
+    required String fingerprint,
+    required String platform,
+    required String appVersion,
+    int? durationMs,
+  }) async {}
+
+  @override
   Future<List<AppAnnouncement>> announcements() async {
     await Future<void>.delayed(latency);
     return List.of(_announcements);

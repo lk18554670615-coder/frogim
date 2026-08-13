@@ -331,10 +331,12 @@ describe('邻里通讯管理后台', () => {
   it('后台任务展示 WuKong 同步、Webhook 与对账状态', async () => {
     window.history.replaceState({}, '', '/operations');
     render(<App />);
-    expect(screen.getByRole('heading', { name: '推送、备份、任务与权限' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '推送、备份、诊断、任务与权限' })).toBeInTheDocument();
     expect(await screen.findByRole('heading', { name: '备份状态' })).toBeInTheDocument();
     expect(screen.getByText('最近成功')).toBeInTheDocument();
     expect(screen.getByText('37 秒')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '客户端诊断' })).toBeInTheDocument();
+    expect(screen.getByText('1380 ms（12 样本）')).toBeInTheDocument();
     expect(await screen.findByText('WuKong 同步队列')).toBeInTheDocument();
     expect(screen.getByText('WuKong Webhook 队列')).toBeInTheDocument();
     expect(screen.getByText(/已对账：12/)).toBeInTheDocument();

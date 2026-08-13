@@ -145,9 +145,24 @@ export interface BackupStatus {
   lastAttemptAt?: string;
   lastSuccessAt?: string;
 }
+export interface ClientDiagnosticRecord {
+  id: string;
+  userId: string;
+  kind: 'crash' | 'performance' | 'connection' | 'call';
+  name: string;
+  fingerprint: string;
+  platform: string;
+  appVersion: string;
+  durationMs?: number;
+  occurredAt: string;
+}
 export interface OperationsStatus {
   push: { providers: Array<{ provider: string; activeDevices: number; disabledDevices: number }>; queue: Array<{ status: string; count: number; attempts: number }> };
   backups: BackupStatus;
+  diagnostics: {
+    summary: { windowHours: number; crashes: number; connectionFailures: number; callFailures: number; performanceSamples: number; performanceP95Ms?: number };
+    items: ClientDiagnosticRecord[];
+  };
   tasks: Record<string, unknown>;
   access: { current: { id: string; role: AdminRole }; administrators: Array<{ id: string; role: AdminRole; source: string; mutable: boolean }>; roles: Array<{ id: AdminRole; permissions: string[] }>; note: string };
 }

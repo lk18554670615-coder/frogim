@@ -135,6 +135,44 @@ void main() {
     await repository.close();
   });
 
+  test('客户端诊断只发送脱敏白名单字段', () async {
+    http.Request? diagnosticRequest;
+    final client = MockClient((request) async {
+      if (request.url.path == '/v2/auth/login') return _loginResponse();
+      if (request.url.path == '/v2/client-diagnostics') {
+        diagnosticRequest = request;
+        return _jsonResponse({'status': 'accepted'}, 202);
+      }
+      return http.Response('{}', 404);
+    });
+    final repository = _repository(client);
+    await repository.login('13800138000', '123456');
+
+    await repository.reportClientDiagnostic(
+      kind: 'crash',
+      name: 'flutter_error',
+      fingerprint:
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      platform: 'android',
+      appVersion: '1.0.0+1',
+    );
+
+    final request = diagnosticRequest!;
+    final body = jsonDecode(request.body) as Map<String, Object?>;
+    expect(request.headers['authorization'], 'Bearer access-token');
+    expect(body.keys, {
+      'kind',
+      'name',
+      'fingerprint',
+      'platform',
+      'appVersion',
+    });
+    expect(body, isNot(contains('message')));
+    expect(body, isNot(contains('stack')));
+    expect(body, isNot(contains('token')));
+    await repository.close();
+  });
+
   test('并发 401 共用同一个刷新请求', () async {
     var refreshCount = 0;
     var protectedCount = 0;

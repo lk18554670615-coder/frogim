@@ -501,6 +501,23 @@ class LiveImRepository
   }).then((_) {});
 
   @override
+  Future<void> reportClientDiagnostic({
+    required String kind,
+    required String name,
+    required String fingerprint,
+    required String platform,
+    required String appVersion,
+    int? durationMs,
+  }) => _sendRequest('POST', '/v2/client-diagnostics', {
+    'kind': kind,
+    'name': name,
+    'fingerprint': fingerprint,
+    'platform': platform,
+    'appVersion': appVersion,
+    'durationMs': ?durationMs,
+  }).then((_) {});
+
+  @override
   Future<List<AppAnnouncement>> announcements() async {
     final data = await _get('/v2/announcements');
     final items = (data['items'] as List<Object?>? ?? const []).map((raw) {
@@ -3430,6 +3447,22 @@ class ResilientImRepository
     category: category,
     content: content,
     contact: contact,
+  );
+  @override
+  Future<void> reportClientDiagnostic({
+    required String kind,
+    required String name,
+    required String fingerprint,
+    required String platform,
+    required String appVersion,
+    int? durationMs,
+  }) => _active.reportClientDiagnostic(
+    kind: kind,
+    name: name,
+    fingerprint: fingerprint,
+    platform: platform,
+    appVersion: appVersion,
+    durationMs: durationMs,
   );
   @override
   Future<List<AppAnnouncement>> announcements() => _active.announcements();

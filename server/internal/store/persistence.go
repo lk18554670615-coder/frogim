@@ -62,6 +62,21 @@ type AdminFeedback struct {
 	ID, UserID, UserName, Category, Content, Contact string
 	CreatedAt                                        time.Time
 }
+type ClientDiagnostic struct {
+	ID          string    `json:"id"`
+	UserID      string    `json:"userId"`
+	Kind        string    `json:"kind"`
+	Name        string    `json:"name"`
+	Fingerprint string    `json:"fingerprint"`
+	Platform    string    `json:"platform"`
+	AppVersion  string    `json:"appVersion"`
+	DurationMS  *int64    `json:"durationMs,omitempty"`
+	OccurredAt  time.Time `json:"occurredAt"`
+}
+type ClientDiagnosticsStore interface {
+	RecordClientDiagnostic(context.Context, ClientDiagnostic) error
+	ListAdminClientDiagnostics(context.Context, string, string, int) ([]ClientDiagnostic, map[string]any, error)
+}
 type AdminOperationsStore interface {
 	AdminStats(context.Context) (map[string]any, error)
 	ListAdminGroups(context.Context, string, string, string, int) ([]map[string]any, int64, string, error)
@@ -235,6 +250,18 @@ func (p *WithRedis) ListAdminFeedback(ctx context.Context, q, status, cursor str
 		return s.ListAdminFeedback(ctx, q, status, cursor, limit)
 	}
 	return nil, 0, "", ErrUnsupported
+}
+func (p *WithRedis) RecordClientDiagnostic(ctx context.Context, diagnostic ClientDiagnostic) error {
+	if s, ok := p.base.(ClientDiagnosticsStore); ok {
+		return s.RecordClientDiagnostic(ctx, diagnostic)
+	}
+	return ErrUnsupported
+}
+func (p *WithRedis) ListAdminClientDiagnostics(ctx context.Context, kind, platform string, limit int) ([]ClientDiagnostic, map[string]any, error) {
+	if s, ok := p.base.(ClientDiagnosticsStore); ok {
+		return s.ListAdminClientDiagnostics(ctx, kind, platform, limit)
+	}
+	return nil, nil, ErrUnsupported
 }
 func (p *WithRedis) AdminPushStatus(ctx context.Context) (map[string]any, error) {
 	if s, ok := p.base.(AdminOperationsStore); ok {

@@ -687,6 +687,22 @@ CREATE TABLE IF NOT EXISTS im_client_version_policies(
 CREATE INDEX IF NOT EXISTS im_client_version_policies_updated_idx
  ON im_client_version_policies(updated_at DESC,platform);
 
+CREATE TABLE IF NOT EXISTS im_client_diagnostics(
+ id text PRIMARY KEY,
+ user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,
+ kind text NOT NULL CHECK(kind IN ('crash','performance','connection','call')),
+ name text NOT NULL,
+ fingerprint text NOT NULL,
+ platform text NOT NULL CHECK(platform IN ('android','ios','web','macos','unknown')),
+ app_version text NOT NULL,
+ duration_ms bigint,
+ occurred_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS im_client_diagnostics_recent_idx
+ ON im_client_diagnostics(occurred_at DESC,id);
+CREATE INDEX IF NOT EXISTS im_client_diagnostics_user_recent_idx
+ ON im_client_diagnostics(user_id,occurred_at DESC);
+
 -- WuKongIM owns durable message and conversation synchronization. These
 -- legacy per-user cursor tables must not receive writes or survive upgrades.
 DROP TABLE IF EXISTS im_sync_events;

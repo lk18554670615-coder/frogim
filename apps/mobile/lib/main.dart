@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -9,6 +10,7 @@ import 'core/app_controller.dart';
 import 'core/app_config.dart';
 import 'core/app_theme.dart';
 import 'core/client_upgrade.dart';
+import 'core/client_diagnostics.dart';
 import 'core/bundled_licenses.dart';
 import 'core/push_service.dart';
 import 'data/im_repository.dart';
@@ -18,9 +20,30 @@ import 'ui/screens/client_upgrade_screen.dart';
 import 'ui/screens/login_screen.dart';
 
 void main() {
-  AppConfig.validate();
-  registerBundledLicenses();
-  runApp(const LinliApp());
+  final startup = Stopwatch()..start();
+  final diagnostics = ClientDiagnostics.instance;
+  runZonedGuarded(() {
+    WidgetsFlutterBinding.ensureInitialized();
+    FlutterError.onError = (details) {
+      FlutterError.presentError(details);
+      diagnostics.captureError(
+        'flutter_error',
+        details.exception,
+        details.stack ?? StackTrace.current,
+      );
+    };
+    PlatformDispatcher.instance.onError = (error, stack) {
+      diagnostics.captureError('async_error', error, stack);
+      return true;
+    };
+    AppConfig.validate();
+    registerBundledLicenses();
+    runApp(const LinliApp());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      startup.stop();
+      diagnostics.recordStartup(startup.elapsed);
+    });
+  }, (error, stack) => diagnostics.captureError('zone_error', error, stack));
 }
 
 class LinliApp extends StatefulWidget {
@@ -47,6 +70,7 @@ class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
     controller = AppController(
       widget.repository ?? ResilientImRepository.fromEnvironment(),
     );
+    ClientDiagnostics.instance.attach(controller.repository);
     pushCoordinator = PushCoordinator();
     upgradeService = widget.upgradeService ?? ClientUpgradeService();
     WidgetsBinding.instance.addObserver(this);

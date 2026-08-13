@@ -57,6 +57,14 @@ abstract interface class ImRepository {
     required String content,
     String contact,
   });
+  Future<void> reportClientDiagnostic({
+    required String kind,
+    required String name,
+    required String fingerprint,
+    required String platform,
+    required String appVersion,
+    int? durationMs,
+  });
   Future<List<AppAnnouncement>> announcements();
   Future<void> markAnnouncementRead(String announcementId);
   Future<List<Conversation>> conversations();

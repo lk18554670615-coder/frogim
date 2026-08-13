@@ -11,6 +11,7 @@ import '../data/im_repository.dart';
 import '../im/business_features.dart';
 import '../im/structured_event_text.dart';
 import 'client_message_id.dart';
+import 'client_diagnostics.dart';
 import 'models.dart';
 
 class AppController extends ChangeNotifier {
@@ -356,10 +357,16 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _connectSafely() async {
+    final started = Stopwatch()..start();
     try {
       await repository.connect();
     } catch (_) {
       connected = false;
+      ClientDiagnostics.instance.captureOperational(
+        kind: 'connection',
+        name: 'wukong_connect',
+        duration: started.elapsed,
+      );
       notifyListeners();
     }
   }
@@ -377,6 +384,7 @@ class AppController extends ChangeNotifier {
     requests = results[1] as List<FriendRequest>;
     groupInvitations = results[2] as List<GroupInvitation>;
     announcements = results[3] as List<AppAnnouncement>;
+    unawaited(ClientDiagnostics.instance.flush(repository));
   }
 
   Future<T> _loadOptional<T>(Future<T> operation, T fallback) async {

@@ -151,6 +151,21 @@ func TestDashboardMessageTrendIndexIsVersioned(t *testing.T) {
 	}
 }
 
+func TestClientDiagnosticsSchemaIsVersioned(t *testing.T) {
+	if schemaVersion < 48 {
+		t.Fatalf("client diagnostics require schema version 48 or newer, got %d", schemaVersion)
+	}
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS im_client_diagnostics",
+		"im_client_diagnostics_recent_idx",
+		"im_client_diagnostics_user_recent_idx",
+	} {
+		if !strings.Contains(normalizedSchema, fragment) {
+			t.Fatalf("client diagnostics schema is missing %q", fragment)
+		}
+	}
+}
+
 func TestTemporaryBusinessMembershipSchemaIsVersioned(t *testing.T) {
 	if schemaVersion < 39 {
 		t.Fatalf("temporary business membership requires schema version 39 or newer, got %d", schemaVersion)
