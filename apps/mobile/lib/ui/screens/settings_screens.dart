@@ -1093,7 +1093,11 @@ class _NotificationSettingsScreenState
     if (kIsWeb) {
       final status = await requestBrowserNotificationPermission();
       if (mounted) setState(() => browserPermission = status);
-      if (!mounted || status == BrowserNotificationPermission.granted) return;
+      if (!mounted) return;
+      if (status == BrowserNotificationPermission.granted) {
+        widget.controller?.refreshPushConfiguration();
+        return;
+      }
       final message = status == BrowserNotificationPermission.unsupported
           ? '浏览器通知需要 HTTPS 或本机安全环境'
           : '浏览器未允许通知，请在地址栏的网站权限中开启';
@@ -1180,7 +1184,7 @@ class _NotificationSettingsScreenState
               icon: CupertinoIcons.app_badge,
               title: kIsWeb ? '浏览器通知权限' : '系统通知权限',
               subtitle: kIsWeb
-                  ? '仅在网页仍打开时提醒，多标签页只显示一次'
+                  ? '允许后即使关闭网页也可接收提醒，多标签页只显示一次'
                   : '由 iOS 或 Android 系统控制最终展示权限',
               status: kIsWeb
                   ? switch (browserPermission) {

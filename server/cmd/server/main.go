@@ -168,24 +168,35 @@ func configuredPushProvider(cfg config.Config) (push.Provider, error) {
 		}
 		return provider, nil
 	}
+	var provider push.Provider
 	switch cfg.PushProvider {
 	case "log":
-		return push.Log{}, nil
+		provider = push.Log{}
 	case "webhook":
-		return push.Webhook{URL: cfg.PushWebhookURL, Token: cfg.PushWebhookToken}, nil
+		provider = push.Webhook{URL: cfg.PushWebhookURL, Token: cfg.PushWebhookToken}
 	case "getui":
-		return getui(false), nil
+		provider = getui(false)
 	case "apns_voip":
-		return apnsVoIP()
+		apns, err := apnsVoIP()
+		if err != nil {
+			return nil, err
+		}
+		provider = apns
 	case "getui_apns_voip":
 		apns, err := apnsVoIP()
 		if err != nil {
 			return nil, err
 		}
-		return push.MultiProvider{getui(true), apns}, nil
+		provider = push.MultiProvider{getui(true), apns}
 	default:
-		return push.Noop{}, nil
+		provider = push.Noop{}
 	}
+	if cfg.WebPushEnabled() {
+		provider = push.MultiProvider{provider, &push.WebPush{
+			PublicKey: cfg.WebPushPublicKey, PrivateKey: cfg.WebPushPrivateKey, Subject: cfg.WebPushSubject,
+		}}
+	}
+	return provider, nil
 }
 
 func configureLogging() {

@@ -1503,7 +1503,7 @@ func (p *Postgres) InvalidatePushDevices(ctx context.Context, ids []string) erro
 	if len(ids) == 0 {
 		return nil
 	}
-	_, err := p.pool.Exec(ctx, `UPDATE im_devices SET notifications_enabled=false,push_token='',updated_at=now() WHERE id=ANY($1::text[]) AND provider IN ('getui','apns_voip')`, ids)
+	_, err := p.pool.Exec(ctx, `UPDATE im_devices SET notifications_enabled=false,push_token='',updated_at=now() WHERE id=ANY($1::text[]) AND provider IN ('getui','apns_voip','webpush')`, ids)
 	return err
 }
 func (p *Postgres) SetBlock(ctx context.Context, uid, target string, blocked bool) error {

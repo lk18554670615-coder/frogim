@@ -432,6 +432,24 @@ case "${IM_PUSH_PROVIDER:-}" in
     ;;
 esac
 
+web_push_values=0
+for key in IM_WEB_PUSH_PUBLIC_KEY IM_WEB_PUSH_PRIVATE_KEY IM_WEB_PUSH_SUBJECT; do
+  [[ -n "${!key:-}" ]] && ((web_push_values+=1))
+done
+if (( web_push_values != 0 && web_push_values != 3 )); then
+  echo "Web Push public key, private key, and subject must be configured together" >&2
+  failed=1
+elif (( web_push_values == 3 )); then
+  if [[ ! "${IM_WEB_PUSH_PUBLIC_KEY:-}" =~ ^[A-Za-z0-9_-]{80,100}$ || ! "${IM_WEB_PUSH_PRIVATE_KEY:-}" =~ ^[A-Za-z0-9_-]{40,50}$ ]]; then
+    echo "Web Push VAPID keys must use URL-safe base64 encoding" >&2
+    failed=1
+  fi
+  if [[ ! "${IM_WEB_PUSH_SUBJECT:-}" =~ ^(https://|mailto:) ]]; then
+    echo "IM_WEB_PUSH_SUBJECT must use https:// or mailto:" >&2
+    failed=1
+  fi
+fi
+
 permissions=""
 if stat -f '%Lp' "$ENV_FILE" >/dev/null 2>&1; then
   permissions="$(stat -f '%Lp' "$ENV_FILE")"

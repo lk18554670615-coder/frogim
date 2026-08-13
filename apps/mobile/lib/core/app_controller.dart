@@ -1707,6 +1707,28 @@ class AppController extends ChangeNotifier {
     _voipPushDeviceId = deviceId;
   }
 
+  Future<void> registerWebPushDevice({
+    required String deviceId,
+    required String subscription,
+    required bool notificationsEnabled,
+    required bool previewEnabled,
+    required bool soundEnabled,
+    required bool vibrationEnabled,
+  }) async {
+    if (!authenticated || subscription.trim().isEmpty) return;
+    await repository.registerDevice(
+      deviceId: deviceId,
+      platform: 'web',
+      provider: 'webpush',
+      pushToken: subscription.trim(),
+      notificationsEnabled: notificationsEnabled,
+      previewEnabled: previewEnabled,
+      soundEnabled: soundEnabled,
+      vibrationEnabled: vibrationEnabled,
+    );
+    _pushDeviceId = deviceId;
+  }
+
   void refreshPushConfiguration() => notifyListeners();
 
   void handlePushPayload(Map<String, dynamic> payload) {

@@ -52,6 +52,12 @@ func invalidGetuiCIDDeliveryError(deviceID string) error {
 		InvalidDeviceIDs: []string{deviceID}, InvalidOnly: true,
 	}
 }
+func invalidWebPushSubscriptionDeliveryError(deviceID string) error {
+	return &DeliveryError{
+		Err:              errors.New("Web Push subscription is no longer valid"),
+		InvalidDeviceIDs: []string{deviceID}, InvalidOnly: true,
+	}
+}
 
 // MultiProvider 始终尝试所有通道；一个通道失败不会阻止另一个通道投递。
 type MultiProvider []Provider

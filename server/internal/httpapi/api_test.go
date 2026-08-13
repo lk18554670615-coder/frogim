@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -1415,6 +1416,62 @@ func TestUserProfilePhoneDevicesFavoritesAndFeedback(t *testing.T) {
 		t.Fatalf("feedback status=%d", res.StatusCode)
 	}
 	_ = res.Body.Close()
+}
+
+func TestWebPushConfigurationAndSubscriptionValidation(t *testing.T) {
+	a, _ := app.New(context.Background(), teststore.Memory{})
+	_ = a.SeedDemo()
+	cfg := config.Config{
+		JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321",
+		AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour,
+		WebPushPublicKey: "public-vapid-key", WebPushPrivateKey: "private-vapid-key", WebPushSubject: "https://chat.example.com",
+	}
+	ts := httptest.NewServer(New(cfg, a).Handler())
+	defer ts.Close()
+	response, err := http.Get(ts.URL + "/v2/config/web-push")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var publicConfig struct {
+		Enabled   bool   `json:"enabled"`
+		PublicKey string `json:"publicKey"`
+	}
+	if err = json.NewDecoder(response.Body).Decode(&publicConfig); err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || !publicConfig.Enabled || publicConfig.PublicKey != cfg.WebPushPublicKey {
+		t.Fatalf("public Web Push config status=%d body=%+v", response.StatusCode, publicConfig)
+	}
+
+	token := loginToken(t, ts.URL, "13800000001")
+	response = authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/users/me/devices", token,
+		`{"deviceId":"web-bad","platform":"web","provider":"webpush","pushToken":"not-json"}`)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("malformed Web Push subscription status=%d", response.StatusCode)
+	}
+	_, x, y, err := elliptic.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authKey := make([]byte, 16)
+	_, _ = rand.Read(authKey)
+	subscription, _ := json.Marshal(map[string]any{
+		"endpoint": "https://push.example.com/subscription",
+		"keys": map[string]string{
+			"p256dh": base64.RawURLEncoding.EncodeToString(elliptic.Marshal(elliptic.P256(), x, y)),
+			"auth":   base64.RawURLEncoding.EncodeToString(authKey),
+		},
+	})
+	requestBody, _ := json.Marshal(map[string]any{
+		"deviceId": "web-valid", "platform": "web", "provider": "webpush", "pushToken": string(subscription),
+	})
+	response = authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/users/me/devices", token, string(requestBody))
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("valid Web Push subscription status=%d", response.StatusCode)
+	}
 }
 
 func TestForwardMessagesSeparateMergedAndIdempotent(t *testing.T) {

@@ -1,7 +1,10 @@
 package config
 
 import (
+	"crypto/elliptic"
+	"encoding/base64"
 	"errors"
+	"math/big"
 	"net"
 	"os"
 	"strconv"
@@ -15,6 +18,7 @@ type Config struct {
 	Addr, JWTSecret, AdminKey, DatabaseURL, RedisURL, PushProvider     string
 	Environment                                                        string
 	PushWebhookURL, PushWebhookToken                                   string
+	WebPushPublicKey, WebPushPrivateKey, WebPushSubject                string
 	GetuiAppID, GetuiAppKey, GetuiMasterSecret                         string
 	APNSVoIPKeyID, APNSVoIPTeamID, APNSVoIPBundleID, APNSVoIPKeyFile   string
 	APNSVoIPSandbox                                                    bool
@@ -61,6 +65,7 @@ func Load() Config {
 		AdminEmail: os.Getenv("IM_ADMIN_EMAIL"), AdminPasswordHash: os.Getenv("IM_ADMIN_PASSWORD_HASH"), AdminTOTPSecret: os.Getenv("IM_ADMIN_TOTP_SECRET"), AdminID: value("IM_ADMIN_ID", "platform-admin"), AdminRole: value("IM_ADMIN_ROLE", "platform_admin"), AdminSharedKeyEnabled: boolValue("IM_ADMIN_SHARED_KEY_ENABLED", false),
 		PushProvider:   value("IM_PUSH_PROVIDER", "noop"),
 		PushWebhookURL: os.Getenv("IM_PUSH_WEBHOOK_URL"), PushWebhookToken: os.Getenv("IM_PUSH_WEBHOOK_TOKEN"),
+		WebPushPublicKey: os.Getenv("IM_WEB_PUSH_PUBLIC_KEY"), WebPushPrivateKey: os.Getenv("IM_WEB_PUSH_PRIVATE_KEY"), WebPushSubject: os.Getenv("IM_WEB_PUSH_SUBJECT"),
 		GetuiAppID: os.Getenv("IM_GETUI_APP_ID"), GetuiAppKey: os.Getenv("IM_GETUI_APP_KEY"), GetuiMasterSecret: os.Getenv("IM_GETUI_MASTER_SECRET"),
 		APNSVoIPKeyID: os.Getenv("IM_APNS_VOIP_KEY_ID"), APNSVoIPTeamID: os.Getenv("IM_APNS_VOIP_TEAM_ID"), APNSVoIPBundleID: os.Getenv("IM_APNS_VOIP_BUNDLE_ID"), APNSVoIPKeyFile: os.Getenv("IM_APNS_VOIP_PRIVATE_KEY_FILE"), APNSVoIPSandbox: boolValue("IM_APNS_VOIP_SANDBOX", false),
 		OTPWebhookURL: os.Getenv("IM_OTP_WEBHOOK_URL"), OTPWebhookToken: os.Getenv("IM_OTP_WEBHOOK_TOKEN"),
@@ -103,6 +108,9 @@ func (c Config) Validate() error {
 	}
 	if c.DatabaseURL == "" {
 		return errors.New("IM_DATABASE_URL is required")
+	}
+	if err := c.validateWebPush(); err != nil {
+		return err
 	}
 	if !c.DevMode {
 		if c.DevAllowContainerBind || c.DevIPTestOnly {
@@ -263,6 +271,34 @@ func (c Config) Validate() error {
 	}
 	if !c.DevMode && !c.LiveKitEnabled {
 		return errors.New("production requires LiveKit")
+	}
+	return nil
+}
+
+func (c Config) WebPushEnabled() bool {
+	return c.WebPushPublicKey != "" && c.WebPushPrivateKey != "" && c.WebPushSubject != ""
+}
+
+func (c Config) validateWebPush() error {
+	configured := c.WebPushPublicKey != "" || c.WebPushPrivateKey != "" || c.WebPushSubject != ""
+	if !configured {
+		return nil
+	}
+	if !c.WebPushEnabled() {
+		return errors.New("Web Push requires public key, private key, and subject together")
+	}
+	publicKey, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(c.WebPushPublicKey, "="))
+	publicX, publicY := elliptic.Unmarshal(elliptic.P256(), publicKey)
+	if err != nil || len(publicKey) != 65 || publicX == nil || publicY == nil {
+		return errors.New("IM_WEB_PUSH_PUBLIC_KEY must be a URL-safe uncompressed P-256 public key")
+	}
+	privateKey, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(c.WebPushPrivateKey, "="))
+	privateScalar := new(big.Int).SetBytes(privateKey)
+	if err != nil || len(privateKey) != 32 || privateScalar.Sign() <= 0 || privateScalar.Cmp(elliptic.P256().Params().N) >= 0 {
+		return errors.New("IM_WEB_PUSH_PRIVATE_KEY must be a URL-safe 32-byte P-256 private key")
+	}
+	if !strings.HasPrefix(c.WebPushSubject, "mailto:") && !strings.HasPrefix(c.WebPushSubject, "https://") {
+		return errors.New("IM_WEB_PUSH_SUBJECT must use mailto: or https://")
 	}
 	return nil
 }

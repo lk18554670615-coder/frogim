@@ -157,6 +157,8 @@ The tests cover memory/PostgreSQL business invariants, Outbox/reconciliation, gr
 - Restrict CORS and admin ingress at the edge; rotate `IM_ADMIN_KEY`.
 - Run PostgreSQL, WuKongIM and MinIO backups and restore drills. Do not claim high availability while the documented single-node topology is in use.
 - `IM_PUSH_PROVIDER=noop|log` are development-only. The production webhook gateway owns APNs/FCM credentials, provider feedback, and token invalidation; the server owns durable leasing, retry, and dead-letter state.
+
+Browser Web Push is an optional channel alongside the selected mobile provider. Set `IM_WEB_PUSH_PUBLIC_KEY`, `IM_WEB_PUSH_PRIVATE_KEY`, and `IM_WEB_PUSH_SUBJECT` together; generate them with `go run ./cmd/webpush-keygen https://chat.example.com`. Subscriptions are encrypted with VAPID, 404/410 endpoints are disabled, and the private key is never returned by an API.
 - Production MinIO bootstraps a separate application credential with bucket-scoped least-privilege object access; the root credential is reserved for initialization, backup and administration. Upload completion verifies expected size, client SHA-256 and magic-byte MIME before marking an object ready. General-file malware scanning, archive inspection and media safety scanning remain external production dependencies and must be connected before allowing arbitrary files.
 - Backups are created under a private `.incomplete-<timestamp>` directory with `umask 077`, checksummed, permission-tightened, and atomically renamed to the published timestamp only after all steps succeed. Incomplete directories are never valid restore points.
 - Export `/metrics`, alert on readiness, errors, latency, queue pressure, and database/Redis availability.

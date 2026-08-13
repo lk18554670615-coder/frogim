@@ -3,6 +3,7 @@ module github.com/linli/im/server
 go 1.26.0
 
 require (
+	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/livekit/protocol v1.50.5-0.20260728075222-28e604c046c6

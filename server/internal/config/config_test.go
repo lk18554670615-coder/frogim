@@ -1,11 +1,24 @@
 package config
 
 import (
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
 )
+
+func configureWebPush(t *testing.T, c *Config) {
+	t.Helper()
+	privateKey, x, y, err := elliptic.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate Web Push key: %v", err)
+	}
+	c.WebPushPublicKey = base64.RawURLEncoding.EncodeToString(elliptic.Marshal(elliptic.P256(), x, y))
+	c.WebPushPrivateKey = base64.RawURLEncoding.EncodeToString(privateKey)
+	c.WebPushSubject = "https://chat.example.com"
+}
 
 func validConfig() Config {
 	c := Config{
@@ -231,6 +244,24 @@ func TestProductionCombinedPushRequiresCompleteAPNSVoIPConfiguration(t *testing.
 	c.APNSVoIPBundleID = "com.linlitong.imapp.voip"
 	if err := c.Validate(); err == nil {
 		t.Fatal("bundle id must not include .voip suffix")
+	}
+}
+
+func TestWebPushConfigurationIsOptionalButAtomic(t *testing.T) {
+	c := validConfig()
+	configureWebPush(t, &c)
+	if err := c.Validate(); err != nil {
+		t.Fatalf("valid Web Push config: %v", err)
+	}
+	c.WebPushPrivateKey = ""
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "Web Push") {
+		t.Fatalf("partial Web Push config err=%v", err)
+	}
+	c = validConfig()
+	configureWebPush(t, &c)
+	c.WebPushPublicKey = base64.RawURLEncoding.EncodeToString(make([]byte, 65))
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "PUBLIC_KEY") {
+		t.Fatalf("invalid Web Push public key err=%v", err)
 	}
 }
 

@@ -29,6 +29,7 @@ import (
 	"github.com/linli/im/server/internal/media"
 	"github.com/linli/im/server/internal/model"
 	"github.com/linli/im/server/internal/netutil"
+	"github.com/linli/im/server/internal/push"
 	"github.com/linli/im/server/internal/store"
 	"github.com/linli/im/server/internal/wukong"
 	"github.com/linli/im/server/internal/wukongplugin"
@@ -328,6 +329,7 @@ func (x *API) routes() {
 	x.mux.Handle("DELETE /v2/stickers/{id}/favorite", x.requireAuth(http.HandlerFunc(x.setStickerFavorite)))
 	x.mux.Handle("POST /v2/stickers/{id}/used", x.requireAuth(http.HandlerFunc(x.recordStickerUse)))
 	x.mux.HandleFunc("GET /v2/config/version", x.clientVersion)
+	x.mux.HandleFunc("GET /v2/config/web-push", x.webPushConfig)
 	x.mux.HandleFunc("POST /v2/admin/auth/login", x.adminLogin)
 	x.mux.Handle("GET /v2/users/me", x.requireAuth(http.HandlerFunc(x.me)))
 	x.mux.Handle("PATCH /v2/users/me", x.requireAuth(http.HandlerFunc(x.updateMe)))
@@ -1468,6 +1470,16 @@ func (x *API) registerDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_ARGUMENT", "invalid request")
 		return
 	}
+	if p.Provider == "webpush" {
+		if p.Platform != "web" {
+			writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "Web Push requires the web platform")
+			return
+		}
+		if _, err := push.ParseWebPushSubscription(p.PushToken); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid Web Push subscription")
+			return
+		}
+	}
 	d := store.Device{ID: p.DeviceID, Platform: p.Platform, Provider: p.Provider, PushToken: p.PushToken, NotificationsEnabled: true, PreviewEnabled: true, SoundEnabled: true, VibrationEnabled: true}
 	if p.NotificationsEnabled != nil {
 		d.NotificationsEnabled = *p.NotificationsEnabled
@@ -1487,6 +1499,13 @@ func (x *API) registerDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, 201, registered)
+}
+
+func (x *API) webPushConfig(w http.ResponseWriter, _ *http.Request) {
+	write(w, http.StatusOK, map[string]any{
+		"enabled":   x.cfg.WebPushEnabled(),
+		"publicKey": x.cfg.WebPushPublicKey,
+	})
 }
 func (x *API) unregisterDevice(w http.ResponseWriter, r *http.Request) {
 	if err := x.app.UnregisterDevice(uid(r), r.PathValue("id")); err != nil {
@@ -2749,12 +2768,14 @@ func (x *API) settingsPayload() map[string]any {
 		"otpProvider":   x.cfg.DevMode || (x.cfg.OTPWebhookURL != "" && x.cfg.OTPWebhookToken != ""),
 		"pushProvider":  pushConfigured,
 		"apnsVoIP":      apnsVoIPConfigured,
+		"webPush":       x.cfg.WebPushEnabled(),
 		"liveKit":       x.cfg.LiveKitEnabled && x.livekit != nil && x.livekitSetupErr == nil,
 		"adminTOTP":     x.cfg.AdminTOTPSecret != "",
 	}
 	values["infrastructure"] = map[string]any{
 		"pushProvider": x.cfg.PushProvider, "mediaMaxSizeMB": x.cfg.MediaMaxBytes / (1 << 20),
 		"apnsVoipSandbox":          x.cfg.APNSVoIPSandbox,
+		"webPushEnabled":           x.cfg.WebPushEnabled(),
 		"callInviteTimeoutSeconds": int64(x.cfg.CallInviteTTL / time.Second), "accessTokenMinutes": int64(x.cfg.AccessTTL / time.Minute),
 		"refreshTokenHours": int64(x.cfg.RefreshTTL / time.Hour),
 	}

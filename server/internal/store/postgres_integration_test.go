@@ -3100,6 +3100,7 @@ func TestPostgresInvalidatesOnlySupportedPushProviders(t *testing.T) {
 	deviceIDs := []string{
 		"push_invalidation_getui_" + suffix,
 		"push_invalidation_voip_" + suffix,
+		"push_invalidation_webpush_" + suffix,
 		"push_invalidation_fcm_" + suffix,
 	}
 	if _, err = p.pool.Exec(ctx, `INSERT INTO im_users(id,phone,name,created_at) VALUES($1,$2,'Push invalidation test',now())`, uid, "push_invalidation_"+suffix); err != nil {
@@ -3108,7 +3109,7 @@ func TestPostgresInvalidatesOnlySupportedPushProviders(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = p.pool.Exec(ctx, `DELETE FROM im_users WHERE id=$1`, uid)
 	})
-	providers := []string{"getui", "apns_voip", "fcm"}
+	providers := []string{"getui", "apns_voip", "webpush", "fcm"}
 	for index, deviceID := range deviceIDs {
 		if _, err = p.pool.Exec(ctx, `INSERT INTO im_devices(id,user_id,platform,provider,push_token,notifications_enabled,updated_at) VALUES($1,$2,'ios',$3,$4,true,now())`, deviceID, uid, providers[index], "push_token_"+suffix+fmt.Sprint(index)); err != nil {
 			t.Fatal(err)
@@ -3139,7 +3140,7 @@ func TestPostgresInvalidatesOnlySupportedPushProviders(t *testing.T) {
 	if err = rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	for _, provider := range []string{"getui", "apns_voip"} {
+	for _, provider := range []string{"getui", "apns_voip", "webpush"} {
 		state := states[provider]
 		if state.enabled || state.token != "" {
 			t.Fatalf("provider %s was not invalidated: %+v", provider, state)
