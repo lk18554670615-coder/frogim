@@ -668,6 +668,7 @@ class FavoritesScreen extends StatefulWidget {
 
 class _FavoritesScreenState extends State<FavoritesScreen> {
   List<ChatMessage>? items;
+  _FavoriteFilter filter = _FavoriteFilter.all;
 
   @override
   void initState() {
@@ -681,63 +682,96 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: const GlassAppBar(title: Text('我的收藏')),
-    body: items == null
-        ? const Center(child: CupertinoActivityIndicator())
-        : items!.isEmpty
-        ? const StatePanel(
-            icon: CupertinoIcons.bookmark,
-            title: '还没有收藏',
-            body: '在聊天中长按消息并选择收藏，内容会同步显示在这里。',
-          )
-        : RefreshIndicator(
-            onRefresh: _load,
-            child: ListView.separated(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
-              itemCount: items!.length,
-              separatorBuilder: (_, _) => const SizedBox(height: 8),
-              itemBuilder: (context, index) {
-                final message = items![index];
-                return Dismissible(
-                  key: ValueKey('favorite-${message.id}'),
-                  direction: DismissDirection.endToStart,
-                  confirmDismiss: (_) => _confirmRemove(message),
-                  background: Container(
-                    alignment: Alignment.centerRight,
-                    padding: const EdgeInsets.only(right: 20),
-                    decoration: BoxDecoration(
-                      color: LinliColors.systemRed,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Icon(
-                      CupertinoIcons.delete,
-                      color: Colors.white,
-                    ),
+  Widget build(BuildContext context) {
+    final allItems = items;
+    final filteredItems = allItems
+        ?.where((message) => filter.matches(message.kind))
+        .toList(growable: false);
+    return Scaffold(
+      appBar: const GlassAppBar(title: Text('我的收藏')),
+      body: allItems == null
+          ? const Center(child: CupertinoActivityIndicator())
+          : allItems.isEmpty
+          ? const StatePanel(
+              icon: CupertinoIcons.bookmark,
+              title: '还没有收藏',
+              body: '在聊天中长按消息并选择收藏，内容会同步显示在这里。',
+            )
+          : Column(
+              children: [
+                SizedBox(
+                  height: 52,
+                  child: ListView.separated(
+                    key: const Key('favorite-filters'),
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                    itemCount: _FavoriteFilter.values.length,
+                    separatorBuilder: (_, _) => const SizedBox(width: 8),
+                    itemBuilder: (context, index) {
+                      final option = _FavoriteFilter.values[index];
+                      return ChoiceChip(
+                        key: Key('favorite-filter-${option.name}'),
+                        label: Text(option.label),
+                        selected: filter == option,
+                        onSelected: (_) => setState(() => filter = option),
+                        showCheckmark: false,
+                      );
+                    },
                   ),
-                  child: Card(
-                    child: ListTile(
-                      minTileHeight: 72,
-                      leading: const Icon(CupertinoIcons.bookmark_fill),
-                      title: Text(
-                        message.text.isEmpty ? '[非文本消息]' : message.text,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: Text(
-                        '${message.senderName} · ${message.sentAt.month}/${message.sentAt.day}',
-                      ),
-                      trailing: const Icon(
-                        CupertinoIcons.chevron_forward,
-                        size: 16,
-                      ),
-                      onTap: () => _openConversation(message),
-                    ),
-                  ),
-                );
-              },
+                ),
+                Expanded(
+                  child: filteredItems!.isEmpty
+                      ? StatePanel(
+                          icon: CupertinoIcons.bookmark,
+                          title: '没有${filter.label}收藏',
+                          body: '切换分类可查看其他已收藏内容。',
+                        )
+                      : RefreshIndicator(
+                          onRefresh: _load,
+                          child: ListView.separated(
+                            padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+                            itemCount: filteredItems.length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(height: 8),
+                            itemBuilder: (context, index) =>
+                                _favoriteTile(filteredItems[index]),
+                          ),
+                        ),
+                ),
+              ],
             ),
-          ),
+    );
+  }
+
+  Widget _favoriteTile(ChatMessage message) => Dismissible(
+    key: ValueKey('favorite-${message.id}'),
+    direction: DismissDirection.endToStart,
+    confirmDismiss: (_) => _confirmRemove(message),
+    background: Container(
+      alignment: Alignment.centerRight,
+      padding: const EdgeInsets.only(right: 20),
+      decoration: BoxDecoration(
+        color: LinliColors.systemRed,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: const Icon(CupertinoIcons.delete, color: Colors.white),
+    ),
+    child: Card(
+      child: ListTile(
+        minTileHeight: 72,
+        leading: const Icon(CupertinoIcons.bookmark_fill),
+        title: Text(
+          message.text.isEmpty ? '[非文本消息]' : message.text,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          '${message.senderName} · ${message.sentAt.month}/${message.sentAt.day}',
+        ),
+        trailing: const Icon(CupertinoIcons.chevron_forward, size: 16),
+        onTap: () => _openConversation(message),
+      ),
+    ),
   );
 
   Future<bool> _confirmRemove(ChatMessage message) async {
@@ -794,6 +828,40 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       ),
     );
   }
+}
+
+enum _FavoriteFilter {
+  all('全部'),
+  text('文字'),
+  media('媒体'),
+  file('文件'),
+  other('其他');
+
+  const _FavoriteFilter(this.label);
+
+  final String label;
+
+  bool matches(MessageContentKind kind) => switch (this) {
+    _FavoriteFilter.all => true,
+    _FavoriteFilter.text =>
+      kind == MessageContentKind.text || kind == MessageContentKind.reply,
+    _FavoriteFilter.media =>
+      kind == MessageContentKind.image ||
+          kind == MessageContentKind.voice ||
+          kind == MessageContentKind.video ||
+          kind == MessageContentKind.sticker ||
+          kind == MessageContentKind.momentShare,
+    _FavoriteFilter.file => kind == MessageContentKind.file,
+    _FavoriteFilter.other =>
+      kind != MessageContentKind.text &&
+          kind != MessageContentKind.reply &&
+          kind != MessageContentKind.image &&
+          kind != MessageContentKind.voice &&
+          kind != MessageContentKind.video &&
+          kind != MessageContentKind.sticker &&
+          kind != MessageContentKind.momentShare &&
+          kind != MessageContentKind.file,
+  };
 }
 
 class DevicesScreen extends StatefulWidget {

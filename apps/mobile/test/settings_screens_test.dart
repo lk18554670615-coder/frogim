@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:linli_im/core/app_controller.dart';
 import 'package:linli_im/core/app_theme.dart';
+import 'package:linli_im/core/models.dart';
 import 'package:linli_im/data/demo_repository.dart';
 import 'package:linli_im/ui/screens/settings_preferences.dart';
 import 'package:linli_im/ui/screens/settings_screens.dart';
@@ -74,6 +75,52 @@ void main() {
       isNull,
     );
     expect(find.text('最近搜索已从本机清除'), findsOneWidget);
+  });
+
+  testWidgets('收藏页按消息类型筛选已同步内容', (tester) async {
+    final controller = (await tester.runAsync(_controller))!;
+    addTearDown(controller.dispose);
+    final conversation = controller.conversations.first;
+    final now = DateTime(2026, 8, 13, 14);
+    await tester.runAsync(() async {
+      await controller.favoriteMessage(
+        ChatMessage(
+          id: 'favorite-text',
+          conversationId: conversation.id,
+          senderId: controller.currentUser!.id,
+          senderName: controller.currentUser!.name,
+          text: '收藏文字内容',
+          sentAt: now,
+          isMine: true,
+        ),
+      );
+      await controller.favoriteMessage(
+        ChatMessage(
+          id: 'favorite-file',
+          conversationId: conversation.id,
+          senderId: controller.currentUser!.id,
+          senderName: controller.currentUser!.name,
+          text: '[文件] 发布说明.pdf',
+          sentAt: now,
+          isMine: true,
+          kind: MessageContentKind.file,
+          fileName: '发布说明.pdf',
+        ),
+      );
+    });
+
+    await _pump(tester, FavoritesScreen(controller: controller));
+    expect(find.text('收藏文字内容'), findsOneWidget);
+    expect(find.text('[文件] 发布说明.pdf'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('favorite-filter-file')));
+    await _settle(tester);
+    expect(find.text('收藏文字内容'), findsNothing);
+    expect(find.text('[文件] 发布说明.pdf'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('favorite-filter-media')));
+    await _settle(tester);
+    expect(find.text('没有媒体收藏'), findsOneWidget);
   });
 
   testWidgets('存储页经二次确认清除所有会话本机消息', (tester) async {

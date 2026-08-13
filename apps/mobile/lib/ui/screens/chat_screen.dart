@@ -533,7 +533,7 @@ class _ChatScreenState extends State<ChatScreen> {
       return const StatePanel(
         icon: CupertinoIcons.chat_bubble,
         title: '从一句问候开始',
-        body: '消息会安全保存在本机，并在联网后同步。',
+        body: '发送后的消息会通过服务器在你的设备间同步。',
       );
     }
     final latestMineId = messages
@@ -1429,7 +1429,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (saved && mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(const SnackBar(content: Text('已收藏到本机')));
+          ).showSnackBar(const SnackBar(content: Text('已收藏并同步')));
         }
       case _MessageMenuAction.select:
         setState(() {
