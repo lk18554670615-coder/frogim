@@ -39,7 +39,7 @@ else
   exit 2
 fi
 
-version="$("${flutter[@]}" --version --machine | python3 -c 'import json,sys; print(json.load(sys.stdin)["frameworkVersion"])')"
+version="$("${flutter[@]}" --version --machine | sed -nE 's/.*"frameworkVersion"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)"
 if [[ "$version" != "3.44.8" ]]; then
   echo "Flutter 3.44.8 is required, found $version" >&2
   exit 2
