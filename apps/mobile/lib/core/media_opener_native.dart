@@ -19,38 +19,55 @@ Future<String?> openMessageMedia(
     if (uri == null || (uri.scheme != 'https' && uri.scheme != 'http')) {
       return '文件地址无效';
     }
-    final request = http.Request('GET', uri);
-    final response = await http.Client()
-        .send(request)
-        .timeout(const Duration(seconds: 45));
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      return '文件下载失败（${response.statusCode}）';
-    }
-    final declaredLength = response.contentLength;
-    if (declaredLength != null && declaredLength > maxBytes) {
-      return '文件超过允许下载的大小';
-    }
-    final directory = await getTemporaryDirectory();
-    final safeName = _safeFileName(
-      message.fileName,
-      message.mimeType,
-      message.mediaId ?? message.id,
-    );
-    final file = File('${directory.path}/linli-media/$safeName');
-    await file.parent.create(recursive: true);
-    final sink = file.openWrite();
-    var received = 0;
+    final client = http.Client();
     try {
-      await for (final chunk in response.stream) {
-        received += chunk.length;
-        if (received > maxBytes) return '文件超过允许下载的大小';
-        sink.add(chunk);
+      final request = http.Request('GET', uri);
+      final response = await client
+          .send(request)
+          .timeout(const Duration(seconds: 45));
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return '文件下载失败（${response.statusCode}）';
       }
+      final declaredLength = response.contentLength;
+      if (declaredLength != null && declaredLength > maxBytes) {
+        return '文件超过允许下载的大小';
+      }
+      final directory = await getTemporaryDirectory();
+      final safeName = _safeFileName(
+        message.fileName,
+        message.mimeType,
+        message.mediaId ?? message.id,
+      );
+      final file = File('${directory.path}/linli-media/$safeName');
+      await file.parent.create(recursive: true);
+      final sink = file.openWrite();
+      var received = 0;
+      var exceeded = false;
+      var streamFailed = false;
+      try {
+        await for (final chunk in response.stream) {
+          received += chunk.length;
+          if (received > maxBytes) {
+            exceeded = true;
+            break;
+          }
+          sink.add(chunk);
+        }
+      } catch (_) {
+        streamFailed = true;
+        rethrow;
+      } finally {
+        await sink.close();
+        if (streamFailed && await file.exists()) await file.delete();
+      }
+      if (exceeded || received == 0) {
+        if (await file.exists()) await file.delete();
+        return exceeded ? '文件超过允许下载的大小' : '下载到的文件为空';
+      }
+      path = file.path;
     } finally {
-      await sink.close();
+      client.close();
     }
-    if (received == 0) return '下载到的文件为空';
-    path = file.path;
   }
   final file = File(path);
   if (!await file.exists()) return '本地文件已不可用';
@@ -77,28 +94,18 @@ String _extensionForMime(String? mime) => switch (mime?.toLowerCase()) {
 };
 
 Future<int> messageMediaCacheBytes() async {
-  try {
-    final directory = await getTemporaryDirectory();
-    final root = Directory('${directory.path}/linli-media');
-    if (!await root.exists()) return 0;
-    var total = 0;
-    await for (final entity in root.list(recursive: true, followLinks: false)) {
-      if (entity is File) total += await entity.length();
-    }
-    return total;
-  } on Exception {
-    // 桌面预览、单元测试或系统目录暂不可用时，缓存统计应安全降级，
-    // 不能影响设置页及聊天主流程。
-    return 0;
+  final directory = await getTemporaryDirectory();
+  final root = Directory('${directory.path}/linli-media');
+  if (!await root.exists()) return 0;
+  var total = 0;
+  await for (final entity in root.list(recursive: true, followLinks: false)) {
+    if (entity is File) total += await entity.length();
   }
+  return total;
 }
 
 Future<void> clearMessageMediaCache() async {
-  try {
-    final directory = await getTemporaryDirectory();
-    final root = Directory('${directory.path}/linli-media');
-    if (await root.exists()) await root.delete(recursive: true);
-  } on Exception {
-    // 目录插件不可用等非业务错误按“无缓存可清理”处理。
-  }
+  final directory = await getTemporaryDirectory();
+  final root = Directory('${directory.path}/linli-media');
+  if (await root.exists()) await root.delete(recursive: true);
 }

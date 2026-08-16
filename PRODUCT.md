@@ -10,7 +10,7 @@ People who use an instant-messaging app throughout the day on iPhone, Android, t
 
 ## Product Purpose
 
-邻里通讯提供可靠的单聊和群聊、清晰的消息状态、可恢复同步、实用群管理与可见安全工具。成功意味着沟通即时、导航稳定，并且用户能够理解每条消息和账号操作发生了什么。
+青蛙呱呱提供可靠的单聊和群聊、清晰的消息状态、可恢复同步、实用群管理与可见安全工具。成功意味着沟通即时、导航稳定，并且用户能够理解每条消息和账号操作发生了什么。
 
 ## Brand Personality
 

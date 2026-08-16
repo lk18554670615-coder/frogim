@@ -101,7 +101,9 @@ func (p *Postgres) SetWukongSystemUser(ctx context.Context, userID string, enabl
 		INSERT INTO im_wukong_system_users(user_id,enabled,updated_by,reason,updated_at)
 		VALUES($1,$2,$3,$4,$5)
 		ON CONFLICT(user_id) DO UPDATE SET enabled=excluded.enabled,updated_by=excluded.updated_by,
-			reason=excluded.reason,updated_at=excluded.updated_at
+			reason=excluded.reason,updated_at=excluded.updated_at,
+			robot_enabled=CASE WHEN excluded.enabled THEN im_wukong_system_users.robot_enabled ELSE false END,
+			robot_version=CASE WHEN NOT excluded.enabled AND im_wukong_system_users.robot_version>0 THEN im_wukong_system_users.robot_version+1 ELSE im_wukong_system_users.robot_version END
 	`, userID, enabled, actorID, reason, at); err != nil {
 		return nil, err
 	}

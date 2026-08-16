@@ -8,6 +8,375 @@ import '../../core/app_theme.dart';
 import '../../core/models.dart';
 import '../widgets/linli_widgets.dart';
 
+class SystemNotificationTile extends StatelessWidget {
+  const SystemNotificationTile({super.key, required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: controller,
+    builder: (context, _) {
+      final dark = Theme.of(context).brightness == Brightness.dark;
+      final latest = controller.announcements.isEmpty
+          ? null
+          : controller.announcements.first;
+      final error = controller.announcementsLoadError;
+      final unread = controller.systemNotificationUnreadCount;
+      final subtitle = error != null ? '通知暂时无法同步' : latest?.title ?? '暂无新通知';
+      final time = latest?.publishedAt == null
+          ? ''
+          : _notificationDate(latest!.publishedAt!);
+      return KeyedSubtree(
+        key: error == null ? null : const Key('announcement-load-error'),
+        child: Semantics(
+          button: true,
+          label: '系统通知${unread > 0 ? '，$unread 条未读' : ''}，$subtitle',
+          child: Material(
+            key: const Key('system-notification-surface'),
+            color: dark ? LinliColors.darkPinnedSurface : LinliColors.brandMint,
+            child: InkWell(
+              key: const Key('system-notifications-entry'),
+              overlayColor: WidgetStatePropertyAll(
+                LinliColors.brandGreen.withValues(alpha: .12),
+              ),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) =>
+                      SystemNotificationsScreen(controller: controller),
+                ),
+              ),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 74),
+                child: Row(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(left: 16, right: 12),
+                      child: Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: LinliColors.brandGreen,
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        alignment: Alignment.center,
+                        child: const Icon(
+                          CupertinoIcons.bell_fill,
+                          size: 22,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: Container(
+                        key: const Key('system-notification-content'),
+                        constraints: const BoxConstraints(minHeight: 74),
+                        padding: const EdgeInsets.fromLTRB(0, 9, 14, 9),
+                        decoration: BoxDecoration(
+                          border: Border(
+                            bottom: BorderSide(
+                              color: dark
+                                  ? const Color(0xFF29443A)
+                                  : const Color(0xFFD7E0DB),
+                              width: .75,
+                            ),
+                          ),
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    '系统通知',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.titleMedium,
+                                  ),
+                                ),
+                                if (time.isNotEmpty) ...[
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    time,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.labelSmall,
+                                  ),
+                                ],
+                              ],
+                            ),
+                            const SizedBox(height: 5),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    subtitle,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodyMedium
+                                        ?.copyWith(
+                                          color: error == null
+                                              ? LinliColors.preview
+                                              : LinliColors.systemRed,
+                                          fontSize: 14,
+                                        ),
+                                  ),
+                                ),
+                                if (unread > 0) ...[
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    constraints: const BoxConstraints(
+                                      minWidth: 21,
+                                      minHeight: 21,
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                    ),
+                                    alignment: Alignment.center,
+                                    decoration: BoxDecoration(
+                                      color: LinliColors.unread,
+                                      borderRadius: BorderRadius.circular(999),
+                                    ),
+                                    child: Text(
+                                      unread > 99 ? '99+' : '$unread',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    },
+  );
+}
+
+class SystemNotificationsScreen extends StatelessWidget {
+  const SystemNotificationsScreen({super.key, required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: controller,
+    builder: (context, _) {
+      final announcements = controller.announcements;
+      final error = controller.announcementsLoadError;
+      return Scaffold(
+        appBar: GlassAppBar(
+          title: const Text('系统通知'),
+          actions: [
+            IconButton(
+              key: const Key('refresh-system-notifications'),
+              tooltip: '刷新系统通知',
+              onPressed: controller.refreshAnnouncements,
+              icon: const Icon(CupertinoIcons.refresh),
+            ),
+          ],
+        ),
+        body: RefreshIndicator(
+          onRefresh: controller.refreshAnnouncements,
+          color: LinliColors.navy,
+          child: ListView.builder(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.only(top: 8, bottom: 32),
+            itemCount: announcements.isEmpty
+                ? 1
+                : announcements.length + (error == null ? 0 : 1),
+            itemBuilder: (context, index) {
+              if (error != null && index == 0) {
+                return _NotificationLoadNotice(
+                  message: error,
+                  onRetry: controller.refreshAnnouncements,
+                );
+              }
+              if (announcements.isEmpty) {
+                return StatePanel(
+                  icon: CupertinoIcons.bell,
+                  title: error == null ? '暂无系统通知' : '通知加载失败',
+                  body: error ?? '平台公告和服务提醒会显示在这里。',
+                  actionLabel: error == null ? null : '重新加载',
+                  onAction: error == null
+                      ? null
+                      : controller.refreshAnnouncements,
+                );
+              }
+              final announcement =
+                  announcements[index - (error == null ? 0 : 1)];
+              return _SystemNotificationRow(
+                controller: controller,
+                announcement: announcement,
+              );
+            },
+          ),
+        ),
+      );
+    },
+  );
+}
+
+class _NotificationLoadNotice extends StatelessWidget {
+  const _NotificationLoadNotice({required this.message, required this.onRetry});
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+    child: Material(
+      color: LinliColors.systemRed.withValues(alpha: .08),
+      borderRadius: BorderRadius.circular(12),
+      child: ListTile(
+        minTileHeight: 52,
+        leading: const Icon(
+          CupertinoIcons.exclamationmark_circle,
+          color: LinliColors.systemRed,
+        ),
+        title: Text(message, maxLines: 2, overflow: TextOverflow.ellipsis),
+        trailing: TextButton(onPressed: onRetry, child: const Text('重试')),
+      ),
+    ),
+  );
+}
+
+class _SystemNotificationRow extends StatelessWidget {
+  const _SystemNotificationRow({
+    required this.controller,
+    required this.announcement,
+  });
+
+  final AppController controller;
+  final AppAnnouncement announcement;
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+    onTap: () => Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => AnnouncementDetailsScreen(
+          controller: controller,
+          announcement: announcement,
+        ),
+      ),
+    ),
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            alignment: Alignment.center,
+            child: Icon(
+              announcement.pinned
+                  ? CupertinoIcons.pin_fill
+                  : CupertinoIcons.speaker_2_fill,
+              size: 19,
+              color: Theme.of(context).brightness == Brightness.dark
+                  ? LinliColors.brandGreen
+                  : LinliColors.navy,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        announcement.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(
+                              fontWeight: announcement.unread
+                                  ? FontWeight.w700
+                                  : FontWeight.w500,
+                            ),
+                      ),
+                    ),
+                    if (announcement.publishedAt != null)
+                      Text(
+                        _notificationDate(announcement.publishedAt!),
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        announcement.content,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSurface.withValues(alpha: .58),
+                          height: 1.35,
+                        ),
+                      ),
+                    ),
+                    if (announcement.unread) ...[
+                      const SizedBox(width: 10),
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: const BoxDecoration(
+                          color: LinliColors.unread,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+String _notificationDate(DateTime value) {
+  final local = value.toLocal();
+  final now = DateTime.now();
+  if (local.year == now.year &&
+      local.month == now.month &&
+      local.day == now.day) {
+    return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+  }
+  if (local.year == now.year) return '${local.month}月${local.day}日';
+  return '${local.year}/${local.month}/${local.day}';
+}
+
 class AnnouncementTicker extends StatelessWidget {
   const AnnouncementTicker({super.key, required this.controller});
   final AppController controller;
@@ -44,7 +413,7 @@ class AnnouncementTicker extends StatelessWidget {
                           : CupertinoIcons.speaker_2_fill,
                       size: 17,
                       color: Theme.of(context).brightness == Brightness.dark
-                          ? LinliColors.yellow
+                          ? LinliColors.brandGreen
                           : LinliColors.navy,
                     ),
                     const SizedBox(width: 10),

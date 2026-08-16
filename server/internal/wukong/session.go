@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +44,39 @@ type SessionIssuer struct {
 	now    func() time.Time
 	store  CredentialProvisionStore
 	locks  [64]sync.Mutex
+}
+
+// Ready verifies the read-only dependencies required before an IM session can
+// be issued. A generic database ping is not enough: deployments can be alive
+// while the WuKong credential table or the WuKong API is unavailable, which
+// would make every login fail after authentication has already succeeded.
+func (s *SessionIssuer) Ready(ctx context.Context) error {
+	if s == nil || s.client == nil {
+		return errors.New("WuKongIM session issuer is unavailable")
+	}
+	if s.store != nil {
+		if _, err := s.store.WukongCredentialProvisioned(
+			ctx,
+			"__readiness__",
+			DeviceApp,
+			DeviceLevelMaster,
+			strings.Repeat("0", sha256.Size*2),
+		); err != nil {
+			return err
+		}
+	}
+	if err := s.client.Health(ctx); err != nil {
+		return err
+	}
+	endpoint, err := url.Parse(s.tcpURL)
+	if err != nil || strings.TrimSpace(endpoint.Host) == "" {
+		return errors.New("WuKongIM TCP endpoint is invalid")
+	}
+	connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", endpoint.Host)
+	if err != nil {
+		return errors.New("WuKongIM TCP endpoint is unavailable")
+	}
+	return connection.Close()
 }
 
 func NewSessionIssuer(client *Client, secret, tcpURL, wsURL string, stores ...CredentialProvisionStore) (*SessionIssuer, error) {

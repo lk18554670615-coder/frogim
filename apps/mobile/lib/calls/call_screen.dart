@@ -97,6 +97,11 @@ class CallScreen extends StatelessWidget {
                     child: Column(
                       children: [
                         _CallHeading(controller: controller),
+                        if (controller.errorMessage?.trim().isNotEmpty ==
+                                true &&
+                            controller.phase != CallPhase.failed &&
+                            controller.phase != CallPhase.ended)
+                          _CallControlError(message: controller.errorMessage!),
                         const Spacer(),
                         if (controller.phase == CallPhase.failed)
                           _CallFailurePanel(controller: controller)
@@ -115,6 +120,51 @@ class CallScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+class _CallControlError extends StatelessWidget {
+  const _CallControlError({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    liveRegion: true,
+    child: Container(
+      key: const Key('call-control-error'),
+      margin: const EdgeInsets.only(top: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xC72A0F1A),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0x70FF6B6B)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            CupertinoIcons.exclamationmark_triangle_fill,
+            color: Color(0xFFFFB4AB),
+            size: 17,
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                height: 1.35,
+                fontWeight: FontWeight.w500,
+                decoration: TextDecoration.none,
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _VideoStage extends StatelessWidget {
@@ -245,7 +295,7 @@ class _CallHeading extends StatelessWidget {
     return Column(
       children: [
         Text(
-          controller.peer?.name ?? controller.conversation?.title ?? '邻里联系人',
+          controller.peer?.name ?? controller.conversation?.title ?? '青蛙呱呱联系人',
           textAlign: TextAlign.center,
           maxLines: 2,
           style: const TextStyle(

@@ -1,4 +1,4 @@
-# 邻里通讯管理后台
+# 青蛙呱呱管理后台
 
 管理后台位于 `apps/admin`，生产模式只连接真实 Go API，不包含演示入口。后台定位是运营治理和运行观测，不提供任意读取私聊正文、执行服务器命令或直接修改好友关系的能力。
 
@@ -7,8 +7,8 @@
 | 页面 | 服务端接口 | 数据与操作 |
 | --- | --- | --- |
 | 运行概览 | `GET /v2/admin/dashboard` | 用户、群组、消息、举报和审计摘要 |
-| 用户管理 | `GET /v2/admin/users`、`POST /users/{id}/ban`、`POST /users/{id}/unban` | 邻里号修改次数、设备数、定时或永久封禁；封禁到期由服务端自动解除 |
-| 群组管理 | `GET /v2/admin/groups`、`GET /groups/{id}`、`GET /groups/{id}/members`、`POST /groups/{id}/disband` | 群主、成员、消息、举报、公告、入群策略和成员分页 |
+| 用户管理 | `GET /v2/admin/users`、`POST /users/{id}/ban`、`POST /users/{id}/unban` | 呱呱号修改次数、设备数、定时或永久封禁；封禁到期由服务端自动解除 |
+| 群组管理 | `GET /v2/admin/groups`、`GET /groups/{id}`、`GET /groups/{id}/members`、`PATCH/DELETE /groups/{id}/members/{userId}`、`POST /groups/{id}/disband` | 群主、成员、消息、举报、公告、入群策略和成员分页；可对非群主成员设为/取消管理员、禁言/解禁或移出群聊，所有写操作要求二次确认、理由和审计 |
 | 举报审核 | `GET /v2/admin/reports`、`POST /reports/{id}/resolve` | 按状态分页；处置动作与审核依据进入审计链 |
 | 消息治理索引 | `GET /v2/admin/messages` | 仅检索消息 ID、客户端 ID、会话、发送人、序号和生命周期；正文不返回也不可搜索 |
 | 文件与存储 | `GET /v2/admin/media` | 对象键、归属、MIME、大小、校验值和上传状态 |

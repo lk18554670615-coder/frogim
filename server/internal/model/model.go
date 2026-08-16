@@ -12,6 +12,7 @@ type User struct {
 	AllowSearchByHandle    bool       `json:"allowSearchByHandle"`
 	AllowSearchByPhone     bool       `json:"allowSearchByPhone"`
 	Signature              string     `json:"signature"`
+	Gender                 string     `json:"gender"`
 	AvatarMediaID          string     `json:"avatarMediaId,omitempty"`
 	AvatarURL              string     `json:"avatarUrl,omitempty"`
 	Banned                 bool       `json:"banned"`
@@ -59,6 +60,7 @@ type ConversationMember struct {
 	LastReadSeq        int64      `json:"lastReadSeq"`
 	LastDeliveredSeq   int64      `json:"lastDeliveredSeq"`
 	Pinned             bool       `json:"pinned"`
+	Saved              bool       `json:"saved"`
 	Archived           bool       `json:"archived"`
 	NotificationsMuted bool       `json:"notificationsMuted"`
 	ManualUnread       bool       `json:"manualUnread"`

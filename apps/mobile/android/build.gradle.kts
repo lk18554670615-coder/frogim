@@ -3,8 +3,6 @@ buildscript {
         maven("https://maven.aliyun.com/repository/google")
         maven("https://maven.aliyun.com/repository/central")
         maven("https://maven.aliyun.com/repository/gradle-plugin")
-        google()
-        mavenCentral()
     }
 }
 
@@ -15,14 +13,10 @@ allprojects {
         maven("https://maven.aliyun.com/repository/google")
         maven("https://maven.aliyun.com/repository/central")
         maven("https://maven.aliyun.com/repository/gradle-plugin")
-        google()
-        mavenCentral()
     }
     repositories {
         maven("https://maven.aliyun.com/repository/google")
         maven("https://maven.aliyun.com/repository/central")
-        google()
-        mavenCentral()
         maven { url = uri("https://mvn.getui.com/nexus/content/repositories/releases/") }
     }
 }

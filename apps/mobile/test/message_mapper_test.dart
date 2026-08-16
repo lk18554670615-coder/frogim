@@ -39,6 +39,50 @@ void main() {
     expect(wukongObjectMap(outgoing.payload['mention'])['all'], 1);
   });
 
+  test(
+    'robot command keeps TangSeng-compatible target and entity metadata',
+    () {
+      final outgoing = mapper.toOutgoing(
+        ChatMessage(
+          id: 'local-robot',
+          clientMessageId: 'client-robot',
+          conversationId: 'conversation-robot',
+          senderId: 'usr_a',
+          senderName: 'Alice',
+          text: '查询订单',
+          sentAt: DateTime.utc(2026, 8, 16),
+          isMine: true,
+          robotId: 'robot_support',
+        ),
+        channel: const WukongChannel(id: 'group_support', type: 2),
+      );
+
+      expect(outgoing.payload['robot_id'], 'robot_support');
+      final entities = outgoing.payload['entities']! as List<Object?>;
+      expect(entities, hasLength(1));
+      expect(wukongObjectMap(entities.single)['type'], 'bot_command');
+      expect(wukongObjectMap(entities.single)['length'], 4);
+
+      final restored = mapper.toChatMessage(
+        WukongMessage(
+          messageId: 'robot-message',
+          messageSeq: 1,
+          clientMsgNo: 'client-robot',
+          clientSeq: 1,
+          fromUid: 'usr_a',
+          channel: const WukongChannel(id: 'group_support', type: 2),
+          timestamp: DateTime.utc(2026, 8, 16),
+          payload: outgoing.payload,
+          state: WukongMessageState.sent,
+        ),
+        currentUserId: 'usr_a',
+        conversationId: 'conversation-robot',
+      );
+      expect(restored.robotId, 'robot_support');
+      expect(ChatMessage.fromJson(restored.toJson()).robotId, 'robot_support');
+    },
+  );
+
   test('maps received WuKong media and protocol status into UI model', () {
     final received = WukongMessage(
       messageId: '101',
@@ -52,6 +96,8 @@ void main() {
         'type': WukongContentType.image,
         'url': 'https://media.example/image.jpg',
         'mediaId': 'media_9',
+        'width': 1440,
+        'height': 1920,
       },
       state: WukongMessageState.sent,
       reasonCode: 1,
@@ -67,8 +113,20 @@ void main() {
     expect(mapped.id, '101');
     expect(mapped.kind, MessageContentKind.image);
     expect(mapped.mediaId, 'media_9');
+    expect(mapped.mediaWidth, 1440);
+    expect(mapped.mediaHeight, 1920);
     expect(mapped.status, MessageStatus.sent);
     expect(mapped.isMine, isFalse);
+
+    final outgoing = mapper.toOutgoing(
+      mapped,
+      channel: const WukongChannel(id: 'usr_b', type: 1),
+    );
+    expect(outgoing.payload['width'], 1440);
+    expect(outgoing.payload['height'], 1920);
+    final restored = ChatMessage.fromJson(mapped.toJson());
+    expect(restored.mediaWidth, 1440);
+    expect(restored.mediaHeight, 1920);
   });
 
   test(

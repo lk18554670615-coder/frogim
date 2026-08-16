@@ -48,7 +48,9 @@ Software is considered launch-ready only when the applicable gates below have ev
 
 ## Admin and deployment
 
+- `/health` and `/ready` return their expected JSON contracts, and anonymous `/v2/config/auth` returns a boolean registration switch, an 8-16 character password minimum and the bcrypt-safe 72-byte maximum. A healthy process with a missing or incompatible public client contract is not release-ready.
 - Production admin build contains no demo selector or embedded administrator credential.
+- The local admin development proxy returns the server's `401` for an unauthenticated `/api/v2/admin/health` request. A proxy `502` is a failed real-data connection, not an acceptable empty state.
 - Current Go dashboard/list/error envelopes pass contract tests without a blank render.
 - User, report and audit lists consume server `q/status/cursor/limit` pagination and `{items,total,nextCursor}` without local re-pagination.
 - Report actions map to `delete_message`, `ban_user`, `no_violation` or `dismiss`; a failed server action leaves the dialog open and never reports success.

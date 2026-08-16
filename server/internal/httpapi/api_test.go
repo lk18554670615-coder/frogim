@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -22,6 +23,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,6 +40,60 @@ import (
 )
 
 type signedMediaService struct{}
+
+type robotAPITestStore struct {
+	teststore.Memory
+	mu             sync.Mutex
+	conversationID string
+	profiles       map[string]*store.RobotProfile
+}
+
+func (s *robotAPITestStore) ListRobotProfiles(context.Context) ([]*store.RobotProfile, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := make([]*store.RobotProfile, 0, len(s.profiles))
+	for _, item := range s.profiles {
+		copy := *item
+		copy.Menus = append([]store.RobotMenu(nil), item.Menus...)
+		items = append(items, &copy)
+	}
+	return items, nil
+}
+
+func (s *robotAPITestStore) RobotProfilesForConversation(_ context.Context, userID, conversationID string) ([]*store.RobotProfile, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if userID != "usr_alice" || conversationID != s.conversationID {
+		return nil, store.ErrNotFound
+	}
+	items := []*store.RobotProfile{}
+	for _, item := range s.profiles {
+		if item.Enabled {
+			copy := *item
+			copy.Menus = append([]store.RobotMenu(nil), item.Menus...)
+			items = append(items, &copy)
+		}
+	}
+	return items, nil
+}
+
+func (s *robotAPITestStore) ConfigureRobotProfile(_ context.Context, profile store.RobotProfile, actorID, reason string, at time.Time) (*store.RobotProfile, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.profiles == nil {
+		s.profiles = map[string]*store.RobotProfile{}
+	}
+	profile.Name = "机器人小青"
+	profile.Version = 1
+	if current := s.profiles[profile.UserID]; current != nil {
+		profile.Version = current.Version + 1
+	}
+	profile.UpdatedBy, profile.Reason, profile.UpdatedAt = actorID, reason, at
+	copy := profile
+	copy.Menus = append([]store.RobotMenu(nil), profile.Menus...)
+	s.profiles[profile.UserID] = &copy
+	return &copy, nil
+}
 
 type httpTestWukongRuntime struct {
 	mu       sync.Mutex
@@ -870,6 +926,50 @@ func TestHealthProbeBypassesApplicationRateLimit(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("probe %d returned %d", i, w.Code)
 		}
+		if i == 0 && !strings.Contains(w.Body.String(), `"service":"qingwaguagua-im"`) {
+			t.Fatalf("health probe exposes stale service identity: %s", w.Body.String())
+		}
+	}
+}
+
+func TestReadyProbeIncludesWukongSessionDependencies(t *testing.T) {
+	tcpListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcpListener.Close()
+	var healthStatus atomic.Int32
+	healthStatus.Store(http.StatusServiceUnavailable)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(int(healthStatus.Load()))
+	}))
+	defer upstream.Close()
+	a, _ := app.New(context.Background(), teststore.Memory{})
+	cfg := config.Config{
+		JWTSecret: strings.Repeat("j", 32), AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour,
+		WukongEnabled: true, WukongAPIURL: upstream.URL, WukongManagerURL: upstream.URL,
+		WukongManagerToken: "manager-secret", WukongTokenSecret: strings.Repeat("t", 32),
+		WukongTCPURL: "tcp://" + tcpListener.Addr().String(), WukongWSURL: "ws://127.0.0.1:5200",
+	}
+	handler := New(cfg, a).Handler()
+
+	request := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"code":"NOT_READY"`) {
+		t.Fatalf("unhealthy readiness status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	healthStatus.Store(http.StatusOK)
+	request = httptest.NewRequest(http.MethodGet, "/ready", nil)
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("healthy readiness status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -1186,6 +1286,23 @@ func TestFriendRequestLifecycleMetadataDeleteAndBlock(t *testing.T) {
 	if first.Source != "search" || first.Status != "pending" || first.Message != "我是邻居" {
 		t.Fatalf("request=%+v", first)
 	}
+	res = authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/contacts/requests", bob, "")
+	var requestList struct {
+		Items []struct {
+			model.FriendRequest
+			User map[string]any `json:"user"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&requestList); err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || len(requestList.Items) != 1 || requestList.Items[0].User["id"] != "usr_alice" || requestList.Items[0].User["name"] != "Alice" {
+		t.Fatalf("friend request peer status=%d items=%+v", res.StatusCode, requestList.Items)
+	}
+	if _, exposed := requestList.Items[0].User["phone"]; exposed {
+		t.Fatalf("friend request peer leaked phone: %+v", requestList.Items[0].User)
+	}
 	res = authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/contacts/requests", alice, requestBody)
 	var retry model.FriendRequest
 	_ = json.NewDecoder(res.Body).Decode(&retry)
@@ -1285,14 +1402,14 @@ func TestConversationPreferencesAndHide(t *testing.T) {
 	aliceToken := loginToken(t, ts.URL, "13800000001")
 	cid := directConversation(t, ts.URL, aliceToken, "usr_bob")
 
-	preferenceBody := `{"pinned":true,"notificationsMuted":true,"manualUnread":true}`
+	preferenceBody := `{"pinned":true,"saved":true,"notificationsMuted":true,"manualUnread":true}`
 	res := authenticatedRequest(t, http.MethodPatch, ts.URL+"/v2/channels/conversations/"+cid+"/preferences", aliceToken, preferenceBody)
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("preference status=%d", res.StatusCode)
 	}
 	_ = res.Body.Close()
 	list := listConversations(t, ts.URL, aliceToken)
-	if len(list) == 0 || !list[0].Membership.Pinned || !list[0].Membership.NotificationsMuted || !list[0].Membership.ManualUnread {
+	if len(list) == 0 || !list[0].Membership.Pinned || !list[0].Membership.Saved || !list[0].Membership.NotificationsMuted || !list[0].Membership.ManualUnread {
 		t.Fatalf("preferences missing from list: %+v", list)
 	}
 
@@ -1326,7 +1443,7 @@ func TestUserProfilePhoneDevicesFavoritesAndFeedback(t *testing.T) {
 	defer ts.Close()
 	token := loginToken(t, ts.URL, "13800000001")
 
-	res := authenticatedRequest(t, http.MethodPatch, ts.URL+"/v2/users/me", token, `{"name":"Alice Chen","handle":"alice_2026","signature":"Hello","avatarMediaId":"avatar-alice"}`)
+	res := authenticatedRequest(t, http.MethodPatch, ts.URL+"/v2/users/me", token, `{"name":"Alice Chen","handle":"alice_2026","signature":"Hello","gender":"female","avatarMediaId":"avatar-alice"}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("profile status=%d", res.StatusCode)
 	}
@@ -1335,9 +1452,31 @@ func TestUserProfilePhoneDevicesFavoritesAndFeedback(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = res.Body.Close()
-	if profile.Handle != "alice_2026" || profile.AvatarMediaID != "avatar-alice" || !strings.HasPrefix(profile.AvatarURL, "/v2/avatars/avatar-alice?") {
+	if profile.Handle != "alice_2026" || profile.Gender != "female" || profile.AvatarMediaID != "avatar-alice" || !strings.HasPrefix(profile.AvatarURL, "/v2/avatars/avatar-alice?") {
 		t.Fatalf("profile=%+v", profile)
 	}
+	bobToken := loginToken(t, ts.URL, "13800000002")
+	handleConflict := authenticatedRequest(t, http.MethodPatch, ts.URL+"/v2/users/me", bobToken, `{"handle":"alice_2026"}`)
+	if handleConflict.StatusCode != http.StatusConflict {
+		t.Fatalf("handle conflict status=%d", handleConflict.StatusCode)
+	}
+	var handleConflictBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(handleConflict.Body).Decode(&handleConflictBody); err != nil {
+		t.Fatal(err)
+	}
+	_ = handleConflict.Body.Close()
+	if handleConflictBody.Error.Code != "HANDLE_TAKEN" {
+		t.Fatalf("handle conflict code=%q", handleConflictBody.Error.Code)
+	}
+	invalidGender := authenticatedRequest(t, http.MethodPatch, ts.URL+"/v2/users/me", token, `{"gender":"private"}`)
+	if invalidGender.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid gender status=%d", invalidGender.StatusCode)
+	}
+	_ = invalidGender.Body.Close()
 	avatarResponse, err := http.Get(ts.URL + profile.AvatarURL)
 	if err != nil {
 		t.Fatal(err)
@@ -1721,12 +1860,73 @@ func TestAdminRuntimeSettingsValidateAuditAndNeverExposeSecrets(t *testing.T) {
 	_ = res.Body.Close()
 }
 
+func TestAdminGroupMemberModerationRequiresReasonAndProtectsOwner(t *testing.T) {
+	a, _ := app.New(context.Background(), teststore.Memory{})
+	_ = a.SeedDemo()
+	group, err := a.CreateGroup("usr_alice", "后台治理群", []string{"usr_bob"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, _ := bcrypt.GenerateFromPassword([]byte("group-admin-password"), 12)
+	cfg := config.Config{JWTSecret: strings.Repeat("g", 32), AdminID: "group-admin", AdminEmail: "group-admin@example.com", AdminPasswordHash: string(hash), AdminRole: "platform_admin"}
+	ts := httptest.NewServer(New(cfg, a).Handler())
+	defer ts.Close()
+	login, _ := http.Post(ts.URL+"/v2/admin/auth/login", "application/json", strings.NewReader(`{"email":"group-admin@example.com","password":"group-admin-password"}`))
+	var session struct {
+		AccessToken string `json:"accessToken"`
+	}
+	_ = json.NewDecoder(login.Body).Decode(&session)
+	_ = login.Body.Close()
+	if session.AccessToken == "" {
+		t.Fatalf("admin login status=%d", login.StatusCode)
+	}
+
+	path := ts.URL + "/v2/admin/groups/" + group.ID + "/members/usr_bob"
+	res := authenticatedRequest(t, http.MethodPatch, path, session.AccessToken, `{"action":"role","role":"admin"}`)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing confirmation status=%d", res.StatusCode)
+	}
+	_ = res.Body.Close()
+	res = authenticatedRequest(t, http.MethodPatch, path, session.AccessToken, `{"action":"role","role":"admin","reason":"运营工单 GROUP-2","confirmed":true}`)
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("role status=%d", res.StatusCode)
+	}
+	_ = res.Body.Close()
+	members, _ := a.GroupMembers("usr_alice", group.ID)
+	bobRole := ""
+	for _, member := range members {
+		if member.UserID == "usr_bob" {
+			bobRole = member.Role
+			break
+		}
+	}
+	if len(members) != 2 || bobRole != "admin" {
+		t.Fatalf("members after role=%+v", members)
+	}
+	ownerPath := ts.URL + "/v2/admin/groups/" + group.ID + "/members/usr_alice"
+	res = authenticatedRequest(t, http.MethodDelete, ownerPath, session.AccessToken, `{"reason":"不得移除群主","confirmed":true}`)
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("owner removal status=%d", res.StatusCode)
+	}
+	_ = res.Body.Close()
+	res = authenticatedRequest(t, http.MethodDelete, path, session.AccessToken, `{"reason":"确认移出违规成员","confirmed":true}`)
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("remove status=%d", res.StatusCode)
+	}
+	_ = res.Body.Close()
+	members, _ = a.GroupMembers("usr_alice", group.ID)
+	if len(members) != 1 || members[0].UserID != "usr_alice" {
+		t.Fatalf("members after removal=%+v", members)
+	}
+}
+
 type conversationListItem struct {
 	Conversation struct {
 		ID string `json:"id"`
 	} `json:"conversation"`
 	Membership struct {
 		Pinned             bool `json:"pinned"`
+		Saved              bool `json:"saved"`
 		NotificationsMuted bool `json:"notificationsMuted"`
 		ManualUnread       bool `json:"manualUnread"`
 	} `json:"membership"`
@@ -1938,6 +2138,255 @@ func publicHTTPPost(t *testing.T, target, contentType string, body io.Reader) (*
 	return http.DefaultClient.Do(request)
 }
 
+func publicPlatformPost(t *testing.T, target, platform, body string) *http.Response {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, target, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Client-Platform", platform)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response
+}
+
+func TestWebQRLoginRequiresMobileConfirmationAndConsumesTicketOnce(t *testing.T) {
+	a, err := app.New(context.Background(), teststore.Memory{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.SeedDemo(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
+	ts := httptest.NewServer(New(cfg, a).Handler())
+	defer ts.Close()
+	mobileToken := loginToken(t, ts.URL, "13800000001")
+
+	create := publicPlatformPost(t, ts.URL+"/v2/auth/qr/create", "web", `{"clientName":"Edge · Windows"}`)
+	defer create.Body.Close()
+	if create.StatusCode != http.StatusCreated {
+		t.Fatalf("create status=%d", create.StatusCode)
+	}
+	var ticket struct {
+		ID, QRPayload, PollToken string
+	}
+	if err = json.NewDecoder(create.Body).Decode(&ticket); err != nil {
+		t.Fatal(err)
+	}
+	if ticket.ID == "" || ticket.PollToken == "" || !strings.HasPrefix(ticket.QRPayload, "qingwaguagua://login/ql_") || strings.Contains(ticket.QRPayload, ticket.PollToken) {
+		t.Fatalf("unsafe ticket response=%+v", ticket)
+	}
+	qrToken := strings.TrimPrefix(ticket.QRPayload, "qingwaguagua://login/")
+
+	pending := publicPlatformPost(t, ts.URL+"/v2/auth/qr/poll", "web", fmt.Sprintf(`{"id":%q,"pollToken":%q}`, ticket.ID, ticket.PollToken))
+	if pending.StatusCode != http.StatusAccepted {
+		t.Fatalf("pending poll status=%d", pending.StatusCode)
+	}
+	pending.Body.Close()
+
+	inspect := authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/auth/qr/inspect", mobileToken, fmt.Sprintf(`{"token":%q}`, qrToken))
+	if inspect.StatusCode != http.StatusOK {
+		t.Fatalf("inspect status=%d", inspect.StatusCode)
+	}
+	var details struct{ ClientName, Status string }
+	_ = json.NewDecoder(inspect.Body).Decode(&details)
+	inspect.Body.Close()
+	if details.ClientName != "Edge · Windows" || details.Status != "pending" {
+		t.Fatalf("inspect details=%+v", details)
+	}
+
+	confirm := authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/auth/qr/confirm", mobileToken, fmt.Sprintf(`{"token":%q}`, qrToken))
+	if confirm.StatusCode != http.StatusOK {
+		t.Fatalf("confirm status=%d", confirm.StatusCode)
+	}
+	confirm.Body.Close()
+
+	claim := publicPlatformPost(t, ts.URL+"/v2/auth/qr/poll", "web", fmt.Sprintf(`{"id":%q,"pollToken":%q}`, ticket.ID, ticket.PollToken))
+	if claim.StatusCode != http.StatusOK {
+		t.Fatalf("claim status=%d", claim.StatusCode)
+	}
+	var session struct {
+		AccessToken, RefreshToken string
+		User                      model.User
+	}
+	if err = json.NewDecoder(claim.Body).Decode(&session); err != nil {
+		t.Fatal(err)
+	}
+	claim.Body.Close()
+	if session.AccessToken == "" || session.RefreshToken == "" || session.User.ID == "" {
+		t.Fatalf("incomplete QR login session=%+v", session)
+	}
+
+	replay := publicPlatformPost(t, ts.URL+"/v2/auth/qr/poll", "web", fmt.Sprintf(`{"id":%q,"pollToken":%q}`, ticket.ID, ticket.PollToken))
+	defer replay.Body.Close()
+	if replay.StatusCode != http.StatusConflict {
+		t.Fatalf("replay status=%d", replay.StatusCode)
+	}
+}
+
+func TestRobotMenusAreAdminConfiguredAndLimitedToConversationMembers(t *testing.T) {
+	repository := &robotAPITestStore{}
+	a, err := app.New(context.Background(), repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.SeedDemo(); err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := a.DirectConversation("usr_alice", "usr_bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository.conversationID = conversation.ID
+	adminKey := strings.Repeat("r", 24)
+	cfg := config.Config{
+		JWTSecret: "robot-test-secret", DevMode: true, DevOTPCode: "654321",
+		AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour,
+		AdminSharedKeyEnabled: true, AdminKey: adminKey,
+	}
+	ts := httptest.NewServer(New(cfg, a).Handler())
+	defer ts.Close()
+
+	configure := adminKeyRequest(t, http.MethodPut, ts.URL+"/v2/admin/wukong/robots/usr_bob", adminKey, `{"enabled":true,"username":"qing_helper","placeholder":"请选择服务","menus":[{"cmd":"查询订单","remark":"查询订单","type":"command"},{"cmd":"联系客服","remark":"联系客服","type":"command"}],"reason":"发布客服菜单","confirmed":true}`)
+	defer configure.Body.Close()
+	if configure.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(configure.Body)
+		t.Fatalf("configure status=%d body=%s", configure.StatusCode, raw)
+	}
+
+	aliceToken := loginToken(t, ts.URL, "13800000001")
+	menus := authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/robots/conversations/"+conversation.ID, aliceToken, "")
+	defer menus.Body.Close()
+	if menus.StatusCode != http.StatusOK {
+		t.Fatalf("menus status=%d", menus.StatusCode)
+	}
+	var payload struct {
+		Items []struct {
+			RobotID string `json:"robot_id"`
+			Status  int    `json:"status"`
+			Version int64  `json:"version"`
+			Menus   []struct {
+				Command string `json:"cmd"`
+				Remark  string `json:"remark"`
+				Type    string `json:"type"`
+			} `json:"menus"`
+		} `json:"items"`
+	}
+	if err = json.NewDecoder(menus.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].RobotID != "usr_bob" || payload.Items[0].Status != 1 || payload.Items[0].Version != 1 || len(payload.Items[0].Menus) != 2 || payload.Items[0].Menus[0].Command != "查询订单" {
+		t.Fatalf("robot payload=%+v", payload.Items)
+	}
+
+	invalid := adminKeyRequest(t, http.MethodPut, ts.URL+"/v2/admin/wukong/robots/usr_bob", adminKey, `{"enabled":true,"menus":[{"cmd":"重复","remark":"一","type":"command"},{"cmd":"重复","remark":"二","type":"command"}],"reason":"拒绝重复命令","confirmed":true}`)
+	defer invalid.Body.Close()
+	if invalid.StatusCode != http.StatusBadRequest {
+		t.Fatalf("duplicate menu status=%d", invalid.StatusCode)
+	}
+
+	outsiderToken := loginToken(t, ts.URL, "13800000003")
+	forbidden := authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/robots/conversations/"+conversation.ID, outsiderToken, "")
+	defer forbidden.Body.Close()
+	if forbidden.StatusCode != http.StatusNotFound {
+		t.Fatalf("outsider status=%d", forbidden.StatusCode)
+	}
+}
+
+func TestAuthAndProfilePhoneValidationIsConsistent(t *testing.T) {
+	a, _ := app.New(context.Background(), teststore.Memory{})
+	_ = a.SeedDemo()
+	cfg := config.Config{JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
+	ts := httptest.NewServer(New(cfg, a).Handler())
+	defer ts.Close()
+	token := loginToken(t, ts.URL, "13800000001")
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		token  string
+	}{
+		{name: "request login code", method: http.MethodPost, path: "/v2/auth/code", body: `{"phone":"abc123"}`},
+		{name: "code login", method: http.MethodPost, path: "/v2/auth/login", body: `{"phone":"abc123","code":"654321"}`},
+		{name: "register", method: http.MethodPost, path: "/v2/auth/register", body: `{"phone":"abc123","code":"654321","password":"password123","name":"测试用户"}`},
+		{name: "password login", method: http.MethodPost, path: "/v2/auth/password-login", body: `{"phone":"abc123","password":"password123"}`},
+		{name: "request password reset code", method: http.MethodPost, path: "/v2/auth/password/reset-code", body: `{"phone":"abc123"}`},
+		{name: "reset password", method: http.MethodPost, path: "/v2/auth/password/reset", body: `{"phone":"abc123","code":"654321","password":"password123"}`},
+		{name: "request phone change code", method: http.MethodPost, path: "/v2/users/me/phone/code", body: `{"phone":"abc123"}`, token: token},
+		{name: "change phone", method: http.MethodPatch, path: "/v2/users/me/phone", body: `{"phone":"abc123","code":"654321"}`, token: token},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var response *http.Response
+			if test.token == "" {
+				request, err := http.NewRequest(test.method, ts.URL+test.path, strings.NewReader(test.body))
+				if err != nil {
+					t.Fatal(err)
+				}
+				request.Header.Set("Content-Type", "application/json")
+				request.Header.Set("X-Client-Platform", "android")
+				response, err = http.DefaultClient.Do(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				response = authenticatedRequest(t, test.method, ts.URL+test.path, test.token, test.body)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status=%d, want %d", response.StatusCode, http.StatusBadRequest)
+			}
+			var payload struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Error.Code != "INVALID_ARGUMENT" {
+				t.Fatalf("code=%q, want INVALID_ARGUMENT", payload.Error.Code)
+			}
+		})
+	}
+}
+
+func TestPublicAuthPolicyMatchesRuntimeSettings(t *testing.T) {
+	a, _ := app.New(context.Background(), teststore.Memory{})
+	if err := a.UpdateSettings("admin", map[string]any{
+		"registrationEnabled": false,
+		"passwordMinLength":   float64(14),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{JWTSecret: "test-secret", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
+	ts := httptest.NewServer(New(cfg, a).Handler())
+	defer ts.Close()
+
+	response, err := http.Get(ts.URL + "/v2/config/auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", response.StatusCode)
+	}
+	var policy app.PublicAuthPolicy
+	if err = json.NewDecoder(response.Body).Decode(&policy); err != nil {
+		t.Fatal(err)
+	}
+	if policy.RegistrationEnabled || policy.PasswordMinLength != 14 || policy.PasswordMaxBytes != 72 {
+		t.Fatalf("policy=%+v", policy)
+	}
+}
+
 func loginToken(t *testing.T, base, phone string) string {
 	t.Helper()
 	body, _ := json.Marshal(map[string]string{"phone": phone, "code": "654321"})
@@ -1995,7 +2444,7 @@ func TestProfileHandleSearchCapabilitiesAndGroupMemberContract(t *testing.T) {
 	var caps map[string]bool
 	_ = json.NewDecoder(res.Body).Decode(&caps)
 	res.Body.Close()
-	if !caps["allowSearchByHandle"] || caps["allowSearchByPhone"] {
+	if !caps["allowSearchByHandle"] || caps["allowSearchByPhone"] || !caps["canUpdatePrivacySettings"] {
 		t.Fatalf("capabilities=%v", caps)
 	}
 	res = authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/contacts/search?q=13800000002&by=phone", alice, "")
@@ -2017,6 +2466,23 @@ func TestProfileHandleSearchCapabilitiesAndGroupMemberContract(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK || len(search.Items) != 1 || search.Items[0].Phone != "" || search.Items[0].Handle != "bob_public" {
 		t.Fatalf("handle search status=%d items=%+v", res.StatusCode, search.Items)
+	}
+	res = authenticatedRequest(t, http.MethodPatch, ts.URL+"/v2/users/me", bob, `{"allowSearchByHandle":false}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("disable handle discovery status=%d", res.StatusCode)
+	}
+	var privacyProfile model.User
+	_ = json.NewDecoder(res.Body).Decode(&privacyProfile)
+	res.Body.Close()
+	if privacyProfile.AllowSearchByHandle {
+		t.Fatalf("handle discovery remained enabled: %+v", privacyProfile)
+	}
+	res = authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/contacts/search?q=bob_public&by=handle", alice, "")
+	search.Items = nil
+	_ = json.NewDecoder(res.Body).Decode(&search)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || len(search.Items) != 0 {
+		t.Fatalf("private handle remained searchable status=%d items=%+v", res.StatusCode, search.Items)
 	}
 
 	group, err := a.CreateGroup("usr_alice", "Neighbors", []string{"usr_bob"})

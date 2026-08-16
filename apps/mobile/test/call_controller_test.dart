@@ -124,6 +124,116 @@ void main() {
     expect(fixture.engine.screenShareEnabled, isTrue);
   });
 
+  test('系统通话层只接收公开呱呱号，不泄露内部账号标识', () async {
+    const internalPeer = AppUser(
+      id: 'internal-peer',
+      name: '内部联系人',
+      handle: 'll_1234567890abcdef1234',
+      presence: '',
+    );
+    final conversation = Conversation(
+      id: 'internal-handle-conversation',
+      title: '内部联系人',
+      subtitle: '',
+      updatedAt: DateTime(2026, 8, 16),
+      kind: ConversationKind.direct,
+      members: const [_Fixture.me, internalPeer],
+    );
+    final repository = _FakeCallRepository(incoming: false);
+    final systemCalls = _FakeSystemCallService();
+    final controller = CallController(
+      repository: repository,
+      currentUser: () => _Fixture.me,
+      findConversation: (_) => conversation,
+      engineFactory: _FakeEngine.new,
+      systemCallService: systemCalls,
+    );
+    addTearDown(() {
+      controller.dispose();
+      repository.dispose();
+    });
+
+    await controller.startCall(conversation, CallMediaType.audio);
+    expect(systemCalls.lastOutgoingHandle, isNull);
+  });
+
+  test('通话媒体控制失败时恢复原状态并保留可读提示', () async {
+    final fixture = _Fixture();
+    addTearDown(fixture.dispose);
+    await fixture.controller.startCall(
+      fixture.conversation,
+      CallMediaType.video,
+    );
+    fixture.repository.acceptRemotely();
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    fixture.engine.connections.add(CallConnectionState.connected);
+    await Future<void>.delayed(Duration.zero);
+
+    fixture.engine.failMuted = true;
+    await fixture.controller.toggleMute();
+    expect(fixture.controller.muted, isFalse);
+    expect(fixture.engine.muted, isFalse);
+    expect(fixture.controller.errorMessage, '麦克风状态切换失败，请重试');
+
+    fixture.engine.failMuted = false;
+    await fixture.controller.toggleMute();
+    expect(fixture.controller.muted, isTrue);
+    expect(fixture.controller.errorMessage, isNull);
+
+    fixture.engine.failSpeaker = true;
+    await fixture.controller.toggleSpeaker();
+    expect(fixture.controller.speakerEnabled, isTrue);
+    expect(fixture.engine.speakerEnabled, isTrue);
+    expect(fixture.controller.errorMessage, '扬声器切换失败，请重试');
+
+    fixture.engine.failCamera = true;
+    await fixture.controller.toggleCamera();
+    expect(fixture.controller.cameraEnabled, isTrue);
+    expect(fixture.engine.cameraEnabled, isTrue);
+    expect(fixture.controller.errorMessage, '摄像头状态切换失败，请重试');
+
+    fixture.engine.failScreenShare = true;
+    await fixture.controller.toggleScreenShare();
+    expect(fixture.controller.screenShareEnabled, isFalse);
+    expect(fixture.controller.errorMessage, '无法共享屏幕');
+
+    fixture.engine.failSwitchCamera = true;
+    await fixture.controller.switchCamera();
+    expect(fixture.controller.errorMessage, '摄像头切换失败，请重试');
+  });
+
+  testWidgets('通话中的媒体控制失败会在控制区显示反馈', (tester) async {
+    final fixture = _Fixture();
+    addTearDown(fixture.dispose);
+    await tester.runAsync(() async {
+      await fixture.controller.startCall(
+        fixture.conversation,
+        CallMediaType.video,
+      );
+      fixture.repository.acceptRemotely();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      fixture.engine.connections.add(CallConnectionState.connected);
+      await Future<void>.delayed(Duration.zero);
+      fixture.engine.failCamera = true;
+      await fixture.controller.toggleCamera();
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CallUiHost(
+          controller: fixture.controller,
+          child: const Scaffold(body: Text('消息首页')),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const Key('call-control-error')), findsOneWidget);
+    expect(find.text('摄像头状态切换失败，请重试'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.runAsync(fixture.controller.end);
+  });
+
   test('群聊主叫只在首位成员接听后加入同一个 LiveKit 房间', () async {
     final repository = _FakeCallRepository(incoming: false);
     final engine = _FakeEngine();
@@ -185,6 +295,7 @@ void main() {
     await Future<void>.delayed(Duration.zero);
 
     expect(fixture.systemCalls.incomingCount, 1);
+    expect(fixture.systemCalls.lastIncomingHandle, 'linyu');
     fixture.systemCalls.emit(
       SystemCallAction(
         type: SystemCallActionType.accept,
@@ -419,6 +530,8 @@ class _FakeSystemCallService implements SystemCallService {
   final actionController = StreamController<SystemCallAction>.broadcast();
   int incomingCount = 0;
   int outgoingCount = 0;
+  String? lastIncomingHandle;
+  String? lastOutgoingHandle;
   final endedCallIds = <String>[];
 
   @override
@@ -436,6 +549,7 @@ class _FakeSystemCallService implements SystemCallService {
     String? avatarUrl,
   }) async {
     incomingCount++;
+    lastIncomingHandle = callerHandle;
     return true;
   }
 
@@ -447,6 +561,7 @@ class _FakeSystemCallService implements SystemCallService {
     String? avatarUrl,
   }) async {
     outgoingCount++;
+    lastOutgoingHandle = calleeHandle;
   }
 
   @override
@@ -639,6 +754,11 @@ class _FakeEngine implements CallMediaEngine {
   bool muted = false;
   bool cameraEnabled = true;
   bool speakerEnabled = true;
+  bool failMuted = false;
+  bool failCamera = false;
+  bool failSpeaker = false;
+  bool failScreenShare = false;
+  bool failSwitchCamera = false;
   @override
   bool screenShareEnabled = false;
   int connectCount = 0;
@@ -673,19 +793,35 @@ class _FakeEngine implements CallMediaEngine {
   }
 
   @override
-  Future<void> setMuted(bool value) async => muted = value;
+  Future<void> setMuted(bool value) async {
+    if (failMuted) throw StateError('mute control failed');
+    muted = value;
+  }
+
   @override
-  Future<void> setCameraEnabled(bool value) async => cameraEnabled = value;
+  Future<void> setCameraEnabled(bool value) async {
+    if (failCamera) throw StateError('camera control failed');
+    cameraEnabled = value;
+  }
+
   @override
-  Future<void> setSpeakerEnabled(bool value) async => speakerEnabled = value;
+  Future<void> setSpeakerEnabled(bool value) async {
+    if (failSpeaker) throw StateError('speaker control failed');
+    speakerEnabled = value;
+  }
+
   @override
   Future<void> setScreenShareEnabled(bool value) async {
+    if (failScreenShare) throw StateError('screen share control failed');
     screenShareEnabled = value;
     media.add(null);
   }
 
   @override
-  Future<void> switchCamera() async {}
+  Future<void> switchCamera() async {
+    if (failSwitchCamera) throw StateError('switch camera failed');
+  }
+
   @override
   Future<void> dispose() async {
     await connections.close();

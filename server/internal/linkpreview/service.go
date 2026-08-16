@@ -223,7 +223,7 @@ func (s *Service) fetch(parent context.Context, target *url.URL) (Preview, error
 		return Preview{}, err
 	}
 	req.Header.Set("Accept", "text/html")
-	req.Header.Set("User-Agent", "Linli-LinkPreview/1.0")
+	req.Header.Set("User-Agent", "Qingwaguagua-LinkPreview/1.0")
 	res, err := s.client.Do(req)
 	if err != nil {
 		return Preview{}, err

@@ -30,6 +30,27 @@ for url in "$SERVER_ORIGIN/health" "$TERMS_URL" "$PRIVACY_URL"; do
   curl --fail --silent --show-error --location --max-time 20 --output /dev/null "$url"
 done
 
+ready_contract="$(curl --fail --silent --show-error --location --max-time 20 "$SERVER_ORIGIN/ready")"
+auth_contract="$(curl --fail --silent --show-error --location --max-time 20 "$SERVER_ORIGIN/v2/config/auth")"
+printf '%s' "$ready_contract" | /usr/bin/python3 -c '
+import json, sys
+payload = json.load(sys.stdin)
+if payload.get("status") != "ready":
+    raise SystemExit("server readiness contract is not ready")
+'
+printf '%s' "$auth_contract" | /usr/bin/python3 -c '
+import json, sys
+payload = json.load(sys.stdin)
+if not isinstance(payload.get("registrationEnabled"), bool):
+    raise SystemExit("registrationEnabled must be boolean")
+minimum = payload.get("passwordMinLength")
+maximum = payload.get("passwordMaxBytes")
+if not isinstance(minimum, int) or isinstance(minimum, bool) or not 8 <= minimum <= 16:
+    raise SystemExit("passwordMinLength must be an integer between 8 and 16")
+if maximum != 72:
+    raise SystemExit("passwordMaxBytes must be 72")
+'
+
 if command -v fvm >/dev/null 2>&1; then
   flutter=(fvm flutter)
 elif [[ -x "$MOBILE_DIR/.fvm/flutter_sdk/bin/flutter" ]]; then

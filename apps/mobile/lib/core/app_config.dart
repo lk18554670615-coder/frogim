@@ -32,8 +32,9 @@ abstract final class AppConfig {
   static bool get isReleaseLike =>
       environment == 'production' || environment == 'staging';
 
-  static bool get allowsDemo =>
-      !isReleaseLike && (enableDemo || !hasLiveBackend);
+  // Runtime builds never expose demo data. Test and preview fixtures remain
+  // injectable from the test harness, but the shipped application is live-only.
+  static bool get allowsDemo => false;
 
   static void validate() => validateConfiguration(
     environment: environment,
@@ -71,11 +72,11 @@ abstract final class AppConfig {
     }
 
     final releaseLike = environment == 'production' || environment == 'staging';
+    if (enableDemo) {
+      throw StateError('Demo mode is not supported by this application');
+    }
     if (releaseLike && !hasApi) {
       throw StateError('$environment builds require API_BASE_URL');
-    }
-    if (releaseLike && enableDemo) {
-      throw StateError('Demo mode is forbidden in $environment builds');
     }
     if (environment == 'production' &&
         !_validUrl(apiBaseUrl, const {'https'})) {

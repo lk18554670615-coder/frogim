@@ -70,7 +70,7 @@ if [[ "$admin_hash" != '$2'* ]]; then
 fi
 
 cat > "$CONFIG_FILE" <<EOF
-# 邻里通讯 IP 验收测试配置。包含固定开发验证码，严禁用于生产。
+# 青蛙呱呱 IP 验收测试配置。包含固定开发验证码，严禁用于生产。
 # 生产必须以 .env.ip.production.example 为模板并使用 deploy-ip-production.sh。
 
 PRODUCTION_ENDPOINT_MODE=ip
@@ -142,7 +142,7 @@ BACKUP_OFFSITE_PREFIX=linli-im
 EOF
 
 cat > "$CREDENTIAL_FILE" <<EOF
-邻里通讯初始凭据（首次登录后请修改，并继续将本文件保留为 root 600 权限）
+青蛙呱呱初始凭据（首次登录后请修改，并继续将本文件保留为 root 600 权限）
 管理后台：https://$SERVER_IP
 管理员邮箱：$admin_email
 管理员密码：$admin_password

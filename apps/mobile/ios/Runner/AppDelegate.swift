@@ -28,7 +28,7 @@ import flutter_callkit_incoming
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "LinliScreenshotDetection")
     let channel = FlutterMethodChannel(
-      name: "com.linlitong.imapp/screenshot",
+      name: "com.qingwaguagua.imapp/screenshot",
       binaryMessenger: registrar.messenger()
     )
     screenshotChannel = channel
@@ -100,15 +100,15 @@ import flutter_callkit_incoming
     let systemCallId = (body["systemCallId"] as? String).flatMap(UUID.init(uuidString:))?.uuidString
       ?? deterministicCallUUID(serverCallId).uuidString
     let mediaType = body["mediaType"] as? String ?? "audio"
-    let callerName = body["nameCaller"] as? String ?? "邻里联系人"
-    let handle = body["handle"] as? String ?? "邻里通讯"
+    let callerName = body["nameCaller"] as? String ?? "青蛙呱呱联系人"
+    let handle = body["handle"] as? String ?? "青蛙呱呱"
     let data = flutter_callkit_incoming.Data(
       id: systemCallId,
       nameCaller: callerName,
       handle: handle,
       type: mediaType == "video" ? 1 : 0
     )
-    data.appName = "邻里通讯"
+    data.appName = "青蛙呱呱"
     data.duration = 30_000
     data.includesCallsInRecents = false
     data.supportsDTMF = false

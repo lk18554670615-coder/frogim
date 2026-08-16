@@ -117,6 +117,19 @@ func newRequestID() string {
 	return hex.EncodeToString(raw[:])
 }
 
+func newQRLoginSecret(prefix string) (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return prefix + base64.RawURLEncoding.EncodeToString(raw[:]), nil
+}
+
+func qrLoginSecretHash(value string) []byte {
+	sum := sha256.Sum256([]byte(value))
+	return sum[:]
+}
+
 const userKey ctxKey = "user"
 const roleKey ctxKey = "role"
 
@@ -225,6 +238,10 @@ func (x *API) routes() {
 	x.mux.HandleFunc("POST /v2/auth/login", x.requireClientPlatform(x.login))
 	x.mux.HandleFunc("POST /v2/auth/register", x.requireClientPlatform(x.register))
 	x.mux.HandleFunc("POST /v2/auth/password-login", x.requireClientPlatform(x.passwordLogin))
+	x.mux.HandleFunc("POST /v2/auth/qr/create", x.requireClientPlatform(x.createQRLogin))
+	x.mux.HandleFunc("POST /v2/auth/qr/poll", x.requireClientPlatform(x.pollQRLogin))
+	x.mux.Handle("POST /v2/auth/qr/inspect", x.requireAuth(http.HandlerFunc(x.inspectQRLogin)))
+	x.mux.Handle("POST /v2/auth/qr/confirm", x.requireAuth(http.HandlerFunc(x.confirmQRLogin)))
 	x.mux.HandleFunc("POST /v2/auth/password/reset-code", x.passwordResetCode)
 	x.mux.HandleFunc("POST /v2/auth/password/reset", x.passwordReset)
 	x.mux.HandleFunc("POST /v2/auth/refresh", x.requireClientPlatform(x.refresh))
@@ -330,6 +347,7 @@ func (x *API) routes() {
 	x.mux.Handle("POST /v2/stickers/{id}/used", x.requireAuth(http.HandlerFunc(x.recordStickerUse)))
 	x.mux.HandleFunc("GET /v2/config/version", x.clientVersion)
 	x.mux.HandleFunc("GET /v2/config/web-push", x.webPushConfig)
+	x.mux.HandleFunc("GET /v2/config/auth", x.authPolicy)
 	x.mux.HandleFunc("POST /v2/admin/auth/login", x.adminLogin)
 	x.mux.Handle("GET /v2/users/me", x.requireAuth(http.HandlerFunc(x.me)))
 	x.mux.Handle("PATCH /v2/users/me", x.requireAuth(http.HandlerFunc(x.updateMe)))
@@ -362,6 +380,7 @@ func (x *API) routes() {
 	x.mux.Handle("PATCH /v2/contacts/friends/{id}", x.requireAuth(http.HandlerFunc(x.friendMetadata)))
 	x.mux.Handle("PUT /v2/contacts/blocks/{id}", x.requireAuth(http.HandlerFunc(x.block)))
 	x.mux.Handle("GET /v2/contacts/blocks", x.requireAuth(http.HandlerFunc(x.blocks)))
+	x.mux.Handle("GET /v2/robots/conversations/{id}", x.requireAuth(http.HandlerFunc(x.conversationRobots)))
 	x.mux.Handle("GET /v2/calls/config", x.requireAuth(http.HandlerFunc(x.livekitCallConfig)))
 	x.mux.Handle("POST /v2/calls/invite", x.requireAuth(http.HandlerFunc(x.inviteCall)))
 	x.mux.Handle("GET /v2/calls/{id}", x.requireAuth(http.HandlerFunc(x.getCall)))
@@ -400,10 +419,12 @@ func (x *API) routes() {
 	x.mux.Handle("POST /v2/admin/announcements/{id}/withdraw", x.requireAdmin(http.HandlerFunc(x.withdrawAnnouncement)))
 	x.mux.Handle("DELETE /v2/admin/announcements/{id}", x.requireAdmin(http.HandlerFunc(x.deleteAnnouncement)))
 	x.mux.Handle("GET /v2/admin/calls", x.requireAdmin(http.HandlerFunc(x.adminCalls)))
-	x.mux.Handle("GET /v2/admin/health", x.requireAdmin(http.HandlerFunc(x.health)))
+	x.mux.Handle("GET /v2/admin/health", x.requireAdmin(http.HandlerFunc(x.adminHealth)))
 	x.mux.Handle("GET /v2/admin/groups", x.requireAdmin(http.HandlerFunc(x.adminGroups)))
 	x.mux.Handle("GET /v2/admin/groups/{id}", x.requireAdmin(http.HandlerFunc(x.adminGroupOverview)))
 	x.mux.Handle("GET /v2/admin/groups/{id}/members", x.requireAdmin(http.HandlerFunc(x.adminGroupMembers)))
+	x.mux.Handle("PATCH /v2/admin/groups/{id}/members/{userId}", x.requireAdmin(http.HandlerFunc(x.adminGroupMemberAction)))
+	x.mux.Handle("DELETE /v2/admin/groups/{id}/members/{userId}", x.requireAdmin(http.HandlerFunc(x.adminGroupMemberAction)))
 	x.mux.Handle("POST /v2/admin/groups/{id}/disband", x.requireAdmin(http.HandlerFunc(x.disbandGroup)))
 	x.mux.Handle("GET /v2/admin/sensitive-words", x.requireAdmin(http.HandlerFunc(x.sensitiveWords)))
 	x.mux.Handle("POST /v2/admin/sensitive-words", x.requireAdmin(http.HandlerFunc(x.addSensitiveWord)))
@@ -442,6 +463,8 @@ func (x *API) registerWukongAdminRoutes(prefix string) {
 	x.mux.Handle("POST "+prefix+"/wukong/devices/{uid}/quit", x.requireAdmin(http.HandlerFunc(x.quitWukongDevice)))
 	x.mux.Handle("GET "+prefix+"/wukong/system-users", x.requireAdmin(http.HandlerFunc(x.adminWukongSystemUsers)))
 	x.mux.Handle("PUT "+prefix+"/wukong/system-users/{uid}", x.requireAdmin(http.HandlerFunc(x.setWukongSystemUser)))
+	x.mux.Handle("GET "+prefix+"/wukong/robots", x.requireAdmin(http.HandlerFunc(x.adminRobotProfiles)))
+	x.mux.Handle("PUT "+prefix+"/wukong/robots/{uid}", x.requireAdmin(http.HandlerFunc(x.configureRobotProfile)))
 	x.mux.Handle("GET "+prefix+"/wukong/plugins", x.requireAdmin(http.HandlerFunc(x.adminWukongPlugins)))
 	x.mux.Handle("GET "+prefix+"/wukong/plugins/{no}/logs", x.requireAdmin(http.HandlerFunc(x.adminWukongPluginLogs)))
 	x.mux.Handle("POST "+prefix+"/wukong/plugins/install", x.requireAdmin(http.HandlerFunc(x.installWukongPlugin)))
@@ -859,7 +882,10 @@ func handleErr(w http.ResponseWriter, err error) {
 }
 
 func (x *API) health(w http.ResponseWriter, r *http.Request) {
-	write(w, 200, map[string]any{"status": "ok", "service": "linli-im", "uptimeSeconds": int(time.Since(x.started).Seconds())})
+	write(w, 200, map[string]any{"status": "ok", "service": "qingwaguagua-im", "uptimeSeconds": int(time.Since(x.started).Seconds())})
+}
+func (x *API) authPolicy(w http.ResponseWriter, _ *http.Request) {
+	write(w, http.StatusOK, x.app.AuthPolicy())
 }
 func (x *API) ready(w http.ResponseWriter, r *http.Request) {
 	if err := x.SetupError(); err != nil {
@@ -871,6 +897,12 @@ func (x *API) ready(w http.ResponseWriter, r *http.Request) {
 	if err := x.app.Ready(ctx); err != nil {
 		writeError(w, 503, "NOT_READY", err.Error())
 		return
+	}
+	if x.imSessions != nil {
+		if err := x.imSessions.Ready(ctx); err != nil {
+			writeError(w, 503, "NOT_READY", "instant messaging service is not ready")
+			return
+		}
 	}
 	write(w, 200, map[string]string{"status": "ready"})
 }
@@ -908,11 +940,16 @@ func (x *API) requestCode(w http.ResponseWriter, r *http.Request) {
 	var p struct {
 		Phone string `json:"phone"`
 	}
-	if decode(r, &p) != nil || strings.TrimSpace(p.Phone) == "" {
-		writeError(w, 400, "INVALID_ARGUMENT", "phone is required")
+	if decode(r, &p) != nil {
+		writeError(w, 400, "INVALID_ARGUMENT", "valid phone is required")
 		return
 	}
-	if !x.allow(r.Context(), "otp-ip:"+x.clientIP(r), 5, 10*time.Minute) || !x.allow(r.Context(), "otp-phone:"+strings.TrimSpace(p.Phone), 3, 10*time.Minute) {
+	p.Phone = strings.TrimSpace(p.Phone)
+	if !app.ValidPhoneNumber(p.Phone) {
+		writeError(w, 400, "INVALID_ARGUMENT", "valid phone is required")
+		return
+	}
+	if !x.allow(r.Context(), "otp-ip:"+x.clientIP(r), 5, 10*time.Minute) || !x.allow(r.Context(), "otp-phone:"+p.Phone, 3, 10*time.Minute) {
 		w.Header().Set("Retry-After", "600")
 		writeError(w, 429, "RATE_LIMITED", "verification requests are temporarily limited")
 		return
@@ -921,7 +958,7 @@ func (x *API) requestCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "SMS_NOT_CONFIGURED", "verification provider is not configured")
 		return
 	}
-	if err := x.otp.Request(r.Context(), strings.TrimSpace(p.Phone)); err != nil {
+	if err := x.otp.Request(r.Context(), p.Phone); err != nil {
 		writeError(w, http.StatusBadGateway, "SMS_UNAVAILABLE", "verification provider is unavailable")
 		return
 	}
@@ -930,8 +967,13 @@ func (x *API) requestCode(w http.ResponseWriter, r *http.Request) {
 }
 func (x *API) login(w http.ResponseWriter, r *http.Request) {
 	var p struct{ Phone, Code, Name string }
-	if decode(r, &p) != nil || p.Phone == "" || p.Code == "" {
+	if decode(r, &p) != nil {
 		writeError(w, 400, "INVALID_ARGUMENT", "phone and code are required")
+		return
+	}
+	p.Phone, p.Code = strings.TrimSpace(p.Phone), strings.TrimSpace(p.Code)
+	if !app.ValidPhoneNumber(p.Phone) || p.Code == "" {
+		writeError(w, 400, "INVALID_ARGUMENT", "valid phone and code are required")
 		return
 	}
 	if !x.allow(r.Context(), "login-ip:"+x.clientIP(r), 10, 10*time.Minute) || !x.allow(r.Context(), "login-phone:"+p.Phone, 8, 10*time.Minute) {
@@ -988,8 +1030,13 @@ func (x *API) issueUserSession(w http.ResponseWriter, r *http.Request, u *model.
 }
 func (x *API) register(w http.ResponseWriter, r *http.Request) {
 	var p struct{ Phone, Code, Password, Name string }
-	if decode(r, &p) != nil || p.Phone == "" || p.Code == "" || p.Password == "" || p.Name == "" {
+	if decode(r, &p) != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "phone, code, password and name are required")
+		return
+	}
+	p.Phone, p.Code, p.Name = strings.TrimSpace(p.Phone), strings.TrimSpace(p.Code), strings.TrimSpace(p.Name)
+	if !app.ValidPhoneNumber(p.Phone) || p.Code == "" || p.Password == "" || p.Name == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "valid phone, code, password and name are required")
 		return
 	}
 	if !x.allow(r.Context(), "register-ip:"+x.clientIP(r), 8, 10*time.Minute) || !x.allow(r.Context(), "register-phone:"+p.Phone, 5, 10*time.Minute) {
@@ -1018,7 +1065,16 @@ func (x *API) register(w http.ResponseWriter, r *http.Request) {
 }
 func (x *API) passwordLogin(w http.ResponseWriter, r *http.Request) {
 	var p struct{ Phone, Password string }
-	if decode(r, &p) != nil || p.Phone == "" || p.Password == "" {
+	if decode(r, &p) != nil {
+		writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "phone or password is incorrect")
+		return
+	}
+	p.Phone = strings.TrimSpace(p.Phone)
+	if !app.ValidPhoneNumber(p.Phone) {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "valid phone is required")
+		return
+	}
+	if p.Password == "" {
 		writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "phone or password is incorrect")
 		return
 	}
@@ -1034,13 +1090,189 @@ func (x *API) passwordLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	x.issueUserSession(w, r, u)
 }
+
+func (x *API) createQRLogin(w http.ResponseWriter, r *http.Request) {
+	platform := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Client-Platform")))
+	if platform != "web" && platform != "macos" {
+		writeError(w, http.StatusBadRequest, "INVALID_PLATFORM", "QR login is available only on Web and desktop clients")
+		return
+	}
+	if !x.allow(r.Context(), "qr-login-create:"+x.clientIP(r), 20, 10*time.Minute) {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "too many QR login requests")
+		return
+	}
+	var payload struct {
+		ClientName string `json:"clientName"`
+	}
+	if decode(r, &payload) != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid request")
+		return
+	}
+	clientName := strings.TrimSpace(payload.ClientName)
+	if clientName == "" {
+		if platform == "web" {
+			clientName = "青蛙呱呱网页版"
+		} else {
+			clientName = "青蛙呱呱桌面端"
+		}
+	}
+	if len([]rune(clientName)) > 60 {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "client name is too long")
+		return
+	}
+	qrToken, err := newQRLoginSecret("ql_")
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	pollToken, err := newQRLoginSecret("qp_")
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	now := time.Now().UTC()
+	ticket := store.QRLoginTicket{
+		ID:             "qrlogin_" + newRequestID(),
+		QRTokenHash:    qrLoginSecretHash(qrToken),
+		PollTokenHash:  qrLoginSecretHash(pollToken),
+		ClientPlatform: platform,
+		ClientName:     clientName,
+		CreatedAt:      now,
+		ExpiresAt:      now.Add(2 * time.Minute),
+	}
+	if err = x.app.CreateQRLoginTicket(ticket); err != nil {
+		handleErr(w, err)
+		return
+	}
+	write(w, http.StatusCreated, map[string]any{
+		"id":        ticket.ID,
+		"qrPayload": "qingwaguagua://login/" + qrToken,
+		"pollToken": pollToken,
+		"expiresAt": ticket.ExpiresAt,
+		"expiresIn": 120,
+	})
+}
+
+func (x *API) inspectQRLogin(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Token string `json:"token"`
+	}
+	payload.Token = ""
+	if decode(r, &payload) != nil || strings.TrimSpace(payload.Token) == "" || len(payload.Token) > 128 {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "QR login token is required")
+		return
+	}
+	now := time.Now().UTC()
+	ticket, err := x.app.QRLoginTicketByToken(qrLoginSecretHash(strings.TrimSpace(payload.Token)))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "QR_LOGIN_NOT_FOUND", "QR login request was not found")
+		return
+	}
+	switch ticket.State(now) {
+	case "expired":
+		writeError(w, http.StatusGone, "QR_LOGIN_EXPIRED", "QR login request has expired")
+		return
+	case "confirmed", "consumed":
+		writeError(w, http.StatusConflict, "QR_LOGIN_USED", "QR login request has already been used")
+		return
+	}
+	write(w, http.StatusOK, map[string]any{
+		"id":             ticket.ID,
+		"status":         "pending",
+		"clientPlatform": ticket.ClientPlatform,
+		"clientName":     ticket.ClientName,
+		"expiresAt":      ticket.ExpiresAt,
+	})
+}
+
+func (x *API) confirmQRLogin(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Token string `json:"token"`
+	}
+	if decode(r, &payload) != nil || strings.TrimSpace(payload.Token) == "" || len(payload.Token) > 128 {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "QR login token is required")
+		return
+	}
+	if !x.allow(r.Context(), "qr-login-confirm:"+uid(r), 20, 10*time.Minute) {
+		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "too many QR login confirmations")
+		return
+	}
+	ticket, err := x.app.ConfirmQRLoginTicket(qrLoginSecretHash(strings.TrimSpace(payload.Token)), uid(r), time.Now().UTC())
+	if err != nil {
+		switch {
+		case errors.Is(err, app.ErrNotFound):
+			writeError(w, http.StatusNotFound, "QR_LOGIN_NOT_FOUND", "QR login request was not found")
+		case errors.Is(err, app.ErrForbidden):
+			writeError(w, http.StatusGone, "QR_LOGIN_EXPIRED", "QR login request has expired or was already used")
+		case errors.Is(err, app.ErrConflict):
+			writeError(w, http.StatusConflict, "QR_LOGIN_USED", "QR login request has already been confirmed")
+		default:
+			handleErr(w, err)
+		}
+		return
+	}
+	write(w, http.StatusOK, map[string]any{"id": ticket.ID, "status": "confirmed"})
+}
+
+func (x *API) pollQRLogin(w http.ResponseWriter, r *http.Request) {
+	platform := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Client-Platform")))
+	if platform != "web" && platform != "macos" {
+		writeError(w, http.StatusBadRequest, "INVALID_PLATFORM", "QR login is available only on Web and desktop clients")
+		return
+	}
+	var payload struct {
+		ID, PollToken string
+	}
+	if decode(r, &payload) != nil || strings.TrimSpace(payload.ID) == "" || strings.TrimSpace(payload.PollToken) == "" || len(payload.ID) > 80 || len(payload.PollToken) > 128 {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "QR login ticket and poll token are required")
+		return
+	}
+	if !x.allow(r.Context(), "qr-login-poll-ip:"+x.clientIP(r), 180, 5*time.Minute) || !x.allow(r.Context(), "qr-login-poll-ticket:"+payload.ID, 90, 5*time.Minute) {
+		w.Header().Set("Retry-After", "10")
+		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "QR login polling is temporarily limited")
+		return
+	}
+	now := time.Now().UTC()
+	ticket, consumed, err := x.app.ConsumeQRLoginTicket(strings.TrimSpace(payload.ID), qrLoginSecretHash(strings.TrimSpace(payload.PollToken)), now)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "QR_LOGIN_NOT_FOUND", "QR login request was not found")
+		return
+	}
+	if consumed {
+		if ticket.UserID == "" || !x.app.IsActiveUser(ticket.UserID) {
+			writeError(w, http.StatusForbidden, "QR_LOGIN_ACCOUNT_UNAVAILABLE", "the confirming account is unavailable")
+			return
+		}
+		user, err := x.app.User(ticket.UserID)
+		if err != nil {
+			handleErr(w, err)
+			return
+		}
+		x.issueUserSession(w, r, user)
+		return
+	}
+	switch ticket.State(now) {
+	case "pending":
+		write(w, http.StatusAccepted, map[string]any{"status": "pending", "expiresAt": ticket.ExpiresAt})
+	case "expired":
+		writeError(w, http.StatusGone, "QR_LOGIN_EXPIRED", "QR login request has expired")
+	default:
+		writeError(w, http.StatusConflict, "QR_LOGIN_USED", "QR login request has already been used")
+	}
+}
+
 func (x *API) passwordResetCode(w http.ResponseWriter, r *http.Request) {
 	var p struct{ Phone string }
-	if decode(r, &p) != nil || strings.TrimSpace(p.Phone) == "" {
-		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "phone is required")
+	if decode(r, &p) != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "valid phone is required")
 		return
 	}
 	p.Phone = strings.TrimSpace(p.Phone)
+	if !app.ValidPhoneNumber(p.Phone) {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "valid phone is required")
+		return
+	}
 	if !x.allow(r.Context(), "reset-ip:"+x.clientIP(r), 5, 10*time.Minute) || !x.allow(r.Context(), "reset-phone:"+p.Phone, 3, 10*time.Minute) {
 		w.Header().Set("Retry-After", "600")
 		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "verification requests are temporarily limited")
@@ -1058,8 +1290,13 @@ func (x *API) passwordResetCode(w http.ResponseWriter, r *http.Request) {
 }
 func (x *API) passwordReset(w http.ResponseWriter, r *http.Request) {
 	var p struct{ Phone, Code, Password string }
-	if decode(r, &p) != nil || p.Phone == "" || p.Code == "" || p.Password == "" {
+	if decode(r, &p) != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "phone, code and password are required")
+		return
+	}
+	p.Phone, p.Code = strings.TrimSpace(p.Phone), strings.TrimSpace(p.Code)
+	if !app.ValidPhoneNumber(p.Phone) || p.Code == "" || p.Password == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "valid phone, code and password are required")
 		return
 	}
 	if !x.allow(r.Context(), "reset-confirm-ip:"+x.clientIP(r), 8, 10*time.Minute) || !x.allow(r.Context(), "reset-confirm-phone:"+p.Phone, 5, 10*time.Minute) {
@@ -1234,6 +1471,14 @@ func (x *API) updateMe(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err := x.app.UpdateUserProfile(uid(r), p)
 	if err != nil {
+		if p.Handle != nil && errors.Is(err, app.ErrConflict) {
+			writeError(w, http.StatusConflict, "HANDLE_TAKEN", "handle is already in use")
+			return
+		}
+		if p.Handle != nil && errors.Is(err, app.ErrForbidden) {
+			writeError(w, http.StatusForbidden, "HANDLE_CHANGE_LIMIT", "handle change limit reached")
+			return
+		}
 		handleErr(w, err)
 		return
 	}
@@ -1377,11 +1622,15 @@ func (x *API) requestPhoneChangeCode(w http.ResponseWriter, r *http.Request) {
 	var p struct {
 		Phone string `json:"phone"`
 	}
-	if decode(r, &p) != nil || strings.TrimSpace(p.Phone) == "" {
-		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "phone is required")
+	if decode(r, &p) != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "valid phone is required")
 		return
 	}
 	p.Phone = strings.TrimSpace(p.Phone)
+	if !app.ValidPhoneNumber(p.Phone) {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "valid phone is required")
+		return
+	}
 	if !x.allow(r.Context(), "phone-change-user:"+uid(r), 3, 10*time.Minute) || !x.allow(r.Context(), "phone-change-phone:"+p.Phone, 3, 10*time.Minute) {
 		w.Header().Set("Retry-After", "600")
 		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "verification requests are temporarily limited")
@@ -1399,11 +1648,15 @@ func (x *API) requestPhoneChangeCode(w http.ResponseWriter, r *http.Request) {
 }
 func (x *API) updatePhone(w http.ResponseWriter, r *http.Request) {
 	var p struct{ Phone, Code string }
-	if decode(r, &p) != nil || strings.TrimSpace(p.Phone) == "" || p.Code == "" {
+	if decode(r, &p) != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "phone and code are required")
 		return
 	}
-	p.Phone = strings.TrimSpace(p.Phone)
+	p.Phone, p.Code = strings.TrimSpace(p.Phone), strings.TrimSpace(p.Code)
+	if !app.ValidPhoneNumber(p.Phone) || p.Code == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "valid phone and code are required")
+		return
+	}
 	if x.otp == nil {
 		writeError(w, http.StatusServiceUnavailable, "SMS_NOT_CONFIGURED", "verification provider is not configured")
 		return
@@ -1705,10 +1958,42 @@ func (x *API) friendRequest(w http.ResponseWriter, r *http.Request) {
 	write(w, 201, v)
 }
 func (x *API) friendRequests(w http.ResponseWriter, r *http.Request) {
-	write(w, 200, map[string]any{"items": x.app.FriendRequests(uid(r))})
+	userID := uid(r)
+	requests, err := x.app.FriendRequestsContext(r.Context(), userID)
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	type friendRequestItem struct {
+		*model.FriendRequest
+		User map[string]any `json:"user,omitempty"`
+	}
+	items := make([]friendRequestItem, 0, len(requests))
+	for _, request := range requests {
+		item := friendRequestItem{FriendRequest: request}
+		peerID := request.FromUserID
+		if peerID == userID {
+			peerID = request.ToUserID
+		}
+		peer, lookupErr := x.app.UserContext(r.Context(), peerID)
+		if lookupErr == nil && peer != nil {
+			x.signAvatarURL(peer)
+			item.User = map[string]any{
+				"id": peer.ID, "name": peer.Name, "handle": peer.Handle,
+				"signature": peer.Signature, "avatarMediaId": peer.AvatarMediaID,
+				"avatarUrl": peer.AvatarURL,
+			}
+		}
+		items = append(items, item)
+	}
+	write(w, http.StatusOK, map[string]any{"items": items})
 }
 func (x *API) friends(w http.ResponseWriter, r *http.Request) {
-	items := x.app.Friends(uid(r))
+	items, err := x.app.FriendsContext(r.Context(), uid(r))
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
 	for _, item := range items {
 		x.signAvatarURL(item)
 	}
@@ -2339,7 +2624,11 @@ func (x *API) readAnnouncement(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 func (x *API) adminStats(w http.ResponseWriter, r *http.Request) {
-	stats := x.app.AdminStats()
+	stats, err := x.app.AdminStatsContext(r.Context())
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
 	stats["wukongConnections"] = int64(0)
 	stats["wukongStatus"] = "disabled"
 	if x.cfg.WukongEnabled && x.wukongClient != nil && x.wukongSetupErr == nil {
@@ -2691,6 +2980,28 @@ func (x *API) adminGroupMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, http.StatusOK, map[string]any{"items": items, "total": total, "nextCursor": next})
+}
+func (x *API) adminGroupMemberAction(w http.ResponseWriter, r *http.Request) {
+	var p struct {
+		Action     string     `json:"action"`
+		Role       string     `json:"role"`
+		Reason     string     `json:"reason"`
+		MutedUntil *time.Time `json:"mutedUntil"`
+		Confirmed  bool       `json:"confirmed"`
+	}
+	if decode(r, &p) != nil || !confirmedReason(p.Confirmed, p.Reason) {
+		writeError(w, http.StatusBadRequest, "CONFIRMATION_REQUIRED", "confirmed and reason are required")
+		return
+	}
+	if r.Method == http.MethodDelete {
+		p.Action = "remove"
+	}
+	if err := x.app.AdminModerateGroupMember(uid(r), r.PathValue("id"), r.PathValue("userId"), p.Action, p.Role, p.Reason, p.MutedUntil); err != nil {
+		handleErr(w, err)
+		return
+	}
+	x.app.RecordAdminAudit(uid(r), "group.member."+p.Action, "group_member", r.PathValue("id")+":"+r.PathValue("userId"), "success", x.clientIP(r), map[string]any{"reason": strings.TrimSpace(p.Reason), "role": p.Role, "mutedUntil": p.MutedUntil})
+	w.WriteHeader(http.StatusNoContent)
 }
 func (x *API) disbandGroup(w http.ResponseWriter, r *http.Request) {
 	var p struct {

@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:linli_im/core/app_controller.dart';
 import 'package:linli_im/core/models.dart';
+import 'package:linli_im/data/demo_repository.dart';
 import 'package:linli_im/data/live_repository.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -52,12 +53,14 @@ void main() {
         expect(body['avatarMediaId'], 'media-avatar-1');
         expect(body['name'], '新昵称');
         expect(body['handle'], 'new_name');
+        expect(body['gender'], 'female');
         return _json({
           'id': 'me',
           'phone': '13800138000',
           'name': body['name'],
           'handle': body['handle'],
           'signature': body['signature'],
+          'gender': body['gender'],
           'avatarMediaId': body['avatarMediaId'],
           'avatarUrl': '/v2/media/media-avatar-1',
         });
@@ -76,6 +79,7 @@ void main() {
       name: '新昵称',
       handle: 'new_name',
       signature: '新的个性签名',
+      gender: 'female',
       avatar: MediaUpload(
         bytes: Uint8List.fromList([1, 2, 3]),
         fileName: 'avatar.png',
@@ -86,6 +90,7 @@ void main() {
 
     expect(success, isTrue);
     expect(controller.currentUser?.avatarMediaId, 'media-avatar-1');
+    expect(controller.currentUser?.gender, 'female');
     expect(
       requests,
       containsAllInOrder([
@@ -97,6 +102,109 @@ void main() {
       ]),
     );
   });
+
+  test('资料绑定失败后重试复用已上传头像，不产生重复媒体', () async {
+    final repository = _RetryProfileRepository();
+    final controller = AppController(repository)
+      ..authenticated = true
+      ..currentUser = DemoImRepository.demoUser;
+    addTearDown(controller.dispose);
+    final avatar = MediaUpload(
+      bytes: Uint8List.fromList([1, 2, 3]),
+      fileName: 'avatar.png',
+      mimeType: 'image/png',
+      kind: MessageContentKind.image,
+    );
+
+    final first = await controller.saveProfile(
+      name: '新昵称',
+      handle: 'new_name',
+      signature: '新的个性签名',
+      gender: 'female',
+      avatar: avatar,
+    );
+    final second = await controller.saveProfile(
+      name: '新昵称',
+      handle: 'new_name',
+      signature: '新的个性签名',
+      gender: 'female',
+      avatar: avatar,
+    );
+
+    expect(first, isFalse);
+    expect(second, isTrue);
+    expect(repository.uploadAvatarCalls, 1);
+    expect(repository.updateProfileCalls, 2);
+    expect(repository.lastAvatarMediaId, 'media-profile-avatar-1');
+  });
+
+  test('资料绑定失败后改选另一张头像会重新上传', () async {
+    final repository = _RetryProfileRepository(failuresBeforeSuccess: 2);
+    final controller = AppController(repository)
+      ..authenticated = true
+      ..currentUser = DemoImRepository.demoUser;
+    addTearDown(controller.dispose);
+
+    Future<bool> save(List<int> bytes) => controller.saveProfile(
+      name: '新昵称',
+      handle: 'new_name',
+      signature: '',
+      gender: 'unspecified',
+      avatar: MediaUpload(
+        bytes: Uint8List.fromList(bytes),
+        fileName: 'avatar.png',
+        mimeType: 'image/png',
+        kind: MessageContentKind.image,
+      ),
+    );
+
+    expect(await save([1, 2, 3]), isFalse);
+    expect(await save([4, 5, 6]), isFalse);
+    expect(repository.uploadAvatarCalls, 2);
+    expect(repository.updateProfileCalls, 2);
+  });
+}
+
+class _RetryProfileRepository extends DemoImRepository {
+  _RetryProfileRepository({this.failuresBeforeSuccess = 1})
+    : super(latency: Duration.zero);
+
+  final int failuresBeforeSuccess;
+  int uploadAvatarCalls = 0;
+  int updateProfileCalls = 0;
+  String? lastAvatarMediaId;
+
+  @override
+  Future<String> uploadAvatar(MediaUpload upload) async {
+    uploadAvatarCalls += 1;
+    return 'media-profile-avatar-$uploadAvatarCalls';
+  }
+
+  @override
+  Future<AppUser> updateProfile({
+    String? name,
+    String? handle,
+    String? signature,
+    String? gender,
+    String? avatarMediaId,
+    bool? allowSearchByHandle,
+    bool? allowSearchByPhone,
+  }) async {
+    updateProfileCalls += 1;
+    lastAvatarMediaId = avatarMediaId;
+    if (updateProfileCalls <= failuresBeforeSuccess) {
+      throw Exception('temporary profile update failure');
+    }
+    return super.updateProfile(
+      name: name,
+      handle: handle,
+      signature: signature,
+      gender: gender,
+      avatarMediaId: avatarMediaId,
+      allowSearchByHandle: allowSearchByHandle,
+      allowSearchByPhone: allowSearchByPhone,
+    );
+  }
 }
 
 http.Response _json(Map<String, Object?> value) => http.Response(

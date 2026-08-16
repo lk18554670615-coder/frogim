@@ -43,7 +43,8 @@ class _BusinessChannelHubScreenState extends State<BusinessChannelHubScreen> {
       );
       if (mounted) setState(() => channels = items);
     } catch (cause) {
-      if (mounted) setState(() => error = '$cause');
+      debugPrint('Business channel list load failed: $cause');
+      if (mounted) setState(() => error = 'failed');
     } finally {
       if (mounted) setState(() => loading = false);
     }
@@ -106,20 +107,15 @@ class _BusinessChannelHubScreenState extends State<BusinessChannelHubScreen> {
         return;
       }
       await Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => ChatScreen(
-            controller: widget.controller,
-            conversation: conversation,
-          ),
+        chatScreenRoute(
+          context,
+          controller: widget.controller,
+          conversation: conversation,
         ),
       );
       await _load();
     } catch (cause) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('暂时无法进入：$cause')));
-      }
+      if (mounted) _showBusinessFailure(context, '暂时无法进入频道', cause);
     }
   }
 
@@ -139,74 +135,130 @@ class _BusinessChannelHubScreenState extends State<BusinessChannelHubScreen> {
   Future<void> _showCreate() async {
     final name = TextEditingController();
     final description = TextEditingController();
-    final parent = TextEditingController(text: parentId);
+    var selectedParentId = parentId;
+    var communities = <BusinessChannelSummary>[];
+    if (channelType == 5) {
+      try {
+        communities = await widget.controller.loadBusinessChannels(
+          channelType: 4,
+        );
+      } catch (cause) {
+        if (mounted) _showBusinessFailure(context, '社区列表加载失败', cause);
+        name.dispose();
+        description.dispose();
+        return;
+      }
+      if (communities.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('请先创建社区，再在社区中创建话题')));
+        }
+        name.dispose();
+        description.dispose();
+        return;
+      }
+      if (!communities.any((item) => item.id == selectedParentId)) {
+        selectedParentId = communities.first.id;
+      }
+    }
+    if (!mounted) {
+      name.dispose();
+      description.dispose();
+      return;
+    }
+    String? nameError;
     final created = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text('创建${_channelTypeLabel(channelType)}'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                key: const Key('business-channel-name'),
-                controller: name,
-                autofocus: true,
-                maxLength: 100,
-                decoration: const InputDecoration(labelText: '名称'),
-              ),
-              if (channelType == 5)
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('创建${_channelTypeLabel(channelType)}'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
                 TextField(
-                  key: const Key('business-channel-parent'),
-                  controller: parent,
-                  decoration: const InputDecoration(labelText: '所属社区 ID'),
+                  key: const Key('business-channel-name'),
+                  controller: name,
+                  autofocus: true,
+                  maxLength: 100,
+                  onChanged: (_) {
+                    if (nameError != null) {
+                      setDialogState(() => nameError = null);
+                    }
+                  },
+                  decoration: InputDecoration(
+                    labelText: '名称',
+                    errorText: nameError,
+                  ),
                 ),
-              TextField(
-                controller: description,
-                maxLength: 2000,
-                minLines: 2,
-                maxLines: 4,
-                decoration: const InputDecoration(labelText: '简介'),
-              ),
-            ],
+                if (channelType == 5)
+                  DropdownButtonFormField<String>(
+                    key: const Key('business-channel-parent'),
+                    initialValue: selectedParentId,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: '所属社区'),
+                    items: communities
+                        .map(
+                          (item) => DropdownMenuItem(
+                            value: item.id,
+                            child: Text(
+                              item.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) => setDialogState(
+                      () => selectedParentId = value ?? selectedParentId,
+                    ),
+                  ),
+                TextField(
+                  controller: description,
+                  maxLength: 2000,
+                  minLines: 2,
+                  maxLines: 4,
+                  decoration: const InputDecoration(labelText: '简介（选填）'),
+                ),
+              ],
+            ),
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              if (name.text.trim().isEmpty ||
-                  (channelType == 5 && parent.text.trim().isEmpty)) {
-                return;
-              }
-              try {
-                await widget.controller.createBusinessChannel(
-                  channelType: channelType,
-                  name: name.text.trim(),
-                  parentId: parent.text.trim(),
-                  description: description.text.trim(),
-                  postingPolicy: channelType == 6 ? 'operators' : 'members',
-                );
-                if (dialogContext.mounted) Navigator.pop(dialogContext, true);
-              } catch (cause) {
-                if (dialogContext.mounted) {
-                  ScaffoldMessenger.of(
-                    dialogContext,
-                  ).showSnackBar(SnackBar(content: Text('创建失败：$cause')));
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                if (name.text.trim().isEmpty) {
+                  setDialogState(() => nameError = '请输入名称');
+                  return;
                 }
-              }
-            },
-            child: const Text('创建'),
-          ),
-        ],
+                try {
+                  await widget.controller.createBusinessChannel(
+                    channelType: channelType,
+                    name: name.text.trim(),
+                    parentId: selectedParentId,
+                    description: description.text.trim(),
+                    postingPolicy: channelType == 6 ? 'operators' : 'members',
+                  );
+                  if (dialogContext.mounted) {
+                    Navigator.pop(dialogContext, true);
+                  }
+                } catch (cause) {
+                  if (dialogContext.mounted) {
+                    _showBusinessFailure(dialogContext, '频道创建失败', cause);
+                  }
+                }
+              },
+              child: const Text('创建'),
+            ),
+          ],
+        ),
       ),
     );
-    name.dispose();
-    description.dispose();
-    parent.dispose();
+    await _disposeAfterDialogTransition([name, description]);
     if (created == true) await _load();
   }
 
@@ -264,24 +316,22 @@ class _BusinessChannelHubScreenState extends State<BusinessChannelHubScreen> {
   Widget _body() {
     if (loading) return const Center(child: CircularProgressIndicator());
     if (error.isNotEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(CupertinoIcons.exclamationmark_circle, size: 32),
-              const SizedBox(height: 12),
-              Text(error, textAlign: TextAlign.center),
-              const SizedBox(height: 12),
-              FilledButton(onPressed: _load, child: const Text('重新加载')),
-            ],
-          ),
-        ),
+      return StatePanel(
+        icon: CupertinoIcons.exclamationmark_circle,
+        title: '社区与频道暂时无法加载',
+        body: '请检查网络连接后重试。已经加入的频道不会受到影响。',
+        actionLabel: '重新加载',
+        onAction: _load,
       );
     }
     if (channels.isEmpty) {
-      return Center(child: Text('暂无${_channelTypeLabel(channelType)}'));
+      return StatePanel(
+        icon: CupertinoIcons.rectangle_stack_person_crop,
+        title: '暂无${_channelTypeLabel(channelType)}',
+        body: '可以稍后刷新，或使用右上角入口创建。',
+        actionLabel: '刷新',
+        onAction: _load,
+      );
     }
     return RefreshIndicator(
       onRefresh: _load,
@@ -405,7 +455,8 @@ class _BusinessChannelDetailScreenState
         access = loadedAccess;
       });
     } catch (cause) {
-      if (mounted) setState(() => error = '$cause');
+      debugPrint('Business channel detail load failed: $cause');
+      if (mounted) setState(() => error = 'failed');
     } finally {
       if (mounted) setState(() => loading = false);
     }
@@ -414,12 +465,17 @@ class _BusinessChannelDetailScreenState
   Future<void> _edit() async {
     final name = TextEditingController(text: channel.name);
     final description = TextEditingController(text: channel.description);
+    final slowModeController = TextEditingController(
+      text: '${channel.slowModeSeconds}',
+    );
     var visibility = channel.visibility;
     var joinPolicy = channel.joinPolicy;
     var postingPolicy = channel.postingPolicy;
     var slowMode = channel.slowModeSeconds;
     var sendBan = channel.sendBan;
     var allowStranger = channel.allowStranger;
+    String? nameError;
+    String? slowModeError;
     final accepted = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
@@ -432,7 +488,15 @@ class _BusinessChannelDetailScreenState
                 TextField(
                   controller: name,
                   maxLength: 100,
-                  decoration: const InputDecoration(labelText: '名称'),
+                  onChanged: (_) {
+                    if (nameError != null) {
+                      setDialogState(() => nameError = null);
+                    }
+                  },
+                  decoration: InputDecoration(
+                    labelText: '名称',
+                    errorText: nameError,
+                  ),
                 ),
                 TextField(
                   controller: description,
@@ -475,12 +539,17 @@ class _BusinessChannelDetailScreenState
                 ),
                 if (channel.channelType == 9)
                   TextFormField(
-                    initialValue: '$slowMode',
+                    controller: slowModeController,
                     keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       labelText: '慢速模式（秒，0 为关闭）',
+                      errorText: slowModeError,
                     ),
-                    onChanged: (value) => slowMode = int.tryParse(value) ?? 0,
+                    onChanged: (_) {
+                      if (slowModeError != null) {
+                        setDialogState(() => slowModeError = null);
+                      }
+                    },
                   ),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
@@ -504,7 +573,27 @@ class _BusinessChannelDetailScreenState
               child: const Text('取消'),
             ),
             FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
+              onPressed: () {
+                final parsedSlowMode = channel.channelType == 9
+                    ? int.tryParse(slowModeController.text.trim())
+                    : slowMode;
+                final invalidName = name.text.trim().isEmpty;
+                final invalidSlowMode =
+                    parsedSlowMode == null ||
+                    parsedSlowMode < 0 ||
+                    parsedSlowMode > 86400;
+                if (invalidName || invalidSlowMode) {
+                  setDialogState(() {
+                    nameError = invalidName ? '请输入名称' : null;
+                    slowModeError = invalidSlowMode
+                        ? '请输入 0 到 86400 之间的整数'
+                        : null;
+                  });
+                  return;
+                }
+                slowMode = parsedSlowMode;
+                Navigator.pop(dialogContext, true);
+              },
               child: const Text('保存'),
             ),
           ],
@@ -513,28 +602,36 @@ class _BusinessChannelDetailScreenState
     );
     try {
       if (accepted == true) {
-        channel = await widget.controller.updateBusinessChannel(
-          channel,
-          name: name.text.trim(),
-          description: description.text.trim(),
-          visibility: visibility,
-          joinPolicy: joinPolicy,
-          postingPolicy: postingPolicy,
-          slowModeSeconds: slowMode.clamp(0, 86400),
-          sendBan: sendBan,
-          allowStranger: allowStranger,
-        );
-        await _load();
+        try {
+          channel = await widget.controller.updateBusinessChannel(
+            channel,
+            name: name.text.trim(),
+            description: description.text.trim(),
+            visibility: visibility,
+            joinPolicy: joinPolicy,
+            postingPolicy: postingPolicy,
+            slowModeSeconds: slowMode.clamp(0, 86400),
+            sendBan: sendBan,
+            allowStranger: allowStranger,
+          );
+          await _load();
+        } catch (cause) {
+          if (mounted) _showBusinessFailure(context, '频道设置保存失败', cause);
+        }
       }
     } finally {
-      name.dispose();
-      description.dispose();
+      await _disposeAfterDialogTransition([
+        name,
+        description,
+        slowModeController,
+      ]);
     }
   }
 
   Future<void> _addMember() async {
     final user = TextEditingController();
     var temporaryDays = channel.channelType == 6 ? 7 : 0;
+    String? userError;
     final accepted = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
@@ -546,7 +643,15 @@ class _BusinessChannelDetailScreenState
               TextField(
                 controller: user,
                 autofocus: true,
-                decoration: const InputDecoration(labelText: '用户 ID'),
+                onChanged: (_) {
+                  if (userError != null) {
+                    setDialogState(() => userError = null);
+                  }
+                },
+                decoration: InputDecoration(
+                  labelText: '用户 ID',
+                  errorText: userError,
+                ),
               ),
               if (channel.channelType == 6)
                 DropdownButtonFormField<int>(
@@ -570,7 +675,13 @@ class _BusinessChannelDetailScreenState
               child: const Text('取消'),
             ),
             FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
+              onPressed: () {
+                if (user.text.trim().isEmpty) {
+                  setDialogState(() => userError = '请输入用户 ID');
+                  return;
+                }
+                Navigator.pop(dialogContext, true);
+              },
               child: const Text('添加'),
             ),
           ],
@@ -578,18 +689,22 @@ class _BusinessChannelDetailScreenState
       ),
     );
     try {
-      if (accepted == true && user.text.trim().isNotEmpty) {
-        await widget.controller.addBusinessChannelMember(
-          channel,
-          user.text.trim(),
-          expiresAt: temporaryDays == 0
-              ? null
-              : DateTime.now().add(Duration(days: temporaryDays)),
-        );
-        await _load();
+      if (accepted == true) {
+        try {
+          await widget.controller.addBusinessChannelMember(
+            channel,
+            user.text.trim(),
+            expiresAt: temporaryDays == 0
+                ? null
+                : DateTime.now().add(Duration(days: temporaryDays)),
+          );
+          await _load();
+        } catch (cause) {
+          if (mounted) _showBusinessFailure(context, '成员添加失败', cause);
+        }
       }
     } finally {
-      user.dispose();
+      await _disposeAfterDialogTransition([user]);
     }
   }
 
@@ -597,70 +712,97 @@ class _BusinessChannelDetailScreenState
     BusinessChannelMemberSummary member,
     String action,
   ) async {
-    switch (action) {
-      case 'admin':
-        await widget.controller.updateBusinessChannelMember(
-          channel,
-          member.userId,
-          role: 'admin',
-        );
-        break;
-      case 'moderator':
-        await widget.controller.updateBusinessChannelMember(
-          channel,
-          member.userId,
-          role: 'moderator',
-        );
-        break;
-      case 'member':
-        await widget.controller.updateBusinessChannelMember(
-          channel,
-          member.userId,
-          role: 'member',
-        );
-        break;
-      case 'mute':
-        await widget.controller.updateBusinessChannelMember(
-          channel,
-          member.userId,
-          mutedUntil: DateTime.now().add(const Duration(hours: 1)),
-        );
-        break;
-      case 'unmute':
-        await widget.controller.updateBusinessChannelMember(
-          channel,
-          member.userId,
-          clearMute: true,
-        );
-        break;
-      case 'temporary':
-        await widget.controller.updateBusinessChannelMember(
-          channel,
-          member.userId,
-          expiresAt: DateTime.now().add(const Duration(days: 1)),
-        );
-        break;
-      case 'permanent':
-        await widget.controller.updateBusinessChannelMember(
-          channel,
-          member.userId,
-          clearExpiry: true,
-        );
-        break;
-      case 'remove':
-        await widget.controller.removeBusinessChannelMember(
-          channel,
-          member.userId,
-        );
-        break;
+    if (action == 'remove') {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('移除成员？'),
+          content: Text(
+            '移除后，${member.name.isEmpty ? '该成员' : member.name} 将无法继续进入此频道。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('确认移除'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
     }
-    await _load();
+    try {
+      switch (action) {
+        case 'admin':
+          await widget.controller.updateBusinessChannelMember(
+            channel,
+            member.userId,
+            role: 'admin',
+          );
+          break;
+        case 'moderator':
+          await widget.controller.updateBusinessChannelMember(
+            channel,
+            member.userId,
+            role: 'moderator',
+          );
+          break;
+        case 'member':
+          await widget.controller.updateBusinessChannelMember(
+            channel,
+            member.userId,
+            role: 'member',
+          );
+          break;
+        case 'mute':
+          await widget.controller.updateBusinessChannelMember(
+            channel,
+            member.userId,
+            mutedUntil: DateTime.now().add(const Duration(hours: 1)),
+          );
+          break;
+        case 'unmute':
+          await widget.controller.updateBusinessChannelMember(
+            channel,
+            member.userId,
+            clearMute: true,
+          );
+          break;
+        case 'temporary':
+          await widget.controller.updateBusinessChannelMember(
+            channel,
+            member.userId,
+            expiresAt: DateTime.now().add(const Duration(days: 1)),
+          );
+          break;
+        case 'permanent':
+          await widget.controller.updateBusinessChannelMember(
+            channel,
+            member.userId,
+            clearExpiry: true,
+          );
+          break;
+        case 'remove':
+          await widget.controller.removeBusinessChannelMember(
+            channel,
+            member.userId,
+          );
+          break;
+      }
+      await _load();
+    } catch (cause) {
+      if (mounted) _showBusinessFailure(context, '成员操作失败', cause);
+    }
   }
 
   Future<void> _addAccess() async {
     final user = TextEditingController();
     final reason = TextEditingController();
     var type = 'deny';
+    String? userError;
     final accepted = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
@@ -671,7 +813,15 @@ class _BusinessChannelDetailScreenState
             children: [
               TextField(
                 controller: user,
-                decoration: const InputDecoration(labelText: '用户 ID'),
+                onChanged: (_) {
+                  if (userError != null) {
+                    setDialogState(() => userError = null);
+                  }
+                },
+                decoration: InputDecoration(
+                  labelText: '用户 ID',
+                  errorText: userError,
+                ),
               ),
               DropdownButtonFormField<String>(
                 initialValue: type,
@@ -694,7 +844,13 @@ class _BusinessChannelDetailScreenState
               child: const Text('取消'),
             ),
             FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
+              onPressed: () {
+                if (user.text.trim().isEmpty) {
+                  setDialogState(() => userError = '请输入用户 ID');
+                  return;
+                }
+                Navigator.pop(dialogContext, true);
+              },
               child: const Text('添加'),
             ),
           ],
@@ -702,25 +858,50 @@ class _BusinessChannelDetailScreenState
       ),
     );
     try {
-      if (accepted == true && user.text.trim().isNotEmpty) {
-        await widget.controller.setBusinessChannelAccess(
-          channel,
-          user.text.trim(),
-          type,
-          true,
-          reason: reason.text.trim(),
-        );
-        await _load();
+      if (accepted == true) {
+        try {
+          await widget.controller.setBusinessChannelAccess(
+            channel,
+            user.text.trim(),
+            type,
+            true,
+            reason: reason.text.trim(),
+          );
+          await _load();
+        } catch (cause) {
+          if (mounted) _showBusinessFailure(context, '名单添加失败', cause);
+        }
       }
     } finally {
-      user.dispose();
-      reason.dispose();
+      await _disposeAfterDialogTransition([user, reason]);
     }
   }
 
   Future<void> _leave() async {
-    await widget.controller.leaveBusinessChannel(channel);
-    if (mounted) Navigator.pop(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('退出频道？'),
+        content: Text('退出“${channel.name}”后，将不再接收频道消息。以后仍可按频道规则重新加入。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('确认退出'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await widget.controller.leaveBusinessChannel(channel);
+      if (mounted) Navigator.pop(context);
+    } catch (cause) {
+      if (mounted) _showBusinessFailure(context, '退出频道失败', cause);
+    }
   }
 
   @override
@@ -739,8 +920,12 @@ class _BusinessChannelDetailScreenState
     body: loading
         ? const Center(child: CircularProgressIndicator())
         : error.isNotEmpty
-        ? Center(
-            child: FilledButton(onPressed: _load, child: Text(error)),
+        ? StatePanel(
+            icon: CupertinoIcons.exclamationmark_circle,
+            title: '频道详情暂时无法加载',
+            body: '请检查网络连接后重试，频道和成员数据不会因此改变。',
+            actionLabel: '重新加载',
+            onAction: _load,
           )
         : RefreshIndicator(
             onRefresh: _load,
@@ -766,7 +951,7 @@ class _BusinessChannelDetailScreenState
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          '${channel.memberCount} 位成员 · ${channel.role.isEmpty ? '访客' : channel.role}'
+                          '${channel.memberCount} 位成员 · ${_businessRoleLabel(channel.role)}'
                           '${channel.slowModeSeconds > 0 ? ' · 慢速 ${channel.slowModeSeconds} 秒' : ''}'
                           '${channel.sendBan ? ' · 全员禁言' : ''}',
                         ),
@@ -802,7 +987,7 @@ class _BusinessChannelDetailScreenState
                           member.name.isEmpty ? member.userId : member.name,
                         ),
                         subtitle: Text(
-                          '${member.role}${member.mutedUntil != null && member.mutedUntil!.isAfter(DateTime.now()) ? ' · 已禁言' : ''}${member.expiresAt == null ? '' : ' · 临时成员'}',
+                          '${_businessRoleLabel(member.role)}${member.mutedUntil != null && member.mutedUntil!.isAfter(DateTime.now()) ? ' · 已禁言' : ''}${member.expiresAt == null ? '' : ' · 临时成员'}',
                         ),
                         trailing: member.role == 'owner'
                             ? const Text('群主')
@@ -880,13 +1065,46 @@ class _BusinessChannelDetailScreenState
                           trailing: IconButton(
                             tooltip: '移除名单',
                             onPressed: () async {
-                              await widget.controller.setBusinessChannelAccess(
-                                channel,
-                                item.userId,
-                                item.accessType,
-                                false,
+                              final confirmed = await showDialog<bool>(
+                                context: context,
+                                builder: (dialogContext) => AlertDialog(
+                                  title: const Text('移除名单记录？'),
+                                  content: Text(
+                                    '将移除${item.name.isEmpty ? '该用户' : item.name}的${item.accessType == 'deny' ? '黑名单' : '白名单'}记录。',
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () =>
+                                          Navigator.pop(dialogContext, false),
+                                      child: const Text('取消'),
+                                    ),
+                                    FilledButton(
+                                      onPressed: () =>
+                                          Navigator.pop(dialogContext, true),
+                                      child: const Text('确认移除'),
+                                    ),
+                                  ],
+                                ),
                               );
-                              await _load();
+                              if (confirmed != true) return;
+                              try {
+                                await widget.controller
+                                    .setBusinessChannelAccess(
+                                      channel,
+                                      item.userId,
+                                      item.accessType,
+                                      false,
+                                    );
+                                await _load();
+                              } catch (cause) {
+                                if (context.mounted) {
+                                  _showBusinessFailure(
+                                    context,
+                                    '名单移除失败',
+                                    cause,
+                                  );
+                                }
+                              }
                             },
                             icon: const Icon(CupertinoIcons.delete),
                           ),
@@ -952,7 +1170,8 @@ class _SupportCenterScreenState extends State<SupportCenterScreen> {
             .firstOrNull;
       });
     } catch (cause) {
-      if (mounted) setState(() => error = '$cause');
+      debugPrint('Support center load failed: $cause');
+      if (mounted) setState(() => error = 'failed');
     } finally {
       if (mounted) setState(() => loading = false);
     }
@@ -987,7 +1206,7 @@ class _SupportCenterScreenState extends State<SupportCenterScreen> {
       ),
     );
     if (accepted != true) {
-      subject.dispose();
+      await _disposeAfterDialogTransition([subject]);
       return;
     }
     try {
@@ -998,23 +1217,18 @@ class _SupportCenterScreenState extends State<SupportCenterScreen> {
       if (!mounted) return;
       if (result.$2 != null) {
         await Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => ChatScreen(
-              controller: widget.controller,
-              conversation: result.$2!,
-            ),
+          chatScreenRoute(
+            context,
+            controller: widget.controller,
+            conversation: result.$2!,
           ),
         );
       }
       await _load();
     } catch (cause) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('创建客服会话失败：$cause')));
-      }
+      if (mounted) _showBusinessFailure(context, '客服会话创建失败', cause);
     } finally {
-      subject.dispose();
+      await _disposeAfterDialogTransition([subject]);
     }
   }
 
@@ -1029,20 +1243,15 @@ class _SupportCenterScreenState extends State<SupportCenterScreen> {
         return;
       }
       await Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => ChatScreen(
-            controller: widget.controller,
-            conversation: conversation,
-          ),
+        chatScreenRoute(
+          context,
+          controller: widget.controller,
+          conversation: conversation,
         ),
       );
       await _load();
     } catch (cause) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('暂时无法进入会话：$cause')));
-      }
+      if (mounted) _showBusinessFailure(context, '暂时无法进入客服会话', cause);
     }
   }
 
@@ -1052,11 +1261,7 @@ class _SupportCenterScreenState extends State<SupportCenterScreen> {
       await _load();
       if (mounted) await _open(claimed);
     } catch (cause) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('接入失败：$cause')));
-      }
+      if (mounted) _showBusinessFailure(context, '客服会话接入失败', cause);
     }
   }
 
@@ -1065,11 +1270,7 @@ class _SupportCenterScreenState extends State<SupportCenterScreen> {
       await widget.controller.setSupportAgentStatus(status);
       await _load();
     } catch (cause) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('状态更新失败：$cause')));
-      }
+      if (mounted) _showBusinessFailure(context, '客服状态更新失败', cause);
     }
   }
 
@@ -1078,11 +1279,7 @@ class _SupportCenterScreenState extends State<SupportCenterScreen> {
       await widget.controller.endSupportSession(session.id);
       await _load();
     } catch (cause) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('结束会话失败：$cause')));
-      }
+      if (mounted) _showBusinessFailure(context, '客服会话结束失败', cause);
     }
   }
 
@@ -1133,11 +1330,7 @@ class _SupportCenterScreenState extends State<SupportCenterScreen> {
       await widget.controller.transferSupportSession(session.id, target.userId);
       await _load();
     } catch (cause) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('转接失败：$cause')));
-      }
+      if (mounted) _showBusinessFailure(context, '客服会话转接失败', cause);
     }
   }
 
@@ -1197,13 +1390,9 @@ class _SupportCenterScreenState extends State<SupportCenterScreen> {
         await _load();
       }
     } catch (cause) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('评价提交失败：$cause')));
-      }
+      if (mounted) _showBusinessFailure(context, '客服评价提交失败', cause);
     } finally {
-      comment.dispose();
+      await _disposeAfterDialogTransition([comment]);
     }
   }
 
@@ -1265,8 +1454,31 @@ class _SupportCenterScreenState extends State<SupportCenterScreen> {
     body: loading
         ? const Center(child: CircularProgressIndicator())
         : error.isNotEmpty
-        ? Center(
-            child: FilledButton(onPressed: _load, child: Text('重新加载\n$error')),
+        ? StatePanel(
+            icon: CupertinoIcons.exclamationmark_circle,
+            title: '客服中心暂时无法加载',
+            body: '请检查网络连接后重试。已有客服会话不会因此结束。',
+            actionLabel: '重新加载',
+            onAction: _load,
+          )
+        : skills.isEmpty && sessions.isEmpty && meAsAgent == null
+        ? RefreshIndicator(
+            onRefresh: _load,
+            child: CustomScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              slivers: [
+                SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: StatePanel(
+                    icon: CupertinoIcons.chat_bubble_2,
+                    title: '当前没有可用客服',
+                    body: '客服服务暂时不可用，你可以稍后下拉刷新或通过帮助与反馈提交问题。',
+                    actionLabel: '刷新',
+                    onAction: _load,
+                  ),
+                ),
+              ],
+            ),
           )
         : RefreshIndicator(
             onRefresh: _load,
@@ -1318,52 +1530,83 @@ class _SupportCenterScreenState extends State<SupportCenterScreen> {
                 ],
                 const SectionHeader('我的会话'),
                 if (sessions.isEmpty)
-                  const Card(
-                    child: Padding(
-                      padding: EdgeInsets.all(20),
-                      child: Text('当前没有客服会话'),
-                    ),
+                  const SectionCard(
+                    children: [
+                      ListTile(
+                        leading: Icon(CupertinoIcons.chat_bubble),
+                        title: Text('当前没有客服会话'),
+                        subtitle: Text('发起咨询后，服务进度会显示在这里'),
+                      ),
+                    ],
                   )
                 else
-                  ...sessions.map(
-                    (session) => Card(
-                      child: ListTile(
-                        leading: Icon(_supportStatusIcon(session.status)),
-                        title: Text(
-                          session.subject.isEmpty
-                              ? session.skillGroupName
-                              : session.subject,
-                        ),
-                        subtitle: Text(_supportStatusText(session)),
-                        trailing: _sessionAction(session),
-                        onTap: session.status == 'queued' && meAsAgent != null
-                            ? () => _claim(session)
-                            : () => _open(session),
-                      ),
-                    ),
+                  SectionCard(
+                    children: sessions
+                        .map(
+                          (session) => ListTile(
+                            leading: Icon(_supportStatusIcon(session.status)),
+                            title: Text(
+                              session.subject.isEmpty
+                                  ? session.skillGroupName
+                                  : session.subject,
+                            ),
+                            subtitle: Text(_supportStatusText(session)),
+                            trailing: _sessionAction(session),
+                            onTap:
+                                session.status == 'queued' && meAsAgent != null
+                                ? () => _claim(session)
+                                : () => _open(session),
+                          ),
+                        )
+                        .toList(),
                   ),
-                const SectionHeader('选择服务'),
-                ...skills.map(
-                  (skill) => Card(
-                    child: ListTile(
-                      leading: const Icon(CupertinoIcons.chat_bubble_2_fill),
-                      title: Text(skill.name),
-                      subtitle: Text(
-                        '${skill.description.isEmpty ? '在线咨询' : skill.description}\n'
-                        '${skill.availableAgents} 位客服在线 · ${skill.queueCount} 人排队',
-                      ),
-                      isThreeLine: true,
-                      trailing: FilledButton.tonal(
-                        onPressed: () => _start(skill),
-                        child: const Text('咨询'),
-                      ),
-                    ),
+                if (skills.isNotEmpty) ...[
+                  const SectionHeader('选择服务'),
+                  SectionCard(
+                    children: skills
+                        .map(
+                          (skill) => ListTile(
+                            leading: const Icon(
+                              CupertinoIcons.chat_bubble_2_fill,
+                            ),
+                            title: Text(skill.name),
+                            subtitle: Text(
+                              '${skill.description.isEmpty ? '在线咨询' : skill.description}\n'
+                              '${skill.availableAgents} 位客服在线 · ${skill.queueCount} 人排队',
+                            ),
+                            isThreeLine: true,
+                            trailing: FilledButton.tonal(
+                              onPressed: () => _start(skill),
+                              child: const Text('咨询'),
+                            ),
+                          ),
+                        )
+                        .toList(),
                   ),
-                ),
+                ],
               ],
             ),
           ),
   );
+}
+
+void _showBusinessFailure(BuildContext context, String message, Object cause) {
+  debugPrint('$message: $cause');
+  ScaffoldMessenger.of(
+    context,
+  ).showSnackBar(SnackBar(content: Text('$message，请稍后重试')));
+}
+
+Future<void> _disposeAfterDialogTransition(
+  Iterable<TextEditingController> controllers,
+) async {
+  // showDialog completes when pop starts, while its text fields can remain in
+  // the reverse transition for a few frames. Dispose after that transition so
+  // the closing route never rebuilds with an already-disposed controller.
+  await Future<void>.delayed(const Duration(milliseconds: 250));
+  for (final controller in controllers) {
+    controller.dispose();
+  }
 }
 
 String _channelTypeLabel(int channelType) => switch (channelType) {
@@ -1372,6 +1615,15 @@ String _channelTypeLabel(int channelType) => switch (channelType) {
   6 => '资讯频道',
   9 => '直播间',
   _ => '频道',
+};
+
+String _businessRoleLabel(String role) => switch (role) {
+  'owner' => '创建者',
+  'admin' => '管理员',
+  'moderator' => '版主',
+  'member' => '成员',
+  '' => '访客',
+  _ => '成员',
 };
 
 IconData _supportStatusIcon(String status) => switch (status) {

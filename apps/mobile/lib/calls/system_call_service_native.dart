@@ -19,7 +19,7 @@ import 'system_call_service_contract.dart';
 
 const _pendingActionsKey = 'calls.pending_system_actions.v1';
 const _permissionPromptedKey = 'calls.system_permission_prompted.v1';
-const _systemCallChannel = MethodChannel('com.linlitong.imapp/system_calls');
+const _systemCallChannel = MethodChannel('com.qingwaguagua.imapp/system_calls');
 
 SystemCallService createSystemCallService() => NativeSystemCallService();
 
@@ -239,10 +239,10 @@ class NativeSystemCallService implements SystemCallService {
     final seconds = session.expiresAt.difference(DateTime.now()).inSeconds;
     return CallKitParams(
       id: systemId,
-      nameCaller: displayName.isEmpty ? '邻里联系人' : displayName,
-      appName: '邻里通讯',
+      nameCaller: displayName.isEmpty ? '青蛙呱呱联系人' : displayName,
+      appName: '青蛙呱呱',
       avatar: avatarUrl,
-      handle: handle?.isNotEmpty == true ? handle : '邻里通讯',
+      handle: handle?.isNotEmpty == true ? handle : '青蛙呱呱',
       type: session.mediaType == CallMediaType.video ? 1 : 0,
       duration: (seconds.clamp(1, 120)) * 1000,
       extra: {

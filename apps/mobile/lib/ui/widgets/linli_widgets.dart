@@ -1,5 +1,6 @@
 import 'dart:ui';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
@@ -8,6 +9,64 @@ import 'package:flutter/services.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/models.dart';
+
+class LinliNetworkImage extends StatelessWidget {
+  const LinliNetworkImage({
+    super.key,
+    required this.url,
+    this.cacheKey,
+    this.width,
+    this.height,
+    this.fit = BoxFit.cover,
+    this.filterQuality = FilterQuality.medium,
+    this.semanticLabel,
+    this.placeholderBuilder,
+    this.errorBuilder,
+  });
+
+  final String url;
+  final String? cacheKey;
+  final double? width;
+  final double? height;
+  final BoxFit fit;
+  final FilterQuality filterQuality;
+  final String? semanticLabel;
+  final WidgetBuilder? placeholderBuilder;
+  final WidgetBuilder? errorBuilder;
+
+  @override
+  Widget build(BuildContext context) {
+    final trimmed = url.trim();
+    final resolved = trimmed.startsWith('/') && AppConfig.apiBaseUrl.isNotEmpty
+        ? '${AppConfig.apiBaseUrl}$trimmed'
+        : trimmed;
+    return CachedNetworkImage(
+      imageUrl: resolved,
+      cacheKey: cacheKey,
+      width: width,
+      height: height,
+      fit: fit,
+      filterQuality: filterQuality,
+      fadeInDuration: const Duration(milliseconds: 90),
+      fadeOutDuration: Duration.zero,
+      imageBuilder: semanticLabel == null
+          ? null
+          : (context, provider) => Image(
+              image: provider,
+              width: width,
+              height: height,
+              fit: fit,
+              filterQuality: filterQuality,
+              semanticLabel: semanticLabel,
+            ),
+      placeholder: placeholderBuilder == null
+          ? null
+          : (context, _) => placeholderBuilder!(context),
+      errorWidget: (context, _, _) =>
+          errorBuilder?.call(context) ?? const SizedBox.shrink(),
+    );
+  }
+}
 
 class GlassSurface extends StatelessWidget {
   const GlassSurface({
@@ -100,7 +159,9 @@ class PersonAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = Theme.of(context).colorScheme.primary;
+    final scheme = Theme.of(context).colorScheme;
+    final color = scheme.primary;
+    final foreground = scheme.onPrimary;
     final resolvedAvatarUrl =
         avatarUrl != null &&
             avatarUrl!.startsWith('/') &&
@@ -124,9 +185,9 @@ class PersonAvatar extends StatelessWidget {
                       context,
                     ).clamp(maxScaleFactor: 1.25),
                     style: TextStyle(
-                      color: Colors.white,
+                      color: foreground,
                       fontSize: size * .38,
-                      fontWeight: FontWeight.w600,
+                      fontWeight: FontWeight.w700,
                     ),
                   )
                 : resolvedAvatarUrl.startsWith('assets/')
@@ -137,18 +198,25 @@ class PersonAvatar extends StatelessWidget {
                     fit: BoxFit.cover,
                     semanticLabel: '$name 的头像',
                   )
-                : Image.network(
-                    resolvedAvatarUrl,
+                : LinliNetworkImage(
+                    url: resolvedAvatarUrl,
+                    cacheKey: resolvedAvatarUrl,
                     width: size,
                     height: size,
                     fit: BoxFit.cover,
                     semanticLabel: '$name 的头像',
-                    errorBuilder: (_, _, _) => Text(
-                      name.characters.take(1).toString(),
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: size * .38,
-                        fontWeight: FontWeight.w600,
+                    placeholderBuilder: (_) => ColoredBox(
+                      color: color,
+                      child: const SizedBox.expand(),
+                    ),
+                    errorBuilder: (_) => Center(
+                      child: Text(
+                        name.characters.take(1).toString(),
+                        style: TextStyle(
+                          color: foreground,
+                          fontSize: size * .38,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                     ),
                   ),
@@ -194,24 +262,24 @@ class LinliSearchBar extends StatelessWidget {
       minimumSize: const Size.fromHeight(44),
       onPressed: onTap,
       child: Container(
-        height: 36,
-        padding: const EdgeInsets.symmetric(horizontal: 10),
+        height: 42,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: BoxDecoration(
           color: Theme.of(context).brightness == Brightness.dark
               ? LinliColors.darkSurfaceElevated
-              : const Color(0xFFEEF2F7),
-          borderRadius: BorderRadius.circular(12),
+              : Theme.of(context).colorScheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(13),
         ),
         child: Row(
           children: [
             Icon(
               CupertinoIcons.search,
-              size: 17,
+              size: 18,
               color: Theme.of(
                 context,
               ).colorScheme.onSurface.withValues(alpha: .42),
             ),
-            const SizedBox(width: 6),
+            const SizedBox(width: 8),
             Expanded(
               child: Text(
                 hint,
@@ -229,46 +297,124 @@ class LinliSearchBar extends StatelessWidget {
   );
 }
 
+class MessagingConnectionBanner extends StatelessWidget {
+  const MessagingConnectionBanner({
+    super.key,
+    required this.retrying,
+    required this.onRetry,
+  });
+
+  final bool retrying;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final message = retrying ? '正在重新连接消息服务…' : '消息服务未连接，发送暂不可用';
+    return Semantics(
+      container: true,
+      liveRegion: true,
+      label: message,
+      child: Container(
+        key: const Key('messaging-connection-banner'),
+        constraints: const BoxConstraints(minHeight: 48),
+        padding: const EdgeInsets.only(left: 14, right: 4),
+        color: dark ? const Color(0xFF3A2A1D) : const Color(0xFFFFF3E8),
+        child: Row(
+          children: [
+            const Icon(
+              CupertinoIcons.exclamationmark_circle_fill,
+              size: 17,
+              color: LinliColors.systemOrange,
+            ),
+            const SizedBox(width: 9),
+            Expanded(
+              child: Text(
+                message,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: dark
+                      ? const Color(0xFFFFD8B8)
+                      : const Color(0xFF70401F),
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+            if (retrying)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 13),
+                child: CupertinoActivityIndicator(radius: 8),
+              )
+            else
+              CupertinoButton(
+                key: const Key('retry-messaging-connection'),
+                minimumSize: const Size(48, 44),
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                onPressed: onRetry,
+                child: const Text(
+                  '重试',
+                  style: TextStyle(
+                    color: LinliColors.systemOrange,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class SectionCard extends StatelessWidget {
   const SectionCard({super.key, required this.children});
   final List<Widget> children;
 
   @override
-  Widget build(BuildContext context) => ClipRRect(
-    borderRadius: BorderRadius.circular(16),
-    child: Material(
-      color: Theme.of(context).colorScheme.surfaceContainer,
-      child: Column(
-        children: [
-          for (var i = 0; i < children.length; i++) ...[
-            children[i],
-            if (i != children.length - 1)
-              Padding(
-                padding: const EdgeInsets.only(left: 56),
-                child: Divider(
-                  color: Theme.of(context).colorScheme.outline,
-                  height: .5,
-                ),
-              ),
-          ],
-        ],
+  Widget build(BuildContext context) => Material(
+    color: Theme.of(context).colorScheme.surfaceContainer,
+    clipBehavior: Clip.antiAlias,
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(16),
+      side: BorderSide(
+        color: Theme.of(context).colorScheme.outline.withValues(alpha: .6),
+        width: .5,
       ),
+    ),
+    child: Column(
+      children: [
+        for (var i = 0; i < children.length; i++) ...[
+          children[i],
+          if (i != children.length - 1)
+            Padding(
+              padding: const EdgeInsets.only(left: 56),
+              child: Divider(
+                color: Theme.of(context).colorScheme.outline,
+                height: .5,
+              ),
+            ),
+        ],
+      ],
     ),
   );
 }
 
 class SectionHeader extends StatelessWidget {
-  const SectionHeader(this.text, {super.key});
+  const SectionHeader(this.text, {super.key, this.horizontalInset = 0});
   final String text;
+  final double horizontalInset;
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 24, 16, 7),
+    padding: EdgeInsets.fromLTRB(horizontalInset, 24, horizontalInset, 8),
     child: Text(
       text,
       style: Theme.of(context).textTheme.labelMedium?.copyWith(
         color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .5),
-        fontWeight: FontWeight.w500,
+        fontWeight: FontWeight.w600,
+        letterSpacing: .1,
       ),
     ),
   );
@@ -295,20 +441,30 @@ class SettingTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ListTile(
-    minTileHeight: subtitle == null ? 52 : 60,
-    contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+    minTileHeight: subtitle == null ? 56 : 64,
+    contentPadding: const EdgeInsets.symmetric(horizontal: 14),
     leading: showIconBackground
         ? Container(
-            width: 30,
-            height: 30,
+            width: 34,
+            height: 34,
             decoration: BoxDecoration(
               color: destructive
-                  ? LinliColors.systemRed
-                  : Theme.of(context).colorScheme.primary,
-              borderRadius: BorderRadius.circular(7),
+                  ? LinliColors.systemRed.withValues(alpha: .1)
+                  : Theme.of(context).brightness == Brightness.dark
+                  ? LinliColors.brandGreen.withValues(alpha: .14)
+                  : LinliColors.brandMintStrong,
+              borderRadius: BorderRadius.circular(10),
             ),
             alignment: Alignment.center,
-            child: Icon(icon, size: 18, color: Colors.white),
+            child: Icon(
+              icon,
+              size: 18,
+              color: destructive
+                  ? LinliColors.systemRed
+                  : Theme.of(context).brightness == Brightness.dark
+                  ? LinliColors.brandGreen
+                  : LinliColors.navy,
+            ),
           )
         : Icon(
             icon,
@@ -321,6 +477,7 @@ class SettingTile extends StatelessWidget {
       title,
       style: Theme.of(context).textTheme.bodyLarge?.copyWith(
         color: destructive ? LinliColors.systemRed : null,
+        fontWeight: FontWeight.w500,
       ),
     ),
     subtitle: subtitle == null
@@ -328,6 +485,8 @@ class SettingTile extends StatelessWidget {
         : Text(
             subtitle!,
             softWrap: true,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
             style: Theme.of(context).textTheme.bodySmall,
           ),
     trailing:
@@ -349,12 +508,14 @@ class StatePanel extends StatelessWidget {
     required this.body,
     this.actionLabel,
     this.onAction,
+    this.loading = false,
   });
   final IconData icon;
   final String title;
   final String body;
   final String? actionLabel;
   final VoidCallback? onAction;
+  final bool loading;
 
   @override
   Widget build(BuildContext context) => Center(
@@ -363,14 +524,31 @@ class StatePanel extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            icon,
-            color: Theme.of(
-              context,
-            ).colorScheme.onSurface.withValues(alpha: .22),
-            size: 50,
+          Container(
+            width: 56,
+            height: 56,
+            decoration: BoxDecoration(
+              color: Theme.of(context).brightness == Brightness.dark
+                  ? LinliColors.brandGreen.withValues(alpha: .1)
+                  : LinliColors.brandMint,
+              shape: BoxShape.circle,
+            ),
+            alignment: Alignment.center,
+            child: loading
+                ? CupertinoActivityIndicator(
+                    color: Theme.of(context).brightness == Brightness.dark
+                        ? LinliColors.brandGreen
+                        : LinliColors.brandGreenDeep,
+                  )
+                : Icon(
+                    icon,
+                    color: Theme.of(context).brightness == Brightness.dark
+                        ? LinliColors.brandGreen
+                        : LinliColors.brandGreenDeep,
+                    size: 26,
+                  ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 18),
           Text(
             title,
             style: Theme.of(context).textTheme.titleLarge,
@@ -387,8 +565,8 @@ class StatePanel extends StatelessWidget {
             textAlign: TextAlign.center,
           ),
           if (actionLabel != null) ...[
-            const SizedBox(height: 14),
-            CupertinoButton(onPressed: onAction, child: Text(actionLabel!)),
+            const SizedBox(height: 18),
+            FilledButton.tonal(onPressed: onAction, child: Text(actionLabel!)),
           ],
         ],
       ),

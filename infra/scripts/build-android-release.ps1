@@ -5,17 +5,14 @@ param(
     [ValidateSet("apk", "aab", "all")]
     [string]$Format = "all",
     [string]$TermsUrl,
-    [string]$PrivacyUrl
+    [string]$PrivacyUrl,
+    [switch]$PreflightOnly
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 $mobileRoot = Join-Path $repoRoot "apps/mobile"
 $flutter = Join-Path $mobileRoot ".fvm/flutter_sdk/bin/flutter.bat"
-
-if (-not (Test-Path -LiteralPath $flutter -PathType Leaf)) {
-    throw "FVM Flutter was not found. Run 'fvm install' in apps/mobile first."
-}
 
 $origin = $ServerOrigin.TrimEnd("/")
 $originUri = $null
@@ -44,7 +41,62 @@ foreach ($entry in @{
     }
 }
 
-foreach ($url in @("$origin/health", $TermsUrl, $PrivacyUrl)) {
+try {
+    $healthResponse = Invoke-WebRequest -UseBasicParsing -Method Get -Uri "$origin/health" -MaximumRedirection 3 -TimeoutSec 15
+}
+catch {
+    throw "Required release endpoint is unavailable: $origin/health ($($_.Exception.Message))"
+}
+if ([int]$healthResponse.StatusCode -lt 200 -or [int]$healthResponse.StatusCode -ge 400) {
+    throw "Required release endpoint returned HTTP $($healthResponse.StatusCode): $origin/health"
+}
+
+try {
+    $readyResponse = Invoke-WebRequest -UseBasicParsing -Method Get -Uri "$origin/ready" -MaximumRedirection 3 -TimeoutSec 15
+}
+catch {
+    throw "Required release endpoint is unavailable: $origin/ready ($($_.Exception.Message))"
+}
+try {
+    $readyPayload = $readyResponse.Content | ConvertFrom-Json
+}
+catch {
+    throw "Required release endpoint returned invalid JSON: $origin/ready"
+}
+if ([int]$readyResponse.StatusCode -ne 200 -or $readyPayload.status -ne "ready") {
+    throw "Required release endpoint is not ready: $origin/ready"
+}
+
+try {
+    $authPolicyResponse = Invoke-WebRequest -UseBasicParsing -Method Get -Uri "$origin/v2/config/auth" -MaximumRedirection 3 -TimeoutSec 15
+}
+catch {
+    throw "Required authentication contract is unavailable: $origin/v2/config/auth ($($_.Exception.Message))"
+}
+try {
+    $authPolicy = $authPolicyResponse.Content | ConvertFrom-Json
+}
+catch {
+    throw "Required authentication contract returned invalid JSON: $origin/v2/config/auth"
+}
+$registrationEnabled = $authPolicy.registrationEnabled
+$passwordMinLength = $authPolicy.passwordMinLength
+$passwordMaxBytes = $authPolicy.passwordMaxBytes
+$parsedPasswordMinLength = 0L
+$parsedPasswordMaxBytes = 0L
+$validPasswordMinLength = [long]::TryParse([string]$passwordMinLength, [ref]$parsedPasswordMinLength)
+$validPasswordMaxBytes = [long]::TryParse([string]$passwordMaxBytes, [ref]$parsedPasswordMaxBytes)
+if ([int]$authPolicyResponse.StatusCode -ne 200 -or
+    $registrationEnabled -isnot [bool] -or
+    -not $validPasswordMinLength -or
+    $parsedPasswordMinLength -lt 8 -or
+    $parsedPasswordMinLength -gt 16 -or
+    -not $validPasswordMaxBytes -or
+    $parsedPasswordMaxBytes -ne 72) {
+    throw "Authentication contract is incompatible with this client: $origin/v2/config/auth"
+}
+
+function Assert-ProductionLegalDocument([string]$url, [string]$label) {
     try {
         $response = Invoke-WebRequest -UseBasicParsing -Method Get -Uri $url -MaximumRedirection 3 -TimeoutSec 15
     }
@@ -54,6 +106,39 @@ foreach ($url in @("$origin/health", $TermsUrl, $PrivacyUrl)) {
     if ([int]$response.StatusCode -lt 200 -or [int]$response.StatusCode -ge 400) {
         throw "Required release endpoint returned HTTP $($response.StatusCode): $url"
     }
+
+    $content = [string]$response.Content
+    if ([string]::IsNullOrWhiteSpace($content) -or $content.Length -lt 500) {
+        throw "$label is empty or too short for production: $url"
+    }
+    if ($content -notmatch '\u9752\u86D9\u5471\u5471') {
+        throw "$label does not contain the current product name: $url"
+    }
+    $forbiddenPatterns = @(
+        '\u90BB\u91CC\u901A\u8BAF',
+        '\u5F00\u53D1\u6D4B\u8BD5',
+        '\u6D4B\u8BD5\u9636\u6BB5',
+        '\u4EC5\u4F9B\u6D4B\u8BD5',
+        '\u5360\u4F4D\u6587\u672C',
+        '\u4E0D\u80FD\u66FF\u4EE3\u6B63\u5F0F'
+    )
+    foreach ($pattern in $forbiddenPatterns) {
+        if ($content -match $pattern) {
+            throw "$label still contains a non-production marker: $url"
+        }
+    }
+}
+
+Assert-ProductionLegalDocument -url $TermsUrl -label 'Terms document'
+Assert-ProductionLegalDocument -url $PrivacyUrl -label 'Privacy document'
+
+if ($PreflightOnly) {
+    Write-Host "Android release preflight completed."
+    return
+}
+
+if (-not (Test-Path -LiteralPath $flutter -PathType Leaf)) {
+    throw "FVM Flutter was not found. Run 'fvm install' in apps/mobile first."
 }
 
 $defines = @(
@@ -79,8 +164,34 @@ function Invoke-FlutterReleaseBuild([string]$target) {
     }
 }
 
+function Assert-FlutterApkAssets([string]$apkPath) {
+    if (-not (Test-Path -LiteralPath $apkPath -PathType Leaf)) {
+        throw "Flutter APK was not created: $apkPath"
+    }
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($apkPath)
+    try {
+        $requiredEntries = @(
+            "assets/flutter_assets/AssetManifest.bin"
+            "assets/flutter_assets/assets/brand/qingwaguagua-mark-transparent.png"
+            "assets/flutter_assets/packages/cupertino_icons/assets/CupertinoIcons.ttf"
+        )
+        foreach ($entry in $requiredEntries) {
+            $asset = $archive.GetEntry($entry)
+            if ($null -eq $asset -or $asset.Length -le 0) {
+                throw "Flutter APK is incomplete; required asset is missing: $entry"
+            }
+        }
+    }
+    finally {
+        $archive.Dispose()
+    }
+}
+
 if ($Format -in @("apk", "all")) {
     Invoke-FlutterReleaseBuild "apk"
+    Assert-FlutterApkAssets (Join-Path $mobileRoot "build/app/outputs/flutter-apk/app-release.apk")
 }
 if ($Format -in @("aab", "all")) {
     Invoke-FlutterReleaseBuild "appbundle"
@@ -110,7 +221,7 @@ $env:JAVA_HOME = $javaHome
 try {
 if ($Format -in @("apk", "all")) {
     $sourceApk = Join-Path $mobileRoot "build/app/outputs/flutter-apk/app-release.apk"
-    $targetApk = Join-Path $releaseDir "linli-im-$version-$targetName.apk"
+    $targetApk = Join-Path $releaseDir "qingwaguagua-im-$version-$targetName.apk"
     Copy-Item -LiteralPath $sourceApk -Destination $targetApk -Force
     try {
         # Current Android Studio JBR emits a native-access warning on stderr.
@@ -151,7 +262,7 @@ if ($Format -in @("apk", "all")) {
 
 if ($Format -in @("aab", "all")) {
     $sourceAab = Join-Path $mobileRoot "build/app/outputs/bundle/release/app-release.aab"
-    $targetAab = Join-Path $releaseDir "linli-im-$version-$targetName.aab"
+    $targetAab = Join-Path $releaseDir "qingwaguagua-im-$version-$targetName.aab"
     Copy-Item -LiteralPath $sourceAab -Destination $targetAab -Force
     $jarsigner = Join-Path $javaHome "bin/jarsigner.exe"
     $savedErrorActionPreference = $ErrorActionPreference

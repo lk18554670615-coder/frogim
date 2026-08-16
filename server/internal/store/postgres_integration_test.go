@@ -1100,8 +1100,8 @@ func TestPostgresRuntimeModerationReceiptsAndOutboxRecovery(t *testing.T) {
 	if favorites, favoriteErr = p.ListFavorites(ctx, u2, 10); favoriteErr != nil || len(favorites) != 0 {
 		t.Fatalf("favorites after delete=%v err=%v", favorites, favoriteErr)
 	}
-	pinned, mutedNotifications, manualUnread := true, true, true
-	if err = p.UpdateConversationPreferences(ctx, u2, cid, ConversationPreferences{Pinned: &pinned, NotificationsMuted: &mutedNotifications, ManualUnread: &manualUnread}); err != nil {
+	pinned, saved, mutedNotifications, manualUnread := true, true, true, true
+	if err = p.UpdateConversationPreferences(ctx, u2, cid, ConversationPreferences{Pinned: &pinned, Saved: &saved, NotificationsMuted: &mutedNotifications, ManualUnread: &manualUnread}); err != nil {
 		t.Fatal(err)
 	}
 	conversations, err := p.ListConversations(ctx, u2, 10)
@@ -1109,7 +1109,7 @@ func TestPostgresRuntimeModerationReceiptsAndOutboxRecovery(t *testing.T) {
 		t.Fatalf("preferences list=%v err=%v", conversations, err)
 	}
 	membership := conversations[0]["membership"].(*model.ConversationMember)
-	if !membership.Pinned || !membership.NotificationsMuted || !membership.ManualUnread {
+	if !membership.Pinned || !membership.Saved || !membership.NotificationsMuted || !membership.ManualUnread {
 		t.Fatalf("preferences not persisted: %+v", membership)
 	}
 	conversationMembers, ok := conversations[0]["members"].([]*model.ConversationMember)
@@ -1547,6 +1547,10 @@ func TestPostgresFriendStateMachineSyncPushPrivacyAndMetadata(t *testing.T) {
 	}
 	if err = p.SetFriendBlock(ctx, u2, u1, true, now.Add(8*time.Second)); err != nil {
 		t.Fatal(err)
+	}
+	blockedUsers, err := p.ListBlockedUsers(ctx, u2)
+	if err != nil || len(blockedUsers) != 1 || blockedUsers[0].ID != u1 || blockedUsers[0].Phone != "" {
+		t.Fatalf("blocked users=%+v err=%v", blockedUsers, err)
 	}
 	var status string
 	if err = p.pool.QueryRow(ctx, `SELECT status FROM im_friend_requests WHERE id=$1`, third.ID).Scan(&status); err != nil || status != "cancelled" {
@@ -2499,7 +2503,7 @@ func TestPostgresUserHandlePolicyAndExactIdentifierSearch(t *testing.T) {
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	uid, phone := "usr_handle_"+suffix, "phone_"+suffix
 	u, err := p.RegisterPasswordUser(ctx, phone, "Handle User", uid, "hash", time.Now())
-	if err != nil || !strings.HasPrefix(u.Handle, "ll_") || u.HandleChangeCount != 0 {
+	if err != nil || !strings.HasPrefix(u.Handle, "gg_") || len(u.Handle) != 23 || u.HandleChangeCount != 0 {
 		t.Fatalf("registered=%+v err=%v", u, err)
 	}
 	first, second := "neighbor_"+suffix[len(suffix)-6:], "resident_"+suffix[len(suffix)-6:]
@@ -3220,5 +3224,160 @@ func TestSetWukongSystemUserRejectsMissingAccountAsNotFound(t *testing.T) {
 	var outboxCount int
 	if queryErr := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_wukong_outbox WHERE aggregate_type='system_user' AND aggregate_id=$1`, missingID).Scan(&outboxCount); queryErr != nil || outboxCount != 0 {
 		t.Fatalf("outbox count=%d err=%v", outboxCount, queryErr)
+	}
+}
+
+func TestPostgresQRLoginTicketIsConfirmedConsumedAndAuditedOnce(t *testing.T) {
+	url := os.Getenv("IM_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("IM_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	p, err := NewPostgres(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	userID := "qr_login_user_" + suffix
+	ticketID := "qr_login_ticket_" + suffix
+	qrHash := []byte("qr-hash-" + suffix)
+	pollHash := []byte("poll-hash-" + suffix)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	t.Cleanup(func() {
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_qr_login_tickets WHERE id=$1`, ticketID)
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_audits WHERE target_type='qr_login' AND target_id=$1`, ticketID)
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_users WHERE id=$1`, userID)
+	})
+	if _, err = p.pool.Exec(ctx, `INSERT INTO im_users(id,phone,name,created_at,updated_at) VALUES($1,$2,'QR login user',$3,$3)`, userID, "qr_login_phone_"+suffix, now); err != nil {
+		t.Fatal(err)
+	}
+
+	ticket := QRLoginTicket{
+		ID:             ticketID,
+		QRTokenHash:    qrHash,
+		PollTokenHash:  pollHash,
+		ClientPlatform: "web",
+		ClientName:     "Chrome on Windows",
+		CreatedAt:      now,
+		ExpiresAt:      now.Add(2 * time.Minute),
+	}
+	if err = p.CreateQRLoginTicket(ctx, ticket); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := p.GetQRLoginTicketByToken(ctx, qrHash)
+	if err != nil || loaded.State(now) != "pending" || loaded.ClientName != ticket.ClientName {
+		t.Fatalf("loaded=%+v err=%v", loaded, err)
+	}
+	if pending, consumed, consumeErr := p.ConsumeQRLoginTicket(ctx, ticketID, pollHash, now.Add(time.Second)); consumeErr != nil || consumed || pending.State(now.Add(time.Second)) != "pending" {
+		t.Fatalf("pending consume ticket=%+v consumed=%v err=%v", pending, consumed, consumeErr)
+	}
+
+	confirmed, err := p.ConfirmQRLoginTicket(ctx, qrHash, userID, now.Add(2*time.Second))
+	if err != nil || confirmed.State(now.Add(2*time.Second)) != "confirmed" || confirmed.UserID != userID {
+		t.Fatalf("confirmed=%+v err=%v", confirmed, err)
+	}
+	if duplicate, duplicateErr := p.ConfirmQRLoginTicket(ctx, qrHash, userID, now.Add(3*time.Second)); duplicateErr != nil || duplicate.UserID != userID {
+		t.Fatalf("duplicate confirm=%+v err=%v", duplicate, duplicateErr)
+	}
+
+	consumedTicket, consumed, err := p.ConsumeQRLoginTicket(ctx, ticketID, pollHash, now.Add(4*time.Second))
+	if err != nil || !consumed || consumedTicket.State(now.Add(4*time.Second)) != "consumed" {
+		t.Fatalf("consumed ticket=%+v consumed=%v err=%v", consumedTicket, consumed, err)
+	}
+	replayed, consumedAgain, err := p.ConsumeQRLoginTicket(ctx, ticketID, pollHash, now.Add(5*time.Second))
+	if err != nil || consumedAgain || replayed.State(now.Add(5*time.Second)) != "consumed" {
+		t.Fatalf("replayed ticket=%+v consumed=%v err=%v", replayed, consumedAgain, err)
+	}
+
+	var confirmAudits, loginAudits int
+	if err = p.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE action='auth.qr_confirm'),count(*) FILTER (WHERE action='auth.qr_login') FROM im_audits WHERE target_type='qr_login' AND target_id=$1`, ticketID).Scan(&confirmAudits, &loginAudits); err != nil {
+		t.Fatal(err)
+	}
+	if confirmAudits != 1 || loginAudits != 1 {
+		t.Fatalf("confirm audits=%d login audits=%d", confirmAudits, loginAudits)
+	}
+}
+
+func TestPostgresRobotProfileIsVersionedAndConversationScoped(t *testing.T) {
+	url := os.Getenv("IM_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("IM_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	p, err := NewPostgres(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	viewerID := "robot_viewer_" + suffix
+	robotID := "robot_account_" + suffix
+	outsiderID := "robot_outsider_" + suffix
+	conversationID := "robot_direct_" + suffix
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	t.Cleanup(func() {
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_audits WHERE action='wukong.robot.updated' AND target_id=$1`, robotID)
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_wukong_outbox WHERE aggregate_type='system_user' AND aggregate_id=$1`, robotID)
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_conversations WHERE id=$1`, conversationID)
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_wukong_system_users WHERE user_id=$1`, robotID)
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_users WHERE id=ANY($1::text[])`, []string{viewerID, robotID, outsiderID})
+	})
+	if _, err = p.pool.Exec(ctx, `INSERT INTO im_users(id,phone,name,created_at,updated_at) VALUES
+		($1,$2,'Robot viewer',$7,$7),($3,$4,'Service helper',$7,$7),($5,$6,'Robot outsider',$7,$7)`,
+		viewerID, "robot_viewer_phone_"+suffix, robotID, "robot_account_phone_"+suffix,
+		outsiderID, "robot_outsider_phone_"+suffix, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = p.SetWukongSystemUser(ctx, robotID, true, viewerID, "enable service account", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = p.GetOrCreateDirectConversation(ctx, viewerID, robotID, conversationID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := p.ConfigureRobotProfile(ctx, RobotProfile{
+		UserID: robotID, Username: "service_helper", Placeholder: "请选择服务", Enabled: true,
+		Menus: []RobotMenu{{Command: "帮助", Remark: "使用帮助", Type: "command"}},
+	}, viewerID, "initial service menu", now.Add(time.Second))
+	if err != nil || created.Version != 1 || len(created.Menus) != 1 {
+		t.Fatalf("created=%+v err=%v", created, err)
+	}
+	visible, err := p.RobotProfilesForConversation(ctx, viewerID, conversationID)
+	if err != nil || len(visible) != 1 || visible[0].UserID != robotID {
+		t.Fatalf("visible=%+v err=%v", visible, err)
+	}
+	if outsiderItems, outsiderErr := p.RobotProfilesForConversation(ctx, outsiderID, conversationID); outsiderErr != ErrNotFound || outsiderItems != nil {
+		t.Fatalf("outsider items=%+v err=%v want ErrNotFound", outsiderItems, outsiderErr)
+	}
+
+	updated, err := p.ConfigureRobotProfile(ctx, RobotProfile{
+		UserID: robotID, Username: "service_helper", Placeholder: "请选择服务", Enabled: true,
+		Menus: []RobotMenu{
+			{Command: "帮助", Remark: "使用帮助", Type: "command"},
+			{Command: "转人工", Remark: "人工客服", Type: "command"},
+		},
+	}, viewerID, "add human support command", now.Add(2*time.Second))
+	if err != nil || updated.Version != 2 || len(updated.Menus) != 2 {
+		t.Fatalf("updated=%+v err=%v", updated, err)
+	}
+	listed, err := p.ListRobotProfiles(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range listed {
+		if item.UserID == robotID {
+			found = item.Version == 2 && len(item.Menus) == 2
+		}
+	}
+	if !found {
+		t.Fatalf("updated robot missing from list: %+v", listed)
+	}
+	var auditCount int
+	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_audits WHERE action='wukong.robot.updated' AND target_id=$1`, robotID).Scan(&auditCount); err != nil || auditCount != 2 {
+		t.Fatalf("audit count=%d err=%v", auditCount, err)
 	}
 }

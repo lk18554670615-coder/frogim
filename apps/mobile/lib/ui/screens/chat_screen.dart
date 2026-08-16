@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:geocoding/geocoding.dart';
@@ -12,16 +15,20 @@ import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../calls/call_models.dart';
 import '../../core/app_controller.dart';
 import '../../core/app_config.dart';
 import '../../core/app_theme.dart';
+import '../../core/image_export.dart';
 import '../../core/image_send_editor.dart';
+import '../../core/image_source_bytes.dart';
 import '../../core/local_media_path.dart';
 import '../../core/media_opener.dart';
 import '../../core/models.dart';
 import '../../core/screenshot_detection.dart';
+import '../../core/user_identity.dart';
 import '../../core/web_drop_paste.dart';
 import '../../im/business_features.dart';
 import '../widgets/linli_widgets.dart';
@@ -29,8 +36,53 @@ import '../widgets/media_send_widgets.dart';
 import 'moments_screen.dart';
 import 'people_screens.dart';
 import 'relationship_screens.dart';
+import 'settings_preferences.dart';
 import 'settings_screens.dart';
 import 'sticker_store_screen.dart';
+
+Route<T> chatScreenRoute<T>(
+  BuildContext context, {
+  required AppController controller,
+  required Conversation conversation,
+  String? initialMessageId,
+}) {
+  // Keep the previous in-memory page visible while every explicit reopen
+  // reconciles with the server. loadMessages also hydrates an empty page from
+  // disk and de-dupes this with ChatScreen's own initial load, so the route
+  // animation never starts two syncs.
+  unawaited(controller.loadMessages(conversation.id, force: true));
+  final reduceMotion = MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+  final duration = reduceMotion ? Duration.zero : nexaMotionDuration(context);
+  return PageRouteBuilder<T>(
+    opaque: true,
+    maintainState: true,
+    transitionDuration: duration,
+    reverseTransitionDuration: duration,
+    pageBuilder: (_, _, _) => ChatScreen(
+      controller: controller,
+      conversation: conversation,
+      initialMessageId: initialMessageId,
+    ),
+    transitionsBuilder: (_, animation, _, child) {
+      if (reduceMotion) return child;
+      final curved = CurvedAnimation(
+        parent: animation,
+        curve: Curves.easeOutCubic,
+        reverseCurve: Curves.easeInCubic,
+      );
+      return FadeTransition(
+        opacity: Tween<double>(begin: .985, end: 1).animate(curved),
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(.035, 0),
+            end: Offset.zero,
+          ).animate(curved),
+          child: child,
+        ),
+      );
+    },
+  );
+}
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
@@ -40,6 +92,8 @@ class ChatScreen extends StatefulWidget {
     this.initialMessageId,
     this.showDesktopDetails = false,
     this.onToggleDesktopDetails,
+    this.settingsStore = const LocalSettingsStore(),
+    this.chatBackgroundOverride,
   });
 
   final AppController controller;
@@ -47,6 +101,8 @@ class ChatScreen extends StatefulWidget {
   final String? initialMessageId;
   final bool showDesktopDetails;
   final VoidCallback? onToggleDesktopDetails;
+  final LocalSettingsStore settingsStore;
+  final ChatBackgroundStyle? chatBackgroundOverride;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -64,18 +120,29 @@ class _ChatScreenState extends State<ChatScreen> {
   final Map<String, MessageMention> _pendingMentions = {};
   ChatMessage? replyingTo;
   Timer? _draftTimer;
+  Timer? _initialScrollTimer;
   bool _draftReady = false;
   bool _loadingSendCapability = false;
   bool _sendCapabilityFailed = false;
+  bool _messageScrollReady = false;
+  bool _initialMessageLoadComplete = false;
+  bool _initialPinCancelled = false;
+  bool _registeredActiveConversation = false;
+  String? _previousActiveConversationId;
+  bool _loadingOlderFromScroll = false;
   String? _sendRestriction;
+  List<RobotProfile> _robotProfiles = const [];
+  bool _robotMenusLoading = false;
+  bool _showRobotMenus = false;
   late final StreamSubscription<DateTime> _screenshotEvents;
   DateTime? _lastScreenshotNotice;
+  ChatBackgroundStyle _chatBackground = ChatBackgroundStyle.followSystem;
 
   AppUser? get peer => widget.conversation.members.firstOrNull;
   String? get conversationAvatarUrl =>
       widget.conversation.avatarUrl ??
       (widget.conversation.kind == ConversationKind.group
-          ? 'assets/brand/linli-im-icon.png'
+          ? 'assets/brand/qingwaguagua-icon.png'
           : peer?.avatarUrl);
 
   String? get _effectiveSendRestriction =>
@@ -88,6 +155,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    scrollController.addListener(_handleMessageScroll);
     HardwareKeyboard.instance.addHandler(_handleChatHardwareKey);
     _screenshotEvents = ScreenshotDetection.instance.events.listen(
       _handleScreenshot,
@@ -98,14 +166,150 @@ class _ChatScreenState extends State<ChatScreen> {
       unawaited(_loadSendCapability());
     }
     unawaited(_restoreDraft());
+    unawaited(_loadRobotProfiles());
+    final backgroundOverride = widget.chatBackgroundOverride;
+    if (backgroundOverride != null) {
+      _chatBackground = backgroundOverride;
+    } else {
+      unawaited(_loadChatBackground());
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      _previousActiveConversationId = widget.controller.activeConversationId;
       widget.controller.setActiveConversation(widget.conversation.id);
+      _registeredActiveConversation = true;
       unawaited(ScreenshotDetection.instance.start());
-      widget.controller
-          .loadMessages(widget.conversation.id)
-          .then((_) => _scrollToInitialMessage());
+      _startInitialScrollPinning(window: const Duration(seconds: 2));
+      unawaited(_loadInitialMessages());
     });
+  }
+
+  Future<void> _loadInitialMessages() async {
+    // ChatScreen is also embedded directly in the desktop split view, where
+    // there is no route helper to start the refresh. Always request a
+    // reconciliation here; an in-flight route prefetch is de-duplicated and
+    // existing in-memory messages stay visible while it completes.
+    await widget.controller.loadMessages(widget.conversation.id, force: true);
+    if (!mounted) return;
+    _initialMessageLoadComplete = true;
+    if (widget.initialMessageId != null) {
+      _initialScrollTimer?.cancel();
+      _scrollToInitialMessage();
+      return;
+    }
+    _startInitialScrollPinning(window: const Duration(milliseconds: 900));
+  }
+
+  void _startInitialScrollPinning({required Duration window}) {
+    if (!mounted || widget.initialMessageId != null || _initialPinCancelled) {
+      return;
+    }
+    _initialScrollTimer?.cancel();
+    var ticksRemaining = ((window.inMilliseconds + 49) ~/ 50).clamp(1, 100);
+    _pinInitialMessagesToEnd();
+    _initialScrollTimer = Timer.periodic(const Duration(milliseconds: 50), (
+      timer,
+    ) {
+      if (!mounted || _initialPinCancelled) {
+        timer.cancel();
+        return;
+      }
+      _pinInitialMessagesToEnd();
+      ticksRemaining -= 1;
+      if (ticksRemaining > 0) return;
+      timer.cancel();
+      if (_initialMessageLoadComplete) _messageScrollReady = true;
+    });
+  }
+
+  void _pinInitialMessagesToEnd() {
+    final binding = WidgetsBinding.instance;
+    binding.addPostFrameCallback((_) {
+      if (!mounted ||
+          _initialPinCancelled ||
+          !scrollController.hasClients ||
+          widget.controller.messagesFor(widget.conversation.id).isEmpty) {
+        return;
+      }
+      scrollController.jumpTo(scrollController.position.maxScrollExtent);
+      if (_initialMessageLoadComplete) _messageScrollReady = true;
+    });
+    // A cache-only reopen may have no network notification or image decode to
+    // request another frame. Explicitly schedule one so repeated end anchoring
+    // can converge as a lazily built ListView discovers its real extent.
+    binding.ensureVisualUpdate();
+  }
+
+  bool _handleInitialScrollNotification(ScrollNotification notification) {
+    if (!_initialPinCancelled &&
+        notification is ScrollStartNotification &&
+        notification.dragDetails != null) {
+      _initialPinCancelled = true;
+      _initialScrollTimer?.cancel();
+      _messageScrollReady = true;
+    } else if (notification is ScrollEndNotification &&
+        notification.metrics.extentAfter <= 48) {
+      _initialPinCancelled = false;
+      _pinInitialMessagesToEnd();
+    }
+    return false;
+  }
+
+  bool _handleMessageMetrics(ScrollMetricsNotification notification) {
+    if (!_initialPinCancelled && widget.initialMessageId == null) {
+      _pinInitialMessagesToEnd();
+    }
+    return false;
+  }
+
+  Future<void> _loadChatBackground() async {
+    final value = await widget.settingsStore.readChatBackground();
+    if (mounted) setState(() => _chatBackground = value);
+  }
+
+  Future<void> _loadRobotProfiles() async {
+    if (mounted) setState(() => _robotMenusLoading = true);
+    try {
+      final profiles = await widget.controller.robotProfilesForConversation(
+        widget.conversation.id,
+      );
+      if (!mounted) return;
+      setState(() {
+        _robotProfiles = profiles;
+        if (profiles.isEmpty) _showRobotMenus = false;
+      });
+    } catch (_) {
+      // Ordinary conversations legitimately have no robot metadata. Keep the
+      // composer clean if the optional menu endpoint is temporarily unavailable.
+    } finally {
+      if (mounted) setState(() => _robotMenusLoading = false);
+    }
+  }
+
+  Future<void> _sendRobotCommand(RobotMenu menu) async {
+    setState(() => _showRobotMenus = false);
+    final sent = await widget.controller.sendRobotCommand(
+      widget.conversation.id,
+      menu,
+    );
+    if (!mounted) return;
+    if (sent == null) {
+      _showError(widget.controller.error ?? '机器人指令发送失败');
+      return;
+    }
+    _scrollToEnd();
+  }
+
+  Color _chatBackgroundColor(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return switch (_chatBackground) {
+      ChatBackgroundStyle.followSystem =>
+        dark ? LinliColors.darkBackground : LinliColors.pinnedSurface,
+      ChatBackgroundStyle.softMint =>
+        dark ? const Color(0xFF092019) : LinliColors.brandMint,
+      ChatBackgroundStyle.cleanPaper =>
+        dark ? LinliColors.navySoft : LinliColors.surface,
+    };
   }
 
   Future<void> _loadSendCapability() async {
@@ -145,6 +349,7 @@ class _ChatScreenState extends State<ChatScreen> {
     unawaited(_screenshotEvents.cancel());
     unawaited(ScreenshotDetection.instance.stop());
     _draftTimer?.cancel();
+    _initialScrollTimer?.cancel();
     if (_draftReady) {
       final conversationId = widget.conversation.id;
       final draft = textController.text;
@@ -160,8 +365,12 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     }
     widget.controller.updateTyping(widget.conversation.id, false);
-    widget.controller.setActiveConversation(null);
+    if (_registeredActiveConversation &&
+        widget.controller.activeConversationId == widget.conversation.id) {
+      widget.controller.setActiveConversation(_previousActiveConversationId);
+    }
     textController.dispose();
+    scrollController.removeListener(_handleMessageScroll);
     scrollController.dispose();
     super.dispose();
   }
@@ -318,9 +527,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   children: [
                     Expanded(
                       child: ColoredBox(
-                        color: Theme.of(context).brightness == Brightness.dark
-                            ? LinliColors.darkBackground
-                            : const Color(0xFFF8FAFC),
+                        key: const Key('chat-background-surface'),
+                        color: _chatBackgroundColor(context),
                         child: AnimatedBuilder(
                           animation: widget.controller,
                           builder: (context, _) => _buildMessages(),
@@ -337,11 +545,18 @@ class _ChatScreenState extends State<ChatScreen> {
                         onDelete: selectedMessageIds.isEmpty
                             ? null
                             : () async {
-                                await widget.controller.deleteMessages(
-                                  widget.conversation.id,
-                                  Set.of(selectedMessageIds),
-                                );
+                                final deleted = await widget.controller
+                                    .deleteMessages(
+                                      widget.conversation.id,
+                                      Set.of(selectedMessageIds),
+                                    );
                                 if (!mounted) return;
+                                if (!deleted) {
+                                  _showError(
+                                    widget.controller.error ?? '消息删除失败，本机记录未修改',
+                                  );
+                                  return;
+                                }
                                 setState(() {
                                   selecting = false;
                                   selectedMessageIds.clear();
@@ -370,32 +585,70 @@ class _ChatScreenState extends State<ChatScreen> {
                             : null,
                       )
                     else
-                      ChatComposer(
-                        controller: textController,
-                        replyingTo: replyingTo,
-                        showAttachments: showAttachments,
-                        showEmoji: showEmoji,
-                        onCancelReply: () => setState(() => replyingTo = null),
-                        onToggleAttachments: () => setState(() {
-                          showAttachments = !showAttachments;
-                          showEmoji = false;
-                        }),
-                        onToggleEmoji: () => setState(() {
-                          showEmoji = !showEmoji;
-                          showAttachments = false;
-                        }),
-                        onAttachment: _pickAttachment,
-                        allowLiveInteraction:
-                            widget.conversation.channelType == 9,
-                        onVoiceReady: _sendVoice,
-                        onMention:
-                            widget.conversation.kind == ConversationKind.group
-                            ? _pickMention
-                            : null,
-                        onTypingChanged: (typing) => widget.controller
-                            .updateTyping(widget.conversation.id, typing),
-                        onSend: _send,
-                        onSendOptions: _showSendOptions,
+                      AnimatedBuilder(
+                        animation: widget.controller,
+                        builder: (context, _) {
+                          if (widget.controller.messagingUnavailable) {
+                            return MessagingConnectionBanner(
+                              retrying: widget.controller.connectionRetrying,
+                              onRetry: widget.controller.retryConnection,
+                            );
+                          }
+                          return Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (_robotMenusLoading &&
+                                  _robotProfiles.isNotEmpty)
+                                const LinearProgressIndicator(minHeight: 2),
+                              if (_robotProfiles.isNotEmpty)
+                                RobotCommandBar(
+                                  profiles: _robotProfiles,
+                                  expanded: _showRobotMenus,
+                                  onToggle: () => setState(() {
+                                    _showRobotMenus = !_showRobotMenus;
+                                    showAttachments = false;
+                                    showEmoji = false;
+                                    FocusScope.of(context).unfocus();
+                                  }),
+                                  onSelected: _sendRobotCommand,
+                                ),
+                              ChatComposer(
+                                controller: textController,
+                                replyingTo: replyingTo,
+                                showAttachments: showAttachments,
+                                showEmoji: showEmoji,
+                                onCancelReply: () =>
+                                    setState(() => replyingTo = null),
+                                onToggleAttachments: () => setState(() {
+                                  showAttachments = !showAttachments;
+                                  showEmoji = false;
+                                  _showRobotMenus = false;
+                                }),
+                                onToggleEmoji: () => setState(() {
+                                  showEmoji = !showEmoji;
+                                  showAttachments = false;
+                                  _showRobotMenus = false;
+                                }),
+                                onAttachment: _pickAttachment,
+                                allowLiveInteraction:
+                                    widget.conversation.channelType == 9,
+                                onVoiceReady: _sendVoice,
+                                onMention:
+                                    widget.conversation.kind ==
+                                        ConversationKind.group
+                                    ? _pickMention
+                                    : null,
+                                onTypingChanged: (typing) =>
+                                    widget.controller.updateTyping(
+                                      widget.conversation.id,
+                                      typing,
+                                    ),
+                                onSend: _send,
+                                onSendOptions: _showSendOptions,
+                              ),
+                            ],
+                          );
+                        },
                       ),
                   ],
                 ),
@@ -515,7 +768,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildMessages() {
     final messages = widget.controller.messagesFor(widget.conversation.id);
-    if (widget.controller.messageLoading.contains(widget.conversation.id)) {
+    if (messages.isEmpty &&
+        widget.controller.messageLoading.contains(widget.conversation.id)) {
       return const Center(child: CupertinoActivityIndicator());
     }
     final loadError = widget.controller.messageErrors[widget.conversation.id];
@@ -540,58 +794,169 @@ class _ChatScreenState extends State<ChatScreen> {
         .where((message) => message.isMine)
         .lastOrNull
         ?.id;
-    return ListView.builder(
-      key: const Key('message-list'),
-      controller: scrollController,
-      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
-      itemCount: messages.length,
-      itemBuilder: (context, index) {
-        final message = messages[index];
-        final previous = index == 0 ? null : messages[index - 1];
-        final showTime =
-            previous == null ||
-            !_sameDay(message.sentAt, previous.sentAt) ||
-            message.sentAt.difference(previous.sentAt).inMinutes >= 15;
-        final sender = widget.conversation.members
-            .where((user) => user.id == message.senderId)
-            .firstOrNull;
-        return Column(
-          key: message.id == widget.initialMessageId
-              ? initialMessageKey
-              : _messageKeys.putIfAbsent(message.id, GlobalKey.new),
-          children: [
-            if (showTime) _TimeDivider(date: message.sentAt),
-            MessageBubble(
-              message: message,
-              controller: widget.controller,
-              avatarUrl:
-                  sender?.avatarUrl ??
-                  (widget.conversation.kind == ConversationKind.direct
-                      ? peer?.avatarUrl
-                      : null),
-              showSender: widget.conversation.kind == ConversationKind.group,
-              showGroupReceipt:
-                  widget.conversation.kind == ConversationKind.group &&
-                  message.id == latestMineId,
-              onRetry:
-                  _effectiveSendRestriction == null && !_loadingSendCapability
-                  ? () => widget.controller.retryMessage(message)
-                  : null,
-              selectionMode: selecting,
-              selected: selectedMessageIds.contains(message.clientMessageId),
-              onSelect: () => _toggleSelection(message),
-              onLongPress: selecting
-                  ? (_) => _toggleSelection(message)
-                  : (position) => _showMessageActions(message, position),
-              onReactionTap: (emoji) =>
-                  widget.controller.toggleReaction(message, emoji),
-              onAddReaction: () => _showReactionPicker(message),
-            ),
-          ],
-        );
-      },
+    return NotificationListener<ScrollMetricsNotification>(
+      onNotification: _handleMessageMetrics,
+      child: NotificationListener<ScrollNotification>(
+        onNotification: _handleInitialScrollNotification,
+        child: ListView.builder(
+          key: const Key('message-list'),
+          controller: scrollController,
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
+          itemCount: messages.length + 1,
+          itemBuilder: (context, index) {
+            if (index == 0) return _buildMessageHistoryHeader();
+            final messageIndex = index - 1;
+            final message = messages[messageIndex];
+            final previous = messageIndex == 0
+                ? null
+                : messages[messageIndex - 1];
+            final showTime =
+                previous == null ||
+                !_sameDay(message.sentAt, previous.sentAt) ||
+                message.sentAt.difference(previous.sentAt).inMinutes >= 15;
+            final sender = widget.conversation.members
+                .where((user) => user.id == message.senderId)
+                .firstOrNull;
+            return Column(
+              key: message.id == widget.initialMessageId
+                  ? initialMessageKey
+                  : _messageKeys.putIfAbsent(message.id, GlobalKey.new),
+              children: [
+                if (showTime) _TimeDivider(date: message.sentAt),
+                MessageBubble(
+                  message: message,
+                  controller: widget.controller,
+                  avatarUrl:
+                      sender?.avatarUrl ??
+                      (widget.conversation.kind == ConversationKind.direct
+                          ? peer?.avatarUrl
+                          : null),
+                  showSender:
+                      widget.conversation.kind == ConversationKind.group,
+                  showGroupReceipt:
+                      widget.conversation.kind == ConversationKind.group &&
+                      message.id == latestMineId,
+                  onRetry:
+                      _effectiveSendRestriction == null &&
+                          !_loadingSendCapability
+                      ? () => widget.controller.retryMessage(message)
+                      : null,
+                  selectionMode: selecting,
+                  selected: selectedMessageIds.contains(
+                    message.clientMessageId,
+                  ),
+                  onSelect: () => _toggleSelection(message),
+                  onLongPress: selecting
+                      ? (_) => _toggleSelection(message)
+                      : (position) => _showMessageActions(message, position),
+                  onReactionTap: (emoji) =>
+                      widget.controller.toggleReaction(message, emoji),
+                  onAddReaction: () => _showReactionPicker(message),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
     );
+  }
+
+  Widget _buildMessageHistoryHeader() {
+    final conversationId = widget.conversation.id;
+    final loading = widget.controller.messageHistoryLoading.contains(
+      conversationId,
+    );
+    final error = widget.controller.messageHistoryErrors[conversationId];
+    final hasMore = widget.controller.messageHistoryHasMore(conversationId);
+    final textStyle = Theme.of(context).textTheme.labelMedium?.copyWith(
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+      fontWeight: FontWeight.w500,
+    );
+
+    if (loading) {
+      return SizedBox(
+        key: const Key('older-messages-loading'),
+        height: 36,
+        child: Center(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CupertinoActivityIndicator(radius: 8),
+              const SizedBox(width: 8),
+              Text('正在加载更早的消息', style: textStyle),
+            ],
+          ),
+        ),
+      );
+    }
+    if (error != null) {
+      return SizedBox(
+        key: const Key('older-messages-error'),
+        height: 36,
+        child: Center(
+          child: TextButton(
+            onPressed: _loadOlderMessages,
+            child: const Text('较早消息加载失败，点此重试'),
+          ),
+        ),
+      );
+    }
+    if (hasMore) {
+      return SizedBox(
+        key: const Key('load-older-messages'),
+        height: 36,
+        child: Center(
+          child: TextButton(
+            onPressed: _loadOlderMessages,
+            child: const Text('加载更早的消息'),
+          ),
+        ),
+      );
+    }
+    return const SizedBox.shrink(key: Key('no-older-messages'));
+  }
+
+  void _handleMessageScroll() {
+    if (!_messageScrollReady ||
+        _loadingOlderFromScroll ||
+        !scrollController.hasClients ||
+        scrollController.position.pixels > 120) {
+      return;
+    }
+    if (!widget.controller.messageHistoryHasMore(widget.conversation.id)) {
+      return;
+    }
+    unawaited(_loadOlderMessages());
+  }
+
+  Future<void> _loadOlderMessages() async {
+    if (_loadingOlderFromScroll || !scrollController.hasClients) return;
+    _loadingOlderFromScroll = true;
+    final beforeOffset = scrollController.position.pixels;
+    final beforeExtent = scrollController.position.maxScrollExtent;
+    final loaded = await widget.controller.loadOlderMessages(
+      widget.conversation.id,
+    );
+    if (mounted && loaded) {
+      final anchorRestored = Completer<void>();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        try {
+          if (!mounted || !scrollController.hasClients) return;
+          final addedExtent =
+              scrollController.position.maxScrollExtent - beforeExtent;
+          final target = (beforeOffset + addedExtent).clamp(
+            scrollController.position.minScrollExtent,
+            scrollController.position.maxScrollExtent,
+          );
+          scrollController.jumpTo(target.toDouble());
+        } finally {
+          anchorRestored.complete();
+        }
+      });
+      await anchorRestored.future;
+    }
+    _loadingOlderFromScroll = false;
   }
 
   Future<void> _send([int? expiresInSeconds]) async {
@@ -1127,7 +1492,7 @@ class _ChatScreenState extends State<ChatScreen> {
       builder: (context) => CupertinoAlertDialog(
         title: const Text('发送这张名片？'),
         content: Text(
-          '\n${contact.name}\n账号：${contact.handle}\n\n仅发送昵称、账号和头像，不会发送手机号、备注或标签。',
+          '\n${contact.name}\n${publicUserHandleLabel(contact.handle)}\n\n仅发送昵称、呱呱号和头像，不会发送手机号、备注或标签。',
         ),
         actions: [
           CupertinoDialogAction(
@@ -1177,7 +1542,7 @@ class _ChatScreenState extends State<ChatScreen> {
         context: context,
         builder: (context) => CupertinoAlertDialog(
           title: const Text('需要定位权限'),
-          content: const Text('\n请在系统设置中允许“邻里通讯”使用你的位置。'),
+          content: const Text('\n请在系统设置中允许“青蛙呱呱”使用你的位置。'),
           actions: [
             CupertinoDialogAction(
               onPressed: () => Navigator.pop(context, false),
@@ -1345,9 +1710,14 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _scrollToEnd() => WidgetsBinding.instance.addPostFrameCallback((_) {
     if (!scrollController.hasClients) return;
+    final duration = nexaMotionDuration(context);
+    if (duration == Duration.zero) {
+      scrollController.jumpTo(scrollController.position.maxScrollExtent);
+      return;
+    }
     scrollController.animateTo(
       scrollController.position.maxScrollExtent,
-      duration: nexaMotionDuration(context),
+      duration: duration,
       curve: Curves.easeOutCubic,
     );
   });
@@ -1356,7 +1726,10 @@ class _ChatScreenState extends State<ChatScreen> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         final target = initialMessageKey.currentContext;
         if (target == null) {
-          _scrollToEnd();
+          if (scrollController.hasClients) {
+            scrollController.jumpTo(scrollController.position.maxScrollExtent);
+          }
+          _messageScrollReady = true;
           return;
         }
         Scrollable.ensureVisible(
@@ -1364,6 +1737,7 @@ class _ChatScreenState extends State<ChatScreen> {
           duration: nexaMotionDuration(context),
           alignment: .42,
         );
+        _messageScrollReady = true;
       });
 
   Future<void> _showMessageActions(ChatMessage message, Offset anchor) async {
@@ -1422,6 +1796,13 @@ class _ChatScreenState extends State<ChatScreen> {
         await _showMessageEditHistory(message);
       case _MessageMenuAction.copy:
         await Clipboard.setData(ClipboardData(text: message.text));
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('已复制')));
+        }
+      case _MessageMenuAction.selectText:
+        await _showTextSelection(message);
       case _MessageMenuAction.forward:
         _showForwardTargets([message], mode: 'separate');
       case _MessageMenuAction.favorite:
@@ -1430,6 +1811,8 @@ class _ChatScreenState extends State<ChatScreen> {
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(const SnackBar(content: Text('已收藏并同步')));
+        } else if (mounted) {
+          _showError(widget.controller.error ?? '收藏失败，请稍后重试');
         }
       case _MessageMenuAction.select:
         setState(() {
@@ -1437,14 +1820,20 @@ class _ChatScreenState extends State<ChatScreen> {
           selectedMessageIds.add(message.clientMessageId);
         });
       case _MessageMenuAction.recall:
-        await widget.controller.recallMessage(message);
+        final success = await widget.controller.recallMessage(message);
+        if (!success && mounted) {
+          _showError(widget.controller.error ?? '撤回失败，请稍后重试');
+        }
       case _MessageMenuAction.pin:
         final success = await widget.controller.toggleMessagePinned(message);
         if (!success && mounted) {
           _showError(widget.controller.error ?? '置顶状态更新失败');
         }
       case _MessageMenuAction.delete:
-        await widget.controller.deleteMessage(message);
+        final success = await widget.controller.deleteMessage(message);
+        if (!success && mounted) {
+          _showError(widget.controller.error ?? '消息删除失败，本机记录未修改');
+        }
       case _MessageMenuAction.report:
         await Navigator.of(context).push(
           MaterialPageRoute(
@@ -1458,6 +1847,78 @@ class _ChatScreenState extends State<ChatScreen> {
         );
     }
   }
+
+  Future<void> _showTextSelection(
+    ChatMessage message,
+  ) => showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    showDragHandle: true,
+    builder: (sheetContext) => FractionallySizedBox(
+      heightFactor: .68,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '选择文字',
+                    style: Theme.of(sheetContext).textTheme.titleLarge
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                TextButton.icon(
+                  key: const Key('copy-all-message-text'),
+                  onPressed: () async {
+                    await Clipboard.setData(ClipboardData(text: message.text));
+                    if (!sheetContext.mounted) return;
+                    Navigator.pop(sheetContext);
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(const SnackBar(content: Text('已复制全部文字')));
+                  },
+                  icon: const Icon(CupertinoIcons.doc_on_doc, size: 18),
+                  label: const Text('复制全部'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              '长按文字后拖动选区，可复制其中一部分。',
+              style: Theme.of(sheetContext).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 14),
+            Expanded(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Theme.of(sheetContext).colorScheme.surfaceContainerLow,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: Theme.of(sheetContext).colorScheme.outline,
+                  ),
+                ),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: SelectableText(
+                    message.text,
+                    key: const Key('selectable-message-text'),
+                    style: Theme.of(
+                      sheetContext,
+                    ).textTheme.bodyLarge?.copyWith(height: 1.55),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 
   Future<void> _showMessageEditHistory(ChatMessage message) =>
       showModalBottomSheet<void>(
@@ -1541,55 +2002,33 @@ class _ChatScreenState extends State<ChatScreen> {
     List<ChatMessage> messages, {
     required String mode,
   }) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
-              child: Text(
-                '转发到',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-            ),
-            for (final conversation in widget.controller.conversations)
-              ListTile(
-                minTileHeight: 56,
-                leading: PersonAvatar(
-                  name: conversation.title,
-                  size: 38,
-                  avatarUrl: conversation.avatarUrl,
-                ),
-                title: Text(conversation.title),
-                onTap: () async {
-                  Navigator.pop(sheetContext);
-                  final sent = await widget.controller.forwardMessages(
-                    messages,
-                    conversation.id,
-                    mode: mode,
-                  );
-                  if (sent.isNotEmpty && mounted) {
-                    setState(() {
-                      selecting = false;
-                      selectedMessageIds.clear();
-                    });
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          mode == 'merged'
-                              ? '已合并转发到 ${conversation.title}'
-                              : '已转发 ${messages.length} 条到 ${conversation.title}',
-                        ),
-                      ),
-                    );
-                  }
-                },
-              ),
-          ],
+    final conversation = await _chooseForwardConversation(
+      context,
+      widget.controller.conversations,
+    );
+    if (!mounted || conversation == null) return;
+    final sent = await widget.controller.forwardMessages(
+      messages,
+      conversation.id,
+      mode: mode,
+    );
+    if (!mounted) return;
+    if (sent.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('转发失败，请稍后重试')));
+      return;
+    }
+    setState(() {
+      selecting = false;
+      selectedMessageIds.clear();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          mode == 'merged'
+              ? '已合并转发到 ${conversation.title}'
+              : '已转发 ${messages.length} 条到 ${conversation.title}',
         ),
       ),
     );
@@ -1659,6 +2098,7 @@ enum _MessageMenuAction {
   edit,
   editHistory,
   copy,
+  selectText,
   forward,
   favorite,
   select,
@@ -1731,6 +2171,12 @@ class _MessageContextMenu extends StatelessWidget {
           action: _MessageMenuAction.copy,
           icon: CupertinoIcons.doc_on_doc,
           label: '复制',
+        ),
+      if (canCopy)
+        const _ContextActionSpec(
+          action: _MessageMenuAction.selectText,
+          icon: CupertinoIcons.text_cursor,
+          label: '选择文字',
         ),
       if (canForward)
         const _ContextActionSpec(
@@ -2092,7 +2538,7 @@ class _ContextActionButton extends StatelessWidget {
                 spec.icon,
                 size: 21,
                 color: Theme.of(context).brightness == Brightness.dark
-                    ? LinliColors.yellow
+                    ? LinliColors.brandGreen
                     : LinliColors.navy,
               ),
               const SizedBox(height: 5),
@@ -2415,7 +2861,7 @@ class _DirectContactSummary extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              '邻里号：${user?.handle ?? '未设置'}',
+              '呱呱号：${publicUserHandleLabel(user?.handle, fallback: '尚未设置')}',
               style: Theme.of(context).textTheme.bodySmall,
             ),
             if ((user?.signature ?? user?.presence ?? '')
@@ -2630,7 +3076,7 @@ class MessageBubble extends StatelessWidget {
             key: Key('live-event-${message.clientMessageId}'),
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
             decoration: BoxDecoration(
-              color: LinliColors.yellow.withValues(alpha: .16),
+              color: LinliColors.brandGreen.withValues(alpha: .16),
               borderRadius: BorderRadius.circular(999),
             ),
             child: Text(
@@ -2740,7 +3186,7 @@ class MessageBubble extends StatelessWidget {
                               ),
                               minHeight: 3,
                               borderRadius: BorderRadius.circular(999),
-                              color: LinliColors.yellow,
+                              color: LinliColors.brandGreen,
                               backgroundColor: Theme.of(
                                 context,
                               ).colorScheme.surfaceContainerHighest,
@@ -2809,25 +3255,50 @@ class MessageBubble extends StatelessWidget {
                             ),
                           if (mine)
                             if (message.status == MessageStatus.failed)
-                              GestureDetector(
+                              Semantics(
+                                container: true,
+                                excludeSemantics: true,
+                                button: onRetry != null,
+                                enabled: onRetry != null,
                                 onTap: onRetry,
-                                child: Row(
-                                  children: [
-                                    const Icon(
-                                      CupertinoIcons
-                                          .exclamationmark_circle_fill,
-                                      size: 13,
-                                      color: LinliColors.systemRed,
+                                label: onRetry == null
+                                    ? '消息发送失败'
+                                    : '消息发送失败，重新发送',
+                                child: InkWell(
+                                  key: const Key('failed-message-retry'),
+                                  borderRadius: BorderRadius.circular(8),
+                                  onTap: onRetry,
+                                  child: ConstrainedBox(
+                                    constraints: const BoxConstraints(
+                                      minHeight: 44,
                                     ),
-                                    const SizedBox(width: 3),
-                                    Text(
-                                      onRetry == null ? '发送失败' : '发送失败，点此重试',
-                                      style: const TextStyle(
-                                        color: LinliColors.systemRed,
-                                        fontSize: 10,
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 4,
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(
+                                            CupertinoIcons
+                                                .exclamationmark_circle_fill,
+                                            size: 14,
+                                            color: LinliColors.systemRed,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            onRetry == null
+                                                ? '发送失败'
+                                                : '发送失败，点此重试',
+                                            style: const TextStyle(
+                                              color: LinliColors.systemRed,
+                                              fontSize: 11,
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                     ),
-                                  ],
+                                  ),
                                 ),
                               )
                             else
@@ -2898,12 +3369,12 @@ class _MessageReactionBar extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 9),
                 decoration: BoxDecoration(
                   color: reaction.reactedByMe
-                      ? LinliColors.yellow.withValues(alpha: .18)
+                      ? LinliColors.brandGreen.withValues(alpha: .18)
                       : Theme.of(context).colorScheme.surfaceContainerHigh,
                   borderRadius: BorderRadius.circular(12),
                   border: reaction.reactedByMe
                       ? Border.all(
-                          color: LinliColors.yellow.withValues(alpha: .55),
+                          color: LinliColors.brandGreen.withValues(alpha: .55),
                         )
                       : null,
                 ),
@@ -2947,40 +3418,12 @@ class _MessageContent extends StatelessWidget {
     if (message.kind == MessageContentKind.image) {
       final media = message.mediaUrl;
       if (media != null) {
-        final image = media.startsWith('assets/')
-            ? Image.asset(media, width: 220, height: 164, fit: BoxFit.cover)
-            : media.startsWith('http://') ||
-                  media.startsWith('https://') ||
-                  media.startsWith('data:') ||
-                  media.startsWith('blob:')
-            ? Image.network(
-                media,
-                width: 220,
-                height: 164,
-                fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => _MediaUnavailable(
-                  color: bubbleColor,
-                  textColor: textColor,
-                  label: '图片加载失败',
-                ),
-              )
-            : Image.file(
-                File(media),
-                width: 220,
-                height: 164,
-                fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => _MediaUnavailable(
-                  color: bubbleColor,
-                  textColor: textColor,
-                  label: '本地图片不可用',
-                ),
-              );
-        return Semantics(
-          label: '图片消息',
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(14),
-            child: image,
-          ),
+        return _MessageImageContent(
+          message: message,
+          source: media,
+          controller: controller,
+          bubbleColor: bubbleColor,
+          textColor: textColor,
         );
       }
       return _MediaUnavailable(
@@ -3005,8 +3448,9 @@ class _MessageContent extends StatelessWidget {
             : '表情消息',
         child: ClipRRect(
           borderRadius: BorderRadius.circular(14),
-          child: Image.network(
+          child: _messageImage(
             media,
+            cacheKey: message.mediaId,
             width: 132,
             height: 132,
             fit: BoxFit.contain,
@@ -3051,7 +3495,9 @@ class _MessageContent extends StatelessWidget {
                   color: textColor.withValues(alpha: .10),
                   border: Border(
                     left: BorderSide(
-                      color: mine ? LinliColors.yellow : LinliColors.preview,
+                      color: mine
+                          ? LinliColors.brandGreen
+                          : LinliColors.preview,
                       width: 2,
                     ),
                   ),
@@ -3099,6 +3545,761 @@ class _MessageContent extends StatelessWidget {
       },
     );
   }
+}
+
+class _MessageImageContent extends StatelessWidget {
+  const _MessageImageContent({
+    required this.message,
+    required this.source,
+    required this.controller,
+    required this.bubbleColor,
+    required this.textColor,
+  });
+
+  final ChatMessage message;
+  final String source;
+  final AppController? controller;
+  final Color bubbleColor;
+  final Color textColor;
+
+  Size get _displaySize {
+    final width = message.mediaWidth;
+    final height = message.mediaHeight;
+    if (width == null || height == null || width <= 0 || height <= 0) {
+      return const Size(220, 180);
+    }
+    final scale = math.min(220 / width, 280 / height);
+    return Size(
+      (width * scale).clamp(120, 220).toDouble(),
+      (height * scale).clamp(96, 280).toDouble(),
+    );
+  }
+
+  void _openPreview(BuildContext context) {
+    final images = controller
+        ?.messagesFor(message.conversationId)
+        .where(
+          (item) =>
+              item.kind == MessageContentKind.image &&
+              item.mediaUrl?.trim().isNotEmpty == true,
+        )
+        .toList();
+    final candidates = images?.isNotEmpty == true ? images! : [message];
+    final selected = candidates.indexWhere(
+      (item) => item.clientMessageId == message.clientMessageId,
+    );
+    Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        opaque: true,
+        fullscreenDialog: true,
+        transitionDuration: nexaMotionDuration(context),
+        reverseTransitionDuration: nexaMotionDuration(context),
+        pageBuilder: (_, animation, _) => FadeTransition(
+          opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
+          child: _MessageImagePreview(
+            controller: controller,
+            messages: candidates,
+            initialIndex: selected < 0 ? 0 : selected,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = _displaySize;
+    return Semantics(
+      button: true,
+      label: '查看图片',
+      child: Material(
+        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(14),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          key: Key('message-image-${message.clientMessageId}'),
+          onTap: () => _openPreview(context),
+          child: SizedBox(
+            width: size.width,
+            height: size.height,
+            child: _messageImage(
+              source,
+              key: Key('message-image-render-${message.clientMessageId}'),
+              cacheKey: message.mediaId,
+              width: size.width,
+              height: size.height,
+              fit: BoxFit.contain,
+              filterQuality: FilterQuality.medium,
+              frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+                if (wasSynchronouslyLoaded || frame != null) return child;
+                return Container(
+                  key: Key(
+                    'message-image-placeholder-${message.clientMessageId}',
+                  ),
+                  width: size.width,
+                  height: size.height,
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  alignment: Alignment.center,
+                  child: Icon(
+                    CupertinoIcons.photo,
+                    size: 24,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                );
+              },
+              errorBuilder: (_, _, _) => _MediaUnavailable(
+                color: bubbleColor,
+                textColor: textColor,
+                label: source.startsWith('http') ? '图片加载失败' : '本地图片不可用',
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MessageImagePreview extends StatefulWidget {
+  const _MessageImagePreview({
+    required this.controller,
+    required this.messages,
+    required this.initialIndex,
+  });
+
+  final AppController? controller;
+  final List<ChatMessage> messages;
+  final int initialIndex;
+
+  @override
+  State<_MessageImagePreview> createState() => _MessageImagePreviewState();
+}
+
+class _MessageImagePreviewState extends State<_MessageImagePreview> {
+  late final PageController _pageController;
+  late int _currentIndex;
+  final bool _controlsVisible = true;
+  bool _busy = false;
+
+  ChatMessage get _message => widget.messages[_currentIndex];
+  String get _source => _message.mediaUrl!.trim();
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex.clamp(0, widget.messages.length - 1);
+    _pageController = PageController(initialPage: _currentIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  void _closePreview() {
+    if (_busy) return;
+    Navigator.of(context).maybePop();
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<Uint8List?> _loadBytes() async {
+    try {
+      return await loadImageSourceBytes(
+        _source,
+        maxBytes: AppConfig.mediaMaxBytes,
+      );
+    } on ImageSourceBytesException catch (error) {
+      _showMessage(error.message);
+    } catch (_) {
+      _showMessage('图片读取失败，请检查网络后重试');
+    }
+    return null;
+  }
+
+  Future<void> _save({Uint8List? editedBytes}) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    final bytes = editedBytes ?? await _loadBytes();
+    if (bytes == null) {
+      if (mounted) setState(() => _busy = false);
+      return;
+    }
+    final format = editedBytes == null
+        ? _previewImageFormat(_message)
+        : const _PreviewImageFormat('image/jpeg', '.jpg');
+    try {
+      await exportImageBytes(
+        bytes,
+        fileName: 'qingwaguagua-${DateTime.now().millisecondsSinceEpoch}',
+        mimeType: format.mimeType,
+        extension: format.extension,
+      );
+      _showMessage('已保存到相册');
+    } on ImageExportException catch (error) {
+      _showMessage(error.message);
+    } catch (_) {
+      _showMessage('保存失败，请稍后重试');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _edit() async {
+    if (_busy) return;
+    final format = _previewImageFormat(_message);
+    if (format.mimeType == 'image/gif') {
+      _showMessage('动图暂不支持编辑，可以先保存原图');
+      return;
+    }
+    setState(() => _busy = true);
+    final original = await _loadBytes();
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (original == null) return;
+    final edited = await editImageBeforeSending(context, original);
+    if (!mounted || edited == null) return;
+    final action = await showCupertinoModalPopup<String>(
+      context: context,
+      builder: (context) => CupertinoActionSheet(
+        title: const Text('图片已编辑'),
+        actions: [
+          if (widget.controller != null)
+            CupertinoActionSheetAction(
+              key: const Key('send-edited-image'),
+              onPressed: () => Navigator.pop(context, 'send'),
+              child: const Text('发送到当前会话'),
+            ),
+          CupertinoActionSheetAction(
+            key: const Key('save-edited-image'),
+            onPressed: () => Navigator.pop(context, 'save'),
+            child: const Text('保存到相册'),
+          ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'save') {
+      await _save(editedBytes: edited);
+    } else if (action == 'send') {
+      await _sendEdited(edited);
+    }
+  }
+
+  Future<void> _sendEdited(Uint8List bytes) async {
+    final controller = widget.controller;
+    if (controller == null || _busy) return;
+    setState(() => _busy = true);
+    try {
+      final path = await persistEditedImage(bytes);
+      final result = await controller.sendMedia(
+        _message.conversationId,
+        MediaUpload(
+          bytes: bytes,
+          fileName: 'qingwaguagua-edited.jpg',
+          mimeType: 'image/jpeg',
+          kind: MessageContentKind.image,
+          localPath: path,
+        ),
+      );
+      _showMessage(
+        result.status == MessageStatus.failed ? '发送失败，请稍后重试' : '已发送',
+      );
+    } catch (_) {
+      _showMessage('发送失败，请稍后重试');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _forward() async {
+    final controller = widget.controller;
+    if (controller == null) {
+      _showMessage('当前页面暂不支持转发');
+      return;
+    }
+    if (_message.id.startsWith('local-') ||
+        _message.status == MessageStatus.failed) {
+      _showMessage('图片发送成功后才能转发');
+      return;
+    }
+    final conversation = await _chooseForwardConversation(
+      context,
+      controller.conversations,
+    );
+    if (!mounted || conversation == null) return;
+    final sent = await controller.forwardMessage(_message, conversation.id);
+    if (!mounted) return;
+    _showMessage(sent == null ? '转发失败，请稍后重试' : '已转发到 ${conversation.title}');
+  }
+
+  Future<void> _showActions() async {
+    final action = await showCupertinoModalPopup<String>(
+      context: context,
+      builder: (context) => CupertinoActionSheet(
+        actions: [
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(context, 'edit'),
+            child: const Text('编辑'),
+          ),
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(context, 'forward'),
+            child: const Text('转发'),
+          ),
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(context, 'save'),
+            child: const Text('保存原图'),
+          ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'edit') await _edit();
+    if (action == 'forward') await _forward();
+    if (action == 'save') await _save();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+    return Scaffold(
+      key: const Key('message-image-preview'),
+      backgroundColor: const Color(0xFF080B0A),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          PageView.builder(
+            key: const Key('message-image-pages'),
+            controller: _pageController,
+            itemCount: widget.messages.length,
+            onPageChanged: (index) => setState(() => _currentIndex = index),
+            itemBuilder: (context, index) => _ZoomableMessageImage(
+              message: widget.messages[index],
+              current: index == _currentIndex,
+              width: media.size.width,
+              height: media.size.height,
+              onTap: _closePreview,
+              onLongPress: _showActions,
+            ),
+          ),
+          Positioned.fill(
+            child: IgnorePointer(
+              ignoring: !_controlsVisible,
+              child: AnimatedOpacity(
+                duration: nexaMotionDuration(context),
+                opacity: _controlsVisible ? 1 : 0,
+                child: Stack(
+                  children: [
+                    Positioned(
+                      key: const Key('message-image-preview-top-scrim'),
+                      left: 0,
+                      right: 0,
+                      top: 0,
+                      height: media.padding.top + 92,
+                      child: const IgnorePointer(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [Color(0xB3000000), Color(0x00000000)],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      key: const Key('message-image-preview-bottom-scrim'),
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      height: media.padding.bottom + 106,
+                      child: const IgnorePointer(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [Color(0x00000000), Color(0x8F000000)],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: 12,
+                      right: 12,
+                      top: media.padding.top + 8,
+                      child: Row(
+                        children: [
+                          IconButton.filledTonal(
+                            key: const Key('close-message-image-preview'),
+                            tooltip: '关闭图片',
+                            onPressed: () => Navigator.pop(context),
+                            style: IconButton.styleFrom(
+                              minimumSize: const Size.square(44),
+                              backgroundColor: Colors.black.withValues(
+                                alpha: .72,
+                              ),
+                              foregroundColor: Colors.white,
+                              side: BorderSide(
+                                color: Colors.white.withValues(alpha: .18),
+                              ),
+                            ),
+                            icon: const Icon(CupertinoIcons.xmark, size: 20),
+                          ),
+                          const Spacer(),
+                          if (widget.messages.length > 1)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 11,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: .72),
+                                borderRadius: BorderRadius.circular(999),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: .18),
+                                ),
+                              ),
+                              child: Text(
+                                '${_currentIndex + 1} / ${widget.messages.length}',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          const Spacer(),
+                          IconButton.filledTonal(
+                            key: const Key('more-message-image-preview'),
+                            tooltip: '更多图片操作',
+                            onPressed: _showActions,
+                            style: IconButton.styleFrom(
+                              minimumSize: const Size.square(44),
+                              backgroundColor: Colors.black.withValues(
+                                alpha: .72,
+                              ),
+                              foregroundColor: Colors.white,
+                              side: BorderSide(
+                                color: Colors.white.withValues(alpha: .18),
+                              ),
+                            ),
+                            icon: const Icon(CupertinoIcons.ellipsis, size: 21),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Positioned(
+                      left: 12,
+                      right: 12,
+                      bottom: media.padding.bottom + 10,
+                      child: _ImagePreviewToolbar(
+                        busy: _busy,
+                        onEdit: _edit,
+                        onForward: _forward,
+                        onSave: () => _save(),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          if (_busy)
+            const Center(
+              child: CircularProgressIndicator(
+                color: LinliColors.brandGreen,
+                strokeWidth: 2.5,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ZoomableMessageImage extends StatefulWidget {
+  const _ZoomableMessageImage({
+    required this.message,
+    required this.current,
+    required this.width,
+    required this.height,
+    required this.onTap,
+    required this.onLongPress,
+  });
+
+  final ChatMessage message;
+  final bool current;
+  final double width;
+  final double height;
+  final VoidCallback onTap;
+  final VoidCallback onLongPress;
+
+  @override
+  State<_ZoomableMessageImage> createState() => _ZoomableMessageImageState();
+}
+
+class _ZoomableMessageImageState extends State<_ZoomableMessageImage> {
+  final TransformationController _controller = TransformationController();
+  TapDownDetails? _doubleTapDetails;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _toggleZoom() {
+    final zoomed = _controller.value.getMaxScaleOnAxis() > 1.05;
+    if (zoomed) {
+      _controller.value = Matrix4.identity();
+      return;
+    }
+    final position =
+        _doubleTapDetails?.localPosition ??
+        Offset(widget.width / 2, widget.height / 2);
+    _controller.value = Matrix4.identity()
+      ..translateByDouble(-position.dx * 1.5, -position.dy * 1.5, 0, 1)
+      ..scaleByDouble(2.5, 2.5, 1, 1);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final id = widget.message.clientMessageId;
+    return InteractiveViewer(
+      key: widget.current
+          ? const Key('message-image-interactive-viewer')
+          : Key('message-image-interactive-viewer-$id'),
+      transformationController: _controller,
+      minScale: 1,
+      maxScale: 5,
+      clipBehavior: Clip.none,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        onDoubleTapDown: (details) => _doubleTapDetails = details,
+        onDoubleTap: _toggleZoom,
+        onLongPress: widget.onLongPress,
+        child: SizedBox(
+          width: widget.width,
+          height: widget.height,
+          child: _messageImage(
+            widget.message.mediaUrl!.trim(),
+            key: widget.current
+                ? const Key('message-image-preview-render')
+                : Key('message-image-preview-render-$id'),
+            width: widget.width,
+            height: widget.height,
+            cacheKey: widget.message.mediaId,
+            fit: BoxFit.contain,
+            filterQuality: FilterQuality.high,
+            errorBuilder: (_, _, _) => const Center(
+              child: _MediaUnavailable(
+                color: Color(0xFF161B19),
+                textColor: Colors.white70,
+                label: '图片加载失败',
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ImagePreviewToolbar extends StatelessWidget {
+  const _ImagePreviewToolbar({
+    required this.busy,
+    required this.onEdit,
+    required this.onForward,
+    required this.onSave,
+  });
+
+  final bool busy;
+  final VoidCallback onEdit;
+  final VoidCallback onForward;
+  final VoidCallback onSave;
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      color: const Color(0xE61A1D1C),
+      borderRadius: BorderRadius.circular(18),
+      border: Border.all(color: Colors.white.withValues(alpha: .10)),
+    ),
+    child: Row(
+      children: [
+        _ImagePreviewAction(
+          key: const Key('edit-message-image-preview'),
+          icon: CupertinoIcons.pencil,
+          label: '编辑',
+          onTap: busy ? null : onEdit,
+        ),
+        _ImagePreviewAction(
+          key: const Key('forward-message-image-preview'),
+          icon: CupertinoIcons.arrowshape_turn_up_right,
+          label: '转发',
+          onTap: busy ? null : onForward,
+        ),
+        _ImagePreviewAction(
+          key: const Key('save-message-image-preview'),
+          icon: CupertinoIcons.arrow_down_to_line,
+          label: '保存',
+          onTap: busy ? null : onSave,
+        ),
+      ],
+    ),
+  );
+}
+
+class _ImagePreviewAction extends StatelessWidget {
+  const _ImagePreviewAction({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) => Expanded(
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 58),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: Colors.white, size: 21),
+            const SizedBox(height: 3),
+            Text(
+              label,
+              style: const TextStyle(color: Colors.white, fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _PreviewImageFormat {
+  const _PreviewImageFormat(this.mimeType, this.extension);
+
+  final String mimeType;
+  final String extension;
+}
+
+_PreviewImageFormat _previewImageFormat(ChatMessage message) {
+  final mime = message.mimeType?.toLowerCase().trim();
+  if (mime == 'image/png') {
+    return const _PreviewImageFormat('image/png', '.png');
+  }
+  if (mime == 'image/gif') {
+    return const _PreviewImageFormat('image/gif', '.gif');
+  }
+  final source = message.mediaUrl?.toLowerCase() ?? '';
+  if (source.contains('image/png') || source.endsWith('.png')) {
+    return const _PreviewImageFormat('image/png', '.png');
+  }
+  if (source.contains('image/gif') || source.endsWith('.gif')) {
+    return const _PreviewImageFormat('image/gif', '.gif');
+  }
+  return const _PreviewImageFormat('image/jpeg', '.jpg');
+}
+
+Widget _messageImage(
+  String source, {
+  Key? key,
+  String? cacheKey,
+  double? width,
+  double? height,
+  BoxFit fit = BoxFit.contain,
+  FilterQuality filterQuality = FilterQuality.medium,
+  ImageFrameBuilder? frameBuilder,
+  ImageErrorWidgetBuilder? errorBuilder,
+}) {
+  if (source.startsWith('assets/')) {
+    return Image.asset(
+      source,
+      key: key,
+      width: width,
+      height: height,
+      fit: fit,
+      filterQuality: filterQuality,
+      frameBuilder: frameBuilder,
+      errorBuilder: errorBuilder,
+    );
+  }
+  if (source.startsWith('http://') || source.startsWith('https://')) {
+    return CachedNetworkImage(
+      key: key,
+      imageUrl: source,
+      cacheKey: cacheKey,
+      width: width,
+      height: height,
+      fit: fit,
+      filterQuality: filterQuality,
+      fadeInDuration: const Duration(milliseconds: 90),
+      fadeOutDuration: Duration.zero,
+      imageBuilder: (context, provider) => Image(
+        image: provider,
+        width: width,
+        height: height,
+        fit: fit,
+        filterQuality: filterQuality,
+      ),
+      placeholder: frameBuilder == null
+          ? null
+          : (context, _) =>
+                frameBuilder(context, const SizedBox.shrink(), null, false),
+      errorWidget: errorBuilder == null
+          ? null
+          : (context, _, error) => errorBuilder(context, error, null),
+    );
+  }
+  if (source.startsWith('data:') || source.startsWith('blob:')) {
+    return Image.network(
+      source,
+      key: key,
+      width: width,
+      height: height,
+      fit: fit,
+      filterQuality: filterQuality,
+      frameBuilder: frameBuilder,
+      errorBuilder: errorBuilder,
+    );
+  }
+  return Image.file(
+    File(source),
+    key: key,
+    width: width,
+    height: height,
+    fit: fit,
+    filterQuality: filterQuality,
+    frameBuilder: frameBuilder,
+    errorBuilder: errorBuilder,
+  );
 }
 
 class _ChatHistoryMessageCard extends StatelessWidget {
@@ -3227,7 +4428,7 @@ class _ChatHistoryDetailScreen extends StatelessWidget {
                 vertical: 5,
               ),
               leading: CircleAvatar(
-                backgroundColor: LinliColors.yellow.withValues(alpha: .22),
+                backgroundColor: LinliColors.brandGreen.withValues(alpha: .22),
                 foregroundColor: LinliColors.navy,
                 child: Icon(_chatHistoryIcon(entry.type), size: 18),
               ),
@@ -3344,8 +4545,9 @@ class _MomentShareMessageCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: isImage && media != null && media.isNotEmpty
-                    ? Image.network(
+                    ? _messageImage(
                         media,
+                        cacheKey: message.mediaId,
                         fit: BoxFit.cover,
                         errorBuilder: (_, _, _) =>
                             Icon(CupertinoIcons.person_2_fill, color: color),
@@ -3414,85 +4616,98 @@ class _ServerLinkPreview extends StatelessWidget {
   final Color color;
 
   @override
-  Widget build(BuildContext context) => Container(
-    key: const Key('server-link-preview'),
-    constraints: const BoxConstraints(maxWidth: 280),
-    clipBehavior: Clip.antiAlias,
-    decoration: BoxDecoration(
-      color: color.withValues(alpha: .09),
+  Widget build(BuildContext context) => Semantics(
+    button: true,
+    link: true,
+    label: '打开链接：${preview.title.isEmpty ? preview.url : preview.title}',
+    child: InkWell(
+      key: const Key('server-link-preview'),
       borderRadius: BorderRadius.circular(12),
-      border: Border.all(color: color.withValues(alpha: .14)),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (preview.imageUrl case final imageUrl?)
-          Image.network(
-            imageUrl,
-            width: double.infinity,
-            height: 112,
-            fit: BoxFit.cover,
-            errorBuilder: (_, _, _) => const SizedBox.shrink(),
-          ),
-        Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (preview.siteName.isNotEmpty)
-                Text(
-                  preview.siteName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: color.withValues(alpha: .65),
-                    fontSize: 11,
-                  ),
-                ),
-              if (preview.title.isNotEmpty) ...[
-                const SizedBox(height: 3),
-                Text(
-                  preview.title,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: color,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
-              if (preview.description.isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Text(
-                  preview.description,
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: color.withValues(alpha: .72),
-                    fontSize: 12,
-                  ),
-                ),
-              ],
-              const SizedBox(height: 5),
-              Text(
-                preview.url,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: color.withValues(alpha: .62),
-                  fontSize: 10,
-                ),
-              ),
-            ],
-          ),
+      onTap: () => _openMessageUri(context, Uri.tryParse(preview.url)),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 280, minHeight: 48),
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: .09),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withValues(alpha: .14)),
         ),
-      ],
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (preview.imageUrl case final imageUrl?)
+              LinliNetworkImage(
+                url: imageUrl,
+                cacheKey: imageUrl,
+                width: double.infinity,
+                height: 112,
+                fit: BoxFit.cover,
+                placeholderBuilder: (context) => ColoredBox(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                ),
+                errorBuilder: (_) => const SizedBox.shrink(),
+              ),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (preview.siteName.isNotEmpty)
+                    Text(
+                      preview.siteName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: color.withValues(alpha: .65),
+                        fontSize: 11,
+                      ),
+                    ),
+                  if (preview.title.isNotEmpty) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      preview.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: color,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                  if (preview.description.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      preview.description,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: color.withValues(alpha: .72),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 5),
+                  Text(
+                    preview.url,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: color.withValues(alpha: .62),
+                      fontSize: 10,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     ),
   );
 }
 
-class _MentionedMessageText extends StatelessWidget {
+class _MentionedMessageText extends StatefulWidget {
   const _MentionedMessageText({
     required this.message,
     required this.color,
@@ -3504,36 +4719,121 @@ class _MentionedMessageText extends StatelessWidget {
   final bool mine;
 
   @override
+  State<_MentionedMessageText> createState() => _MentionedMessageTextState();
+}
+
+class _MentionedMessageTextState extends State<_MentionedMessageText> {
+  final List<TapGestureRecognizer> _recognizers = [];
+
+  static final RegExp _interactivePattern = RegExp(
+    r'https?://[^\s<>]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)',
+  );
+
+  @override
+  void dispose() {
+    for (final recognizer in _recognizers) {
+      recognizer.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final base = Theme.of(context).textTheme.bodyLarge?.copyWith(color: color);
-    if (message.mentions.isEmpty) return Text(message.text, style: base);
-    final tokens = message.mentions
+    for (final recognizer in _recognizers) {
+      recognizer.dispose();
+    }
+    _recognizers.clear();
+    final base = Theme.of(
+      context,
+    ).textTheme.bodyLarge?.copyWith(color: widget.color);
+    final mentionTokens = widget.message.mentions
         .map((mention) => mention.isEveryone ? '@所有人' : '@${mention.name}')
         .toSet()
         .toList();
-    final pattern = RegExp(tokens.map(RegExp.escape).join('|'));
+    final patternParts = <String>[
+      ...mentionTokens.map(RegExp.escape),
+      _interactivePattern.pattern,
+    ];
+    final pattern = RegExp(patternParts.join('|'));
     final spans = <TextSpan>[];
     var offset = 0;
-    for (final match in pattern.allMatches(message.text)) {
+    for (final match in pattern.allMatches(widget.message.text)) {
       if (match.start > offset) {
-        spans.add(TextSpan(text: message.text.substring(offset, match.start)));
+        spans.add(
+          TextSpan(text: widget.message.text.substring(offset, match.start)),
+        );
       }
-      spans.add(
-        TextSpan(
-          text: match.group(0),
-          style: TextStyle(
-            color: mine ? LinliColors.yellow : LinliColors.navy,
-            fontWeight: FontWeight.w600,
+      final token = match.group(0)!;
+      final uri = _messageTokenUri(token);
+      if (uri == null) {
+        spans.add(
+          TextSpan(
+            text: token,
+            style: TextStyle(
+              color: widget.mine ? LinliColors.brandGreen : LinliColors.navy,
+              fontWeight: FontWeight.w600,
+            ),
           ),
-        ),
-      );
+        );
+      } else {
+        final recognizer = TapGestureRecognizer()
+          ..onTap = () => _openMessageUri(context, uri);
+        _recognizers.add(recognizer);
+        spans.add(
+          TextSpan(
+            text: token,
+            semanticsLabel: '${_messageTokenLabel(uri)}：$token',
+            style: TextStyle(
+              color: widget.mine
+                  ? LinliColors.brandGreen
+                  : LinliColors.brandGreenDeep,
+              fontWeight: FontWeight.w600,
+              decoration: TextDecoration.underline,
+              decorationColor: widget.mine
+                  ? LinliColors.brandGreen
+                  : LinliColors.brandGreenDeep,
+            ),
+            recognizer: recognizer,
+            mouseCursor: SystemMouseCursors.click,
+          ),
+        );
+      }
       offset = match.end;
     }
-    if (offset < message.text.length) {
-      spans.add(TextSpan(text: message.text.substring(offset)));
+    if (offset < widget.message.text.length) {
+      spans.add(TextSpan(text: widget.message.text.substring(offset)));
     }
     return Text.rich(TextSpan(style: base, children: spans));
   }
+}
+
+Uri? _messageTokenUri(String token) {
+  if (token.startsWith('http://') || token.startsWith('https://')) {
+    return Uri.tryParse(token);
+  }
+  if (token.contains('@')) return Uri(scheme: 'mailto', path: token);
+  final phone = token.replaceAll(RegExp(r'[\s-]'), '');
+  if (RegExp(r'^(?:\+?86)?1[3-9]\d{9}$').hasMatch(phone)) {
+    return Uri(scheme: 'tel', path: phone);
+  }
+  return null;
+}
+
+String _messageTokenLabel(Uri uri) => switch (uri.scheme) {
+  'mailto' => '发送邮件',
+  'tel' => '拨打电话',
+  _ => '打开链接',
+};
+
+Future<void> _openMessageUri(BuildContext context, Uri? uri) async {
+  if (uri != null &&
+      await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+    return;
+  }
+  if (!context.mounted) return;
+  ScaffoldMessenger.maybeOf(
+    context,
+  )?.showSnackBar(const SnackBar(content: Text('暂时无法打开，请稍后重试')));
 }
 
 class _VideoMessageContent extends StatelessWidget {
@@ -4473,6 +5773,122 @@ class ChannelSendRestrictionBar extends StatelessWidget {
   );
 }
 
+class RobotCommandBar extends StatelessWidget {
+  const RobotCommandBar({
+    super.key,
+    required this.profiles,
+    required this.expanded,
+    required this.onToggle,
+    required this.onSelected,
+  });
+
+  final List<RobotProfile> profiles;
+  final bool expanded;
+  final VoidCallback onToggle;
+  final ValueChanged<RobotMenu> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final placeholder = profiles.length == 1
+        ? profiles.first.placeholder.trim()
+        : '';
+    return Material(
+      key: const Key('robot-command-bar'),
+      color: dark ? LinliColors.darkSurface : LinliColors.surface,
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border(
+            top: BorderSide(color: Theme.of(context).colorScheme.outline),
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              height: 48,
+              child: Row(
+                children: [
+                  const SizedBox(width: 8),
+                  TextButton.icon(
+                    key: const Key('robot-menu-toggle'),
+                    onPressed: onToggle,
+                    icon: Icon(
+                      expanded
+                          ? CupertinoIcons.chevron_down
+                          : CupertinoIcons.list_bullet,
+                      size: 18,
+                    ),
+                    label: const Text('菜单'),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      placeholder.isEmpty
+                          ? '${profiles.length} 个机器人可用'
+                          : placeholder,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                ],
+              ),
+            ),
+            if (expanded)
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 220),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (final profile in profiles) ...[
+                        if (profiles.length > 1)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8, bottom: 8),
+                            child: Text(
+                              profile.name.trim().isEmpty
+                                  ? profile.username
+                                  : profile.name,
+                              style: Theme.of(context).textTheme.labelMedium,
+                            ),
+                          ),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            for (final menu in profile.menus)
+                              OutlinedButton(
+                                key: ValueKey(
+                                  'robot-command-${profile.id}-${menu.command}',
+                                ),
+                                onPressed: () => onSelected(menu),
+                                style: OutlinedButton.styleFrom(
+                                  minimumSize: const Size(0, 40),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 14,
+                                  ),
+                                ),
+                                child: Text(menu.label),
+                              ),
+                          ],
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class ChatComposer extends StatefulWidget {
   const ChatComposer({
     super.key,
@@ -4518,10 +5934,13 @@ class _ChatComposerState extends State<ChatComposer> {
   Timer? _recordTimer;
   bool _voiceMode = false;
   bool _recording = false;
+  bool _finishingRecording = false;
   bool _cancelRecording = false;
   bool _playing = false;
   bool _pressingVoice = false;
   int _recordSeconds = 0;
+  DateTime? _recordingStartedAt;
+  String? _activeRecordingPath;
   String? _voiceDraftPath;
   int _voiceDraftSeconds = 0;
 
@@ -4554,10 +5973,23 @@ class _ChatComposerState extends State<ChatComposer> {
     _recordTimer?.cancel();
     final draftPath = _voiceDraftPath;
     if (draftPath != null) unawaited(_deleteVoiceFile(draftPath));
-    unawaited(_recorder.dispose());
+    unawaited(_disposeRecorder());
     unawaited(_player.dispose());
     _inputFocusNode.dispose();
     super.dispose();
+  }
+
+  Future<void> _disposeRecorder() async {
+    if (_recording || _finishingRecording) {
+      try {
+        await _recorder.cancel();
+      } catch (_) {
+        // The recorder may already be stopping during widget disposal.
+      }
+      final activePath = _activeRecordingPath;
+      if (activePath != null) await _deleteVoiceFile(activePath);
+    }
+    await _recorder.dispose();
   }
 
   bool _handleHardwareKey(KeyEvent event) {
@@ -4597,7 +6029,7 @@ class _ChatComposerState extends State<ChatComposer> {
   }
 
   Future<void> _startRecording() async {
-    if (_recording || _voiceDraftPath != null) return;
+    if (_recording || _finishingRecording || _voiceDraftPath != null) return;
     final allowed = await _recorder.hasPermission();
     if (!mounted) return;
     if (!allowed) {
@@ -4605,7 +6037,7 @@ class _ChatComposerState extends State<ChatComposer> {
         context: context,
         builder: (context) => CupertinoAlertDialog(
           title: const Text('无法使用麦克风'),
-          content: const Text('请在系统设置中允许邻里通讯访问麦克风后再试。'),
+          content: const Text('请在系统设置中允许青蛙呱呱访问麦克风后再试。'),
           actions: [
             CupertinoDialogAction(
               onPressed: () => Navigator.pop(context),
@@ -4619,11 +6051,22 @@ class _ChatComposerState extends State<ChatComposer> {
     if (!_pressingVoice) return;
     final path =
         '${Directory.systemTemp.path}/linli-im-voice-${DateTime.now().microsecondsSinceEpoch}.m4a';
+    _activeRecordingPath = path;
     await _recorder.start(
       const RecordConfig(encoder: AudioEncoder.aacLc, bitRate: 64000),
       path: path,
     );
-    if (!mounted) return;
+    if (!mounted || !_pressingVoice) {
+      try {
+        await _recorder.cancel();
+      } catch (_) {
+        // The press can end while the recorder is still starting.
+      }
+      await _deleteVoiceFile(path);
+      _activeRecordingPath = null;
+      return;
+    }
+    _recordingStartedAt = DateTime.now();
     setState(() {
       _recording = true;
       _cancelRecording = false;
@@ -4632,8 +6075,14 @@ class _ChatComposerState extends State<ChatComposer> {
     _recordTimer?.cancel();
     _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || !_recording) return;
-      setState(() => _recordSeconds++);
-      if (_recordSeconds >= 60) unawaited(_finishRecording());
+      final elapsed = DateTime.now().difference(_recordingStartedAt!);
+      final displayedSeconds = elapsed.inSeconds.clamp(0, 60);
+      if (displayedSeconds != _recordSeconds) {
+        setState(() => _recordSeconds = displayedSeconds);
+      }
+      if (elapsed >= const Duration(seconds: 60)) {
+        unawaited(_finishRecording());
+      }
     });
   }
 
@@ -4656,6 +6105,11 @@ class _ChatComposerState extends State<ChatComposer> {
         _recording = false;
         _recordSeconds = 0;
       });
+      final activePath = _activeRecordingPath;
+      _activeRecordingPath = null;
+      _recordingStartedAt = null;
+      if (activePath != null) await _deleteVoiceFile(activePath);
+      if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('录音启动失败，请检查麦克风后重试')));
@@ -4665,6 +6119,11 @@ class _ChatComposerState extends State<ChatComposer> {
   void _endVoicePress(LongPressEndDetails _) {
     _pressingVoice = false;
     unawaited(_finishRecording());
+  }
+
+  void _cancelVoicePress() {
+    _pressingVoice = false;
+    unawaited(_finishRecording(forceCancel: true));
   }
 
   void _updateRecording(LongPressMoveUpdateDetails details) {
@@ -4679,22 +6138,55 @@ class _ChatComposerState extends State<ChatComposer> {
   }
 
   Future<void> _finishRecording({bool forceCancel = false}) async {
-    if (!_recording) return;
+    if (!_recording || _finishingRecording) return;
+    _finishingRecording = true;
+    _pressingVoice = false;
     _recordTimer?.cancel();
     final cancel = forceCancel || _cancelRecording;
-    final path = await _recorder.stop();
-    if (!mounted) return;
-    final seconds = _recordSeconds.clamp(1, 60);
+    final startedAt = _recordingStartedAt;
+    final fallbackPath = _activeRecordingPath;
+    String? stoppedPath;
+    Object? stopError;
+    try {
+      stoppedPath = await _recorder.stop();
+    } catch (error) {
+      stopError = error;
+    }
+    final elapsed = startedAt == null
+        ? Duration.zero
+        : DateTime.now().difference(startedAt);
+    final tooShort = !cancel && voiceRecordingIsTooShort(elapsed);
+    final path = stoppedPath ?? fallbackPath;
+    final seconds = voiceRecordingDurationSeconds(elapsed);
+    _finishingRecording = false;
+    _recordingStartedAt = null;
+    _activeRecordingPath = null;
+    if (!mounted) {
+      if (path != null) await _deleteVoiceFile(path);
+      return;
+    }
     setState(() {
       _recording = false;
       _cancelRecording = false;
       _recordSeconds = 0;
-      if (!cancel && path != null) {
+      if (!cancel && !tooShort && stopError == null && path != null) {
         _voiceDraftPath = path;
         _voiceDraftSeconds = seconds;
       }
     });
-    if (cancel && path != null) await _deleteVoiceFile(path);
+    if ((cancel || tooShort || stopError != null) && path != null) {
+      await _deleteVoiceFile(path);
+    }
+    if (!mounted || cancel) return;
+    if (stopError != null || path == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('录音保存失败，请重试')));
+    } else if (tooShort) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('说话时间太短')));
+    }
   }
 
   Future<void> _togglePreview() async {
@@ -4822,6 +6314,7 @@ class _ChatComposerState extends State<ChatComposer> {
                             onLongPressStart: _beginVoicePress,
                             onLongPressMoveUpdate: _updateRecording,
                             onLongPressEnd: _endVoicePress,
+                            onLongPressCancel: _cancelVoicePress,
                             onPreview: _togglePreview,
                             onDiscard: _discardDraft,
                             onSend: _sendVoice,
@@ -4924,6 +6417,12 @@ class _ChatComposerState extends State<ChatComposer> {
 
 bool voiceRecordingShouldCancel(double verticalOffset) => verticalOffset <= -64;
 
+bool voiceRecordingIsTooShort(Duration duration) =>
+    duration < const Duration(milliseconds: 800);
+
+int voiceRecordingDurationSeconds(Duration duration) =>
+    ((duration.inMilliseconds + 999) ~/ 1000).clamp(1, 60);
+
 class _VoiceRecorderControl extends StatelessWidget {
   const _VoiceRecorderControl({
     required this.recording,
@@ -4935,6 +6434,7 @@ class _VoiceRecorderControl extends StatelessWidget {
     required this.onLongPressStart,
     required this.onLongPressMoveUpdate,
     required this.onLongPressEnd,
+    required this.onLongPressCancel,
     required this.onPreview,
     required this.onDiscard,
     required this.onSend,
@@ -4949,6 +6449,7 @@ class _VoiceRecorderControl extends StatelessWidget {
   final GestureLongPressStartCallback onLongPressStart;
   final GestureLongPressMoveUpdateCallback onLongPressMoveUpdate;
   final GestureLongPressEndCallback onLongPressEnd;
+  final VoidCallback onLongPressCancel;
   final VoidCallback onPreview;
   final VoidCallback onDiscard;
   final VoidCallback onSend;
@@ -5007,6 +6508,7 @@ class _VoiceRecorderControl extends StatelessWidget {
         onLongPressStart: onLongPressStart,
         onLongPressMoveUpdate: onLongPressMoveUpdate,
         onLongPressEnd: onLongPressEnd,
+        onLongPressCancel: onLongPressCancel,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 140),
           height: 44,
@@ -5030,6 +6532,254 @@ class _VoiceRecorderControl extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+Future<Conversation?> _chooseForwardConversation(
+  BuildContext context,
+  List<Conversation> conversations,
+) {
+  return showModalBottomSheet<Conversation>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    showDragHandle: true,
+    builder: (sheetContext) => AnimatedPadding(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
+      ),
+      child: _ForwardConversationSheet(conversations: conversations),
+    ),
+  );
+}
+
+class _ForwardConversationSheet extends StatefulWidget {
+  const _ForwardConversationSheet({required this.conversations});
+
+  final List<Conversation> conversations;
+
+  @override
+  State<_ForwardConversationSheet> createState() =>
+      _ForwardConversationSheetState();
+}
+
+class _ForwardConversationSheetState extends State<_ForwardConversationSheet> {
+  final searchController = TextEditingController();
+  String query = '';
+  String? selectedId;
+
+  @override
+  void dispose() {
+    searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final normalized = query.trim().toLowerCase();
+    final conversations = widget.conversations
+        .where((conversation) => !conversation.archived)
+        .where(
+          (conversation) =>
+              normalized.isEmpty ||
+              conversation.title.toLowerCase().contains(normalized) ||
+              conversation.subtitle.toLowerCase().contains(normalized),
+        )
+        .toList();
+    final selected = widget.conversations
+        .where((conversation) => conversation.id == selectedId)
+        .firstOrNull;
+    final theme = Theme.of(context);
+    final dark = theme.brightness == Brightness.dark;
+
+    return FractionallySizedBox(
+      heightFactor: .78,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 0, 18, 12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('选择转发对象', style: theme.textTheme.titleLarge),
+                      const SizedBox(height: 3),
+                      Text(
+                        '选择一个会话，确认后发送',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Text(
+                  '${conversations.length} 个会话',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: CupertinoSearchTextField(
+              key: const Key('forward-conversation-search'),
+              controller: searchController,
+              placeholder: '搜索会话',
+              onChanged: (value) => setState(() => query = value),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: conversations.isEmpty
+                ? Center(
+                    key: const Key('forward-conversation-empty'),
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            CupertinoIcons.chat_bubble_2,
+                            size: 34,
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            normalized.isEmpty ? '暂无可转发会话' : '没有匹配的会话',
+                            style: theme.textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            normalized.isEmpty
+                                ? '有最近会话后，可以从这里转发消息。'
+                                : '换个会话名称试试。',
+                            textAlign: TextAlign.center,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : ListView.separated(
+                    key: const Key('forward-conversation-list'),
+                    keyboardDismissBehavior:
+                        ScrollViewKeyboardDismissBehavior.onDrag,
+                    padding: const EdgeInsets.fromLTRB(8, 2, 8, 8),
+                    itemCount: conversations.length,
+                    separatorBuilder: (_, _) =>
+                        const Divider(height: 1, indent: 68, endIndent: 8),
+                    itemBuilder: (context, index) {
+                      final conversation = conversations[index];
+                      final selected = selectedId == conversation.id;
+                      return Semantics(
+                        selected: selected,
+                        button: true,
+                        label: '转发到 ${conversation.title}',
+                        child: ListTile(
+                          key: Key('forward-conversation-${conversation.id}'),
+                          minTileHeight: 64,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          selected: selected,
+                          selectedTileColor: dark
+                              ? LinliColors.brandGreen.withValues(alpha: .10)
+                              : LinliColors.brandMint,
+                          leading: PersonAvatar(
+                            name: conversation.title,
+                            size: 44,
+                            avatarUrl: conversation.avatarUrl,
+                          ),
+                          title: Text(
+                            conversation.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: conversation.subtitle.trim().isEmpty
+                              ? null
+                              : Text(
+                                  conversation.subtitle,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                          trailing: AnimatedContainer(
+                            duration: const Duration(milliseconds: 140),
+                            width: 24,
+                            height: 24,
+                            decoration: BoxDecoration(
+                              color: selected
+                                  ? LinliColors.brandGreen
+                                  : Colors.transparent,
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: selected
+                                    ? LinliColors.brandGreen
+                                    : theme.colorScheme.outlineVariant,
+                              ),
+                            ),
+                            child: selected
+                                ? const Icon(
+                                    CupertinoIcons.check_mark,
+                                    size: 15,
+                                    color: Colors.white,
+                                  )
+                                : null,
+                          ),
+                          onTap: () =>
+                              setState(() => selectedId = conversation.id),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface,
+              border: Border(
+                top: BorderSide(color: theme.colorScheme.outlineVariant),
+              ),
+            ),
+            child: SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        key: const Key('forward-conversation-cancel'),
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('取消'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton(
+                        key: const Key('forward-conversation-confirm'),
+                        onPressed: selected == null
+                            ? null
+                            : () => Navigator.pop(context, selected),
+                        child: const Text('转发'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -5086,7 +6836,7 @@ class _ContactPickerSheetState extends State<_ContactPickerSheet> {
             child: CupertinoSearchTextField(
               key: const Key('contact-card-search'),
               controller: searchController,
-              placeholder: '搜索联系人或邻里号',
+              placeholder: '搜索联系人或呱呱号',
               onChanged: (value) => setState(() => query = value),
             ),
           ),
@@ -5118,7 +6868,7 @@ class _ContactPickerSheetState extends State<_ContactPickerSheet> {
                           avatarUrl: contact.avatarUrl,
                         ),
                         title: Text(name),
-                        subtitle: Text('@${contact.handle}'),
+                        subtitle: Text(publicUserHandleLabel(contact.handle)),
                         trailing: const Icon(
                           CupertinoIcons.chevron_forward,
                           size: 17,
@@ -5435,7 +7185,7 @@ class _EmojiPanelState extends State<_EmojiPanel> {
               ),
               itemCount: emojis.length,
               itemBuilder: (context, index) => CupertinoButton(
-                minimumSize: const Size(40, 40),
+                minimumSize: const Size(44, 44),
                 padding: EdgeInsets.zero,
                 onPressed: () => _insert(emojis[index]),
                 child: Text(
@@ -5538,7 +7288,7 @@ class _MentionPickerSheetState extends State<_MentionPickerSheet> {
                       height: 44,
                       alignment: Alignment.center,
                       decoration: BoxDecoration(
-                        color: LinliColors.yellow.withValues(alpha: .18),
+                        color: LinliColors.brandGreen.withValues(alpha: .18),
                         shape: BoxShape.circle,
                       ),
                       child: const Icon(
@@ -5563,7 +7313,7 @@ class _MentionPickerSheetState extends State<_MentionPickerSheet> {
                       avatarUrl: member.avatarUrl,
                     ),
                     title: Text(member.name),
-                    subtitle: Text('@${member.handle}'),
+                    subtitle: Text(publicUserHandleLabel(member.handle)),
                     onTap: () => Navigator.pop(
                       context,
                       MessageMention(userId: member.id, name: member.name),
@@ -5575,7 +7325,7 @@ class _MentionPickerSheetState extends State<_MentionPickerSheet> {
                     child: StatePanel(
                       icon: CupertinoIcons.person_2,
                       title: '没有匹配成员',
-                      body: '换个昵称或邻里号试试。',
+                      body: '换个昵称或呱呱号试试。',
                     ),
                   ),
               ],

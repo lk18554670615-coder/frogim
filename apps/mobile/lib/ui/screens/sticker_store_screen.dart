@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_controller.dart';
 import '../../im/business_features.dart';
+import '../widgets/linli_widgets.dart';
 
 Future<StickerItemSummary?> showStickerPicker(
   BuildContext context,
@@ -84,7 +85,8 @@ class _StickerPickerState extends State<StickerPicker> {
         }
       });
     } catch (cause) {
-      if (mounted) setState(() => error = cause.toString());
+      debugPrint('Sticker store load failed: $cause');
+      if (mounted) setState(() => error = 'failed');
     } finally {
       if (mounted) setState(() => loading = false);
     }
@@ -110,7 +112,8 @@ class _StickerPickerState extends State<StickerPicker> {
       await widget.controller.toggleStickerFavorite(sticker);
       await _load();
     } catch (cause) {
-      _snack(cause.toString());
+      debugPrint('Sticker favorite update failed: $cause');
+      _snack('暂时无法更新收藏，请稍后重试');
     }
   }
 
@@ -119,7 +122,8 @@ class _StickerPickerState extends State<StickerPicker> {
       await widget.controller.toggleStickerPackFavorite(pack);
       await _load();
     } catch (cause) {
-      _snack(cause.toString());
+      debugPrint('Sticker pack favorite update failed: $cause');
+      _snack('暂时无法更新表情包收藏，请稍后重试');
     }
   }
 
@@ -138,20 +142,12 @@ class _StickerPickerState extends State<StickerPicker> {
   Widget build(BuildContext context) {
     if (loading) return const Center(child: CircularProgressIndicator());
     if (error.isNotEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(CupertinoIcons.exclamationmark_circle, size: 42),
-              const SizedBox(height: 12),
-              Text(error, textAlign: TextAlign.center),
-              const SizedBox(height: 16),
-              FilledButton(onPressed: _load, child: const Text('重新加载')),
-            ],
-          ),
-        ),
+      return StatePanel(
+        icon: CupertinoIcons.exclamationmark_circle,
+        title: '表情商店暂时无法加载',
+        body: '请检查网络连接后重试。已经收藏的表情不会丢失。',
+        actionLabel: '重新加载',
+        onAction: _load,
       );
     }
     return Column(
@@ -196,12 +192,13 @@ class _StickerPickerState extends State<StickerPicker> {
                       return ListTile(
                         leading: ClipRRect(
                           borderRadius: BorderRadius.circular(10),
-                          child: Image.network(
-                            pack.coverUrl,
+                          child: LinliNetworkImage(
+                            url: pack.coverUrl,
+                            cacheKey: pack.coverUrl,
                             width: 42,
                             height: 42,
                             fit: BoxFit.cover,
-                            errorBuilder: (_, _, _) => const Icon(
+                            errorBuilder: (_) => const Icon(
                               CupertinoIcons.square_grid_2x2,
                               size: 32,
                             ),
@@ -227,9 +224,21 @@ class _StickerPickerState extends State<StickerPicker> {
                     },
                   ),
                 if (_visibleItems.isEmpty)
-                  const SliverFillRemaining(
+                  SliverFillRemaining(
                     hasScrollBody: false,
-                    child: Center(child: Text('这里还没有表情')),
+                    child: StatePanel(
+                      icon: CupertinoIcons.smiley,
+                      title: selected == 'recent'
+                          ? '最近还没有使用记录'
+                          : selected == 'favorites'
+                          ? '还没有收藏表情'
+                          : '当前分类没有表情',
+                      body: selected == 'recent'
+                          ? '发送过的表情会出现在这里，方便下次快速使用。'
+                          : selected == 'favorites'
+                          ? '长按表情即可收藏，常用内容会在这里集中显示。'
+                          : '可以下拉刷新，或切换到其他分类继续浏览。',
+                    ),
                   )
                 else
                   SliverPadding(
@@ -311,10 +320,11 @@ class _StickerTile extends StatelessWidget {
         child: Column(
           children: [
             Expanded(
-              child: Image.network(
-                sticker.url,
+              child: LinliNetworkImage(
+                url: sticker.url,
+                cacheKey: sticker.mediaId,
                 fit: BoxFit.contain,
-                errorBuilder: (_, _, _) => Center(
+                errorBuilder: (_) => Center(
                   child: Text(sticker.emoji.isEmpty ? '🙂' : sticker.emoji),
                 ),
               ),

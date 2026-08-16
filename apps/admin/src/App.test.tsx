@@ -5,10 +5,121 @@ import { App } from './App';
 
 const session = { token: 'test-admin-jwt', displayName: '测试管理员', role: 'platform_admin', expiresAt: Date.now() + 60_000 };
 
-describe('邻里通讯管理后台', () => {
+let fixtureStickerCategories: Array<Record<string, unknown>> = [];
+let fixtureStickerPacks: Array<Record<string, unknown>> = [];
+let fixtureRobots: Array<Record<string, unknown>> = [];
+
+function response(payload: unknown, status = 200) {
+  return { ok: status >= 200 && status < 300, status, headers: new Headers(), json: async () => payload };
+}
+
+async function liveFixture(input: RequestInfo | URL, init?: RequestInit) {
+  const url = String(input);
+  const method = init?.method ?? 'GET';
+  if (url.includes('/dashboard')) return response({
+    metrics: [
+      { label: '在线用户', value: '8,429', delta: '较上个时段 +2.4%', tone: 'success' },
+      { label: '今日消息', value: '1.82M', delta: '实时统计', tone: 'info' },
+      { label: '待审举报', value: '23', delta: '请及时处理', tone: 'warning' },
+      { label: '消息成功率', value: '99.993%', delta: '近 24 小时', tone: 'success' },
+    ],
+    messageTrend: [{ time: '10:00', count: 120 }, { time: '11:00', count: 168 }],
+    channelMix: [{ label: '单聊', value: 72, color: 'var(--primary)' }, { label: '群聊', value: 28, color: 'var(--info)' }],
+    alerts: [], activity: [],
+  });
+  if (url.includes('/users/u_10291')) return response({ user: { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia', signature: '在青蛙呱呱保持联系', gender: 'female', handleChangeCount: 1, createdAt: '2026-08-01T08:00:00Z' }, deviceCount: 2, friendCount: 18, groupCount: 4, handleChangesUsed: 1, handleChangesRemaining: 1 });
+  if (url.includes('/users')) {
+    const query = new URL(url, 'http://localhost').searchParams.get('q') ?? '';
+    const users = [
+      { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia', status: 'active', createdAt: '2026-08-01T08:00:00Z' },
+      { id: 'u_10288', name: '江宁', phone: '13800001002', handle: 'jiangning', status: 'active', createdAt: '2026-08-02T08:00:00Z' },
+    ].filter((item) => !query || `${item.name}${item.id}${item.phone}`.includes(query));
+    return response({ items: users, total: users.length });
+  }
+  if (url.includes('/groups/g_1/members')) return response({ items: [
+    { conversationId: 'g_1', userId: 'u_10291', name: '林夏', handle: 'linxia', role: 'owner', lastReadSeq: 1280, lastDeliveredSeq: 1280, joinedAt: '2026-08-01T08:00:00Z' },
+    { conversationId: 'g_1', userId: 'u_10288', name: '江宁', handle: 'jiangning', role: 'member', lastReadSeq: 1240, lastDeliveredSeq: 1250, joinedAt: '2026-08-02T08:00:00Z' },
+  ], total: 2 });
+  if (url.includes('/groups/g_1')) return response({ id: 'g_1', title: '产品交流群', ownerId: 'u_10291', announcement: '文明交流，保护隐私', announcementVersion: 2, joinPolicy: 'approval', allowMemberAddFriend: true, messageCount: 1280, memberCount: 1 });
+  if (url.includes('/groups')) return response({ items: [{ id: 'g_1', title: '产品交流群', owner: '林夏', memberCount: 1, messageCount: 1280, status: 'active', createdAt: '2026-08-01T08:00:00Z', reportCount: 0 }], total: 1 });
+  if (url.includes('/sensitive-words')) return response({ items: [{ id: 'sw_1', word: '代开发票', category: '黑产', matchType: 'exact', action: 'block', createdAt: '2026-08-01T08:00:00Z' }], total: 1 });
+  if (url.includes('/reports')) return response({ items: [], total: 0 });
+  if (url.includes('/health')) return response({ items: [{ name: 'WuKongIM 长连接', status: 'healthy', latency: 18, uptime: '99.998%', version: 'v2.2.5', detail: '服务端探针响应正常' }] });
+  if (url.includes('/settings')) return response({
+    allowRegistration: true, passwordMinLength: 8, maxMessageTextLength: 5000, messageRecallMinutes: 2, maxGroupMembers: 500,
+    allowFriendRequests: true, allowSearchByHandle: true, allowSearchByPhone: false, friendRequestExpiryDays: 7,
+    announcementPushEnabled: true, callsEnabled: true, videoCallsEnabled: true, sensitiveWordEnabled: true,
+    reportSlaHours: 8, maintenanceMode: false, announcement: '', restartRequiredKeys: [],
+    configurationStatus: { database: true, redis: true, objectStorage: true, otpProvider: true, pushProvider: true, liveKit: true, adminTOTP: true },
+    infrastructure: { pushProvider: 'fcm', mediaMaxSizeMB: 100, callInviteTimeoutSeconds: 30, accessTokenMinutes: 15, refreshTokenHours: 720 },
+  });
+  if (url.includes('/sticker-categories')) {
+    if (method === 'POST') {
+      const body = JSON.parse(String(init?.body));
+      const item = { id: 'festival', name: body.name, sortOrder: body.sortOrder, enabled: body.enabled };
+      fixtureStickerCategories.push(item);
+      return response({ item });
+    }
+    return response({ items: fixtureStickerCategories });
+  }
+  if (url.includes('/sticker-packs')) {
+    if (method === 'POST') {
+      const body = JSON.parse(String(init?.body));
+      const item = { id: 'pack_new', categoryId: body.categoryId, categoryName: '节日', name: body.name, description: body.description, coverMediaId: body.coverMediaId, status: body.status, itemCount: 0, createdBy: '运营管理员', updatedAt: '2026-08-15T08:00:00Z' };
+      fixtureStickerPacks.push(item);
+      return response({ item });
+    }
+    return response({ items: fixtureStickerPacks, total: fixtureStickerPacks.length });
+  }
+  if (url.includes('/moments')) return response({ items: [], total: 0 });
+  if (url.includes('/wukong/overview')) return response({ server_id: '1', version: 'v2.2.5-20260422', uptime: '6d 12h', connections: 7, user_handler_count: 6, cpu: 2.4, mem: 104857600, goroutine: 40, in_msgs: 18, out_msgs: 34, retry_queue: 0 });
+  if (url.includes('/wukong/settings')) return response({ logger: { trace_on: 0, loki_on: 1 }, prometheus_on: 1, stress_on: 0 });
+  if (url.includes('/wukong/nodes')) return response({ data: [{ id: 1, online: 1, is_leader: 1, version: 'v2.2.5-20260422', slot_count: 64, slot_leader_count: 64 }] });
+  if (url.includes('/wukong/robots/')) {
+    const body = JSON.parse(String(init?.body));
+    const item = { userId: decodeURIComponent(url.split('/').pop() ?? ''), name: '系统通知', username: body.username, placeholder: body.placeholder, enabled: body.enabled, inlineOn: body.inlineOn, version: 2, menus: body.menus, updatedBy: '测试管理员', reason: body.reason, updatedAt: '2026-08-16T08:00:00Z' };
+    fixtureRobots = [item];
+    return response({ item });
+  }
+  if (url.includes('/wukong/robots')) return response({ items: fixtureRobots });
+  if (url.includes('/wukong/system-users')) return response({ items: [{ userId: 'u_notice', name: '系统通知', enabled: true, syncStatus: 'synced', updatedBy: '系统', reason: '系统通知账号', updatedAt: '2026-08-15T08:00:00Z' }] });
+  if (url.includes('/wukong/plugin-events')) return response({ items: [] });
+  if (url.includes('/wukong/plugins/') && url.includes('/logs')) return response({ entries: [{ sequence: 1, stream: 'stdout', timestamp: Date.now(), message: 'policy plugin ready' }] });
+  if (url.includes('/wukong/plugins')) return response({ items: [{ no: 'wk.plugin.safe', node_id: 1, name: 'Safety Policy', version: '1.0.0', status: 'active', methods: ['Send'], priority: 10, is_ai: 0, config: {}, managed: true, verified: true, built_in: true, lifecycle_status: 'active', file_name: 'safe.wkp', sha256: 'sha256', key_id: 'builtin', installed_at: '2026-08-01T08:00:00Z', updated_at: '2026-08-15T08:00:00Z' }] });
+  if (url.includes('/livekit/metrics')) return response({ healthy: true, activeRooms: 1, activeParticipants: 2, cpuPercent: 3.2, residentMemoryBytes: 134217728, networkReceiveBytesPerSecond: 4096, networkTransmitBytesPerSecond: 8192, packetLossPercent: 0.02, participantJoinsLastHour: 12, roomsCompletedLastHour: 5, sampledAt: '2026-08-15T08:00:00Z' });
+  if (url.includes('/livekit/rooms/') && url.includes('/participants')) return response({ items: [] });
+  if (url.includes('/livekit/rooms')) return response({ items: [{ sid: 'RM_01', name: 'call_20260815_01', createdAt: '2026-08-15T08:00:00Z', participantCount: 2, publisherCount: 2, maxParticipants: 10, activeRecording: false }] });
+  if (url.includes('/push')) return response({ providers: [{ provider: 'fcm', activeDevices: 120, disabledDevices: 2 }], queue: [] });
+  if (url.includes('/backups')) return response({ configured: true, available: true, status: 'healthy', lastStatus: true, running: false, lastDurationSeconds: 37, incompleteGenerations: 0, offsiteEnabled: true, lastSuccessAt: '2026-08-15T07:00:00Z' });
+  if (url.includes('/client-diagnostics')) return response({ summary: { windowHours: 24, crashes: 0, connectionFailures: 1, callFailures: 0, performanceSamples: 12, performanceP95Ms: 1380 }, items: [] });
+  if (url.includes('/tasks')) return response({ tasks: { wukongOutbox: { pending: 0, processing: 0, failed: 0, oldestPendingSeconds: 0, reconcileCompleted: 12, reconcilePending: 0, reconcileFailed: 0 }, wukongWebhook: { pending: 0, processing: 0, failed: 0, oldestPendingSeconds: 0 } } });
+  if (url.includes('/access')) return response({ current: { id: 'admin_1', role: 'platform_admin' }, administrators: [], roles: [], note: '权限数据来自服务端' });
+  if (url.includes('/channels/') && url.includes('/members')) return response({ items: [{ channelId: 'community_1', channelType: 4, userId: 'u_operator', name: '运营小青', handle: 'operator_green', role: 'operator', mutedUntil: '', expiresAt: '', createdAt: '2026-08-10T08:00:00Z', updatedAt: '2026-08-15T08:00:00Z' }] });
+  if (url.includes('/channels/') && url.includes('/access')) return response({ items: [] });
+  if (url.includes('/channels')) return response({ items: [{ id: 'community_1', channelType: 4, category: 'community', name: '产品交流社区', avatarUrl: '', ownerId: 'u_owner', parentId: '', description: '产品使用和意见交流', visibility: 'public', joinPolicy: 'open', postingPolicy: 'members', slowModeSeconds: 0, memberCount: 126, ban: false, disband: false, sendBan: false, allowStranger: true, metadata: {}, createdAt: '2026-08-01T08:00:00Z', updatedAt: '2026-08-15T08:00:00Z' }], total: 1 });
+  if (url.includes('/support/skills')) return response({ items: [{ id: 'support_general', name: '综合咨询', description: '账号和产品问题', routingStrategy: 'least_active', maxConcurrentPerAgent: 5, enabled: true, queueCount: 1, availableAgents: 1, createdAt: '2026-08-01T08:00:00Z', updatedAt: '2026-08-15T08:00:00Z' }] });
+  if (url.includes('/support/agents')) return response({ items: [
+    { userId: 'u_support', name: '客服坐席', handle: 'support', avatarUrl: '', status: 'available', maxConcurrent: 5, activeSessions: 1, skillGroupIds: ['support_general'], createdAt: '2026-08-01T08:00:00Z', updatedAt: '2026-08-15T08:00:00Z' },
+    { userId: 'u_support_2', name: '高级客服', handle: 'support_senior', avatarUrl: '', status: 'available', maxConcurrent: 8, activeSessions: 0, skillGroupIds: ['support_general'], createdAt: '2026-08-02T08:00:00Z', updatedAt: '2026-08-15T08:00:00Z' },
+  ] });
+  if (url.includes('/support/sessions')) return response({ items: [{ id: 'support_session_1', visitorId: 'u_visitor', visitorName: '访客 A', skillGroupId: 'support_general', skillGroupName: '综合咨询', channelId: 'u_visitor', channelType: 10, subject: '账号登录问题', status: 'active', queuePosition: 0, assignedAgentId: 'u_support', agentName: '客服坐席', transferCount: 0, rating: 0, ratingComment: '', createdAt: '2026-08-15T08:00:00Z', updatedAt: '2026-08-15T08:00:00Z' }], total: 1 });
+  if (url.includes('/media')) return response({ items: [
+    { id: 'media_cover_20260815', ownerId: 'u_10291', objectKey: 'stickers/new-year-cover.png', mime: 'image/png', status: 'ready', size: 28672, checksum: 'cover-checksum' },
+    { id: 'media_sticker_20260815', ownerId: 'u_10291', objectKey: 'stickers/new-year-smile.webp', mime: 'image/webp', status: 'ready', size: 18432, checksum: 'sticker-checksum' },
+  ], total: 2 });
+  if (url.includes('/messages')) return response({ items: [], total: 0 });
+  return response({ items: [], total: 0 });
+}
+
+describe('青蛙呱呱管理后台', () => {
   beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
+    fixtureStickerCategories = [];
+    fixtureStickerPacks = [];
+    fixtureRobots = [{ userId: 'u_notice', name: '系统通知', username: 'service_helper', placeholder: '请选择服务', enabled: true, inlineOn: false, version: 1, menus: [{ cmd: '帮助', remark: '使用帮助', type: 'command' }], updatedBy: '系统', reason: '客服入口', updatedAt: '2026-08-15T08:00:00Z' }];
+    sessionStorage.setItem('qingwaguagua_admin_session', JSON.stringify(session));
+    vi.stubGlobal('fetch', vi.fn(liveFixture));
     window.history.replaceState({}, '', '/overview');
   });
   afterEach(() => { vi.unstubAllGlobals(); });
@@ -20,12 +131,49 @@ describe('邻里通讯管理后台', () => {
     expect(screen.getByText('99.993%')).toBeInTheDocument();
   });
 
-  it('切换并持久化数据源', async () => {
-    const view = render(<App />);
-    await screen.findByText('8,429');
-    fireEvent.change(screen.getByLabelText('数据源'), { target: { value: 'live' } });
-    expect(localStorage.getItem('nexachat_data_mode')).toBe('live');
-    view.unmount();
+  it('概览危险指标不会被错误标记为正常', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => response({
+      metrics: [{ label: '消息成功率', value: '82%', delta: '低于服务目标', tone: 'danger' }],
+      messageTrend: [], channelMix: [], alerts: [], activity: [],
+    })));
+    render(<App />);
+    expect(await screen.findByText('82%')).toBeInTheDocument();
+    expect(screen.getByText('异常')).toBeInTheDocument();
+    expect(screen.queryByText('正常')).not.toBeInTheDocument();
+  });
+
+  it('只连接生产实时接口且不提供演示切换', async () => {
+    render(<App />);
+    expect(await screen.findByText('服务端实时数据')).toBeInTheDocument();
+    expect(screen.queryByLabelText('数据源')).not.toBeInTheDocument();
+    expect(localStorage.getItem('nexachat_data_mode')).toBeNull();
+  });
+
+  it('窄屏侧栏关闭时不可聚焦，打开后支持 Escape 并把焦点还给菜单按钮', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({
+      matches: true,
+      media: '(max-width: 880px)',
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })));
+    render(<App />);
+    const user = userEvent.setup();
+    const navigation = screen.getByLabelText('运营控制台导航');
+    const menu = screen.getByRole('button', { name: '打开导航' });
+    await waitFor(() => expect((navigation as HTMLElement).inert).toBe(true));
+    expect(menu).toHaveAttribute('aria-expanded', 'false');
+    await user.click(menu);
+    expect((navigation as HTMLElement).inert).toBe(false);
+    expect(menu).toHaveAttribute('aria-expanded', 'true');
+    await waitFor(() => expect(screen.getByRole('link', { name: '运行概览' })).toHaveFocus());
+    fireEvent.keyDown(navigation, { key: 'Escape' });
+    await waitFor(() => expect(menu).toHaveFocus());
+    expect((navigation as HTMLElement).inert).toBe(true);
+    expect(menu).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('支持防抖搜索用户', async () => {
@@ -38,7 +186,90 @@ describe('邻里通讯管理后台', () => {
     expect(await screen.findByText('江宁')).toBeInTheDocument();
   });
 
-  it('消息治理可以筛选全部内置和自定义消息类型', () => {
+  it('用户反馈分类始终展示中文而不是服务端枚举', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/friendships')) return response({ items: [], total: 0 });
+      if (url.includes('/feedback')) return response({
+        items: [{ id: 'feedback_1', userId: 'u_10291', userName: '林夏', category: 'bug', content: '扫码页偶发无法打开相册', contact: '', createdAt: '2026-08-16T08:00:00Z' }],
+        total: 1,
+      });
+      return liveFixture(input, init);
+    }));
+    window.history.replaceState({}, '', '/relationships');
+
+    render(<App />);
+
+    expect(await screen.findByText('扫码页偶发无法打开相册')).toBeInTheDocument();
+    expect(screen.getByText('故障', { selector: 'td' })).toBeInTheDocument();
+    expect(screen.queryByText('bug')).not.toBeInTheDocument();
+  });
+
+  it('举报分类始终展示中文而不是服务端枚举', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/reports')) return response({
+        items: [{
+          id: 'report_spam_1', targetType: 'message', targetId: 'message_1', target: '消息 message_1',
+          reporterId: 'u_10291', reporter: '林夏', category: 'spam', details: '重复发送推广链接',
+          status: 'pending', risk: 'medium', createdAt: '2026-08-16T08:00:00Z',
+        }],
+        total: 1,
+      });
+      return liveFixture(input, init);
+    }));
+    window.history.replaceState({}, '', '/reports');
+
+    render(<App />);
+
+    expect(await screen.findByText('垃圾信息')).toBeInTheDocument();
+    expect(screen.queryByText('spam')).not.toBeInTheDocument();
+  });
+
+  it('按需加载真实用户详情并支持键盘关闭', async () => {
+    window.history.replaceState({}, '', '/users');
+    render(<App />);
+    await screen.findByText('林夏');
+    await userEvent.click(screen.getAllByRole('button', { name: '查看详情' })[0]);
+    const dialog = await screen.findByRole('dialog', { name: '用户详情' });
+    expect(within(dialog).getByText('在青蛙呱呱保持联系')).toBeInTheDocument();
+    expect(within(dialog).getByText('女')).toBeInTheDocument();
+    expect(within(dialog).getByText('18')).toBeInTheDocument();
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: '用户详情' })).not.toBeInTheDocument();
+  });
+
+  it('展示群资料和服务端群成员列表', async () => {
+    window.history.replaceState({}, '', '/groups');
+    render(<App />);
+    await screen.findByText('产品交流群');
+    await userEvent.click(screen.getByRole('button', { name: '查看详情' }));
+    const dialog = await screen.findByRole('dialog', { name: '群组详情' });
+    expect(within(dialog).getByText('文明交流，保护隐私')).toBeInTheDocument();
+    expect(within(dialog).getByText('群主')).toBeInTheDocument();
+    expect(within(dialog).getByText('呱呱号：linxia')).toBeInTheDocument();
+  });
+
+  it('群成员治理提供角色、禁言和移出操作且提交审计理由', async () => {
+    window.history.replaceState({}, '', '/groups');
+    render(<App />);
+    await screen.findByText('产品交流群');
+    await userEvent.click(screen.getByRole('button', { name: '查看详情' }));
+    const detail = await screen.findByRole('dialog', { name: '群组详情' });
+    expect(within(detail).getByRole('button', { name: '设为管理员' })).toBeInTheDocument();
+    expect(within(detail).getByRole('button', { name: '禁言 1 小时' })).toBeInTheDocument();
+    expect(within(detail).getByRole('button', { name: '移出群聊' })).toBeInTheDocument();
+
+    await userEvent.click(within(detail).getByRole('button', { name: '禁言 1 小时' }));
+    const confirmation = await screen.findByRole('dialog', { name: '禁言成员一小时' });
+    expect(within(confirmation).getByRole('button', { name: '确认禁言' })).toBeDisabled();
+    await userEvent.type(within(confirmation).getByLabelText('处置理由'), '群内违规发言，工单 GROUP-4');
+    await userEvent.click(within(confirmation).getByRole('button', { name: '确认禁言' }));
+    expect(await screen.findByText('江宁：确认禁言已完成')).toBeInTheDocument();
+    const write = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).includes('/groups/g_1/members/u_10288') && init?.method === 'PATCH');
+    expect(JSON.parse(String(write?.[1]?.body))).toEqual(expect.objectContaining({ action: 'mute', reason: '群内违规发言，工单 GROUP-4', confirmed: true }));
+  });
+
+  it('消息治理可以筛选全部内置和自定义消息类型', async () => {
     window.history.replaceState({}, '', '/messages');
     render(<App />);
     const typeFilter = screen.getByLabelText('消息类型');
@@ -46,11 +277,11 @@ describe('邻里通讯管理后台', () => {
       '全部类型', '文本', '图片 / GIF', '语音', '视频', '位置', '名片', '文件', '合并聊天记录',
       '系统事件', '商店表情', '朋友圈分享', '通话事件', '直播互动', '客服事件', '截屏提示',
     ]);
+    expect(await screen.findByText('没有匹配的消息元数据')).toBeInTheDocument();
   });
 
   it('兼容服务端扁平 dashboard 响应', async () => {
-    localStorage.setItem('nexachat_data_mode', 'live');
-    sessionStorage.setItem('nexachat_admin_session', JSON.stringify(session));
+    sessionStorage.setItem('qingwaguagua_admin_session', JSON.stringify(session));
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true, status: 200, headers: new Headers(),
       json: async () => ({
@@ -75,10 +306,10 @@ describe('邻里通讯管理后台', () => {
   });
 
   it('解析嵌套接口错误并停留在登录页', async () => {
-    localStorage.setItem('nexachat_data_mode', 'live');
+    sessionStorage.clear();
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: false, status: 401, headers: new Headers({ 'x-request-id': 'req-1' }),
-      json: async () => ({ error: { code: 'UNAUTHENTICATED', message: '邮箱、密码或动态验证码无效' } }),
+      json: async () => ({ error: { code: 'UNAUTHENTICATED', message: 'invalid credentials' } }),
     })));
     render(<App />);
     const user = userEvent.setup();
@@ -86,12 +317,83 @@ describe('邻里通讯管理后台', () => {
     await user.type(screen.getByLabelText('密码'), 'wrong-password');
     await user.type(screen.getByLabelText('动态验证码（如已启用）'), '123456');
     await user.click(screen.getByRole('button', { name: '登录控制台' }));
-    expect(await screen.findByText(/邮箱、密码或动态验证码无效/)).toBeInTheDocument();
+    expect(await screen.findByText(/邮箱、密码或动态验证码不正确/)).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '管理员登录' })).toBeInTheDocument();
+    await user.type(screen.getByLabelText('密码'), 'a');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('网络连接失败时展示中文可执行提示而不是浏览器英文异常', async () => {
+    sessionStorage.clear();
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
+    render(<App />);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('管理员邮箱'), 'ops@example.com');
+    await user.type(screen.getByLabelText('密码'), 'password');
+    await user.click(screen.getByRole('button', { name: '登录控制台' }));
+    expect(await screen.findByText('无法连接服务，请检查网络或服务状态')).toBeInTheDocument();
+    expect(screen.queryByText('Failed to fetch')).not.toBeInTheDocument();
+  });
+
+  it('管理员可以确认密码输入且不完整动态验证码会就地说明', async () => {
+    sessionStorage.clear();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    render(<App />);
+    const user = userEvent.setup();
+    const password = screen.getByLabelText('密码');
+    expect(password).toHaveAttribute('type', 'password');
+    await user.type(password, 'correct-password');
+    await user.click(screen.getByRole('button', { name: '显示密码' }));
+    expect(password).toHaveAttribute('type', 'text');
+    expect(screen.getByRole('button', { name: '隐藏密码' })).toHaveAttribute('aria-pressed', 'true');
+    await user.type(screen.getByLabelText('管理员邮箱'), 'ops@example.com');
+    const totp = screen.getByLabelText('动态验证码（如已启用）');
+    await user.type(totp, '123');
+    expect(totp).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByText('还需输入完整的 6 位验证码')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '登录控制台' })).toBeDisabled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('管理员邮箱仅在失焦后提示格式错误且不会发送无效请求', async () => {
+    sessionStorage.clear();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    render(<App />);
+    const user = userEvent.setup();
+    const email = screen.getByLabelText('管理员邮箱');
+    const password = screen.getByLabelText('密码');
+
+    await user.type(email, 'not-an-email');
+    expect(screen.queryByText('请输入有效的管理员邮箱')).not.toBeInTheDocument();
+    await user.type(password, 'correct-password');
+
+    expect(email).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByText('请输入有效的管理员邮箱')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '登录控制台' })).toBeDisabled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('管理员邮箱未编辑时焦点切换不会提前显示必填错误', async () => {
+    sessionStorage.clear();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    render(<App />);
+    const user = userEvent.setup();
+    const email = screen.getByLabelText('管理员邮箱');
+
+    expect(email).toHaveFocus();
+    await user.click(screen.getByLabelText('密码'));
+
+    expect(email).toHaveAttribute('aria-invalid', 'false');
+    expect(screen.queryByText('请输入管理员邮箱')).not.toBeInTheDocument();
+    expect(screen.getByText('使用管理员分配的邮箱地址')).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('使用服务端返回的角色建立短时会话', async () => {
-    localStorage.setItem('nexachat_data_mode', 'live');
+    sessionStorage.clear();
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
         ok: true, status: 200, headers: new Headers(),
@@ -108,8 +410,35 @@ describe('邻里通讯管理后台', () => {
     await user.type(screen.getByLabelText('密码'), 'correct-password');
     await user.click(screen.getByRole('button', { name: '登录控制台' }));
     expect(await screen.findByText('安全审核员')).toBeInTheDocument();
-    expect(JSON.parse(sessionStorage.getItem('nexachat_admin_session') ?? '{}')).toEqual(expect.objectContaining({ token: 'admin.jwt', role: 'moderator' }));
+    expect(JSON.parse(sessionStorage.getItem('qingwaguagua_admin_session') ?? '{}')).toEqual(expect.objectContaining({ token: 'admin.jwt', role: 'moderator' }));
     expect(fetchMock).toHaveBeenNthCalledWith(1, expect.stringContaining('/auth/login'), expect.objectContaining({ method: 'POST' }));
+  });
+
+  it('页面保持打开时也会在管理员会话到期后自动退出', async () => {
+    sessionStorage.setItem('qingwaguagua_admin_session', JSON.stringify({ ...session, expiresAt: Date.now() + 30 }));
+    render(<App />);
+    expect(await screen.findByText('测试管理员')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '管理员登录' })).toBeInTheDocument();
+    expect(screen.getByText('管理员会话已到期，请重新登录')).toBeInTheDocument();
+    expect(sessionStorage.getItem('qingwaguagua_admin_session')).toBeNull();
+  });
+
+  it('刷新页面发现已过期会话时在登录表单内说明原因', () => {
+    sessionStorage.setItem('qingwaguagua_admin_session', JSON.stringify({ ...session, expiresAt: Date.now() - 1 }));
+    render(<App />);
+    expect(screen.getByRole('heading', { name: '管理员登录' })).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('管理员会话已到期，请重新登录');
+    expect(sessionStorage.getItem('qingwaguagua_admin_session')).toBeNull();
+  });
+
+  it('并发 401 只展示一条稳定的会话失效说明', async () => {
+    render(<App />);
+    expect(await screen.findByText('测试管理员')).toBeInTheDocument();
+    window.dispatchEvent(new CustomEvent('nexachat:unauthorized'));
+    window.dispatchEvent(new CustomEvent('nexachat:unauthorized'));
+    expect(await screen.findByRole('heading', { name: '管理员登录' })).toBeInTheDocument();
+    expect(screen.getAllByText('管理员会话已失效，请重新登录')).toHaveLength(1);
+    expect(sessionStorage.getItem('qingwaguagua_admin_session')).toBeNull();
   });
 
   it('危险操作弹窗接管焦点并支持 Escape', async () => {
@@ -120,6 +449,8 @@ describe('邻里通讯管理后台', () => {
     await user.click(actions[0]);
     const dialog = screen.getByRole('dialog');
     expect(dialog).toBeInTheDocument();
+    expect(screen.getByLabelText('处置理由')).toHaveValue('');
+    expect(screen.getByRole('button', { name: '确认封禁' })).toBeDisabled();
     await waitFor(() => expect(screen.getByRole('button', { name: '取消' })).toHaveFocus());
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -131,7 +462,92 @@ describe('邻里通讯管理后台', () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: '删除 代开发票' }));
     expect(screen.getByRole('heading', { name: '删除敏感词规则' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '删除规则' })).toBeInTheDocument();
+    const confirm = screen.getByRole('button', { name: '删除规则' });
+    expect(screen.getByLabelText('删除理由')).toHaveValue('');
+    expect(confirm).toBeDisabled();
+    await user.type(screen.getByLabelText('删除理由'), '规则已被更精准的条目替代');
+    expect(confirm).toBeEnabled();
+  });
+
+  it('解散群组必须由操作人主动填写理由', async () => {
+    window.history.replaceState({}, '', '/groups');
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: '解散群组' }));
+    const dialog = screen.getByRole('dialog');
+    const confirm = within(dialog).getByRole('button', { name: '解散群组' });
+    expect(within(dialog).getByLabelText('解散理由')).toHaveValue('');
+    expect(confirm).toBeDisabled();
+    await user.type(within(dialog).getByLabelText('解散理由'), '多次处置后仍持续传播违规内容');
+    expect(confirm).toBeEnabled();
+  });
+
+  it('新建公告在完成内容与操作理由前不允许提交', async () => {
+    window.history.replaceState({}, '', '/announcements');
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: '新建公告' }));
+    const confirm = screen.getByRole('button', { name: '创建公告' });
+    expect(screen.getByLabelText('操作理由')).toHaveValue('');
+    expect(confirm).toBeDisabled();
+    await user.type(screen.getByLabelText('操作理由'), '运营计划 OPS-2026-0815');
+    expect(confirm).toBeDisabled();
+    await user.type(screen.getByLabelText('公告标题'), '系统维护通知');
+    await user.type(screen.getByLabelText('公告正文'), '今晚 23:00 开始进行系统维护，预计 30 分钟。');
+    expect(confirm).toBeEnabled();
+  });
+
+  it('公告编辑存在未保存内容时关闭会先确认并保留草稿', async () => {
+    window.history.replaceState({}, '', '/announcements');
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: '新建公告' }));
+    await user.type(screen.getByLabelText('公告标题'), '临时维护公告');
+    await user.type(screen.getByLabelText('公告正文'), '今晚进行短时维护。');
+    await user.type(screen.getByLabelText('操作理由'), '变更单 OPS-2026-0816');
+
+    await user.click(screen.getByRole('button', { name: '关闭' }));
+    expect(screen.getByRole('heading', { name: '放弃未保存的公告？' })).toBeInTheDocument();
+    expect(screen.getByText('标题、正文、投放范围和定时设置将全部丢失。')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '继续编辑' })).toHaveFocus();
+
+    await user.click(screen.getByRole('button', { name: '继续编辑' }));
+    expect(screen.getByRole('heading', { name: '新建运营公告' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '关闭' })).toHaveFocus();
+    expect(screen.getByLabelText('公告标题')).toHaveValue('临时维护公告');
+    expect(screen.getByLabelText('公告正文')).toHaveValue('今晚进行短时维护。');
+    expect(screen.getByLabelText('操作理由')).toHaveValue('变更单 OPS-2026-0816');
+
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('heading', { name: '放弃未保存的公告？' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('heading', { name: '新建运营公告' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '关闭' })).toHaveFocus();
+
+    await user.click(screen.getByRole('button', { name: '取消' }));
+    await user.click(screen.getByRole('button', { name: '放弃修改' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '新建公告' }));
+    expect(screen.getByLabelText('公告标题')).toHaveValue('');
+    expect(screen.getByLabelText('公告正文')).toHaveValue('');
+    expect(screen.getByLabelText('操作理由')).toHaveValue('');
+  });
+
+  it('定向公告从真实账号中添加接收用户而不手填用户 ID', async () => {
+    window.history.replaceState({}, '', '/announcements');
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: '新建公告' }));
+    await user.selectOptions(screen.getByLabelText('投放范围'), 'users');
+    const receiver = screen.getByLabelText('添加公告接收用户');
+    await waitFor(() => expect(within(receiver).getByRole('option', { name: '林夏 · linxia' })).toBeInTheDocument());
+    expect(screen.queryByLabelText('用户 ID（逗号或换行分隔）')).not.toBeInTheDocument();
+
+    await user.selectOptions(receiver, 'u_10291');
+    expect(screen.getByLabelText('已选公告接收用户')).toHaveTextContent('林夏 · linxia');
+    expect(screen.getByRole('button', { name: '移除林夏 · linxia' })).toBeInTheDocument();
   });
 
   it('举报状态筛选使用全部可键盘聚焦的普通按钮', async () => {
@@ -142,11 +558,11 @@ describe('邻里通讯管理后台', () => {
     expect(buttons).toHaveLength(5);
     buttons.forEach((button) => expect(button.tabIndex).toBe(0));
     expect(buttons[0]).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByText('当前队列已处理完')).toBeInTheDocument();
   });
 
   it('点击下一页时使用服务端 nextCursor 而非本地切片', async () => {
-    localStorage.setItem('nexachat_data_mode', 'live');
-    sessionStorage.setItem('nexachat_admin_session', JSON.stringify(session));
+    sessionStorage.setItem('qingwaguagua_admin_session', JSON.stringify(session));
     const firstPage = Array.from({ length: 20 }, (_, index) => ({ id: `u_${index}`, name: `用户${index}`, createdAt: '2026-07-31T00:00:00Z' }));
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const next = String(input).includes('cursor=next-user');
@@ -162,8 +578,7 @@ describe('邻里通讯管理后台', () => {
   });
 
   it('举报处置失败时保留弹窗错误且不显示成功通知', async () => {
-    localStorage.setItem('nexachat_data_mode', 'live');
-    sessionStorage.setItem('nexachat_admin_session', JSON.stringify(session));
+    sessionStorage.setItem('qingwaguagua_admin_session', JSON.stringify(session));
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/resolve')) return { ok: false, status: 409, headers: new Headers(), json: async () => ({ error: { code: 'TARGET_CHANGED', message: '目标消息状态已变化' } }) };
@@ -193,12 +608,66 @@ describe('邻里通讯管理后台', () => {
     expect(await screen.findByText('WuKongIM 长连接')).toBeInTheDocument();
   });
 
+  it('系统健康页面不会把实时消息或管理端口故障汇总为正常', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/health')) return response({ items: [
+        { name: '青蛙呱呱 API', status: 'healthy', latency: 1, uptime: '2 天', version: '当前部署', detail: 'HTTP 服务已响应' },
+        { name: 'PostgreSQL 数据库', status: 'healthy', latency: 2, uptime: '实时探测', version: '当前部署', detail: '依赖服务响应正常' },
+        { name: 'WuKongIM 实时消息', status: 'down', latency: 4, uptime: '实时探测', version: '当前部署', detail: '依赖服务当前无法连接，请检查进程、端口和网络' },
+        { name: 'WuKongIM 管理接口', status: 'down', latency: 5, uptime: '实时探测', version: '当前部署', detail: '依赖服务当前无法连接，请检查进程、端口和网络' },
+      ] });
+      return liveFixture(input, init);
+    }));
+    window.history.replaceState({}, '', '/system-health');
+    render(<App />);
+    expect(await screen.findByText('2 个检测项目需要关注')).toBeInTheDocument();
+    expect(screen.getAllByText('服务中断')).toHaveLength(2);
+    expect(screen.queryByText('当前检测项目正常')).not.toBeInTheDocument();
+  });
+
+  it('系统健康页面把缺失状态明确标记为未知并计入关注项', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/health')) return response({ items: [
+        { name: '对象存储', latency: 4 },
+      ] });
+      return liveFixture(input, init);
+    }));
+    window.history.replaceState({}, '', '/system-health');
+    render(<App />);
+
+    expect(await screen.findByText('1 个检测项目需要关注')).toBeInTheDocument();
+    expect(screen.getByText('状态未知')).toBeInTheDocument();
+    expect(screen.getByText('服务未返回健康状态')).toBeInTheDocument();
+    expect(screen.queryByText('当前检测项目正常')).not.toBeInTheDocument();
+  });
+
+  it('运行概览不会把服务端缺失的计数和趋势伪造成零', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/dashboard')) return response({ wukongStatus: 'ok' });
+      return liveFixture(input, init);
+    }));
+    window.history.replaceState({}, '', '/overview');
+    render(<App />);
+
+    expect((await screen.findAllByText('—')).length).toBeGreaterThanOrEqual(4);
+    expect(screen.getByText('消息总数未上报')).toBeInTheDocument();
+    expect(screen.getByText('举报队列未上报')).toBeInTheDocument();
+    expect(screen.getByText('暂无可用趋势数据')).toBeInTheDocument();
+    expect(screen.queryByText('当前队列为空')).not.toBeInTheDocument();
+  });
+
   it('发布系统设置前要求二次确认和理由', async () => {
     window.history.replaceState({}, '', '/settings');
     render(<App />);
     const user = userEvent.setup();
     await screen.findByRole('heading', { name: '系统设置' });
-    await user.click(await screen.findByRole('button', { name: '保存并立即生效' }));
+    const saveButton = await screen.findByRole('button', { name: '保存并立即生效' });
+    expect(saveButton).toBeDisabled();
+    expect(screen.getByText('当前设置与服务端一致')).toBeInTheDocument();
+    await user.click(screen.getByRole('checkbox', { name: /允许新用户注册/ }));
+    expect(saveButton).toBeEnabled();
+    expect(screen.getByText('有未保存的策略更改')).toBeInTheDocument();
+    await user.click(saveButton);
     expect(screen.getByRole('heading', { name: '发布系统业务策略' })).toBeInTheDocument();
     const confirm = screen.getByRole('button', { name: '确认发布' });
     expect(confirm).toBeDisabled();
@@ -206,9 +675,86 @@ describe('邻里通讯管理后台', () => {
     expect(confirm).toBeEnabled();
   });
 
+  it('系统设置保存失败时保留确认窗口并显示服务端错误', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PUT') {
+        return response({ error: { code: 'DATASTORE_UNAVAILABLE' } }, 503);
+      }
+      return liveFixture(input, init);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('checkbox', { name: /允许新用户注册/ }));
+    await user.click(screen.getByRole('button', { name: '保存并立即生效' }));
+    await user.type(screen.getByLabelText('发布理由'), '变更单 OPS-2026-0816');
+    await user.click(screen.getByRole('button', { name: '确认发布' }));
+
+    expect(await screen.findByText('数据服务暂时不可用，请稍后重试')).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: '发布系统业务策略' })).toBeInTheDocument();
+    expect(screen.getByLabelText('发布理由')).toHaveValue('变更单 OPS-2026-0816');
+  });
+
+  it('系统设置有未保存修改时保护侧栏导航和退出登录', async () => {
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('checkbox', { name: /允许新用户注册/ }));
+
+    await user.click(screen.getByRole('link', { name: '运行概览' }));
+    expect(screen.getByRole('heading', { name: '放弃未保存的修改？' })).toBeInTheDocument();
+    expect(screen.getByText(/系统业务策略有未保存的修改/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('heading', { name: '系统设置' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '退出管理后台' }));
+    expect(screen.getByRole('button', { name: '放弃修改并退出' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('heading', { name: '系统设置' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('link', { name: '运行概览' }));
+    await user.click(screen.getByRole('button', { name: '放弃修改并离开' }));
+    expect(await screen.findByRole('heading', { name: '运行概览' })).toBeInTheDocument();
+  });
+
+  it('系统设置有未保存修改时保护浏览器前进后退', async () => {
+    const confirmLeave = vi.fn(() => false);
+    vi.stubGlobal('confirm', confirmLeave);
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('checkbox', { name: /允许新用户注册/ }));
+
+    window.history.pushState({}, '', '/overview');
+    fireEvent.popState(window);
+    expect(confirmLeave).toHaveBeenCalledWith('系统业务策略有未保存的修改，确定离开当前页面吗？');
+    expect(window.location.pathname).toBe('/settings');
+    expect(screen.getByRole('heading', { name: '系统设置' })).toBeInTheDocument();
+
+    confirmLeave.mockReturnValue(true);
+    window.history.pushState({}, '', '/overview');
+    fireEvent.popState(window);
+    expect(await screen.findByRole('heading', { name: '运行概览' })).toBeInTheDocument();
+  });
+
+  it('公告时间异常时降级展示而不是让整页崩溃', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/announcements')) {
+        return response({ items: [{ id: 'notice_bad_time', title: '异常时间公告', content: '用于验证时间容错', status: 'published', targetType: 'all', targetUserIds: [], pushOnPublish: false, publishedAt: 'not-a-date' }], total: 1 });
+      }
+      return liveFixture(input, init);
+    }));
+    window.history.replaceState({}, '', '/announcements');
+    render(<App />);
+
+    expect(await screen.findByText('异常时间公告')).toBeInTheDocument();
+    expect(screen.getByText('时间未知')).toBeInTheDocument();
+    expect(screen.queryByText('页面暂时无法显示')).not.toBeInTheDocument();
+  });
+
   it('内容审核要求填写理由并发送确认字段', async () => {
-    localStorage.setItem('nexachat_data_mode', 'live');
-    sessionStorage.setItem('nexachat_admin_session', JSON.stringify(session));
+    sessionStorage.setItem('qingwaguagua_admin_session', JSON.stringify(session));
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (init?.method === 'POST') return { ok: true, status: 200, headers: new Headers(), json: async () => ({ id: 'moment_1', status: 'hidden' }) };
@@ -229,6 +775,28 @@ describe('邻里通讯管理后台', () => {
     expect(JSON.parse(String(write?.[1]?.body))).toEqual({ status: 'hidden', reason: '举报复核确认违规', confirmed: true });
   });
 
+  it('朋友圈媒体类型和可见范围始终展示中文', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/moments')) return response({
+        items: [{
+          id: 'moment_image_1', authorId: 'u_10291', authorName: '林夏', content: '',
+          mediaKind: 'image', media: [{ id: 'media_1' }, { id: 'media_2' }], visibility: 'public',
+          likeCount: 2, commentCount: 1, status: 'published', createdAt: '2026-08-16T08:00:00Z',
+        }],
+        total: 1,
+      });
+      return liveFixture(input, init);
+    }));
+    window.history.replaceState({}, '', '/content-moderation');
+
+    render(<App />);
+
+    expect(await screen.findByText('[图片 × 2]')).toBeInTheDocument();
+    expect(screen.getByText('所有好友')).toBeInTheDocument();
+    expect(screen.queryByText('image')).not.toBeInTheDocument();
+    expect(screen.queryByText('public')).not.toBeInTheDocument();
+  });
+
   it('表情商店可以创建分类和表情包', async () => {
     window.history.replaceState({}, '', '/content-moderation');
     render(<App />);
@@ -245,16 +813,58 @@ describe('邻里通讯管理后台', () => {
     await user.click(screen.getByRole('button', { name: '创建表情包' }));
     const packConfirm = screen.getByRole('button', { name: '保存表情包' });
     await user.type(screen.getByLabelText('表情包名称'), '新年祝福');
-    await user.type(screen.getByLabelText('封面媒体 ID'), 'media_cover_demo');
+    await waitFor(() => expect(within(screen.getByLabelText('表情包封面图片')).getByRole('option', { name: 'new-year-cover.png · 28.0 KB' })).toBeInTheDocument());
+    await user.selectOptions(screen.getByLabelText('表情包封面图片'), 'media_cover_20260815');
+    expect(screen.queryByLabelText('封面媒体 ID')).not.toBeInTheDocument();
     await user.type(screen.getByLabelText('操作理由'), '创建运营表情包');
     expect(packConfirm).toBeEnabled();
     await user.click(packConfirm);
     expect(await screen.findByText('新年祝福')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '表情' }));
+    const stickerImage = screen.getByLabelText('表情图片');
+    await waitFor(() => expect(within(stickerImage).getByRole('option', { name: 'new-year-smile.webp · 18.0 KB' })).toBeInTheDocument());
+    expect(screen.queryByLabelText('图片媒体 ID')).not.toBeInTheDocument();
+    await user.selectOptions(stickerImage, 'media_sticker_20260815');
+    expect(stickerImage).toHaveValue('media_sticker_20260815');
+  });
+
+  it('表情运营弹窗关闭前确认并保留未保存内容', async () => {
+    window.history.replaceState({}, '', '/content-moderation');
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('tab', { name: '表情包' }));
+
+    await user.click(await screen.findByRole('button', { name: '创建分类' }));
+    await user.type(screen.getByLabelText('分类名称'), '节日专题');
+    await user.type(screen.getByLabelText('操作理由'), '准备节日运营内容');
+    await user.click(screen.getByRole('button', { name: '关闭' }));
+    expect(screen.getByRole('heading', { name: '放弃未保存的分类？' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '继续编辑' }));
+    expect(screen.getByLabelText('分类名称')).toHaveValue('节日专题');
+    expect(screen.getByLabelText('操作理由')).toHaveValue('准备节日运营内容');
+    await user.click(screen.getByRole('button', { name: '保存分类' }));
+
+    await user.click(await screen.findByRole('button', { name: '创建表情包' }));
+    await user.type(screen.getByLabelText('表情包名称'), '春节祝福');
+    await waitFor(() => expect(within(screen.getByLabelText('表情包封面图片')).getByRole('option', { name: 'new-year-cover.png · 28.0 KB' })).toBeInTheDocument());
+    await user.selectOptions(screen.getByLabelText('表情包封面图片'), 'media_cover_20260815');
+    await user.type(screen.getByLabelText('描述'), '用于春节期间的祝福表情');
+    await user.type(screen.getByLabelText('操作理由'), '春节运营排期');
+    await user.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('heading', { name: '放弃未保存的表情包？' })).toBeInTheDocument();
+    expect(screen.getByText('名称、封面、描述、状态和操作理由将全部丢失。')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '继续编辑' }));
+    expect(screen.getByLabelText('表情包名称')).toHaveValue('春节祝福');
+    expect(screen.getByLabelText('表情包封面图片')).toHaveValue('media_cover_20260815');
+    expect(screen.getByLabelText('描述')).toHaveValue('用于春节期间的祝福表情');
+    await user.click(screen.getByRole('button', { name: '取消' }));
+    await user.click(screen.getByRole('button', { name: '放弃修改' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('系统运维角色可以发布客户端版本策略', async () => {
-    localStorage.setItem('nexachat_data_mode', 'live');
-    sessionStorage.setItem('nexachat_admin_session', JSON.stringify({ ...session, role: 'system_operator' }));
+    sessionStorage.setItem('qingwaguagua_admin_session', JSON.stringify({ ...session, role: 'system_operator' }));
     const policy = { platform: 'android', minimumVersion: '1.0.0', latestVersion: '1.1.0', forceUpdate: false, rolloutPercentage: 100, releaseNotes: '', downloadUrl: 'https://download.example.com/app.apk', updatedBy: 'ops', updatedAt: '2026-08-11T00:00:00Z' };
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => ({ ok: true, status: 200, headers: new Headers(), json: async () => init?.method === 'PUT' ? policy : { items: [policy] } }));
     vi.stubGlobal('fetch', fetchMock);
@@ -262,7 +872,11 @@ describe('邻里通讯管理后台', () => {
     render(<App />);
     const user = userEvent.setup();
     const publish = await screen.findByRole('button', { name: '保存并发布' });
+    expect(publish).toBeDisabled();
+    expect(screen.getByText('当前策略与服务端一致')).toBeInTheDocument();
+    await user.type(screen.getByLabelText('更新说明'), '修复消息同步问题');
     expect(publish).toBeEnabled();
+    expect(screen.getByText('有未发布的版本策略更改')).toBeInTheDocument();
     await user.click(publish);
     await user.type(screen.getByLabelText('发布原因'), '发布单 REL-1024');
     await user.click(screen.getByRole('button', { name: '确认发布' }));
@@ -271,9 +885,66 @@ describe('邻里通讯管理后台', () => {
     expect(JSON.parse(String(write?.[1]?.body))).toEqual(expect.objectContaining({ reason: '发布单 REL-1024', confirmed: true }));
   });
 
+  it('服务端缺失平台版本策略时不伪装成线上默认数据', async () => {
+    window.history.replaceState({}, '', '/client-versions');
+    render(<App />);
+    const user = userEvent.setup();
+
+    expect(await screen.findByText('服务端尚未配置 Android 版本策略；以下内容仅是本地新建草稿，不是线上数据。')).toBeInTheDocument();
+    expect(screen.getByText('尚未创建线上版本策略')).toBeInTheDocument();
+    expect(screen.queryByText('当前策略与服务端一致')).not.toBeInTheDocument();
+
+    const create = screen.getByRole('button', { name: '创建并发布' });
+    expect(create).toBeDisabled();
+    await user.type(screen.getByLabelText('更新说明'), '首次创建 Android 发布策略');
+    expect(create).toBeEnabled();
+    await user.click(create);
+    expect(screen.getByRole('heading', { name: '创建并发布 Android 版本策略' })).toBeInTheDocument();
+  });
+
+  it('客户端版本策略在二次确认前完成本地规则校验', async () => {
+    window.history.replaceState({}, '', '/client-versions');
+    render(<App />);
+    const user = userEvent.setup();
+    const latest = await screen.findByLabelText('最新发布版本');
+    await user.clear(latest);
+    await user.type(latest, '0.9.0');
+    await user.click(screen.getByRole('button', { name: '创建并发布' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('最新发布版本不能低于最低支持版本');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    await user.clear(latest);
+    await user.type(latest, '1.1.0');
+    await user.type(screen.getByLabelText('下载地址'), 'http://downloads.example.com/app.apk');
+    await user.click(screen.getByRole('button', { name: '创建并发布' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('HTTPS 地址');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    await user.clear(screen.getByLabelText('下载地址'));
+    await user.type(screen.getByLabelText('下载地址'), 'https://downloads.example.com/app.apk');
+    await user.click(screen.getByRole('button', { name: '创建并发布' }));
+    expect(screen.getByRole('heading', { name: '创建并发布 Android 版本策略' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '确认发布' })).toBeDisabled();
+  });
+
+  it('切换客户端平台前确认放弃尚未发布的修改', async () => {
+    window.history.replaceState({}, '', '/client-versions');
+    render(<App />);
+    const user = userEvent.setup();
+    await user.type(await screen.findByLabelText('更新说明'), '尚未发布的 Android 修改');
+    await user.click(screen.getByRole('tab', { name: 'iOS' }));
+    expect(screen.getByRole('heading', { name: '放弃未发布的版本策略？' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Android' })).toHaveAttribute('aria-selected', 'true');
+    await user.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByLabelText('更新说明')).toHaveValue('尚未发布的 Android 修改');
+    await user.click(screen.getByRole('tab', { name: 'iOS' }));
+    await user.click(screen.getByRole('button', { name: '放弃更改并切换' }));
+    expect(screen.getByRole('tab', { name: 'iOS' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByLabelText('更新说明')).toHaveValue('');
+  });
+
   it('群通话记录展示完整参与状态和友好失败原因', async () => {
-    localStorage.setItem('nexachat_data_mode', 'live');
-    sessionStorage.setItem('nexachat_admin_session', JSON.stringify(session));
+    sessionStorage.setItem('qingwaguagua_admin_session', JSON.stringify(session));
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true, status: 200, headers: new Headers(),
       json: async () => ({ items: [{
@@ -291,6 +962,27 @@ describe('邻里通讯管理后台', () => {
     expect(screen.getByText('结束人 u_2')).toBeInTheDocument();
   });
 
+  it('不同业务空态使用对应语义图标而不是统一搜索图标', async () => {
+    window.history.replaceState({}, '', '/online');
+    const onlineView = render(<App />);
+    const onlineTitle = await screen.findByText('当前没有在线用户');
+    expect(onlineTitle.closest('.state-box')?.querySelector('.lucide-wifi')).not.toBeNull();
+    expect(onlineTitle.closest('.state-box')?.querySelector('.lucide-search')).toBeNull();
+    onlineView.unmount();
+
+    window.history.replaceState({}, '', '/reports');
+    const reportView = render(<App />);
+    const reportTitle = await screen.findByText('当前队列已处理完');
+    expect(reportTitle.closest('.state-box')?.querySelector('.lucide-shield-check')).not.toBeNull();
+    reportView.unmount();
+
+    window.history.replaceState({}, '', '/calls');
+    const callView = render(<App />);
+    const callTitle = await screen.findByText('没有匹配的通话');
+    expect(callTitle.closest('.state-box')?.querySelector('.lucide-phone-call')).not.toBeNull();
+    callView.unmount();
+  });
+
   it('统一展示 WuKongIM 节点并可切换到 LiveKit 房间', async () => {
     window.history.replaceState({}, '', '/im-infrastructure');
     render(<App />);
@@ -301,19 +993,60 @@ describe('邻里通讯管理后台', () => {
     expect(screen.getByText('Loki 日志')).toBeInTheDocument();
     expect(screen.getByText('压力测试模式')).toBeInTheDocument();
     const user = userEvent.setup();
+    const overviewTab = screen.getByRole('tab', { name: '运行概览' });
+    overviewTab.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(screen.getByRole('tab', { name: '连接' })).toHaveFocus();
+    expect(screen.getByRole('tab', { name: '连接' })).toHaveAttribute('aria-selected', 'true');
+    await user.keyboard('{End}');
+    expect(screen.getByRole('tab', { name: '音视频房间' })).toHaveFocus();
+    expect(screen.getByRole('tab', { name: '音视频房间' })).toHaveAttribute('aria-selected', 'true');
     await user.click(screen.getByRole('tab', { name: '音视频房间' }));
     expect(await screen.findByLabelText('LiveKit 资源指标')).toBeInTheDocument();
     expect(screen.getByText('媒体进程资源')).toBeInTheDocument();
     expect(screen.getByText('近 5 分钟丢包')).toBeInTheDocument();
-    expect(await screen.findByText('call_demo')).toBeInTheDocument();
+    expect((await screen.findAllByText('call_20260815_01')).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: '关闭房间' })).toBeEnabled();
     await user.click(screen.getByRole('tab', { name: '插件' }));
     expect(screen.getByRole('heading', { name: '签名插件发布' })).toBeInTheDocument();
     expect(screen.getByText(/AI Receive 插件会被拒绝/)).toBeInTheDocument();
+    expect(await screen.findByText('运行中')).toBeInTheDocument();
     await user.click(await screen.findByRole('button', { name: '运行日志' }));
     expect(screen.getByRole('heading', { name: '插件运行日志' })).toBeInTheDocument();
     expect(await screen.findByText('policy plugin ready')).toBeInTheDocument();
     expect(await screen.findByRole('button', { name: '卸载' })).toBeDisabled();
+  });
+
+  it('基础设施缺失指标时显示未上报而不是虚假的零值和关闭状态', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/wukong/overview')) return response({ server_id: '1', version: 'v2.2.5' });
+      if (url.includes('/wukong/settings')) return response({ logger: {} });
+      if (url.includes('/wukong/nodes')) return response({ data: [] });
+      return liveFixture(input, init);
+    }));
+    window.history.replaceState({}, '', '/im-infrastructure');
+    render(<App />);
+
+    expect((await screen.findAllByText('未上报')).length).toBeGreaterThanOrEqual(4);
+    expect(screen.getByText('用户处理器未上报')).toBeInTheDocument();
+    expect(screen.getByText('资源明细未上报')).toBeInTheDocument();
+    expect(screen.getAllByText('状态未知')).toHaveLength(4);
+    expect(screen.queryByText('0.0%')).not.toBeInTheDocument();
+  });
+
+  it('审计结果缺失时明确显示状态未知而不是成功', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => response({
+      items: [{ id: 'audit_missing_result', action: 'settings.updated', target: 'global', createdAt: '2026-08-16T00:00:00Z' }],
+      total: 1,
+    })));
+    window.history.replaceState({}, '', '/audit');
+    render(<App />);
+
+    const unknownResult = await screen.findByText('状态未知');
+    expect(unknownResult).toBeInTheDocument();
+    expect(within(unknownResult.closest('tr')!).queryByText('成功')).not.toBeInTheDocument();
+    expect(screen.getByText('未提供')).toBeInTheDocument();
   });
 
   it('可在 IM 基础设施中管理系统账号', async () => {
@@ -324,7 +1057,9 @@ describe('邻里通讯管理后台', () => {
     expect(screen.getByRole('heading', { name: '系统账号' })).toBeInTheDocument();
     expect(await screen.findByText('系统通知')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '设为系统账号' })).toBeDisabled();
-    await user.type(screen.getByLabelText('用户 UID'), 'u_notice_2');
+    await waitFor(() => expect(within(screen.getByLabelText('系统账号候选')).getByRole('option', { name: '林夏 · linxia' })).toBeInTheDocument());
+    await user.selectOptions(screen.getByLabelText('系统账号候选'), 'u_10291');
+    expect(screen.queryByLabelText('用户 UID')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '设为系统账号' })).toBeEnabled();
   });
 
@@ -341,6 +1076,35 @@ describe('邻里通讯管理后台', () => {
     expect(screen.getByText('WuKong Webhook 队列')).toBeInTheDocument();
     expect(screen.getByText(/已对账：12/)).toBeInTheDocument();
     expect(screen.getAllByText(/最老积压（秒）：0/)).toHaveLength(2);
+    expect(screen.getByText('暂无管理员记录')).toBeInTheDocument();
+    expect(screen.getByText('暂无角色权限定义')).toBeInTheDocument();
+  });
+
+  it('可编辑真实机器人命令菜单并要求填写审计理由', async () => {
+    window.history.replaceState({}, '', '/im-infrastructure');
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('tab', { name: '机器人' }));
+    expect(screen.getByRole('heading', { name: '机器人' })).toBeInTheDocument();
+    expect(await screen.findByText('使用帮助')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '编辑' }));
+    expect(screen.getByRole('heading', { name: /配置机器人/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '保存配置' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: '添加菜单' }));
+    await user.type(screen.getByLabelText('菜单名称 2'), '人工客服');
+    await user.type(screen.getByLabelText('发送命令 2'), '转人工');
+    await user.type(screen.getByLabelText('机器人配置理由'), '客服菜单更新单 CS-18');
+    expect(screen.getByRole('button', { name: '保存配置' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: '关闭' }));
+    expect(screen.getByRole('heading', { name: '放弃未保存的机器人配置？' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '继续编辑' }));
+    expect(screen.getByLabelText('菜单名称 2')).toHaveValue('人工客服');
+    expect(screen.getByLabelText('发送命令 2')).toHaveValue('转人工');
+    expect(screen.getByLabelText('机器人配置理由')).toHaveValue('客服菜单更新单 CS-18');
+    await user.click(screen.getByRole('button', { name: '保存配置' }));
+    await waitFor(() => expect(screen.queryByRole('heading', { name: /配置机器人/ })).not.toBeInTheDocument());
+    const write = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).includes('/wukong/robots/u_notice') && init?.method === 'PUT');
+    expect(JSON.parse(String(write?.[1]?.body))).toEqual(expect.objectContaining({ confirmed: true, reason: '客服菜单更新单 CS-18', menus: expect.arrayContaining([expect.objectContaining({ cmd: '转人工', remark: '人工客服' })]) }));
   });
 
   it('频道运营覆盖成员、临时订阅与黑白名单入口', async () => {
@@ -351,7 +1115,14 @@ describe('邻里通讯管理后台', () => {
     await user.click(await screen.findByRole('button', { name: '运营管理' }));
     expect(screen.getByRole('heading', { name: '成员与临时订阅' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '黑白名单' })).toBeInTheDocument();
-    await user.type(screen.getByLabelText('成员用户 ID'), 'u_temp');
+    expect(screen.getByLabelText('频道成员账号')).toBeInTheDocument();
+    expect(screen.getByLabelText('名单账号')).toBeInTheDocument();
+    expect(screen.queryByLabelText('成员用户 ID')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('名单用户 ID')).not.toBeInTheDocument();
+    expect(await screen.findByText('运营人员')).toBeInTheDocument();
+    const memberAccount = screen.getByLabelText('频道成员账号');
+    await waitFor(() => expect(within(memberAccount).getByRole('option', { name: '林夏 · linxia' })).toBeInTheDocument());
+    await user.selectOptions(memberAccount, 'u_10291');
     await user.click(screen.getByRole('button', { name: '添加' }));
     expect(screen.getByRole('heading', { name: '添加频道成员' })).toBeInTheDocument();
     const confirm = screen.getByRole('button', { name: '确认并记录' });
@@ -360,18 +1131,138 @@ describe('邻里通讯管理后台', () => {
     expect(confirm).toBeEnabled();
   });
 
+  it('创建频道从真实账号和已有社区中选择归属而不要求原始 ID', async () => {
+    window.history.replaceState({}, '', '/business-channels');
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: '创建频道' }));
+    const dialog = screen.getByRole('dialog', { name: '创建业务频道' });
+    expect(within(dialog).getByLabelText('查找频道所有者')).toBeInTheDocument();
+    expect(within(dialog).getByLabelText('频道所有者账号')).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText('所有者用户 ID')).not.toBeInTheDocument();
+
+    const ownerOption = await within(dialog).findByRole('option', { name: '林夏 · linxia' });
+    expect(ownerOption).toBeInTheDocument();
+    await user.selectOptions(within(dialog).getByLabelText('频道所有者账号'), 'u_10291');
+    await user.selectOptions(within(dialog).getByLabelText('频道类型'), '5');
+
+    const parent = within(dialog).getByLabelText('话题所属社区');
+    expect(parent).toBeInTheDocument();
+    expect(within(parent).getByRole('option', { name: '产品交流社区' })).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText('父社区 ID')).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: '关闭' }));
+    expect(screen.getByRole('heading', { name: '放弃未保存的频道？' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '继续编辑' }));
+    expect(screen.getByLabelText('频道所有者账号')).toHaveValue('u_10291');
+    expect(screen.getByLabelText('频道类型')).toHaveValue('5');
+  });
+
+  it('频道运营在本地拦截非法慢速模式和已过期的临时订阅', async () => {
+    window.history.replaceState({}, '', '/business-channels');
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: '运营管理' }));
+
+    fireEvent.change(screen.getByLabelText('慢速模式秒数'), { target: { value: '90000' } });
+    await user.click(screen.getByRole('button', { name: '保存慢速模式' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('慢速模式必须是 0 到 86400 之间的整数秒');
+    expect(screen.queryByRole('heading', { name: '更新慢速模式' })).not.toBeInTheDocument();
+
+    const memberAccount = screen.getByLabelText('频道成员账号');
+    await waitFor(() => expect(within(memberAccount).getByRole('option', { name: '江宁 · jiangning' })).toBeInTheDocument());
+    await user.selectOptions(memberAccount, 'u_10288');
+    fireEvent.change(screen.getByLabelText('订阅到期时间'), { target: { value: '2020-01-01T08:00' } });
+    await user.click(screen.getByRole('button', { name: '添加' }));
+    expect(await screen.findByText('临时订阅到期时间必须晚于当前时间')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '添加频道成员' })).not.toBeInTheDocument();
+  });
+
   it('客服工作台提供队列认领、转接和结束处置', async () => {
     window.history.replaceState({}, '', '/support-workbench');
     render(<App />);
     expect(screen.getByRole('heading', { name: '客服工作台' })).toBeInTheDocument();
     expect(await screen.findByText('账号登录问题')).toBeInTheDocument();
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText('目标客服 ID'), 'u_support_2');
+    await user.selectOptions(screen.getByLabelText('目标客服'), 'u_support_2');
     await user.click(screen.getByRole('button', { name: '转接' }));
     expect(screen.getByRole('heading', { name: '转接客服会话' })).toBeInTheDocument();
     const confirm = screen.getByRole('button', { name: '确认并记录' });
     expect(confirm).toBeDisabled();
     await user.type(screen.getByLabelText('操作原因'), '升级到高级客服');
     expect(confirm).toBeEnabled();
+  });
+
+  it('客服坐席从真实账号与真实技能组中选择，不要求手填技术 ID', async () => {
+    window.history.replaceState({}, '', '/support-workbench');
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('tab', { name: '客服坐席' }));
+    await screen.findByRole('option', { name: '林夏 · linxia' });
+    expect(screen.getByLabelText('客服坐席账号')).toBeInTheDocument();
+    expect(screen.queryByLabelText('用户 ID')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('技能组 ID')).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText('客服坐席账号'), 'u_10291');
+    await user.click(screen.getByRole('checkbox', { name: /综合咨询/ }));
+    expect(screen.getByRole('button', { name: '保存坐席' })).toBeEnabled();
+  });
+
+  it('客服配置在本地拦截越界并发和缺失技能组', async () => {
+    window.history.replaceState({}, '', '/support-workbench');
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('tab', { name: '技能组' }));
+    await user.type(screen.getByLabelText('名称'), '大客户支持');
+    fireEvent.change(screen.getByLabelText('每坐席并发'), { target: { value: '101' } });
+    await user.click(screen.getByRole('button', { name: '保存技能组' }));
+    expect(await screen.findByText('每坐席并发必须是 1 到 100 之间的整数')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '创建客服技能组' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('tab', { name: '客服坐席' }));
+    await user.click(screen.getByRole('button', { name: '放弃修改并继续' }));
+    await screen.findByRole('option', { name: '林夏 · linxia' });
+    await user.selectOptions(screen.getByLabelText('客服坐席账号'), 'u_10291');
+    const skill = screen.getByRole('checkbox', { name: /综合咨询/ });
+    await user.click(skill);
+    fireEvent.change(screen.getByLabelText('总并发上限'), { target: { value: '0' } });
+    await user.click(screen.getByRole('button', { name: '保存坐席' }));
+    expect(await screen.findByText('总并发上限必须是 1 到 100 之间的整数')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '保存客服坐席' })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('总并发上限'), { target: { value: '5' } });
+    await user.click(skill);
+    expect(screen.getByRole('button', { name: '保存坐席' })).toBeDisabled();
+  });
+
+  it('客服配置切换页签前确认并保留未保存内容', async () => {
+    window.history.replaceState({}, '', '/support-workbench');
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('tab', { name: '技能组' }));
+    await user.type(screen.getByLabelText('名称'), 'VIP 客服');
+    await user.type(screen.getByLabelText('描述'), '服务重点客户');
+    await user.click(screen.getByRole('tab', { name: '客服坐席' }));
+    expect(screen.getByRole('heading', { name: '放弃未保存的客服配置？' })).toBeInTheDocument();
+    expect(screen.getByText('技能组名称、路由策略和并发上限将恢复到上次保存状态。')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('tab', { name: '技能组' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByLabelText('名称')).toHaveValue('VIP 客服');
+    expect(screen.getByLabelText('描述')).toHaveValue('服务重点客户');
+
+    await user.click(screen.getByRole('tab', { name: '客服坐席' }));
+    await user.click(screen.getByRole('button', { name: '放弃修改并继续' }));
+    expect(screen.getByRole('tab', { name: '客服坐席' })).toHaveAttribute('aria-selected', 'true');
+    await screen.findByRole('option', { name: '林夏 · linxia' });
+    await user.selectOptions(screen.getByLabelText('客服坐席账号'), 'u_10291');
+    await user.click(screen.getByRole('checkbox', { name: /综合咨询/ }));
+    await user.click(screen.getByRole('tab', { name: '会话队列' }));
+    expect(screen.getByRole('heading', { name: '放弃未保存的客服配置？' })).toBeInTheDocument();
+    expect(screen.getByText('坐席账号、技能组和接待状态将恢复到上次保存状态。')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByLabelText('客服坐席账号')).toHaveValue('u_10291');
+    expect(screen.getByRole('checkbox', { name: /综合咨询/ })).toBeChecked();
   });
 });

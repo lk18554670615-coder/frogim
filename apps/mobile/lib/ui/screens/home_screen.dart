@@ -2,10 +2,12 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_slidable/flutter_slidable.dart';
+import 'package:pinyin/pinyin.dart';
 
 import '../../core/app_controller.dart';
 import '../../core/app_theme.dart';
 import '../../core/models.dart';
+import '../../core/user_identity.dart';
 import '../widgets/linli_widgets.dart';
 import 'announcement_screens.dart';
 import 'business_channel_screens.dart';
@@ -14,6 +16,7 @@ import 'moments_screen.dart';
 import 'people_screens.dart';
 import 'qr_tools_screen.dart';
 import 'settings_screens.dart';
+import 'settings_preferences.dart';
 import 'sticker_store_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -21,10 +24,12 @@ class HomeScreen extends StatefulWidget {
     super.key,
     required this.controller,
     required this.onToggleTheme,
+    this.chatBackgroundOverride,
   });
 
   final AppController controller;
   final VoidCallback onToggleTheme;
+  final ChatBackgroundStyle? chatBackgroundOverride;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -86,7 +91,9 @@ class _HomeScreenState extends State<HomeScreen> {
                           unreadCount:
                               widget.controller.notificationUnreadCount,
                           hasMutedUnread: widget.controller.hasMutedUnread,
-                          onSelected: (value) => setState(() => index = value),
+                          contactNotificationCount:
+                              widget.controller.contactNotificationCount,
+                          onSelected: _selectSection,
                         ),
                 );
               },
@@ -170,6 +177,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   key: ValueKey('wide-chat-${selected.id}'),
                   controller: widget.controller,
                   conversation: selected,
+                  chatBackgroundOverride: widget.chatBackgroundOverride,
                   showDesktopDetails: showDetails,
                   onToggleDesktopDetails: width >= 1280
                       ? () => setState(
@@ -232,11 +240,10 @@ class _HomeScreenState extends State<HomeScreen> {
         }
         setState(() => index = 0);
         await Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => ChatScreen(
-              controller: widget.controller,
-              conversation: conversation!,
-            ),
+          chatScreenRoute(
+            context,
+            controller: widget.controller,
+            conversation: conversation,
           ),
         );
       } finally {
@@ -310,6 +317,7 @@ class _DesktopAccountNavigation extends StatelessWidget {
                 icon: CupertinoIcons.person_2_fill,
                 label: '联系人  Ctrl 2',
                 selected: selectedIndex == 1,
+                badge: controller.contactNotificationCount,
                 onPressed: () => onSelected(1),
               ),
               _DesktopNavButton(
@@ -420,7 +428,7 @@ class _DesktopNavButton extends StatelessWidget {
                   height: 40,
                   decoration: BoxDecoration(
                     color: selected
-                        ? LinliColors.yellow.withValues(alpha: .16)
+                        ? LinliColors.brandGreen.withValues(alpha: .16)
                         : Colors.transparent,
                     borderRadius: BorderRadius.circular(12),
                   ),
@@ -429,7 +437,7 @@ class _DesktopNavButton extends StatelessWidget {
                   icon,
                   size: 22,
                   color: selected
-                      ? LinliColors.yellow
+                      ? LinliColors.brandGreen
                       : const Color(0xFFCBD5E1),
                 ),
                 if (selected)
@@ -437,7 +445,7 @@ class _DesktopNavButton extends StatelessWidget {
                     left: 0,
                     child: DecoratedBox(
                       decoration: BoxDecoration(
-                        color: LinliColors.yellow,
+                        color: LinliColors.brandGreen,
                         borderRadius: BorderRadius.horizontal(
                           right: Radius.circular(99),
                         ),
@@ -494,7 +502,8 @@ class _DesktopDirectoryOverview extends StatelessWidget {
                 _DesktopDirectoryAction(
                   icon: CupertinoIcons.person_badge_plus,
                   title: '新的朋友',
-                  subtitle: '${controller.requests.length} 个申请',
+                  subtitle:
+                      '${controller.pendingIncomingFriendRequestCount} 个待处理申请',
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (_) =>
@@ -505,11 +514,23 @@ class _DesktopDirectoryOverview extends StatelessWidget {
                 _DesktopDirectoryAction(
                   icon: CupertinoIcons.person_2_fill,
                   title: '群聊邀请',
-                  subtitle: '查看待处理邀请',
+                  subtitle:
+                      '${controller.pendingIncomingGroupInvitationCount} 个待处理邀请',
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (_) =>
                           GroupInvitationsScreen(controller: controller),
+                    ),
+                  ),
+                ),
+                _DesktopDirectoryAction(
+                  icon: CupertinoIcons.group,
+                  title: '我的群聊',
+                  subtitle:
+                      '${controller.conversations.where((item) => item.kind == ConversationKind.group && !item.isBusinessChannel).length} 个群聊',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => SavedGroupsScreen(controller: controller),
                     ),
                   ),
                 ),
@@ -561,7 +582,7 @@ class _DesktopDirectoryAction extends StatelessWidget {
                 width: 40,
                 height: 40,
                 decoration: BoxDecoration(
-                  color: LinliColors.yellow.withValues(alpha: .16),
+                  color: LinliColors.brandGreen.withValues(alpha: .16),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Icon(icon, size: 21, color: LinliColors.navy),
@@ -644,7 +665,7 @@ class _DesktopToolsWorkspace extends StatelessWidget {
         _DesktopAction(
           icon: CupertinoIcons.person_badge_plus,
           title: '新的朋友',
-          subtitle: '${controller.requests.length} 个待处理申请',
+          subtitle: '${controller.pendingIncomingFriendRequestCount} 个待处理申请',
           onTap: () =>
               _push(context, FriendRequestsScreen(controller: controller)),
         ),
@@ -703,7 +724,7 @@ class _DesktopAccountWorkspace extends StatelessWidget {
                         ),
                         const SizedBox(height: 5),
                         Text(
-                          '邻里号 · ${user?.handle ?? '未设置'}',
+                          _profileIdentityLabel(user),
                           style: Theme.of(context).textTheme.bodyMedium,
                         ),
                         if ((user?.signature ?? '').trim().isNotEmpty) ...[
@@ -743,11 +764,25 @@ class _DesktopAccountWorkspace extends StatelessWidget {
               _DesktopAction(
                 icon: CupertinoIcons.lock_shield_fill,
                 title: '账号与安全',
-                subtitle: '手机号、密码、设备与账号注销',
+                subtitle: '手机号、密码与账号注销',
                 onTap: () => _push(
                   context,
                   AccountSecurityScreen(controller: controller),
                 ),
+              ),
+              _DesktopAction(
+                icon: CupertinoIcons.device_phone_portrait,
+                title: '登录设备',
+                subtitle: '查看并管理当前登录会话',
+                onTap: () =>
+                    _push(context, DevicesScreen(controller: controller)),
+              ),
+              _DesktopAction(
+                icon: CupertinoIcons.bookmark_fill,
+                title: '我的收藏',
+                subtitle: '查看收藏的消息、图片与文件',
+                onTap: () =>
+                    _push(context, FavoritesScreen(controller: controller)),
               ),
               _DesktopAction(
                 icon: CupertinoIcons.bell_fill,
@@ -776,7 +811,17 @@ class _DesktopAccountWorkspace extends StatelessWidget {
                 icon: CupertinoIcons.paintbrush_fill,
                 title: '外观与通用',
                 subtitle: '切换深浅外观与通用偏好',
-                onTap: onToggleTheme,
+                onTap: () => _push(
+                  context,
+                  GeneralSettingsScreen(onToggleTheme: onToggleTheme),
+                ),
+              ),
+              _DesktopAction(
+                icon: CupertinoIcons.photo_on_rectangle,
+                title: '聊天背景',
+                subtitle: '设置会话背景与显示风格',
+                onTap: () =>
+                    _push(context, const ChatBackgroundSettingsScreen()),
               ),
               _DesktopAction(
                 icon: CupertinoIcons.question_circle_fill,
@@ -843,7 +888,10 @@ class _DesktopActionGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
-      final columns = constraints.maxWidth >= 1080 ? 4 : 3;
+      final supportsFourColumns = constraints.maxWidth >= 1080;
+      final wouldLeaveSingleCard =
+          actions.length > 4 && actions.length % 4 == 1;
+      final columns = supportsFourColumns && !wouldLeaveSingleCard ? 4 : 3;
       const gap = 12.0;
       final width = (constraints.maxWidth - gap * (columns - 1)) / columns;
       return Wrap(
@@ -870,7 +918,9 @@ class _DesktopActionGrid extends StatelessWidget {
                             width: 40,
                             height: 40,
                             decoration: BoxDecoration(
-                              color: LinliColors.yellow.withValues(alpha: .18),
+                              color: LinliColors.brandGreen.withValues(
+                                alpha: .18,
+                              ),
                               borderRadius: BorderRadius.circular(11),
                             ),
                             child: Icon(
@@ -879,7 +929,7 @@ class _DesktopActionGrid extends StatelessWidget {
                               color:
                                   Theme.of(context).brightness ==
                                       Brightness.dark
-                                  ? LinliColors.yellow
+                                  ? LinliColors.brandGreen
                                   : LinliColors.navy,
                             ),
                           ),
@@ -917,21 +967,25 @@ class _LinliTabBar extends StatelessWidget {
     required this.selectedIndex,
     required this.unreadCount,
     required this.hasMutedUnread,
+    required this.contactNotificationCount,
     required this.onSelected,
   });
 
   final int selectedIndex;
   final int unreadCount;
   final bool hasMutedUnread;
+  final int contactNotificationCount;
   final ValueChanged<int> onSelected;
 
   @override
   Widget build(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
-    final activeColor = dark ? LinliColors.yellow : LinliColors.navy;
     final inactiveColor = dark
         ? LinliColors.darkPreview
         : LinliColors.tertiaryLabel;
+    final selectedColor = dark
+        ? LinliColors.brandGreen
+        : LinliColors.brandGreenDeep;
     const items = [
       ('消息', CupertinoIcons.chat_bubble, CupertinoIcons.chat_bubble_fill),
       ('联系人', CupertinoIcons.person_2, CupertinoIcons.person_2_fill),
@@ -961,22 +1015,14 @@ class _LinliTabBar extends StatelessWidget {
                       key: Key('home-tab-$i'),
                       minimumSize: const Size(44, 44),
                       padding: const EdgeInsets.only(top: 4, bottom: 4),
+                      // The default Cupertino pressed opacity fades the whole
+                      // item to 40% before the selected state is painted. On a
+                      // bottom navigation bar this reads as a visible flash.
+                      pressedOpacity: 1,
                       onPressed: () => onSelected(i),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          AnimatedContainer(
-                            duration: nexaMotionDuration(context),
-                            width: 20,
-                            height: 3,
-                            margin: const EdgeInsets.only(bottom: 3),
-                            decoration: BoxDecoration(
-                              color: selectedIndex == i
-                                  ? LinliColors.yellow
-                                  : Colors.transparent,
-                              borderRadius: BorderRadius.circular(99),
-                            ),
-                          ),
                           _MessageNavIcon(
                             key: Key('home-tab-icon-$i'),
                             icon: selectedIndex == i
@@ -984,11 +1030,12 @@ class _LinliTabBar extends StatelessWidget {
                                 : items[i].$2,
                             count: i == 0 ? unreadCount : 0,
                             showDot: i == 0 && hasMutedUnread,
+                            badgeCount: i == 1 ? contactNotificationCount : 0,
                             color: selectedIndex == i
-                                ? activeColor
+                                ? selectedColor
                                 : inactiveColor,
                           ),
-                          const SizedBox(height: 2),
+                          const SizedBox(height: 4),
                           Text(
                             items[i].$1,
                             maxLines: 1,
@@ -996,7 +1043,7 @@ class _LinliTabBar extends StatelessWidget {
                               height: 1.05,
                               fontSize: 11,
                               color: selectedIndex == i
-                                  ? activeColor
+                                  ? selectedColor
                                   : inactiveColor,
                               fontWeight: selectedIndex == i
                                   ? FontWeight.w600
@@ -1022,20 +1069,23 @@ class _MessageNavIcon extends StatelessWidget {
     required this.icon,
     required this.count,
     required this.showDot,
+    this.badgeCount = 0,
     this.color,
   });
 
   final IconData icon;
   final int count;
   final bool showDot;
+  final int badgeCount;
   final Color? color;
 
   @override
   Widget build(BuildContext context) {
     final child = Icon(icon, size: 24, color: color);
-    if (count > 0) {
+    final visibleCount = count > 0 ? count : badgeCount;
+    if (visibleCount > 0) {
       return Badge.count(
-        count: count,
+        count: visibleCount,
         backgroundColor: LinliColors.unread,
         textColor: Colors.white,
         child: child,
@@ -1051,53 +1101,46 @@ class _MessageNavIcon extends StatelessWidget {
 enum _HeaderAction { group, addFriend, scan, myQr }
 
 class _HeaderMenuItem extends StatelessWidget {
-  const _HeaderMenuItem({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-  });
+  const _HeaderMenuItem({required this.icon, required this.title});
 
   final IconData icon;
   final String title;
-  final String subtitle;
 
   @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      Container(
-        width: 34,
-        height: 34,
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: .08),
-          borderRadius: BorderRadius.circular(9),
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return Row(
+      children: [
+        Container(
+          key: Key('header-menu-icon-$title'),
+          width: 30,
+          height: 30,
+          decoration: BoxDecoration(
+            color: dark
+                ? LinliColors.brandGreen.withValues(alpha: .16)
+                : LinliColors.brandMintStrong,
+            borderRadius: BorderRadius.circular(9),
+          ),
+          child: Icon(
+            icon,
+            color: dark ? LinliColors.brandGreen : LinliColors.brandGreenDeep,
+            size: 17,
+          ),
         ),
-        child: Icon(icon, color: Colors.white, size: 18),
-      ),
-      const SizedBox(width: 11),
-      Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-              ),
+        const SizedBox(width: 11),
+        Expanded(
+          child: Text(
+            title,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: dark ? LinliColors.darkLabel : LinliColors.label,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
             ),
-            const SizedBox(height: 2),
-            Text(
-              subtitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Color(0xFFAAB3C2), fontSize: 11),
-            ),
-          ],
+          ),
         ),
-      ),
-    ],
-  );
+      ],
+    );
+  }
 }
 
 enum _ConversationFilter { all, direct, group, unread, mentioned, archived }
@@ -1152,10 +1195,19 @@ class _ConversationsTabState extends State<ConversationsTab> {
               onFilterChanged: (value) => setState(() => filter = value),
             ),
             Divider(height: 1, color: Theme.of(context).colorScheme.outline),
+            if (widget.controller.messagingUnavailable)
+              MessagingConnectionBanner(
+                retrying: widget.controller.connectionRetrying,
+                onRetry: widget.controller.retryConnection,
+              ),
             Expanded(
               child: _ConversationBody(
                 controller: widget.controller,
                 conversations: conversations,
+                showSystemNotifications:
+                    filter == _ConversationFilter.all ||
+                    (filter == _ConversationFilter.unread &&
+                        widget.controller.systemNotificationUnreadCount > 0),
                 selectedConversationId: widget.selectedConversationId,
                 onConversationSelected: widget.onConversationSelected,
                 emptyTitle: filter == _ConversationFilter.archived
@@ -1184,23 +1236,41 @@ class _ConversationsTabState extends State<ConversationsTab> {
             Expanded(
               child: ClipRRect(
                 borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(16),
+                  top: Radius.circular(20),
                 ),
                 child: ColoredBox(
                   color: dark
                       ? LinliColors.darkBackground
                       : LinliColors.background,
-                  child: _ConversationBody(
-                    controller: widget.controller,
-                    conversations: conversations,
-                    selectedConversationId: widget.selectedConversationId,
-                    onConversationSelected: widget.onConversationSelected,
-                    emptyTitle: filter == _ConversationFilter.archived
-                        ? '没有已归档会话'
-                        : '这里还没有对话',
-                    emptyBody: filter == _ConversationFilter.archived
-                        ? '向左滑动普通会话并选择“归档”，稍后可在这里恢复。'
-                        : '点击右上角加号，从单聊或群聊开始。',
+                  child: Column(
+                    children: [
+                      if (widget.controller.messagingUnavailable)
+                        MessagingConnectionBanner(
+                          retrying: widget.controller.connectionRetrying,
+                          onRetry: widget.controller.retryConnection,
+                        ),
+                      Expanded(
+                        child: _ConversationBody(
+                          controller: widget.controller,
+                          conversations: conversations,
+                          showSystemNotifications:
+                              filter == _ConversationFilter.all ||
+                              (filter == _ConversationFilter.unread &&
+                                  widget
+                                          .controller
+                                          .systemNotificationUnreadCount >
+                                      0),
+                          selectedConversationId: widget.selectedConversationId,
+                          onConversationSelected: widget.onConversationSelected,
+                          emptyTitle: filter == _ConversationFilter.archived
+                              ? '没有已归档会话'
+                              : '这里还没有对话',
+                          emptyBody: filter == _ConversationFilter.archived
+                              ? '向左滑动普通会话并选择“归档”，稍后可在这里恢复。'
+                              : '点击右上角加号，从单聊或群聊开始。',
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -1273,7 +1343,7 @@ class _DesktopMessagesHeader extends StatelessWidget {
               ),
               _DesktopFilterChip(
                 label: '未读',
-                count: controller.notificationUnreadCount,
+                count: controller.conversationUnreadCount,
                 selected: filter == _ConversationFilter.unread,
                 onPressed: () => onFilterChanged(_ConversationFilter.unread),
               ),
@@ -1321,12 +1391,12 @@ class _DesktopFilterChip extends StatelessWidget {
         onTap: onPressed,
         borderRadius: BorderRadius.circular(10),
         child: Container(
-          constraints: const BoxConstraints(minWidth: 48, minHeight: 40),
+          constraints: const BoxConstraints(minWidth: 48, minHeight: 44),
           padding: const EdgeInsets.symmetric(horizontal: 10),
           alignment: Alignment.center,
           decoration: BoxDecoration(
             color: selected
-                ? LinliColors.yellow
+                ? LinliColors.brandGreen
                 : Theme.of(context).colorScheme.surfaceContainerHigh,
             borderRadius: BorderRadius.circular(10),
           ),
@@ -1362,7 +1432,7 @@ class _MessagesHeader extends StatelessWidget {
     clipBehavior: Clip.none,
     children: [
       Padding(
-        padding: const EdgeInsets.fromLTRB(16, 2, 16, 4),
+        padding: const EdgeInsets.fromLTRB(16, 0, 12, 3),
         child: Column(
           children: [
             Row(
@@ -1373,95 +1443,111 @@ class _MessagesHeader extends StatelessWidget {
                     '消息',
                     style: Theme.of(
                       context,
-                    ).textTheme.headlineLarge?.copyWith(color: Colors.white),
+                    ).textTheme.headlineMedium?.copyWith(color: Colors.white),
                   ),
                 ),
-                PopupMenuButton<_HeaderAction>(
-                  key: const Key('messages-plus-menu'),
-                  tooltip: '快捷操作',
-                  color: const Color(0xFF202631),
-                  surfaceTintColor: Colors.transparent,
-                  elevation: 16,
-                  offset: const Offset(0, 8),
-                  constraints: const BoxConstraints(
-                    minWidth: 214,
-                    maxWidth: 236,
+                SizedBox.square(
+                  dimension: 44,
+                  child: PopupMenuButton<_HeaderAction>(
+                    key: const Key('messages-plus-menu'),
+                    tooltip: '更多操作',
+                    padding: EdgeInsets.zero,
+                    splashRadius: 22,
+                    color: Theme.of(context).brightness == Brightness.dark
+                        ? LinliColors.darkSurfaceElevated
+                        : LinliColors.surface,
+                    surfaceTintColor: Colors.transparent,
+                    shadowColor: LinliColors.navy.withValues(alpha: .14),
+                    elevation: 8,
+                    offset: const Offset(0, 6),
+                    menuPadding: const EdgeInsets.symmetric(vertical: 6),
+                    constraints: const BoxConstraints.tightFor(width: 184),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      side: BorderSide(
+                        color: Theme.of(context).brightness == Brightness.dark
+                            ? const Color(0xFF315044)
+                            : LinliColors.separator,
+                        width: .75,
+                      ),
+                    ),
+                    icon: Container(
+                      key: const Key('messages-plus-icon'),
+                      width: 28,
+                      height: 28,
+                      decoration: BoxDecoration(
+                        color: LinliColors.brandGreen,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        CupertinoIcons.add,
+                        color: LinliColors.navy,
+                        size: 16,
+                      ),
+                    ),
+                    onSelected: (value) {
+                      HapticFeedback.selectionClick();
+                      final screen = switch (value) {
+                        _HeaderAction.group => CreateGroupScreen(
+                          controller: controller,
+                        ),
+                        _HeaderAction.addFriend => SearchScreen(
+                          controller: controller,
+                        ),
+                        _HeaderAction.scan => QrScannerScreen(
+                          controller: controller,
+                        ),
+                        _HeaderAction.myQr => MyQrCodeScreen(
+                          controller: controller,
+                        ),
+                      };
+                      Navigator.of(
+                        context,
+                      ).push(MaterialPageRoute(builder: (_) => screen));
+                    },
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(
+                        key: Key('header-action-group'),
+                        value: _HeaderAction.group,
+                        height: 48,
+                        padding: EdgeInsets.symmetric(horizontal: 12),
+                        child: _HeaderMenuItem(
+                          icon: CupertinoIcons.group_solid,
+                          title: '发起群聊',
+                        ),
+                      ),
+                      PopupMenuItem(
+                        key: Key('header-action-add-friend'),
+                        value: _HeaderAction.addFriend,
+                        height: 48,
+                        padding: EdgeInsets.symmetric(horizontal: 12),
+                        child: _HeaderMenuItem(
+                          icon: CupertinoIcons.person_add_solid,
+                          title: '添加朋友',
+                        ),
+                      ),
+                      PopupMenuItem(
+                        key: Key('header-action-scan'),
+                        value: _HeaderAction.scan,
+                        height: 48,
+                        padding: EdgeInsets.symmetric(horizontal: 12),
+                        child: _HeaderMenuItem(
+                          icon: CupertinoIcons.qrcode_viewfinder,
+                          title: '扫一扫',
+                        ),
+                      ),
+                      PopupMenuItem(
+                        key: Key('header-action-my-qr'),
+                        value: _HeaderAction.myQr,
+                        height: 48,
+                        padding: EdgeInsets.symmetric(horizontal: 12),
+                        child: _HeaderMenuItem(
+                          icon: CupertinoIcons.qrcode,
+                          title: '我的二维码',
+                        ),
+                      ),
+                    ],
                   ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    side: BorderSide(color: Colors.white.withValues(alpha: .1)),
-                  ),
-                  icon: Container(
-                    key: const Key('messages-plus-icon'),
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: .1),
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: .18),
-                      ),
-                    ),
-                    child: const Icon(
-                      CupertinoIcons.add,
-                      color: Colors.white,
-                      size: 21,
-                    ),
-                  ),
-                  onSelected: (value) {
-                    HapticFeedback.selectionClick();
-                    final screen = switch (value) {
-                      _HeaderAction.group => CreateGroupScreen(
-                        controller: controller,
-                      ),
-                      _HeaderAction.addFriend => SearchScreen(
-                        controller: controller,
-                      ),
-                      _HeaderAction.scan => QrScannerScreen(
-                        controller: controller,
-                      ),
-                      _HeaderAction.myQr => MyQrCodeScreen(
-                        controller: controller,
-                      ),
-                    };
-                    Navigator.of(
-                      context,
-                    ).push(MaterialPageRoute(builder: (_) => screen));
-                  },
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(
-                      value: _HeaderAction.group,
-                      child: _HeaderMenuItem(
-                        icon: CupertinoIcons.group_solid,
-                        title: '发起群聊',
-                        subtitle: '选择联系人创建群组',
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: _HeaderAction.addFriend,
-                      child: _HeaderMenuItem(
-                        icon: CupertinoIcons.person_add_solid,
-                        title: '添加朋友',
-                        subtitle: '按邻里号、昵称或手机号查找',
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: _HeaderAction.scan,
-                      child: _HeaderMenuItem(
-                        icon: CupertinoIcons.qrcode_viewfinder,
-                        title: '扫一扫',
-                        subtitle: '扫描个人二维码',
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: _HeaderAction.myQr,
-                      child: _HeaderMenuItem(
-                        icon: CupertinoIcons.qrcode,
-                        title: '我的二维码',
-                        subtitle: '让朋友扫码添加你',
-                      ),
-                    ),
-                  ],
                 ),
               ],
             ),
@@ -1509,78 +1595,179 @@ class _MessagesHeader extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 6),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: SingleChildScrollView(
-                key: const Key('messages-filter-control'),
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    _StatusFilterButton(
-                      label: '全部',
-                      selected: filter == _ConversationFilter.all,
-                      onPressed: () => onFilterChanged(_ConversationFilter.all),
-                    ),
-                    const SizedBox(width: 6),
-                    _StatusFilterButton(
-                      label: '单聊',
-                      selected: filter == _ConversationFilter.direct,
-                      onPressed: () =>
-                          onFilterChanged(_ConversationFilter.direct),
-                    ),
-                    const SizedBox(width: 6),
-                    _StatusFilterButton(
-                      label: '群聊',
-                      selected: filter == _ConversationFilter.group,
-                      onPressed: () =>
-                          onFilterChanged(_ConversationFilter.group),
-                    ),
-                    const SizedBox(width: 6),
-                    _StatusFilterButton(
-                      key: const Key('unread-conversation-filter'),
-                      label: '未读',
-                      count: controller.notificationUnreadCount,
-                      selected: filter == _ConversationFilter.unread,
-                      onPressed: () => onFilterChanged(
-                        filter == _ConversationFilter.unread
-                            ? _ConversationFilter.all
-                            : _ConversationFilter.unread,
-                      ),
-                    ),
-                    if (controller.supportsMentionUnread) ...[
-                      const SizedBox(width: 6),
-                      _StatusFilterButton(
-                        key: const Key('mentioned-conversation-filter'),
-                        label: '@我',
-                        count: controller.mentionUnreadCount,
-                        selected: filter == _ConversationFilter.mentioned,
-                        onPressed: () => onFilterChanged(
-                          filter == _ConversationFilter.mentioned
-                              ? _ConversationFilter.all
-                              : _ConversationFilter.mentioned,
-                        ),
-                      ),
-                    ],
-                    const SizedBox(width: 6),
-                    _StatusFilterButton(
-                      key: const Key('archived-conversation-filter'),
-                      label: '已归档',
-                      count: controller.archivedConversationCount,
-                      selected: filter == _ConversationFilter.archived,
-                      onPressed: () => onFilterChanged(
-                        filter == _ConversationFilter.archived
-                            ? _ConversationFilter.all
-                            : _ConversationFilter.archived,
-                      ),
-                    ),
-                  ],
+            _ConversationFilterStrip(
+              children: [
+                _StatusFilterButton(
+                  label: '全部',
+                  selected: filter == _ConversationFilter.all,
+                  onPressed: () => onFilterChanged(_ConversationFilter.all),
                 ),
-              ),
+                const SizedBox(width: 6),
+                _StatusFilterButton(
+                  label: '单聊',
+                  selected: filter == _ConversationFilter.direct,
+                  onPressed: () => onFilterChanged(_ConversationFilter.direct),
+                ),
+                const SizedBox(width: 6),
+                _StatusFilterButton(
+                  label: '群聊',
+                  selected: filter == _ConversationFilter.group,
+                  onPressed: () => onFilterChanged(_ConversationFilter.group),
+                ),
+                const SizedBox(width: 6),
+                _StatusFilterButton(
+                  key: const Key('unread-conversation-filter'),
+                  label: '未读',
+                  count: controller.conversationUnreadCount,
+                  selected: filter == _ConversationFilter.unread,
+                  onPressed: () => onFilterChanged(
+                    filter == _ConversationFilter.unread
+                        ? _ConversationFilter.all
+                        : _ConversationFilter.unread,
+                  ),
+                ),
+                if (controller.supportsMentionUnread) ...[
+                  const SizedBox(width: 6),
+                  _StatusFilterButton(
+                    key: const Key('mentioned-conversation-filter'),
+                    label: '@我',
+                    count: controller.mentionUnreadCount,
+                    selected: filter == _ConversationFilter.mentioned,
+                    onPressed: () => onFilterChanged(
+                      filter == _ConversationFilter.mentioned
+                          ? _ConversationFilter.all
+                          : _ConversationFilter.mentioned,
+                    ),
+                  ),
+                ],
+                const SizedBox(width: 6),
+                _StatusFilterButton(
+                  key: const Key('archived-conversation-filter'),
+                  label: '已归档',
+                  count: controller.archivedConversationCount,
+                  selected: filter == _ConversationFilter.archived,
+                  onPressed: () => onFilterChanged(
+                    filter == _ConversationFilter.archived
+                        ? _ConversationFilter.all
+                        : _ConversationFilter.archived,
+                  ),
+                ),
+              ],
             ),
           ],
         ),
       ),
     ],
+  );
+}
+
+class _ConversationFilterStrip extends StatefulWidget {
+  const _ConversationFilterStrip({required this.children});
+
+  final List<Widget> children;
+
+  @override
+  State<_ConversationFilterStrip> createState() =>
+      _ConversationFilterStripState();
+}
+
+class _ConversationFilterStripState extends State<_ConversationFilterStrip> {
+  final ScrollController controller = ScrollController();
+  bool canScrollLeft = false;
+  bool canScrollRight = false;
+
+  @override
+  void initState() {
+    super.initState();
+    controller.addListener(_updateEdges);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _updateEdges());
+  }
+
+  @override
+  void didUpdateWidget(covariant _ConversationFilterStrip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _updateEdges());
+  }
+
+  void _updateEdges() {
+    if (!mounted || !controller.hasClients) return;
+    final nextLeft = controller.offset > 2;
+    final nextRight =
+        controller.offset < controller.position.maxScrollExtent - 2;
+    if (nextLeft == canScrollLeft && nextRight == canScrollRight) return;
+    setState(() {
+      canScrollLeft = nextLeft;
+      canScrollRight = nextRight;
+    });
+  }
+
+  @override
+  void dispose() {
+    controller
+      ..removeListener(_updateEdges)
+      ..dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    height: 44,
+    child: Stack(
+      children: [
+        SingleChildScrollView(
+          key: const Key('messages-filter-control'),
+          controller: controller,
+          scrollDirection: Axis.horizontal,
+          child: Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: Row(children: widget.children),
+          ),
+        ),
+        if (canScrollLeft)
+          const Positioned(
+            left: 0,
+            top: 0,
+            bottom: 0,
+            child: _FilterEdgeCue(left: true),
+          ),
+        if (canScrollRight)
+          const Positioned(
+            right: 0,
+            top: 0,
+            bottom: 0,
+            child: _FilterEdgeCue(left: false),
+          ),
+      ],
+    ),
+  );
+}
+
+class _FilterEdgeCue extends StatelessWidget {
+  const _FilterEdgeCue({required this.left});
+
+  final bool left;
+
+  @override
+  Widget build(BuildContext context) => IgnorePointer(
+    child: Container(
+      width: 24,
+      alignment: left ? Alignment.centerLeft : Alignment.centerRight,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: left ? Alignment.centerLeft : Alignment.centerRight,
+          end: left ? Alignment.centerRight : Alignment.centerLeft,
+          colors: const [LinliColors.navy, Color(0x00123B32)],
+        ),
+      ),
+      child: Padding(
+        padding: EdgeInsets.only(left: left ? 1 : 0, right: left ? 0 : 1),
+        child: Icon(
+          left ? CupertinoIcons.chevron_left : CupertinoIcons.chevron_right,
+          size: 11,
+          color: Colors.white70,
+        ),
+      ),
+    ),
   );
 }
 
@@ -1609,22 +1796,22 @@ class _StatusFilterButton extends StatelessWidget {
       onPressed: onPressed,
       child: AnimatedContainer(
         duration: nexaMotionDuration(context),
-        constraints: const BoxConstraints(minHeight: 36, minWidth: 64),
-        padding: const EdgeInsets.symmetric(horizontal: 12),
+        constraints: const BoxConstraints(minHeight: 36, minWidth: 48),
+        padding: const EdgeInsets.symmetric(horizontal: 10),
         decoration: BoxDecoration(
           color: selected
-              ? LinliColors.yellow
+              ? LinliColors.brandGreen
               : Colors.white.withValues(alpha: .08),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
             color: selected
-                ? LinliColors.yellow
+                ? LinliColors.brandGreen
                 : Colors.white.withValues(alpha: .12),
           ),
         ),
         alignment: Alignment.center,
         child: Text(
-          count == null ? label : '$label $count',
+          count == null || count == 0 ? label : '$label $count',
           style: TextStyle(
             color: selected ? LinliColors.navy : Colors.white,
             fontSize: 14,
@@ -1640,6 +1827,7 @@ class _ConversationBody extends StatelessWidget {
   const _ConversationBody({
     required this.controller,
     required this.conversations,
+    this.showSystemNotifications = true,
     this.selectedConversationId,
     this.onConversationSelected,
     this.emptyTitle = '这里还没有对话',
@@ -1647,6 +1835,7 @@ class _ConversationBody extends StatelessWidget {
   });
   final AppController controller;
   final List<Conversation> conversations;
+  final bool showSystemNotifications;
   final String? selectedConversationId;
   final ValueChanged<Conversation>? onConversationSelected;
   final String emptyTitle;
@@ -1654,7 +1843,6 @@ class _ConversationBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hasAnnouncements = controller.announcements.isNotEmpty;
     if (controller.loading && controller.conversations.isEmpty) {
       return const Center(child: CupertinoActivityIndicator());
     }
@@ -1667,13 +1855,9 @@ class _ConversationBody extends StatelessWidget {
         onAction: controller.refresh,
       );
     }
-    if (conversations.isEmpty) {
-      return StatePanel(
-        icon: CupertinoIcons.archivebox,
-        title: emptyTitle,
-        body: emptyBody,
-      );
-    }
+    final showConversationEmpty = conversations.isEmpty;
+    final canStartConversation = emptyTitle == '这里还没有对话';
+    final leadingItemCount = showSystemNotifications ? 1 : 0;
     return RefreshIndicator(
       onRefresh: controller.refresh,
       color: LinliColors.navy,
@@ -1681,12 +1865,34 @@ class _ConversationBody extends StatelessWidget {
         child: ListView.builder(
           physics: const AlwaysScrollableScrollPhysics(),
           padding: EdgeInsets.zero,
-          itemCount: conversations.length + (hasAnnouncements ? 1 : 0),
+          itemCount:
+              leadingItemCount +
+              conversations.length +
+              (showConversationEmpty ? 1 : 0),
           itemBuilder: (context, index) {
-            if (hasAnnouncements && index == 0) {
-              return AnnouncementTicker(controller: controller);
+            if (showSystemNotifications && index == 0) {
+              return KeyedSubtree(
+                key: const Key('system-notification-section'),
+                child: SystemNotificationTile(controller: controller),
+              );
             }
-            final itemIndex = index - (hasAnnouncements ? 1 : 0);
+            final contentIndex = index - leadingItemCount;
+            if (showConversationEmpty && contentIndex == 0) {
+              return StatePanel(
+                icon: CupertinoIcons.archivebox,
+                title: emptyTitle,
+                body: emptyBody,
+                actionLabel: canStartConversation ? '发起会话' : null,
+                onAction: canStartConversation
+                    ? () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => SearchScreen(controller: controller),
+                        ),
+                      )
+                    : null,
+              );
+            }
+            final itemIndex = contentIndex;
             return ConversationTile(
               key: ValueKey(conversations[itemIndex].id),
               conversation: conversations[itemIndex],
@@ -1805,175 +2011,186 @@ class ConversationTile extends StatelessWidget {
                 return;
               }
               Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => ChatScreen(
-                    controller: controller,
-                    conversation: conversation,
-                  ),
+                chatScreenRoute(
+                  context,
+                  controller: controller,
+                  conversation: conversation,
                 ),
               );
             },
             child: Container(
               constraints: const BoxConstraints(minHeight: 74),
-              padding: const EdgeInsets.fromLTRB(16, 9, 14, 9),
-              decoration: BoxDecoration(
-                border: Border(
-                  bottom: BorderSide(
-                    color: Theme.of(context).colorScheme.outline,
-                  ),
-                ),
-              ),
               child: Row(
                 children: [
-                  PersonAvatar(
-                    key: ValueKey('conversation-avatar-${conversation.id}'),
-                    name: conversation.title,
-                    size: 48,
-                    avatarUrl:
-                        conversation.avatarUrl ??
-                        conversation.members.firstOrNull?.avatarUrl,
-                    online:
-                        conversation.kind == ConversationKind.direct &&
-                        (conversation.members.firstOrNull?.isOnline ?? false),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 16, right: 12),
+                    child: PersonAvatar(
+                      key: ValueKey('conversation-avatar-${conversation.id}'),
+                      name: conversation.title,
+                      size: 48,
+                      avatarUrl:
+                          conversation.avatarUrl ??
+                          conversation.members.firstOrNull?.avatarUrl,
+                      online:
+                          conversation.kind == ConversationKind.direct &&
+                          (conversation.members.firstOrNull?.isOnline ?? false),
+                    ),
                   ),
-                  const SizedBox(width: 12),
                   Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(
-                          children: [
-                            if (highlighted) ...[
-                              Icon(
-                                CupertinoIcons.pin_fill,
-                                key: ValueKey(
-                                  'conversation-pinned-indicator-${conversation.id}',
-                                ),
-                                size: 12,
-                                color: dark
-                                    ? LinliColors.darkPreview
-                                    : LinliColors.preview,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                '置顶',
-                                style: Theme.of(context).textTheme.labelSmall
-                                    ?.copyWith(fontWeight: FontWeight.w600),
-                              ),
-                              const SizedBox(width: 7),
-                            ],
-                            Expanded(
-                              child: Text(
-                                key: ValueKey(
-                                  'conversation-title-${conversation.id}',
-                                ),
-                                conversation.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: Theme.of(context).textTheme.titleMedium,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              _relativeTime(conversation.updatedAt),
-                              style: Theme.of(context).textTheme.labelSmall,
-                            ),
-                          ],
+                    child: Container(
+                      key: ValueKey('conversation-content-${conversation.id}'),
+                      constraints: const BoxConstraints(minHeight: 74),
+                      padding: const EdgeInsets.fromLTRB(0, 9, 14, 9),
+                      decoration: BoxDecoration(
+                        border: Border(
+                          bottom: BorderSide(
+                            color: dark
+                                ? const Color(0xFF29443A)
+                                : const Color(0xFFD7E0DB),
+                            width: .75,
+                          ),
                         ),
-                        const SizedBox(height: 5),
-                        Row(
-                          children: [
-                            if (conversation.muted) ...[
-                              const Icon(
-                                CupertinoIcons.bell_slash_fill,
-                                size: 13,
-                                color: LinliColors.tertiaryLabel,
-                              ),
-                              const SizedBox(width: 4),
-                            ],
-                            Expanded(
-                              child: Text(
-                                subtitle,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: Theme.of(context).textTheme.bodyMedium
-                                    ?.copyWith(
-                                      color: draft.isEmpty
-                                          ? LinliColors.preview
-                                          : LinliColors.systemRed,
-                                      fontSize: 14,
-                                    ),
-                              ),
-                            ),
-                            if ((conversation.mentionUnreadCount ?? 0) > 0) ...[
-                              const SizedBox(width: 8),
-                              Container(
-                                key: ValueKey(
-                                  'conversation-mention-${conversation.id}',
-                                ),
-                                constraints: const BoxConstraints(
-                                  minHeight: 21,
-                                  minWidth: 34,
-                                ),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 6,
-                                ),
-                                alignment: Alignment.center,
-                                decoration: BoxDecoration(
-                                  color: LinliColors.yellow,
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                                child: const Text(
-                                  '@我',
-                                  style: TextStyle(
-                                    color: LinliColors.navy,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Row(
+                            children: [
+                              if (highlighted) ...[
+                                Icon(
+                                  CupertinoIcons.pin_fill,
+                                  key: ValueKey(
+                                    'conversation-pinned-indicator-${conversation.id}',
                                   ),
+                                  size: 12,
+                                  color: dark
+                                      ? LinliColors.darkPreview
+                                      : LinliColors.preview,
                                 ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  '置顶',
+                                  style: Theme.of(context).textTheme.labelSmall
+                                      ?.copyWith(fontWeight: FontWeight.w600),
+                                ),
+                                const SizedBox(width: 7),
+                              ],
+                              Expanded(
+                                child: Text(
+                                  key: ValueKey(
+                                    'conversation-title-${conversation.id}',
+                                  ),
+                                  conversation.title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(
+                                    context,
+                                  ).textTheme.titleMedium,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                _relativeTime(conversation.updatedAt),
+                                style: Theme.of(context).textTheme.labelSmall,
                               ),
                             ],
-                            if (conversation.unread > 0) ...[
-                              const SizedBox(width: 8),
-                              if (conversation.muted)
+                          ),
+                          const SizedBox(height: 5),
+                          Row(
+                            children: [
+                              if (conversation.muted) ...[
+                                const Icon(
+                                  CupertinoIcons.bell_slash_fill,
+                                  size: 13,
+                                  color: LinliColors.tertiaryLabel,
+                                ),
+                                const SizedBox(width: 4),
+                              ],
+                              Expanded(
+                                child: Text(
+                                  subtitle,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.bodyMedium
+                                      ?.copyWith(
+                                        color: draft.isEmpty
+                                            ? LinliColors.preview
+                                            : LinliColors.systemRed,
+                                        fontSize: 14,
+                                      ),
+                                ),
+                              ),
+                              if ((conversation.mentionUnreadCount ?? 0) >
+                                  0) ...[
+                                const SizedBox(width: 8),
                                 Container(
-                                  width: 9,
-                                  height: 9,
-                                  decoration: const BoxDecoration(
-                                    color: LinliColors.unread,
-                                    shape: BoxShape.circle,
+                                  key: ValueKey(
+                                    'conversation-mention-${conversation.id}',
                                   ),
-                                )
-                              else
-                                Container(
                                   constraints: const BoxConstraints(
-                                    minWidth: 21,
                                     minHeight: 21,
+                                    minWidth: 34,
                                   ),
                                   padding: const EdgeInsets.symmetric(
                                     horizontal: 6,
                                   ),
                                   alignment: Alignment.center,
                                   decoration: BoxDecoration(
-                                    color: LinliColors.unread,
+                                    color: LinliColors.brandGreen,
                                     borderRadius: BorderRadius.circular(999),
                                   ),
-                                  child: Text(
-                                    conversation.unread > 99
-                                        ? '99+'
-                                        : '${conversation.unread}',
-                                    style: const TextStyle(
-                                      color: Colors.white,
+                                  child: const Text(
+                                    '@我',
+                                    style: TextStyle(
+                                      color: LinliColors.navy,
                                       fontSize: 11,
                                       fontWeight: FontWeight.w700,
                                     ),
                                   ),
                                 ),
+                              ],
+                              if (conversation.unread > 0) ...[
+                                const SizedBox(width: 8),
+                                if (conversation.muted)
+                                  Container(
+                                    width: 9,
+                                    height: 9,
+                                    decoration: const BoxDecoration(
+                                      color: LinliColors.unread,
+                                      shape: BoxShape.circle,
+                                    ),
+                                  )
+                                else
+                                  Container(
+                                    constraints: const BoxConstraints(
+                                      minWidth: 21,
+                                      minHeight: 21,
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                    ),
+                                    alignment: Alignment.center,
+                                    decoration: BoxDecoration(
+                                      color: LinliColors.unread,
+                                      borderRadius: BorderRadius.circular(999),
+                                    ),
+                                    child: Text(
+                                      conversation.unread > 99
+                                          ? '99+'
+                                          : '${conversation.unread}',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                              ],
                             ],
-                          ],
-                        ),
-                      ],
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ],
@@ -2071,7 +2288,7 @@ String _relativeTime(DateTime time) {
   return '${time.month}/${time.day}';
 }
 
-class ContactsTab extends StatelessWidget {
+class ContactsTab extends StatefulWidget {
   const ContactsTab({
     super.key,
     required this.controller,
@@ -2083,120 +2300,493 @@ class ContactsTab extends StatelessWidget {
   final Future<void> Function(AppUser)? onContactSelected;
 
   @override
+  State<ContactsTab> createState() => _ContactsTabState();
+}
+
+class _ContactsTabState extends State<ContactsTab> {
+  final ScrollController _scrollController = ScrollController();
+  final GlobalKey _scrollViewportKey = GlobalKey();
+  final GlobalKey _contactsSectionKey = GlobalKey();
+  final Map<String, GlobalKey> _groupKeys = {};
+  double? _contactsStartOffset;
+  String? _activeLetter;
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  List<_ContactGroup> get _groups {
+    final byLetter = <String, List<AppUser>>{};
+    for (final user in widget.controller.contacts) {
+      byLetter.putIfAbsent(_contactInitial(user.name), () => []).add(user);
+    }
+    final letters = byLetter.keys.toList()
+      ..sort((a, b) {
+        if (a == '#') return 1;
+        if (b == '#') return -1;
+        return a.compareTo(b);
+      });
+    return [
+      for (final letter in letters)
+        _ContactGroup(
+          letter,
+          byLetter[letter]!..sort(
+            (a, b) =>
+                _contactSortName(a.name).compareTo(_contactSortName(b.name)),
+          ),
+        ),
+    ];
+  }
+
+  void _jumpToGroup(String letter, List<_ContactGroup> groups) {
+    final groupIndex = groups.indexWhere((group) => group.letter == letter);
+    if (groupIndex < 0 || !_scrollController.hasClients) return;
+    setState(() => _activeLetter = letter);
+
+    final sectionContext = _contactsSectionKey.currentContext;
+    final viewportContext = _scrollViewportKey.currentContext;
+    final sectionBox = sectionContext?.findRenderObject() as RenderBox?;
+    final viewportBox = viewportContext?.findRenderObject() as RenderBox?;
+    if (_contactsStartOffset == null &&
+        sectionBox != null &&
+        viewportBox != null) {
+      _contactsStartOffset =
+          _scrollController.offset +
+          sectionBox.localToGlobal(Offset.zero, ancestor: viewportBox).dy +
+          sectionBox.size.height;
+    }
+    final contactsStart = _contactsStartOffset;
+    if (contactsStart == null) return;
+    var target = contactsStart;
+    for (var index = 0; index < groupIndex; index++) {
+      target += 32 + groups[index].users.length * 68;
+    }
+    target = target.clamp(
+      _scrollController.position.minScrollExtent,
+      _scrollController.position.maxScrollExtent,
+    );
+    // Alphabet rails are direct-manipulation controls. An immediate jump stays
+    // responsive while the finger is still down and while it moves across
+    // several letters; an animation here can be cancelled by the next update.
+    _scrollController.jumpTo(target);
+  }
+
+  void _clearActiveLetter() {
+    if (!mounted || _activeLetter == null) return;
+    setState(() => _activeLetter = null);
+  }
+
+  @override
   Widget build(BuildContext context) => _TopLevelShell(
     title: '联系人',
-    desktopMode: desktopMode,
+    desktopMode: widget.desktopMode,
     action: IconButton(
       tooltip: '添加联系人',
-      color: desktopMode
+      color: widget.desktopMode
           ? Theme.of(context).colorScheme.onSurface
           : Colors.white,
       onPressed: () => Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => SearchScreen(controller: controller)),
+        MaterialPageRoute(
+          builder: (_) => SearchScreen(controller: widget.controller),
+        ),
       ),
       icon: const Icon(CupertinoIcons.person_add),
     ),
-    child: CustomScrollView(
-      slivers: [
-        SliverPadding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-          sliver: SliverToBoxAdapter(
-            child: LinliSearchBar(
-              hint: '搜索邻里号或手机号',
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => SearchScreen(controller: controller),
-                ),
-              ),
-            ),
-          ),
-        ),
-        SliverPadding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          sliver: SliverToBoxAdapter(
-            child: SectionCard(
-              children: [
-                SettingTile(
-                  icon: CupertinoIcons.person_badge_plus,
-                  title: '新的朋友',
-                  subtitle: controller.requests.isEmpty
-                      ? '暂无新申请'
-                      : '${controller.requests.length} 个待处理申请',
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) =>
-                          FriendRequestsScreen(controller: controller),
-                    ),
-                  ),
-                ),
-                SettingTile(
-                  icon: CupertinoIcons.person_2_fill,
-                  title: '群聊邀请',
-                  subtitle:
-                      controller.groupInvitations
-                          .where((item) => item.pending && !item.outgoing)
-                          .isEmpty
-                      ? '暂无待处理邀请'
-                      : '${controller.groupInvitations.where((item) => item.pending && !item.outgoing).length} 个待处理邀请',
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) =>
-                          GroupInvitationsScreen(controller: controller),
-                    ),
-                  ),
-                ),
-                SettingTile(
-                  icon: CupertinoIcons.person_2_fill,
-                  title: '创建群聊',
-                  subtitle: '选择联系人开始群组对话',
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => CreateGroupScreen(controller: controller),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        const SliverToBoxAdapter(child: SectionHeader('联系人')),
-        SliverList.builder(
-          itemCount: controller.contacts.length,
-          itemBuilder: (context, index) {
-            final user = controller.contacts[index];
-            return ListTile(
-              minTileHeight: 68,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-              leading: PersonAvatar(
-                name: user.name,
-                avatarUrl: user.avatarUrl,
-                online: user.isOnline,
-              ),
-              title: Text(user.name),
-              subtitle: Text(user.presence),
-              onTap: () async {
-                if (onContactSelected != null) {
-                  await onContactSelected!(user);
-                  return;
-                }
-                final conversation = await controller.createDirect(user);
-                if (conversation != null && context.mounted) {
-                  await Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => ChatScreen(
-                        controller: controller,
-                        conversation: conversation,
+    child: Builder(
+      builder: (context) {
+        final controller = widget.controller;
+        final groups = _groups;
+        for (final group in groups) {
+          _groupKeys.putIfAbsent(group.letter, GlobalKey.new);
+        }
+        return Stack(
+          children: [
+            CustomScrollView(
+              key: _scrollViewportKey,
+              controller: _scrollController,
+              slivers: [
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+                  sliver: SliverToBoxAdapter(
+                    child: LinliSearchBar(
+                      hint: '搜索联系人或呱呱号',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => SearchScreen(controller: controller),
+                        ),
                       ),
                     ),
-                  );
-                }
-              },
-            );
-          },
-        ),
-      ],
+                  ),
+                ),
+                SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  sliver: SliverToBoxAdapter(
+                    child: SectionCard(
+                      children: [
+                        SettingTile(
+                          icon: CupertinoIcons.person_badge_plus,
+                          title: '新的朋友',
+                          subtitle:
+                              controller.pendingIncomingFriendRequestCount == 0
+                              ? '暂无新申请'
+                              : '${controller.pendingIncomingFriendRequestCount} 个待处理申请',
+                          trailing:
+                              controller.pendingIncomingFriendRequestCount > 0
+                              ? Badge.count(
+                                  count: controller
+                                      .pendingIncomingFriendRequestCount,
+                                  backgroundColor: LinliColors.unread,
+                                  textColor: Colors.white,
+                                )
+                              : null,
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  FriendRequestsScreen(controller: controller),
+                            ),
+                          ),
+                        ),
+                        SettingTile(
+                          icon: CupertinoIcons.person_2_fill,
+                          title: '群聊邀请',
+                          subtitle:
+                              controller.pendingIncomingGroupInvitationCount ==
+                                  0
+                              ? '暂无待处理邀请'
+                              : '${controller.pendingIncomingGroupInvitationCount} 个待处理邀请',
+                          trailing:
+                              controller.pendingIncomingGroupInvitationCount > 0
+                              ? Badge.count(
+                                  count: controller
+                                      .pendingIncomingGroupInvitationCount,
+                                  backgroundColor: LinliColors.unread,
+                                  textColor: Colors.white,
+                                )
+                              : null,
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => GroupInvitationsScreen(
+                                controller: controller,
+                              ),
+                            ),
+                          ),
+                        ),
+                        SettingTile(
+                          key: const Key('contacts-saved-groups'),
+                          icon: CupertinoIcons.book,
+                          title: '保存的群聊',
+                          subtitle:
+                              '${controller.conversations.where((item) => item.kind == ConversationKind.group && !item.isBusinessChannel && item.saved).length} 个群聊',
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  SavedGroupsScreen(controller: controller),
+                            ),
+                          ),
+                        ),
+                        SettingTile(
+                          icon: CupertinoIcons.person_2_fill,
+                          title: '创建群聊',
+                          subtitle: '选择联系人开始群组对话',
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  CreateGroupScreen(controller: controller),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                SliverToBoxAdapter(
+                  child: SectionHeader(
+                    '联系人',
+                    key: _contactsSectionKey,
+                    horizontalInset: 16,
+                  ),
+                ),
+                if (controller.contactsLoadError != null &&
+                    controller.contacts.isNotEmpty)
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                    sliver: SliverToBoxAdapter(
+                      child: Card(
+                        child: ListTile(
+                          key: const Key('contacts-load-error'),
+                          leading: const Icon(
+                            CupertinoIcons.exclamationmark_circle,
+                            color: LinliColors.systemRed,
+                          ),
+                          title: const Text('联系人同步失败'),
+                          subtitle: Text(controller.contactsLoadError!),
+                          trailing: TextButton(
+                            onPressed: controller.refreshContacts,
+                            child: const Text('重试'),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                if (controller.contacts.isEmpty)
+                  SliverToBoxAdapter(
+                    child: SizedBox(
+                      height: 300,
+                      child: StatePanel(
+                        icon: controller.contactsLoadError == null
+                            ? CupertinoIcons.person_2
+                            : CupertinoIcons.cloud_download,
+                        title: controller.contactsLoadError == null
+                            ? '还没有联系人'
+                            : '联系人暂时无法加载',
+                        body: controller.contactsLoadError ?? '可以通过呱呱号查找并添加朋友。',
+                        actionLabel: controller.contactsLoadError == null
+                            ? null
+                            : '重新加载',
+                        onAction: controller.contactsLoadError == null
+                            ? null
+                            : controller.refreshContacts,
+                      ),
+                    ),
+                  )
+                else
+                  for (final group in groups) ...[
+                    SliverToBoxAdapter(
+                      child: _ContactGroupHeader(
+                        key: _groupKeys[group.letter],
+                        letter: group.letter,
+                      ),
+                    ),
+                    SliverList.builder(
+                      itemCount: group.users.length,
+                      itemBuilder: (context, index) => _ContactListTile(
+                        user: group.users[index],
+                        onTap: () async {
+                          final user = group.users[index];
+                          if (widget.onContactSelected != null) {
+                            await widget.onContactSelected!(user);
+                            return;
+                          }
+                          final conversation = await controller.createDirect(
+                            user,
+                          );
+                          if (conversation != null && context.mounted) {
+                            await Navigator.of(context).push(
+                              chatScreenRoute(
+                                context,
+                                controller: controller,
+                                conversation: conversation,
+                              ),
+                            );
+                          }
+                        },
+                      ),
+                    ),
+                  ],
+              ],
+            ),
+            if (groups.length > 1)
+              Positioned.fill(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: _ContactAlphabetRail(
+                    letters: groups.map((group) => group.letter).toList(),
+                    activeLetter: _activeLetter,
+                    onLetterSelected: (letter) => _jumpToGroup(letter, groups),
+                    onInteractionEnd: _clearActiveLetter,
+                  ),
+                ),
+              ),
+            if (_activeLetter case final letter?)
+              IgnorePointer(
+                child: Center(
+                  child: Container(
+                    key: const Key('contact-index-bubble'),
+                    width: 64,
+                    height: 64,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: LinliColors.navy.withValues(alpha: .88),
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: Text(
+                      letter,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 28,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
     ),
   );
+}
+
+class _ContactGroup {
+  const _ContactGroup(this.letter, this.users);
+
+  final String letter;
+  final List<AppUser> users;
+}
+
+String _contactSortName(String name) => PinyinHelper.getPinyinE(
+  name.trim(),
+  separator: '',
+  defPinyin: '#',
+  format: PinyinFormat.WITHOUT_TONE,
+).toUpperCase();
+
+String _contactInitial(String name) {
+  final sortName = _contactSortName(name);
+  if (sortName.isEmpty) return '#';
+  final initial = sortName[0];
+  return RegExp(r'[A-Z]').hasMatch(initial) ? initial : '#';
+}
+
+class _ContactGroupHeader extends StatelessWidget {
+  const _ContactGroupHeader({super.key, required this.letter});
+
+  final String letter;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    key: Key('contact-group-$letter'),
+    height: 32,
+    alignment: Alignment.centerLeft,
+    padding: const EdgeInsets.only(left: 16, right: 40),
+    color: Theme.of(context).brightness == Brightness.dark
+        ? Theme.of(context).colorScheme.surfaceContainerHigh
+        : LinliColors.background,
+    child: Text(
+      letter,
+      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+        color: LinliColors.brandGreenDeep,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
+}
+
+class _ContactListTile extends StatelessWidget {
+  const _ContactListTile({required this.user, required this.onTap});
+
+  final AppUser user;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => ListTile(
+    key: Key('contact-${user.id}'),
+    minTileHeight: 68,
+    contentPadding: const EdgeInsets.only(left: 16, right: 36),
+    leading: PersonAvatar(
+      name: user.name,
+      avatarUrl: user.avatarUrl,
+      online: user.isOnline,
+    ),
+    title: Text(user.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+    subtitle: Text(user.presence, maxLines: 1, overflow: TextOverflow.ellipsis),
+    onTap: onTap,
+  );
+}
+
+class _ContactAlphabetRail extends StatelessWidget {
+  const _ContactAlphabetRail({
+    required this.letters,
+    required this.activeLetter,
+    required this.onLetterSelected,
+    required this.onInteractionEnd,
+  });
+
+  final List<String> letters;
+  final String? activeLetter;
+  final ValueChanged<String> onLetterSelected;
+  final VoidCallback onInteractionEnd;
+
+  String _letterFor(double dy, double height) {
+    final index = (dy / height * letters.length).floor().clamp(
+      0,
+      letters.length - 1,
+    );
+    return letters[index];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Keep sparse indexes comfortably tappable. Dense A-Z indexes retain the
+    // familiar drag-to-scrub interaction within the available screen height.
+    final height = (letters.length * 44).clamp(48, 480).toDouble();
+    return Semantics(
+      label: '联系人字母索引',
+      child: GestureDetector(
+        key: const Key('contact-alphabet-index'),
+        behavior: HitTestBehavior.opaque,
+        onTapDown: (details) =>
+            onLetterSelected(_letterFor(details.localPosition.dy, height)),
+        onTapUp: (_) => onInteractionEnd(),
+        onTapCancel: onInteractionEnd,
+        onVerticalDragStart: (details) =>
+            onLetterSelected(_letterFor(details.localPosition.dy, height)),
+        onVerticalDragUpdate: (details) =>
+            onLetterSelected(_letterFor(details.localPosition.dy, height)),
+        onVerticalDragEnd: (_) => onInteractionEnd(),
+        onVerticalDragCancel: onInteractionEnd,
+        child: Container(
+          width: 44,
+          height: height,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: activeLetter == null
+                ? Colors.transparent
+                : LinliColors.brandMint.withValues(alpha: .88),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              for (final letter in letters)
+                Expanded(
+                  child: Semantics(
+                    button: true,
+                    selected: activeLetter == letter,
+                    label: '跳转到 $letter',
+                    onTap: () {
+                      onLetterSelected(letter);
+                      onInteractionEnd();
+                    },
+                    child: ExcludeSemantics(
+                      child: Center(
+                        child: Text(
+                          letter,
+                          style: TextStyle(
+                            color: activeLetter == letter
+                                ? LinliColors.brandGreenDeep
+                                : Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                            fontSize: 11,
+                            height: 1,
+                            fontWeight: activeLetter == letter
+                                ? FontWeight.w800
+                                : FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class DiscoverTab extends StatelessWidget {
@@ -2209,7 +2799,7 @@ class DiscoverTab extends StatelessWidget {
     child: ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       children: [
-        const SectionHeader('工具'),
+        const SectionHeader('常用工具', horizontalInset: 0),
         SectionCard(
           children: [
             SettingTile(
@@ -2232,6 +2822,11 @@ class DiscoverTab extends StatelessWidget {
                 ),
               ),
             ),
+          ],
+        ),
+        const SectionHeader('内容与服务', horizontalInset: 0),
+        SectionCard(
+          children: [
             SettingTile(
               icon: CupertinoIcons.person_2_fill,
               title: '朋友圈',
@@ -2312,19 +2907,34 @@ class MeTab extends StatelessWidget {
                   user?.name ?? '我的账户',
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
-                subtitle: Text('邻里号 · ${user?.handle ?? ''}'),
-                trailing: IconButton(
-                  tooltip: '我的二维码',
-                  onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => MyQrCodeScreen(controller: controller),
+                subtitle: Text(_profileIdentityLabel(user)),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: '我的二维码',
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              MyQrCodeScreen(controller: controller),
+                        ),
+                      ),
+                      icon: const Icon(CupertinoIcons.qrcode),
+                      style: IconButton.styleFrom(
+                        backgroundColor:
+                            Theme.of(context).brightness == Brightness.dark
+                            ? LinliColors.brandGreen.withValues(alpha: .14)
+                            : LinliColors.brandMintStrong,
+                        foregroundColor: LinliColors.navy,
+                      ),
                     ),
-                  ),
-                  icon: const Icon(CupertinoIcons.qrcode),
-                  style: IconButton.styleFrom(
-                    backgroundColor: LinliColors.yellow.withValues(alpha: .2),
-                    foregroundColor: LinliColors.navy,
-                  ),
+                    const SizedBox(width: 2),
+                    Icon(
+                      CupertinoIcons.chevron_forward,
+                      size: 16,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ],
                 ),
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(
@@ -2334,12 +2944,14 @@ class MeTab extends StatelessWidget {
               ),
             ],
           ),
-          const SectionHeader('账户'),
+          const SectionHeader('常用'),
           SectionCard(
             children: [
               SettingTile(
+                key: const Key('profile-favorites'),
                 icon: CupertinoIcons.bookmark_fill,
                 title: '我的收藏',
+                subtitle: '查看已收藏的消息与文件',
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) => FavoritesScreen(controller: controller),
@@ -2347,14 +2959,38 @@ class MeTab extends StatelessWidget {
                 ),
               ),
               SettingTile(
-                icon: CupertinoIcons.settings,
+                key: const Key('profile-devices'),
+                icon: CupertinoIcons.device_phone_portrait,
+                title: '登录设备',
+                subtitle: '管理当前设备与其他登录会话',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => DevicesScreen(controller: controller),
+                  ),
+                ),
+              ),
+              SettingTile(
+                key: const Key('profile-settings'),
+                icon: CupertinoIcons.settings_solid,
                 title: '设置',
+                subtitle: '通知、隐私、外观与存储',
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) => SettingsScreen(
                       controller: controller,
                       onToggleTheme: onToggleTheme,
                     ),
+                  ),
+                ),
+              ),
+              SettingTile(
+                key: const Key('profile-help'),
+                icon: CupertinoIcons.question_circle_fill,
+                title: '帮助与反馈',
+                subtitle: '常见问题、问题反馈与客服',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => HelpFeedbackScreen(controller: controller),
                   ),
                 ),
               ),
@@ -2421,15 +3057,15 @@ class _TopLevelShell extends StatelessWidget {
           children: [
             SizedBox(
               key: ValueKey('top-level-header-$title'),
-              height: 66,
+              height: 60,
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 2, 12, 8),
+                padding: const EdgeInsets.fromLTRB(16, 2, 12, 6),
                 child: Row(
                   children: [
                     Expanded(
                       child: Text(
                         title,
-                        style: Theme.of(context).textTheme.headlineLarge
+                        style: Theme.of(context).textTheme.headlineMedium
                             ?.copyWith(color: Colors.white),
                       ),
                     ),
@@ -2442,7 +3078,7 @@ class _TopLevelShell extends StatelessWidget {
               child: ClipRRect(
                 key: ValueKey('top-level-content-$title'),
                 borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(16),
+                  top: Radius.circular(20),
                 ),
                 child: Material(
                   color: dark
@@ -2457,4 +3093,10 @@ class _TopLevelShell extends StatelessWidget {
       ),
     );
   }
+}
+
+String _profileIdentityLabel(AppUser? user) {
+  final handle = publicUserHandle(user?.handle);
+  if (handle == null) return '点击完善呱呱号';
+  return '呱呱号 · $handle';
 }

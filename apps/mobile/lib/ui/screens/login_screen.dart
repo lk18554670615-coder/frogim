@@ -1,12 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../core/app_controller.dart';
 import '../../core/app_theme.dart';
+import '../../core/auth_validation.dart';
+import '../../core/models.dart';
 import '../legal_documents.dart';
 import '../widgets/linli_widgets.dart';
 
-enum _LoginMode { code, password }
+enum _LoginMode { code, password, qr }
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key, required this.controller});
@@ -19,28 +25,61 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final formKey = GlobalKey<FormState>();
+  final phoneFieldKey = GlobalKey<FormFieldState<String>>();
   final phone = TextEditingController();
   final credential = TextEditingController();
   _LoginMode mode = _LoginMode.code;
   bool obscurePassword = true;
   bool agreedToPolicies = false;
+  bool codeRequested = false;
+  String? codeRequestedPhone;
+  QrLoginTicket? qrTicket;
+  Timer? qrPollTimer;
+  bool qrPolling = false;
+  String? qrStatus;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      widget.controller.clearError(preserveAuthenticationFailure: true);
+      if (!widget.controller.authPolicyLoaded) {
+        unawaited(widget.controller.refreshAuthPolicy());
+      }
+    });
+  }
 
   @override
   void dispose() {
+    qrPollTimer?.cancel();
     phone.dispose();
     credential.dispose();
     super.dispose();
   }
 
   Future<void> _requestCode() async {
-    if (!_validPhone(phone.text)) {
-      formKey.currentState?.validate();
-      return;
+    if (!(phoneFieldKey.currentState?.validate() ?? false)) return;
+    final requested = await widget.controller.requestCode(phone.text);
+    if (!mounted || !requested) return;
+    setState(() {
+      codeRequested = true;
+      codeRequestedPhone = phone.text.trim();
+    });
+  }
+
+  void _phoneChanged(String value) {
+    if (codeRequested && value.trim() != codeRequestedPhone) {
+      setState(() {
+        codeRequested = false;
+        codeRequestedPhone = null;
+      });
     }
-    await widget.controller.requestCode(phone.text);
+    widget.controller.clearError();
   }
 
   void _submit() {
+    if (mode == _LoginMode.qr) return;
     if (!(formKey.currentState?.validate() ?? false)) return;
     if (!agreedToPolicies) {
       ScaffoldMessenger.of(
@@ -55,6 +94,66 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  void _changeMode(_LoginMode value) {
+    if (value == mode) return;
+    setState(() {
+      mode = value;
+      credential.clear();
+      obscurePassword = true;
+      qrStatus = null;
+    });
+    widget.controller.clearError();
+    if (value == _LoginMode.qr) {
+      _createQrLogin();
+    } else {
+      qrPollTimer?.cancel();
+    }
+  }
+
+  Future<void> _createQrLogin() async {
+    qrPollTimer?.cancel();
+    setState(() {
+      qrTicket = null;
+      qrStatus = '正在生成安全登录码…';
+    });
+    final ticket = await widget.controller.createQrLoginTicket(
+      clientName: kIsWeb ? '青蛙呱呱网页版' : '青蛙呱呱桌面端',
+    );
+    if (!mounted || mode != _LoginMode.qr) return;
+    if (ticket == null) {
+      setState(() => qrStatus = widget.controller.error ?? '二维码生成失败');
+      return;
+    }
+    setState(() {
+      qrTicket = ticket;
+      qrStatus = '等待手机确认';
+    });
+    qrPollTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => _pollQrLogin(),
+    );
+  }
+
+  Future<void> _pollQrLogin() async {
+    final ticket = qrTicket;
+    if (!mounted || ticket == null || qrPolling || mode != _LoginMode.qr) {
+      return;
+    }
+    if (ticket.expired) {
+      qrPollTimer?.cancel();
+      setState(() => qrStatus = '二维码已过期，请刷新');
+      return;
+    }
+    qrPolling = true;
+    final loggedIn = await widget.controller.pollQrLoginTicket(ticket);
+    qrPolling = false;
+    if (!mounted || loggedIn) return;
+    if (widget.controller.error != null) {
+      qrPollTimer?.cancel();
+      setState(() => qrStatus = widget.controller.error);
+    }
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     body: AnimatedBuilder(
@@ -62,15 +161,20 @@ class _LoginScreenState extends State<LoginScreen> {
       builder: (context, _) => LayoutBuilder(
         builder: (context, constraints) {
           if (constraints.maxWidth >= 1024) {
-            return _buildDesktopLogin(context);
+            return _buildDesktopLogin(context, constraints);
           }
+          final horizontalPadding = constraints.maxWidth < 360 ? 16.0 : 24.0;
           return SafeArea(
-            child: Center(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 24,
-                  vertical: 28,
-                ),
+            child: SingleChildScrollView(
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+              padding: EdgeInsets.fromLTRB(
+                horizontalPadding,
+                constraints.maxHeight >= 760 ? 44 : 24,
+                horizontalPadding,
+                28,
+              ),
+              child: Align(
+                alignment: Alignment.topCenter,
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 390),
                   child: _buildLoginForm(context, showBrand: true),
@@ -83,18 +187,23 @@ class _LoginScreenState extends State<LoginScreen> {
     ),
   );
 
-  Widget _buildDesktopLogin(BuildContext context) {
+  Widget _buildDesktopLogin(BuildContext context, BoxConstraints viewport) {
     final dark = Theme.of(context).brightness == Brightness.dark;
+    final compactHeight = viewport.maxHeight < 820;
+    final outerPadding = compactHeight ? 24.0 : 40.0;
     return ColoredBox(
       key: const Key('desktop-login-shell'),
       color: dark ? LinliColors.darkBackground : const Color(0xFFF0F3F8),
       child: SafeArea(
         child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.all(40),
+            padding: EdgeInsets.all(outerPadding),
             child: ConstrainedBox(
               key: const Key('desktop-login-card'),
-              constraints: const BoxConstraints(maxWidth: 920, minHeight: 680),
+              constraints: BoxConstraints(
+                maxWidth: 920,
+                minHeight: compactHeight ? 0 : 680,
+              ),
               child: DecoratedBox(
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.surfaceContainer,
@@ -122,8 +231,15 @@ class _LoginScreenState extends State<LoginScreen> {
                         SizedBox(
                           width: 460,
                           child: Padding(
-                            padding: const EdgeInsets.fromLTRB(40, 44, 40, 36),
-                            child: _buildLoginForm(context, showBrand: false),
+                            padding: EdgeInsets.fromLTRB(
+                              40,
+                              compactHeight ? 32 : 44,
+                              40,
+                              compactHeight ? 28 : 36,
+                            ),
+                            child: Center(
+                              child: _buildLoginForm(context, showBrand: false),
+                            ),
                           ),
                         ),
                       ],
@@ -138,192 +254,378 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  Widget _buildLoginForm(
-    BuildContext context, {
-    required bool showBrand,
-  }) => Form(
-    key: formKey,
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (showBrand) ...[
-          Center(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(16),
+  Widget _buildLoginForm(BuildContext context, {required bool showBrand}) {
+    final effectiveMode = showBrand && mode == _LoginMode.qr
+        ? _LoginMode.code
+        : mode;
+    final qrMode = effectiveMode == _LoginMode.qr;
+    return Form(
+      key: formKey,
+      autovalidateMode: AutovalidateMode.disabled,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (showBrand) ...[
+            Center(
               child: Image.asset(
-                'assets/brand/linli-im-icon.png',
-                width: 72,
-                height: 72,
-                semanticLabel: '邻里通讯应用图标',
+                'assets/brand/qingwaguagua-mark-transparent.png',
+                width: 88,
+                height: 88,
+                semanticLabel: '青蛙呱呱应用图标',
               ),
             ),
-          ),
-          const SizedBox(height: 20),
-        ],
-        Text(
-          '登录邻里通讯',
-          textAlign: showBrand ? TextAlign.center : TextAlign.left,
-          style: Theme.of(context).textTheme.headlineMedium,
-        ),
-        const SizedBox(height: 8),
-        Text(
-          '使用验证码或账号密码继续。',
-          textAlign: showBrand ? TextAlign.center : TextAlign.left,
-          style: Theme.of(context).textTheme.bodyMedium,
-        ),
-        const SizedBox(height: 24),
-        CupertinoSlidingSegmentedControl<_LoginMode>(
-          key: const Key('login-mode-control'),
-          groupValue: mode,
-          children: const {
-            _LoginMode.code: Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Text('验证码登录'),
-            ),
-            _LoginMode.password: Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Text('密码登录'),
-            ),
-          },
-          onValueChanged: (value) {
-            if (value == null) return;
-            setState(() {
-              mode = value;
-              credential.clear();
-            });
-          },
-        ),
-        const SizedBox(height: 16),
-        TextFormField(
-          key: const Key('phone-field'),
-          controller: phone,
-          keyboardType: TextInputType.phone,
-          textInputAction: TextInputAction.next,
-          autofillHints: const [AutofillHints.telephoneNumber],
-          decoration: const InputDecoration(
-            labelText: '手机号',
-            prefixIcon: Icon(CupertinoIcons.phone),
-          ),
-          validator: (value) => _validPhone(value ?? '') ? null : '请输入有效手机号',
-        ),
-        const SizedBox(height: 12),
-        TextFormField(
-          key: Key(mode == _LoginMode.code ? 'code-field' : 'password-field'),
-          controller: credential,
-          keyboardType: mode == _LoginMode.code
-              ? TextInputType.number
-              : TextInputType.visiblePassword,
-          obscureText: mode == _LoginMode.password && obscurePassword,
-          autofillHints: mode == _LoginMode.code
-              ? const [AutofillHints.oneTimeCode]
-              : const [AutofillHints.password],
-          onFieldSubmitted: (_) => _submit(),
-          decoration: InputDecoration(
-            labelText: mode == _LoginMode.code ? '验证码' : '密码',
-            prefixIcon: const Icon(CupertinoIcons.lock),
-            suffixIcon: mode == _LoginMode.code
-                ? TextButton(
-                    key: const Key('request-code-button'),
-                    onPressed: widget.controller.loading ? null : _requestCode,
-                    child: Text(
-                      widget.controller.codeRequested ? '重新获取' : '获取验证码',
-                    ),
-                  )
-                : IconButton(
-                    tooltip: obscurePassword ? '显示密码' : '隐藏密码',
-                    onPressed: () =>
-                        setState(() => obscurePassword = !obscurePassword),
-                    icon: Icon(
-                      obscurePassword
-                          ? CupertinoIcons.eye
-                          : CupertinoIcons.eye_slash,
-                    ),
-                  ),
-          ),
-          validator: (value) {
-            final text = value ?? '';
-            if (mode == _LoginMode.code) {
-              return text.trim().length >= 4 ? null : '请输入验证码';
-            }
-            return text.length >= 8 ? null : '密码至少 8 位';
-          },
-        ),
-        if (mode == _LoginMode.password)
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton(
-              key: const Key('forgot-password'),
-              onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => ResetPasswordScreen(
-                    controller: widget.controller,
-                    initialPhone: phone.text,
-                  ),
-                ),
-              ),
-              child: const Text('忘记密码？'),
+            const SizedBox(height: 18),
+          ],
+          Text(
+            '登录青蛙呱呱',
+            textAlign: showBrand ? TextAlign.center : TextAlign.left,
+            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+              fontSize: showBrand ? 26 : null,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -.3,
             ),
           ),
-        if (widget.controller.error != null) ...[
           const SizedBox(height: 8),
           Text(
-            widget.controller.error!,
-            key: const Key('login-error'),
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(color: LinliColors.systemRed),
+            qrMode ? '使用手机确认后安全登录' : '登录后继续与重要的人保持联系',
+            textAlign: showBrand ? TextAlign.center : TextAlign.left,
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 26),
+          CupertinoSlidingSegmentedControl<_LoginMode>(
+            key: const Key('login-mode-control'),
+            groupValue: effectiveMode,
+            backgroundColor: Theme.of(context).brightness == Brightness.dark
+                ? LinliColors.darkSurfaceElevated
+                : LinliColors.brandMintStrong,
+            thumbColor: Theme.of(context).colorScheme.surfaceContainer,
+            children: {
+              _LoginMode.code: _LoginModeLabel(
+                label: showBrand ? '验证码登录' : '验证码',
+                selected: effectiveMode == _LoginMode.code,
+                compact: !showBrand,
+              ),
+              _LoginMode.password: _LoginModeLabel(
+                label: showBrand ? '密码登录' : '密码',
+                selected: effectiveMode == _LoginMode.password,
+                compact: !showBrand,
+              ),
+              if (!showBrand)
+                _LoginMode.qr: _LoginModeLabel(
+                  label: '扫码登录',
+                  selected: effectiveMode == _LoginMode.qr,
+                  compact: true,
+                ),
+            },
+            onValueChanged: (value) {
+              if (value != null) _changeMode(value);
+            },
+          ),
+          const SizedBox(height: 16),
+          if (qrMode)
+            _buildQrLoginPanel(context)
+          else ...[
+            TextFormField(
+              key: phoneFieldKey,
+              autovalidateMode: AutovalidateMode.onUnfocus,
+              controller: phone,
+              keyboardType: TextInputType.phone,
+              textInputAction: TextInputAction.next,
+              autofillHints: const [AutofillHints.telephoneNumber],
+              onChanged: _phoneChanged,
+              onTapOutside: (_) =>
+                  FocusManager.instance.primaryFocus?.unfocus(),
+              decoration: const InputDecoration(
+                labelText: '手机号',
+                prefixIcon: Icon(CupertinoIcons.phone),
+              ),
+              validator: (value) =>
+                  _validPhone(value ?? '') ? null : '请输入有效手机号',
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              key: Key(
+                effectiveMode == _LoginMode.code
+                    ? 'code-field'
+                    : 'password-field',
+              ),
+              autovalidateMode: AutovalidateMode.onUnfocus,
+              controller: credential,
+              keyboardType: effectiveMode == _LoginMode.code
+                  ? TextInputType.number
+                  : TextInputType.visiblePassword,
+              obscureText:
+                  effectiveMode == _LoginMode.password && obscurePassword,
+              autofillHints: effectiveMode == _LoginMode.code
+                  ? const [AutofillHints.oneTimeCode]
+                  : const [AutofillHints.password],
+              onChanged: (_) => widget.controller.clearError(),
+              onTapOutside: (_) =>
+                  FocusManager.instance.primaryFocus?.unfocus(),
+              onFieldSubmitted: (_) => _submit(),
+              decoration: InputDecoration(
+                labelText: effectiveMode == _LoginMode.code ? '验证码' : '密码',
+                prefixIcon: const Icon(CupertinoIcons.lock),
+                suffixIcon: effectiveMode == _LoginMode.code
+                    ? TextButton(
+                        key: const Key('request-code-button'),
+                        onPressed: widget.controller.loading
+                            ? null
+                            : _requestCode,
+                        child: Text(codeRequested ? '重新获取' : '获取验证码'),
+                      )
+                    : IconButton(
+                        tooltip: obscurePassword ? '显示密码' : '隐藏密码',
+                        onPressed: () =>
+                            setState(() => obscurePassword = !obscurePassword),
+                        icon: Icon(
+                          obscurePassword
+                              ? CupertinoIcons.eye
+                              : CupertinoIcons.eye_slash,
+                        ),
+                      ),
+              ),
+              validator: (value) {
+                final text = value ?? '';
+                if (effectiveMode == _LoginMode.code) {
+                  return text.trim().length >= 4 ? null : '请输入验证码';
+                }
+                return text.isNotEmpty ? null : '请输入密码';
+              },
+            ),
+            if (effectiveMode == _LoginMode.password)
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  key: const Key('forgot-password'),
+                  onPressed: () {
+                    widget.controller.clearError();
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => ResetPasswordScreen(
+                          controller: widget.controller,
+                          initialPhone: phone.text,
+                        ),
+                      ),
+                    );
+                  },
+                  child: const Text('忘记密码？'),
+                ),
+              ),
+            if (widget.controller.error != null) ...[
+              const SizedBox(height: 8),
+              _InlineAuthError(
+                key: const Key('login-error'),
+                message: widget.controller.error!,
+              ),
+            ],
+            const SizedBox(height: 10),
+            _PolicyConsent(
+              key: const Key('login-policy-consent'),
+              value: agreedToPolicies,
+              onChanged: (value) => setState(() => agreedToPolicies = value),
+            ),
+            const SizedBox(height: 12),
+            FilledButton(
+              key: const Key('login-button'),
+              onPressed: widget.controller.loading ? null : _submit,
+              child: widget.controller.loading
+                  ? const SizedBox.square(
+                      key: Key('login-spinner'),
+                      dimension: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Text(effectiveMode == _LoginMode.code ? '验证码登录' : '密码登录'),
+            ),
+            const SizedBox(height: 8),
+            if (!widget.controller.authPolicyAvailable ||
+                widget.controller.authPolicy.registrationEnabled)
+              OutlinedButton(
+                key: const Key('open-register'),
+                onPressed: () {
+                  widget.controller.clearError();
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => RegisterScreen(
+                        controller: widget.controller,
+                        initialPhone: phone.text,
+                      ),
+                    ),
+                  );
+                },
+                child: const Text('注册新账号'),
+              )
+            else
+              const _RegistrationClosedNotice(),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQrLoginPanel(BuildContext context) {
+    final ticket = qrTicket;
+    final canRefresh =
+        ticket?.expired == true ||
+        (ticket == null && !widget.controller.loading);
+    return Column(
+      key: const Key('qr-login-panel'),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 214,
+          height: 214,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0xFFDCE6E1)),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x160F172A),
+                blurRadius: 24,
+                offset: Offset(0, 10),
+              ),
+            ],
+          ),
+          child: ticket == null
+              ? const Center(child: CupertinoActivityIndicator(radius: 14))
+              : Semantics(
+                  label: '青蛙呱呱安全登录二维码',
+                  image: true,
+                  child: QrImageView(
+                    key: const Key('qr-login-code'),
+                    data: ticket.qrPayload,
+                    version: QrVersions.auto,
+                    eyeStyle: const QrEyeStyle(
+                      eyeShape: QrEyeShape.square,
+                      color: LinliColors.navy,
+                    ),
+                    dataModuleStyle: const QrDataModuleStyle(
+                      dataModuleShape: QrDataModuleShape.square,
+                      color: LinliColors.navy,
+                    ),
+                    padding: EdgeInsets.zero,
+                  ),
+                ),
+        ),
+        const SizedBox(height: 18),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              canRefresh
+                  ? CupertinoIcons.exclamationmark_circle
+                  : CupertinoIcons.shield_lefthalf_fill,
+              size: 17,
+              color: canRefresh
+                  ? LinliColors.systemRed
+                  : LinliColors.brandGreenDeep,
+            ),
+            const SizedBox(width: 7),
+            Flexible(
+              child: Text(
+                qrStatus ?? '等待手机确认',
+                key: const Key('qr-login-status'),
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: canRefresh ? LinliColors.systemRed : null,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Text(
+          '手机打开青蛙呱呱，点击右上角“+”后选择“扫一扫”',
+          textAlign: TextAlign.center,
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(height: 1.5),
+        ),
+        if (canRefresh) ...[
+          const SizedBox(height: 8),
+          TextButton.icon(
+            key: const Key('refresh-qr-login'),
+            onPressed: widget.controller.loading ? null : _createQrLogin,
+            icon: const Icon(CupertinoIcons.refresh, size: 17),
+            label: const Text('刷新二维码'),
           ),
         ],
-        if (mode == _LoginMode.code && widget.controller.supportsDemo)
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton(
-              key: const Key('dev-fill-code'),
-              onPressed: () => setState(() => credential.text = '123456'),
-              child: const Text('开发环境：填入 123456'),
+      ],
+    );
+  }
+}
+
+class _LoginModeLabel extends StatelessWidget {
+  const _LoginModeLabel({
+    required this.label,
+    required this.selected,
+    required this.compact,
+  });
+
+  final String label;
+  final bool selected;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: EdgeInsets.symmetric(
+      horizontal: compact ? 12 : 16,
+      vertical: compact ? 13 : 14,
+    ),
+    child: Text(
+      label,
+      style: TextStyle(
+        color: selected
+            ? Theme.of(context).colorScheme.onSurface
+            : LinliColors.preview,
+        fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+      ),
+    ),
+  );
+}
+
+class _InlineAuthError extends StatelessWidget {
+  const _InlineAuthError({super.key, required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    liveRegion: true,
+    label: '操作提示：$message',
+    child: Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: LinliColors.systemRed.withValues(alpha: .08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: LinliColors.systemRed.withValues(alpha: .18)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(top: 1),
+            child: Icon(
+              CupertinoIcons.exclamationmark_circle_fill,
+              size: 16,
+              color: LinliColors.systemRed,
             ),
           ),
-        const SizedBox(height: 8),
-        FilledButton(
-          key: const Key('login-button'),
-          onPressed: widget.controller.loading ? null : _submit,
-          child: widget.controller.loading
-              ? const SizedBox.square(
-                  key: Key('login-spinner'),
-                  dimension: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : Text(mode == _LoginMode.code ? '验证码登录' : '密码登录'),
-        ),
-        const SizedBox(height: 8),
-        OutlinedButton(
-          key: const Key('open-register'),
-          onPressed: () => Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => RegisterScreen(
-                controller: widget.controller,
-                initialPhone: phone.text,
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              message,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: LinliColors.systemRed,
+                fontWeight: FontWeight.w500,
               ),
             ),
           ),
-          child: const Text('注册新账号'),
-        ),
-        if (widget.controller.supportsDemo)
-          CupertinoButton(
-            key: const Key('demo-login-button'),
-            onPressed: widget.controller.loading
-                ? null
-                : widget.controller.loginAsDemo,
-            child: const Text('预览演示环境'),
-          ),
-        const SizedBox(height: 10),
-        _PolicyConsent(
-          key: const Key('login-policy-consent'),
-          value: agreedToPolicies,
-          onChanged: (value) => setState(() => agreedToPolicies = value),
-        ),
-      ],
+        ],
+      ),
     ),
   );
 }
@@ -340,14 +642,11 @@ class _DesktopLoginBrandPanel extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: Image.asset(
-              'assets/brand/linli-im-icon.png',
-              width: 68,
-              height: 68,
-              semanticLabel: '邻里通讯应用图标',
-            ),
+          Image.asset(
+            'assets/brand/qingwaguagua-mark-transparent.png',
+            width: 80,
+            height: 80,
+            semanticLabel: '青蛙呱呱应用图标',
           ),
           const SizedBox(height: 32),
           const Text(
@@ -411,7 +710,7 @@ class _DesktopLoginFeature extends StatelessWidget {
     child: Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, size: 17, color: LinliColors.yellow),
+        Icon(icon, size: 17, color: LinliColors.brandGreen),
         const SizedBox(width: 7),
         Text(
           label,
@@ -442,12 +741,27 @@ class RegisterScreen extends StatefulWidget {
 
 class _RegisterScreenState extends State<RegisterScreen> {
   final formKey = GlobalKey<FormState>();
+  final phoneFieldKey = GlobalKey<FormFieldState<String>>();
   late final phone = TextEditingController(text: widget.initialPhone);
   final code = TextEditingController();
   final name = TextEditingController();
   final password = TextEditingController();
   final confirmPassword = TextEditingController();
   bool agreedToPolicies = false;
+  bool codeRequested = false;
+  String? codeRequestedPhone;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      widget.controller.clearError();
+      if (!widget.controller.authPolicyLoaded) {
+        unawaited(widget.controller.refreshAuthPolicy());
+      }
+    });
+  }
 
   @override
   void dispose() {
@@ -478,87 +792,147 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
   }
 
+  Future<void> _requestCode() async {
+    if (!(phoneFieldKey.currentState?.validate() ?? false)) return;
+    final requested = await widget.controller.requestCode(phone.text);
+    if (!mounted || !requested) return;
+    setState(() {
+      codeRequested = true;
+      codeRequestedPhone = phone.text.trim();
+    });
+  }
+
+  void _phoneChanged(String value) {
+    if (codeRequested && value.trim() != codeRequestedPhone) {
+      setState(() {
+        codeRequested = false;
+        codeRequestedPhone = null;
+      });
+    }
+    widget.controller.clearError();
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: const GlassAppBar(title: Text('注册账号')),
+    appBar: const GlassAppBar(title: _AuthBrandAppBarTitle()),
     body: AnimatedBuilder(
       animation: widget.controller,
-      builder: (context, _) => Form(
-        key: formKey,
-        child: ListView(
-          padding: const EdgeInsets.all(20),
-          children: [
-            Text('创建邻里通讯账号', style: Theme.of(context).textTheme.headlineMedium),
-            const SizedBox(height: 8),
-            Text(
-              '手机号验证后即可设置密码和昵称。',
-              style: Theme.of(context).textTheme.bodyMedium,
+      builder: (context, _) {
+        if (widget.controller.authPolicyAvailable &&
+            !widget.controller.authPolicy.registrationEnabled) {
+          return const _RegistrationClosedView();
+        }
+        return Form(
+          key: formKey,
+          autovalidateMode: AutovalidateMode.disabled,
+          child: ListView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding: EdgeInsets.fromLTRB(
+              MediaQuery.sizeOf(context).width > 528
+                  ? (MediaQuery.sizeOf(context).width - 480) / 2
+                  : 24,
+              24,
+              MediaQuery.sizeOf(context).width > 528
+                  ? (MediaQuery.sizeOf(context).width - 480) / 2
+                  : 24,
+              36,
             ),
-            const SizedBox(height: 24),
-            _phoneField(phone),
-            const SizedBox(height: 12),
-            _codeField(
-              code,
-              onRequest: () {
-                if (_validPhone(phone.text)) {
-                  widget.controller.requestCode(phone.text);
-                }
-              },
-            ),
-            if (widget.controller.supportsDemo)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton(
-                  key: const Key('register-dev-fill-code'),
-                  onPressed: () => setState(() => code.text = '123456'),
-                  child: const Text('开发环境：填入 123456'),
-                ),
+            children: [
+              const _AuthFlowHeader(
+                title: '创建账号',
+                subtitle: '验证手机号并设置昵称与登录密码。',
               ),
-            TextFormField(
-              key: const Key('register-name'),
-              controller: name,
-              maxLength: 40,
-              decoration: const InputDecoration(labelText: '昵称'),
-              validator: (value) =>
-                  (value?.trim().isNotEmpty ?? false) ? null : '请输入昵称',
-            ),
-            const SizedBox(height: 12),
-            _passwordField(password, key: const Key('register-password')),
-            const SizedBox(height: 12),
-            TextFormField(
-              key: const Key('register-confirm-password'),
-              controller: confirmPassword,
-              obscureText: true,
-              textInputAction: TextInputAction.done,
-              onFieldSubmitted: (_) => _register(),
-              decoration: const InputDecoration(labelText: '确认密码'),
-              validator: (value) =>
-                  value == password.text ? null : '两次输入的密码不一致',
-            ),
-            const SizedBox(height: 8),
-            _PolicyConsent(
-              key: const Key('register-policy-consent'),
-              value: agreedToPolicies,
-              onChanged: (value) => setState(() => agreedToPolicies = value),
-            ),
-            if (widget.controller.error != null) ...[
+              const SizedBox(height: 28),
+              const _AuthSectionLabel(label: '验证手机号'),
+              const SizedBox(height: 10),
+              _phoneField(
+                phone,
+                fieldKey: phoneFieldKey,
+                onChanged: _phoneChanged,
+              ),
+              const SizedBox(height: 14),
+              _codeField(
+                code,
+                onRequest: _requestCode,
+                requestLabel: codeRequested ? '重新获取' : '获取验证码',
+                requestEnabled: !widget.controller.loading,
+                onChanged: (_) => widget.controller.clearError(),
+              ),
+              if (codeRequested) const _AuthCodeSentNotice(),
+              const SizedBox(height: 24),
+              const _AuthSectionLabel(label: '完善账号资料'),
+              const SizedBox(height: 10),
+              TextFormField(
+                key: const Key('register-name'),
+                autovalidateMode: AutovalidateMode.onUnfocus,
+                controller: name,
+                maxLength: 40,
+                textInputAction: TextInputAction.next,
+                onTapOutside: (_) =>
+                    FocusManager.instance.primaryFocus?.unfocus(),
+                onChanged: (_) => widget.controller.clearError(),
+                decoration: const InputDecoration(
+                  labelText: '昵称',
+                  hintText: '例如：小青蛙',
+                  helperText: '最多 40 个字符，之后可在个人资料中修改',
+                  counterText: '',
+                ),
+                validator: (value) =>
+                    (value?.trim().isNotEmpty ?? false) ? null : '请输入昵称',
+              ),
+              const SizedBox(height: 14),
+              _AuthPasswordField(
+                fieldKey: const Key('register-password'),
+                controller: password,
+                label: '登录密码',
+                helperText: widget.controller.authPolicy.passwordHelperText,
+                onChanged: (_) => widget.controller.clearError(),
+                validator: (value) =>
+                    widget.controller.authPolicy.passwordError(value ?? ''),
+              ),
+              const SizedBox(height: 14),
+              _AuthPasswordField(
+                fieldKey: const Key('register-confirm-password'),
+                controller: confirmPassword,
+                label: '确认密码',
+                textInputAction: TextInputAction.done,
+                onChanged: (_) => widget.controller.clearError(),
+                onFieldSubmitted: (_) => _register(),
+                validator: (value) {
+                  if (value?.isEmpty ?? true) return '请再次输入登录密码';
+                  return value == password.text ? null : '两次输入的密码不一致';
+                },
+              ),
+              const SizedBox(height: 18),
+              _PolicyConsent(
+                key: const Key('register-policy-consent'),
+                value: agreedToPolicies,
+                onChanged: (value) => setState(() => agreedToPolicies = value),
+              ),
+              if (widget.controller.error != null) ...[
+                const SizedBox(height: 12),
+                _InlineAuthError(message: widget.controller.error!),
+              ],
+              const SizedBox(height: 18),
+              FilledButton(
+                key: const Key('register-submit'),
+                onPressed: widget.controller.loading ? null : _register,
+                child: widget.controller.loading
+                    ? const SizedBox.square(
+                        dimension: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('注册并登录'),
+              ),
               const SizedBox(height: 8),
-              Text(
-                widget.controller.error!,
-                style: Theme.of(
-                  context,
-                ).textTheme.bodySmall?.copyWith(color: LinliColors.systemRed),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('已有账号，返回登录'),
               ),
             ],
-            const SizedBox(height: 20),
-            FilledButton(
-              key: const Key('register-submit'),
-              onPressed: widget.controller.loading ? null : _register,
-              child: const Text('注册并登录'),
-            ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     ),
   );
 }
@@ -579,10 +953,9 @@ class _PolicyConsent extends StatelessWidget {
         Theme.of(context).textTheme.bodySmall ??
         DefaultTextStyle.of(context).style;
     final linkStyle = TextButton.styleFrom(
-      minimumSize: Size.zero,
+      minimumSize: const Size(0, 48),
       padding: const EdgeInsets.symmetric(horizontal: 1),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      visualDensity: VisualDensity.compact,
       textStyle: policyTextStyle.copyWith(fontWeight: FontWeight.w600),
     );
 
@@ -590,42 +963,56 @@ class _PolicyConsent extends StatelessWidget {
       checked: value,
       label: '同意用户协议和隐私政策',
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Checkbox(
-            key: const Key('policy-consent-checkbox'),
-            value: value,
-            visualDensity: VisualDensity.compact,
-            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            onChanged: (next) => onChanged(next ?? false),
+          SizedBox.square(
+            dimension: 48,
+            child: Checkbox(
+              key: const Key('policy-consent-checkbox'),
+              value: value,
+              visualDensity: VisualDensity.compact,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              onChanged: (next) => onChanged(next ?? false),
+            ),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
           Expanded(
-            child: Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: DefaultTextStyle(
-                style: policyTextStyle,
-                child: Wrap(
-                  spacing: 0,
-                  runSpacing: 4,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    const Text('我已阅读并同意'),
-                    TextButton(
-                      style: linkStyle,
-                      onPressed: () =>
-                          showLegalDocument(context, LegalDocument.terms),
-                      child: const Text('用户协议'),
+            child: DefaultTextStyle(
+              style: policyTextStyle,
+              child: Wrap(
+                spacing: 0,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  const SizedBox(
+                    height: 48,
+                    child: Align(
+                      widthFactor: 1,
+                      alignment: Alignment.center,
+                      child: Text('我已阅读并同意'),
                     ),
-                    const Text('和'),
-                    TextButton(
-                      style: linkStyle,
-                      onPressed: () =>
-                          showLegalDocument(context, LegalDocument.privacy),
-                      child: const Text('隐私政策'),
+                  ),
+                  TextButton(
+                    style: linkStyle,
+                    onPressed: () =>
+                        showLegalDocument(context, LegalDocument.terms),
+                    child: const Text('用户协议'),
+                  ),
+                  const SizedBox(
+                    height: 48,
+                    child: Align(
+                      widthFactor: 1,
+                      alignment: Alignment.center,
+                      child: Text('和'),
                     ),
-                  ],
-                ),
+                  ),
+                  TextButton(
+                    style: linkStyle,
+                    onPressed: () =>
+                        showLegalDocument(context, LegalDocument.privacy),
+                    child: const Text('隐私政策'),
+                  ),
+                ],
               ),
             ),
           ),
@@ -651,10 +1038,24 @@ class ResetPasswordScreen extends StatefulWidget {
 
 class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
   final formKey = GlobalKey<FormState>();
+  final phoneFieldKey = GlobalKey<FormFieldState<String>>();
   late final phone = TextEditingController(text: widget.initialPhone);
   final code = TextEditingController();
   final password = TextEditingController();
   bool codeRequested = false;
+  String? codeRequestedPhone;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      widget.controller.clearError();
+      if (!widget.controller.authPolicyLoaded) {
+        unawaited(widget.controller.refreshAuthPolicy());
+      }
+    });
+  }
 
   @override
   void dispose() {
@@ -665,12 +1066,23 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
   }
 
   Future<void> _request() async {
-    if (!_validPhone(phone.text)) {
-      formKey.currentState?.validate();
-      return;
-    }
+    if (!(phoneFieldKey.currentState?.validate() ?? false)) return;
     final success = await widget.controller.requestResetCode(phone.text);
-    if (mounted && success) setState(() => codeRequested = true);
+    if (!mounted || !success) return;
+    setState(() {
+      codeRequested = true;
+      codeRequestedPhone = phone.text.trim();
+    });
+  }
+
+  void _phoneChanged(String value) {
+    if (codeRequested && value.trim() != codeRequestedPhone) {
+      setState(() {
+        codeRequested = false;
+        codeRequestedPhone = null;
+      });
+    }
+    widget.controller.clearError();
   }
 
   Future<void> _reset() async {
@@ -689,100 +1101,333 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: const GlassAppBar(title: Text('重置密码')),
+    appBar: const GlassAppBar(title: _AuthBrandAppBarTitle()),
     body: AnimatedBuilder(
       animation: widget.controller,
-      builder: (context, _) => Form(
-        key: formKey,
-        child: ListView(
-          padding: const EdgeInsets.all(20),
-          children: [
-            Text('找回账号', style: Theme.of(context).textTheme.headlineMedium),
-            const SizedBox(height: 8),
-            Text(
-              '验证手机号后设置新密码，成功后其他登录会话将失效。',
-              style: Theme.of(context).textTheme.bodyMedium,
+      builder: (context, _) {
+        return Form(
+          key: formKey,
+          autovalidateMode: AutovalidateMode.disabled,
+          child: ListView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding: EdgeInsets.fromLTRB(
+              MediaQuery.sizeOf(context).width > 528
+                  ? (MediaQuery.sizeOf(context).width - 480) / 2
+                  : 24,
+              24,
+              MediaQuery.sizeOf(context).width > 528
+                  ? (MediaQuery.sizeOf(context).width - 480) / 2
+                  : 24,
+              36,
             ),
-            const SizedBox(height: 24),
-            _phoneField(phone),
-            const SizedBox(height: 12),
-            _codeField(code, onRequest: _request),
-            if (widget.controller.supportsDemo)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton(
-                  key: const Key('reset-dev-fill-code'),
-                  onPressed: () => setState(() => code.text = '123456'),
-                  child: const Text('开发环境：填入 123456'),
-                ),
+            children: [
+              const _AuthFlowHeader(title: '找回密码', subtitle: '验证绑定手机号后设置新密码。'),
+              const SizedBox(height: 28),
+              const _AuthSectionLabel(label: '验证账号归属'),
+              const SizedBox(height: 10),
+              _phoneField(
+                phone,
+                fieldKey: phoneFieldKey,
+                onChanged: _phoneChanged,
               ),
-            _passwordField(password, key: const Key('reset-password')),
-            if (widget.controller.error != null) ...[
+              const SizedBox(height: 14),
+              _codeField(
+                code,
+                onRequest: _request,
+                requestLabel: codeRequested ? '重新获取' : '获取验证码',
+                requestEnabled: !widget.controller.loading,
+                onChanged: (_) => widget.controller.clearError(),
+              ),
+              if (codeRequested) const _AuthCodeSentNotice(),
+              const SizedBox(height: 24),
+              const _AuthSectionLabel(label: '设置新密码'),
+              const SizedBox(height: 10),
+              _AuthPasswordField(
+                fieldKey: const Key('reset-password'),
+                controller: password,
+                label: '新密码',
+                helperText: widget.controller.authPolicy.passwordHelperText,
+                textInputAction: TextInputAction.done,
+                onChanged: (_) => widget.controller.clearError(),
+                validator: (value) =>
+                    widget.controller.authPolicy.passwordError(value ?? ''),
+                onFieldSubmitted: (_) => _reset(),
+              ),
+              const SizedBox(height: 14),
+              const _AuthSecurityNotice(),
+              if (widget.controller.error != null) ...[
+                const SizedBox(height: 12),
+                _InlineAuthError(message: widget.controller.error!),
+              ],
+              const SizedBox(height: 18),
+              FilledButton(
+                key: const Key('reset-submit'),
+                onPressed: widget.controller.loading ? null : _reset,
+                child: widget.controller.loading
+                    ? const SizedBox.square(
+                        dimension: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('确认重置密码'),
+              ),
               const SizedBox(height: 8),
-              Text(
-                widget.controller.error!,
-                style: Theme.of(
-                  context,
-                ).textTheme.bodySmall?.copyWith(color: LinliColors.systemRed),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('返回登录'),
               ),
             ],
-            const SizedBox(height: 20),
-            FilledButton(
-              key: const Key('reset-submit'),
-              onPressed: widget.controller.loading || !codeRequested
-                  ? null
-                  : _reset,
-              child: const Text('重置密码'),
-            ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     ),
   );
 }
 
-TextFormField _phoneField(TextEditingController controller) => TextFormField(
-  key: const Key('auth-phone'),
+TextFormField _phoneField(
+  TextEditingController controller, {
+  Key? fieldKey,
+  ValueChanged<String>? onChanged,
+}) => TextFormField(
+  key: fieldKey ?? const Key('auth-phone'),
+  autovalidateMode: AutovalidateMode.onUnfocus,
   controller: controller,
   keyboardType: TextInputType.phone,
+  textInputAction: TextInputAction.next,
   autofillHints: const [AutofillHints.telephoneNumber],
-  decoration: const InputDecoration(
-    labelText: '手机号',
-    prefixIcon: Icon(CupertinoIcons.phone),
-  ),
+  onChanged: onChanged,
+  onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
+  decoration: const InputDecoration(labelText: '手机号'),
   validator: (value) => _validPhone(value ?? '') ? null : '请输入有效手机号',
 );
 
 TextFormField _codeField(
   TextEditingController controller, {
   required VoidCallback onRequest,
+  String requestLabel = '获取验证码',
+  bool requestEnabled = true,
+  ValueChanged<String>? onChanged,
 }) => TextFormField(
   key: const Key('auth-code'),
+  autovalidateMode: AutovalidateMode.onUnfocus,
   controller: controller,
   keyboardType: TextInputType.number,
+  textInputAction: TextInputAction.next,
   autofillHints: const [AutofillHints.oneTimeCode],
+  onChanged: onChanged,
+  onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
   decoration: InputDecoration(
     labelText: '验证码',
-    prefixIcon: const Icon(CupertinoIcons.lock),
-    suffixIcon: TextButton(onPressed: onRequest, child: const Text('获取验证码')),
+    suffixIcon: TextButton(
+      onPressed: requestEnabled ? onRequest : null,
+      child: Text(requestLabel),
+    ),
   ),
   validator: (value) => (value?.trim().length ?? 0) >= 4 ? null : '请输入验证码',
 );
 
-TextFormField _passwordField(
-  TextEditingController controller, {
-  required Key key,
-}) => TextFormField(
-  key: key,
-  controller: controller,
-  obscureText: true,
-  autofillHints: const [AutofillHints.newPassword],
-  decoration: const InputDecoration(
-    labelText: '密码',
-    helperText: '至少 8 位，建议同时包含字母、数字和符号',
-    prefixIcon: Icon(CupertinoIcons.lock_shield),
-  ),
-  validator: (value) => (value?.length ?? 0) >= 8 ? null : '密码至少 8 位',
-);
+class _AuthPasswordField extends StatefulWidget {
+  const _AuthPasswordField({
+    required this.fieldKey,
+    required this.controller,
+    required this.label,
+    this.helperText,
+    this.textInputAction = TextInputAction.next,
+    this.onFieldSubmitted,
+    this.onChanged,
+    this.validator,
+  });
 
-bool _validPhone(String value) => value.trim().length >= 6;
+  final Key fieldKey;
+  final TextEditingController controller;
+  final String label;
+  final String? helperText;
+  final TextInputAction textInputAction;
+  final ValueChanged<String>? onFieldSubmitted;
+  final ValueChanged<String>? onChanged;
+  final FormFieldValidator<String>? validator;
+
+  @override
+  State<_AuthPasswordField> createState() => _AuthPasswordFieldState();
+}
+
+class _AuthPasswordFieldState extends State<_AuthPasswordField> {
+  bool obscure = true;
+
+  @override
+  Widget build(BuildContext context) => TextFormField(
+    key: widget.fieldKey,
+    autovalidateMode: AutovalidateMode.onUnfocus,
+    controller: widget.controller,
+    obscureText: obscure,
+    keyboardType: TextInputType.visiblePassword,
+    textInputAction: widget.textInputAction,
+    autofillHints: const [AutofillHints.newPassword],
+    onFieldSubmitted: widget.onFieldSubmitted,
+    onChanged: widget.onChanged,
+    onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
+    decoration: InputDecoration(
+      labelText: widget.label,
+      helperText: widget.helperText,
+      suffixIcon: IconButton(
+        tooltip: obscure ? '显示密码' : '隐藏密码',
+        onPressed: () => setState(() => obscure = !obscure),
+        icon: Icon(obscure ? CupertinoIcons.eye : CupertinoIcons.eye_slash),
+      ),
+    ),
+    validator:
+        widget.validator ??
+        (value) => (value?.length ?? 0) >= 8 ? null : '密码至少 8 位',
+  );
+}
+
+class _AuthFlowHeader extends StatelessWidget {
+  const _AuthFlowHeader({required this.title, required this.subtitle});
+
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        title,
+        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+          fontWeight: FontWeight.w700,
+          letterSpacing: -.25,
+        ),
+      ),
+      const SizedBox(height: 7),
+      Text(
+        subtitle,
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+          height: 1.5,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+    ],
+  );
+}
+
+class _AuthBrandAppBarTitle extends StatelessWidget {
+  const _AuthBrandAppBarTitle();
+
+  @override
+  Widget build(BuildContext context) => Image.asset(
+    'assets/brand/qingwaguagua-mark-transparent.png',
+    width: 28,
+    height: 28,
+    semanticLabel: '青蛙呱呱',
+  );
+}
+
+class _AuthSectionLabel extends StatelessWidget {
+  const _AuthSectionLabel({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Text(
+    label,
+    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+      color: Theme.of(context).colorScheme.onSurface,
+      fontWeight: FontWeight.w700,
+    ),
+  );
+}
+
+class _AuthSecurityNotice extends StatelessWidget {
+  const _AuthSecurityNotice();
+
+  @override
+  Widget build(BuildContext context) => Text(
+    '重置后，其他设备上的登录会话将自动失效。',
+    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+      height: 1.45,
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    ),
+  );
+}
+
+class _AuthCodeSentNotice extends StatelessWidget {
+  const _AuthCodeSentNotice();
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 8, left: 4),
+    child: Text(
+      '验证码已发送，5 分钟内有效',
+      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+        color: LinliColors.brandGreenDeep,
+        fontWeight: FontWeight.w500,
+      ),
+    ),
+  );
+}
+
+bool _validPhone(String value) => validAuthPhone(value);
+
+class _RegistrationClosedNotice extends StatelessWidget {
+  const _RegistrationClosedNotice();
+
+  @override
+  Widget build(BuildContext context) => Container(
+    key: const Key('registration-disabled-notice'),
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+    decoration: BoxDecoration(
+      color: Theme.of(context).brightness == Brightness.dark
+          ? LinliColors.darkSurfaceElevated
+          : LinliColors.brandMint,
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: Theme.of(context).colorScheme.outline),
+    ),
+    child: Row(
+      children: [
+        const Icon(
+          CupertinoIcons.info_circle,
+          size: 18,
+          color: LinliColors.brandGreenDeep,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            '当前暂未开放新账号注册',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _RegistrationClosedView extends StatelessWidget {
+  const _RegistrationClosedView();
+
+  @override
+  Widget build(BuildContext context) => ListView(
+    key: const Key('registration-disabled-view'),
+    padding: EdgeInsets.fromLTRB(
+      MediaQuery.sizeOf(context).width > 528
+          ? (MediaQuery.sizeOf(context).width - 480) / 2
+          : 24,
+      32,
+      MediaQuery.sizeOf(context).width > 528
+          ? (MediaQuery.sizeOf(context).width - 480) / 2
+          : 24,
+      36,
+    ),
+    children: [
+      const _AuthFlowHeader(
+        title: '暂未开放注册',
+        subtitle: '当前仅支持已有账号登录，注册恢复后会在此处显示。',
+      ),
+      const SizedBox(height: 22),
+      const _RegistrationClosedNotice(),
+      const SizedBox(height: 22),
+      OutlinedButton(
+        onPressed: () => Navigator.of(context).maybePop(),
+        child: const Text('返回登录'),
+      ),
+    ],
+  );
+}

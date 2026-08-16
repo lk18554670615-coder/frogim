@@ -234,13 +234,7 @@ class _MomentsScreenState extends State<MomentsScreen> {
     body: loading
         ? const Center(child: CircularProgressIndicator())
         : error.isNotEmpty
-        ? Center(
-            child: FilledButton.icon(
-              onPressed: _load,
-              icon: const Icon(CupertinoIcons.refresh),
-              label: const Text('加载失败，点击重试'),
-            ),
-          )
+        ? MomentsErrorState(onRefresh: _load)
         : items.isEmpty
         ? MomentsEmptyState(onRefresh: _load, onPublish: _publish)
         : RefreshIndicator(
@@ -285,6 +279,32 @@ class _MomentsScreenState extends State<MomentsScreen> {
               },
             ),
           ),
+  );
+}
+
+class MomentsErrorState extends StatelessWidget {
+  const MomentsErrorState({super.key, required this.onRefresh});
+
+  final Future<void> Function() onRefresh;
+
+  @override
+  Widget build(BuildContext context) => RefreshIndicator(
+    onRefresh: onRefresh,
+    child: CustomScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      slivers: [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: StatePanel(
+            icon: CupertinoIcons.exclamationmark_circle,
+            title: '朋友圈暂时无法加载',
+            body: '请检查网络连接后重试。已经发布的内容仍保存在服务器。',
+            actionLabel: '重新加载',
+            onAction: onRefresh,
+          ),
+        ),
+      ],
+    ),
   );
 }
 
@@ -539,10 +559,13 @@ class _MomentNetworkImage extends StatelessWidget {
   final String url;
 
   @override
-  Widget build(BuildContext context) => Image.network(
-    url,
+  Widget build(BuildContext context) => LinliNetworkImage(
+    url: url,
+    cacheKey: url,
     fit: BoxFit.cover,
-    errorBuilder: (_, _, _) => ColoredBox(
+    placeholderBuilder: (context) =>
+        ColoredBox(color: Theme.of(context).colorScheme.surfaceContainerHigh),
+    errorBuilder: (context) => ColoredBox(
       color: Theme.of(context).colorScheme.surfaceContainerHigh,
       child: const Center(child: Icon(CupertinoIcons.photo)),
     ),
@@ -1242,12 +1265,13 @@ class _MomentPickerState extends State<_MomentPicker> {
                         ? const Icon(CupertinoIcons.person_2_square_stack)
                         : ClipRRect(
                             borderRadius: BorderRadius.circular(8),
-                            child: Image.network(
-                              moment.media.first.url,
+                            child: LinliNetworkImage(
+                              url: moment.media.first.url,
+                              cacheKey: moment.media.first.url,
                               width: 48,
                               height: 48,
                               fit: BoxFit.cover,
-                              errorBuilder: (_, _, _) =>
+                              errorBuilder: (_) =>
                                   const Icon(CupertinoIcons.photo),
                             ),
                           ),

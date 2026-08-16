@@ -14,7 +14,7 @@ self.addEventListener('push', (event) => {
   }
   const title = typeof payload.title === 'string' && payload.title
     ? payload.title
-    : '邻里通讯';
+    : '青蛙呱呱';
   const body = typeof payload.body === 'string' && payload.body
     ? payload.body
     : '你有一条新通知';

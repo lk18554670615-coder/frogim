@@ -4,12 +4,16 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:linli_im/core/app_controller.dart';
 import 'package:linli_im/core/app_theme.dart';
+import 'package:linli_im/core/models.dart';
 import 'package:linli_im/data/demo_repository.dart';
 import 'package:linli_im/ui/screens/home_screen.dart';
 import 'package:linli_im/ui/screens/login_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUp(() => SharedPreferences.setMockInitialValues({}));
 
   testWidgets('1440 桌面登录使用独立窗体而不是放大手机表单', (tester) async {
     _setViewport(tester, const Size(1440, 1000));
@@ -26,13 +30,65 @@ void main() {
 
     expect(find.byKey(const Key('desktop-login-shell')), findsOneWidget);
     expect(find.textContaining('让重要的沟通'), findsOneWidget);
-    expect(find.byKey(const Key('phone-field')), findsOneWidget);
+    expect(find.byType(TextFormField), findsNWidgets(2));
     expect(find.byKey(const Key('login-button')), findsOneWidget);
     final card = tester.getRect(find.byKey(const Key('desktop-login-card')));
     final policy = tester.getRect(
       find.byKey(const Key('login-policy-consent')),
     );
     expect(card.bottom, greaterThanOrEqualTo(policy.bottom));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('1280x720 桌面登录完整落在视口内且验证码操作不被裁切', (tester) async {
+    const viewport = Size(1280, 720);
+    _setViewport(tester, viewport);
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: LoginScreen(controller: controller),
+      ),
+    );
+    await _pumpUi(tester);
+
+    final card = tester.getRect(find.byKey(const Key('desktop-login-card')));
+    final requestCode = tester.getRect(
+      find.byKey(const Key('request-code-button')),
+    );
+    expect(card.left, greaterThanOrEqualTo(24));
+    expect(card.right, lessThanOrEqualTo(viewport.width - 24));
+    expect(requestCode.right, lessThanOrEqualTo(card.right - 24));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('桌面扫码登录展示真实二维码且不混入手机号表单', (tester) async {
+    const viewport = Size(1280, 720);
+    _setViewport(tester, viewport);
+    final repository = _QrLoginRepository();
+    final controller = AppController(repository);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: LoginScreen(controller: controller),
+      ),
+    );
+    await _pumpUi(tester);
+    await tester.tap(find.text('扫码登录'));
+    await _pumpUi(tester);
+
+    expect(repository.createCount, 1);
+    expect(find.byKey(const Key('qr-login-panel')), findsOneWidget);
+    expect(find.byKey(const Key('qr-login-code')), findsOneWidget);
+    expect(find.textContaining('右上角“+”'), findsOneWidget);
+    expect(find.byType(TextFormField), findsNothing);
+    expect(find.byKey(const Key('login-policy-consent')), findsNothing);
+    final card = tester.getRect(find.byKey(const Key('desktop-login-card')));
+    expect(card.bottom, lessThanOrEqualTo(viewport.height - 24));
     expect(tester.takeException(), isNull);
   });
 
@@ -113,7 +169,64 @@ void main() {
     await _pumpUi(tester);
     expect(find.byKey(const Key('desktop-account-workspace')), findsOneWidget);
     expect(find.text('账号与安全'), findsOneWidget);
+    expect(find.text('登录设备'), findsOneWidget);
+    expect(find.text('我的收藏'), findsOneWidget);
+    expect(find.text('聊天背景'), findsOneWidget);
     expect(find.text('帮助与反馈'), findsOneWidget);
+    expect(tester.getRect(find.text('编辑资料')).right, lessThanOrEqualTo(1280));
+    expect(tester.getRect(find.text('存储空间')).right, lessThanOrEqualTo(1280));
+    expect(
+      tester.getRect(find.text('外观与通用')).top,
+      tester.getRect(find.text('帮助与反馈')).top,
+    );
+    expect(
+      tester.getRect(find.text('聊天背景')).top,
+      tester.getRect(find.text('帮助与反馈')).top,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('桌面外观入口先进入通用设置且不会误触切换主题', (tester) async {
+    var themeToggleCount = 0;
+    final controller = await _pumpDesktopHome(
+      tester,
+      size: const Size(1280, 900),
+      onToggleTheme: () => themeToggleCount += 1,
+    );
+    addTearDown(controller.dispose);
+
+    await tester.tap(find.byKey(const Key('desktop-nav-profile')));
+    await _pumpUi(tester);
+    await tester.tap(find.text('外观与通用'));
+    await _pumpUi(tester);
+
+    expect(find.text('通用'), findsOneWidget);
+    expect(find.byKey(const Key('general-toggle-theme')), findsOneWidget);
+    expect(themeToggleCount, 0);
+
+    await tester.tap(find.byKey(const Key('general-toggle-theme')));
+    await _pumpUi(tester);
+    expect(themeToggleCount, 1);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('桌面个人中心的聊天背景入口可打开真实设置页', (tester) async {
+    final controller = await _pumpDesktopHome(
+      tester,
+      size: const Size(1280, 900),
+    );
+    addTearDown(controller.dispose);
+
+    await tester.tap(find.byKey(const Key('desktop-nav-profile')));
+    await _pumpUi(tester);
+    await tester.tap(find.text('聊天背景'));
+    await _pumpUi(tester);
+    for (var i = 0; i < 6; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    expect(find.text('聊天背景'), findsWidgets);
+    expect(find.text('跟随系统'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -188,6 +301,7 @@ void main() {
 Future<AppController> _pumpDesktopHome(
   WidgetTester tester, {
   required Size size,
+  VoidCallback? onToggleTheme,
 }) async {
   _setViewport(tester, size);
   final controller = AppController(DemoImRepository(latency: Duration.zero));
@@ -195,7 +309,10 @@ Future<AppController> _pumpDesktopHome(
   await tester.pumpWidget(
     MaterialApp(
       theme: buildLinliTheme(Brightness.light),
-      home: HomeScreen(controller: controller, onToggleTheme: () {}),
+      home: HomeScreen(
+        controller: controller,
+        onToggleTheme: onToggleTheme ?? () {},
+      ),
     ),
   );
   await _pumpUi(tester);
@@ -212,4 +329,26 @@ void _setViewport(WidgetTester tester, Size size) {
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
+}
+
+class _QrLoginRepository extends DemoImRepository {
+  _QrLoginRepository() : super(latency: Duration.zero);
+
+  int createCount = 0;
+
+  @override
+  Future<QrLoginTicket> createQrLoginTicket({
+    required String clientName,
+  }) async {
+    createCount += 1;
+    return QrLoginTicket(
+      id: 'qrlogin-widget',
+      qrPayload: 'qingwaguagua://login/ql_widget_test',
+      pollToken: 'qp_widget_test',
+      expiresAt: DateTime.now().add(const Duration(minutes: 2)),
+    );
+  }
+
+  @override
+  Future<AppUser?> pollQrLoginTicket(QrLoginTicket ticket) async => null;
 }

@@ -9,6 +9,8 @@ import type {
   CallRecord,
   ClientVersionPolicy,
   DashboardData,
+  GroupMemberRecord,
+  GroupOverview,
   GroupRecord,
   FriendshipRecord,
   FeedbackRecord,
@@ -30,6 +32,7 @@ import type {
   StickerItemOperationsRecord,
   StickerItemInput,
   UserRecord,
+  UserOverview,
   WukongOverview,
   WukongRuntimeSettings,
   WukongNode,
@@ -38,6 +41,7 @@ import type {
   WukongStoredMessage,
   WukongDevice,
   WukongSystemUser,
+  WukongRobotProfile,
   WukongPlugin,
   WukongPluginRelease,
   WukongPluginEvent,
@@ -54,7 +58,6 @@ import type {
 } from './types';
 
 type JsonObject = Record<string, unknown>;
-const demoAllowed = import.meta.env.DEV || import.meta.env.VITE_ALLOW_DEMO === 'true';
 
 export class ApiError extends Error {
   constructor(
@@ -68,12 +71,61 @@ export class ApiError extends Error {
   }
 }
 
-const wait = (ms = 160) => new Promise((resolve) => setTimeout(resolve, ms));
 const object = (value: unknown): JsonObject => value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {};
 const string = (value: unknown, fallback = '') => typeof value === 'string' ? value : fallback;
 const number = (value: unknown, fallback = 0) => typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 const boolean = (value: unknown, fallback = false) => typeof value === 'boolean' ? value : fallback;
+const optionalNumber = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null;
 const list = (value: unknown) => Array.isArray(value) ? value : [];
+const chineseTextPattern = /[\u3400-\u9fff]/;
+const apiErrorMessages: Record<string, string> = {
+  UNAUTHENTICATED: '登录状态已失效，请重新登录',
+  INVALID_CREDENTIALS: '邮箱、密码或动态验证码无效',
+  TOTP_REQUIRED: '请输入动态验证码后重试',
+  INVALID_TOTP: '动态验证码无效或已过期',
+  FORBIDDEN: '当前账号没有执行此操作的权限',
+  NOT_FOUND: '目标记录不存在或已被删除',
+  CONFLICT: '数据状态已发生变化，请刷新后重试',
+  INVALID_ARGUMENT: '提交内容不符合要求，请检查后重试',
+  CONFIRMATION_REQUIRED: '请确认操作并填写原因',
+  RATE_LIMITED: '操作过于频繁，请稍后重试',
+  PAYLOAD_TOO_LARGE: '提交内容过大，请缩小文件或内容后重试',
+  DATASTORE_UNAVAILABLE: '数据服务暂时不可用，请稍后重试',
+  DATASOURCE_UNAVAILABLE: '同步数据源暂时不可用，请检查服务状态后重试',
+  WUKONG_UNAVAILABLE: '即时通信服务暂时不可用，请稍后重试',
+  WUKONG_UPSTREAM_ERROR: '即时通信管理服务暂时不可用，请检查服务状态后重试',
+  IM_UNAVAILABLE: '即时通信服务暂时不可用，请稍后重试',
+  IM_DISABLED: '即时通信服务当前未启用',
+  LIVEKIT_UNAVAILABLE: '音视频服务暂时不可用，请稍后重试',
+  LIVEKIT_UPSTREAM_ERROR: '音视频管理服务暂时不可用，请检查服务状态后重试',
+  MEDIA_UNAVAILABLE: '文件存储服务暂时不可用，请稍后重试',
+  SMS_UNAVAILABLE: '短信验证码服务暂时不可用，请稍后重试',
+  SMS_NOT_CONFIGURED: '短信验证码服务尚未完成配置',
+  DEVICE_STATE_UNAVAILABLE: '设备已下线，但凭据状态暂未同步，请稍后刷新确认',
+  PLUGIN_STORE_UNAVAILABLE: '插件状态存储暂时不可用，请稍后重试',
+  PLUGIN_LIFECYCLE_UNAVAILABLE: '插件生命周期管理暂时不可用，请稍后重试',
+  NOT_READY: '核心依赖尚未就绪，请检查系统健康状态',
+  MAINTENANCE: '系统正在维护，请稍后重试',
+  INTERNAL: '服务处理失败，请稍后重试',
+  INTERNAL_ERROR: '服务处理失败，请稍后重试',
+};
+
+function localizedApiErrorMessage(code: string, rawMessage: string, status: number) {
+  const mapped = apiErrorMessages[code.trim().toUpperCase()];
+  const genericStatusMessage = /^请求失败（\d+）$/.test(rawMessage);
+  if (mapped && (!rawMessage || genericStatusMessage)) return mapped;
+  if (rawMessage && chineseTextPattern.test(rawMessage)) return rawMessage;
+  if (mapped) return mapped;
+  if (status === 400 || status === 422) return '提交内容不符合要求，请检查后重试';
+  if (status === 401) return '登录状态已失效，请重新登录';
+  if (status === 403) return '当前账号没有执行此操作的权限';
+  if (status === 404) return '请求的功能或记录不存在';
+  if (status === 409) return '数据状态已发生变化，请刷新后重试';
+  if (status === 413) return '提交内容过大，请缩小后重试';
+  if (status === 429) return '操作过于频繁，请稍后重试';
+  if (status >= 500) return '服务暂时不可用，请稍后重试';
+  return '请求未完成，请稍后重试';
+}
 const formatDate = (value: unknown) => {
   const raw = string(value);
   if (!raw) return '暂无';
@@ -127,13 +179,6 @@ function adaptClientDiagnostics(value: unknown): OperationsStatus['diagnostics']
       };
     }),
   };
-}
-
-function demoPageResult<T>(items: T[], page = 1, pageSize = 20): PageResult<T> {
-  const safePage = Math.max(1, page);
-  const safeSize = Math.min(100, Math.max(1, pageSize));
-  const visible = items.slice((safePage - 1) * safeSize, safePage * safeSize);
-  return { items: visible, page: safePage, pageSize: safeSize, total: items.length, hasNext: safePage * safeSize < items.length };
 }
 
 function unwrapItems(payload: unknown): { items: unknown[]; total?: number; nextCursor?: string; page?: number; pageSize?: number } {
@@ -193,10 +238,11 @@ function adaptReport(value: unknown): ReportRecord {
 
 function adaptAudit(value: unknown): AuditLog {
   const raw = object(value);
+  const result = raw.result === 'success' || raw.result === 'failed' ? raw.result : 'unknown';
   return {
-    id: string(raw.id, crypto.randomUUID()), actor: string(raw.actor, string(raw.actorId, '系统')),
+    id: string(raw.id, crypto.randomUUID()), actor: string(raw.actor, string(raw.actorId, '未提供')),
     action: string(raw.action, '未知操作'), target: string(raw.target, `${string(raw.targetType)} ${string(raw.targetId)}`.trim()),
-    result: raw.result === 'failed' ? 'failed' : 'success', ip: string(raw.ip, '未记录'), createdAt: formatDate(raw.createdAt),
+    result, ip: string(raw.ip, '未记录'), createdAt: formatDate(raw.createdAt),
   };
 }
 
@@ -210,13 +256,28 @@ function adaptClientVersion(value: unknown): ClientVersionPolicy {
   const outer = object(value);
   const nested = object(outer.data);
   const raw = Object.keys(nested).length ? nested : outer;
-  const platform = raw.platform === 'ios' || raw.platform === 'web' || raw.platform === 'macos' ? raw.platform : 'android';
+  const platformValue = string(raw.platform);
+  if (!['android', 'ios', 'web', 'macos'].includes(platformValue)) {
+    throw new Error('服务端版本策略缺少有效平台');
+  }
+  const minimumVersion = string(raw.minimumVersion);
+  const latestVersion = string(raw.latestVersion);
+  if (!minimumVersion || !latestVersion) {
+    throw new Error('服务端版本策略缺少必需版本号');
+  }
+  if (typeof raw.forceUpdate !== 'boolean') {
+    throw new Error('服务端版本策略缺少强制更新状态');
+  }
+  if (typeof raw.rolloutPercentage !== 'number' || !Number.isFinite(raw.rolloutPercentage)) {
+    throw new Error('服务端版本策略缺少有效灰度比例');
+  }
+  const platform = platformValue as ClientVersionPolicy['platform'];
   return {
     platform,
-    minimumVersion: string(raw.minimumVersion, '1.0.0'),
-    latestVersion: string(raw.latestVersion, '1.0.0'),
-    forceUpdate: boolean(raw.forceUpdate),
-    rolloutPercentage: Math.min(100, Math.max(0, number(raw.rolloutPercentage, 100))),
+    minimumVersion,
+    latestVersion,
+    forceUpdate: raw.forceUpdate,
+    rolloutPercentage: Math.min(100, Math.max(0, raw.rolloutPercentage)),
     releaseNotes: string(raw.releaseNotes),
     downloadUrl: string(raw.downloadUrl),
     updatedBy: string(raw.updatedBy),
@@ -263,6 +324,11 @@ function adaptStickerItem(value: unknown): StickerItemOperationsRecord {
 }
 
 const flag = (value: unknown) => boolean(value) || number(value) === 1;
+const optionalFlag = (value: unknown) => {
+  if (typeof value === 'boolean') return value;
+  if (value === 0 || value === 1) return value === 1;
+  return null;
+};
 const managerData = (payload: unknown) => {
   const raw = object(payload);
   return list(Array.isArray(raw.data) ? raw.data : raw.items);
@@ -271,9 +337,9 @@ const managerData = (payload: unknown) => {
 function adaptWukongOverview(value: unknown): WukongOverview {
   const raw = object(value);
   return {
-    serverId: string(raw.server_id), version: string(raw.version), uptime: string(raw.uptime), connections: number(raw.connections),
-    userHandlers: number(raw.user_handler_count), cpu: number(raw.cpu), memoryBytes: number(raw.mem), goroutines: number(raw.goroutine),
-    inMessages: number(raw.in_msgs), outMessages: number(raw.out_msgs), retryQueue: number(raw.retry_queue),
+    serverId: string(raw.server_id), version: string(raw.version), uptime: string(raw.uptime), connections: optionalNumber(raw.connections),
+    userHandlers: optionalNumber(raw.user_handler_count), cpu: optionalNumber(raw.cpu), memoryBytes: optionalNumber(raw.mem), goroutines: optionalNumber(raw.goroutine),
+    inMessages: optionalNumber(raw.in_msgs), outMessages: optionalNumber(raw.out_msgs), retryQueue: optionalNumber(raw.retry_queue),
   };
 }
 
@@ -281,8 +347,8 @@ function adaptWukongSettings(value: unknown): WukongRuntimeSettings {
   const raw = object(value);
   const logger = object(raw.logger);
   return {
-    traceEnabled: flag(logger.trace_on), lokiEnabled: flag(logger.loki_on),
-    prometheusEnabled: flag(raw.prometheus_on), stressEnabled: flag(raw.stress_on),
+    traceEnabled: optionalFlag(logger.trace_on), lokiEnabled: optionalFlag(logger.loki_on),
+    prometheusEnabled: optionalFlag(raw.prometheus_on), stressEnabled: optionalFlag(raw.stress_on),
   };
 }
 
@@ -489,10 +555,12 @@ function adaptDashboard(payload: unknown): DashboardData {
       activity: list(raw.activity).map(adaptAudit),
     };
   }
-  const users = number(raw.users);
-  const messages = number(raw.messages);
-  const reports = number(raw.pendingReports);
-  const sockets = number(raw.wukongConnections);
+  const users = optionalNumber(raw.users);
+  const bannedUsers = optionalNumber(raw.bannedUsers);
+  const messages = optionalNumber(raw.messages);
+  const reports = optionalNumber(raw.pendingReports);
+  const sockets = optionalNumber(raw.wukongConnections);
+  const conversations = optionalNumber(raw.conversations);
   const messageTrend = list(raw.messageTrend).map((value) => {
     const point = object(value);
     const rawTime = string(point.time);
@@ -522,7 +590,7 @@ function adaptDashboard(payload: unknown): DashboardData {
     };
   }).filter((item) => item.value > 0);
   const alerts: DashboardData['alerts'] = list(raw.alerts) as DashboardData['alerts'];
-  if (!alerts.length && reports > 0) alerts.push({
+  if (!alerts.length && reports !== null && reports > 0) alerts.push({
     id: 'pending-reports', title: '存在待审举报', detail: `${reports} 条举报等待处理`, severity: reports >= 10 ? 'critical' : 'warning', time: '现在',
   });
   if (raw.wukongStatus !== 'ok') alerts.push({
@@ -530,10 +598,10 @@ function adaptDashboard(payload: unknown): DashboardData {
   });
   return {
     metrics: [
-      { label: '用户总数', value: users.toLocaleString(), delta: `${number(raw.bannedUsers)} 个封禁账号`, tone: 'info' },
-      { label: '累计消息', value: messages.toLocaleString(), delta: '服务端持久化统计', tone: 'success' },
-      { label: '待审举报', value: reports.toLocaleString(), delta: reports > 0 ? '请及时处理' : '当前队列为空', tone: reports > 0 ? 'warning' : 'success' },
-      { label: 'WuKong 连接', value: sockets.toLocaleString(), delta: raw.wukongStatus === 'ok' ? `${number(raw.conversations)} 个业务会话` : 'WuKong 状态不可用', tone: raw.wukongStatus === 'ok' ? 'info' : 'warning' },
+      { label: '用户总数', value: users?.toLocaleString() ?? '—', delta: bannedUsers === null ? '封禁账号数未上报' : `${bannedUsers} 个封禁账号`, tone: users === null ? 'warning' : 'info' },
+      { label: '累计消息', value: messages?.toLocaleString() ?? '—', delta: messages === null ? '消息总数未上报' : '服务端持久化统计', tone: messages === null ? 'warning' : 'success' },
+      { label: '待审举报', value: reports?.toLocaleString() ?? '—', delta: reports === null ? '举报队列未上报' : reports > 0 ? '请及时处理' : '当前队列为空', tone: reports === null || reports > 0 ? 'warning' : 'success' },
+      { label: 'WuKong 连接', value: sockets?.toLocaleString() ?? '—', delta: raw.wukongStatus !== 'ok' ? 'WuKong 状态不可用' : conversations === null ? '业务会话数未上报' : `${conversations} 个业务会话`, tone: raw.wukongStatus === 'ok' && sockets !== null ? 'info' : 'warning' },
     ],
     messageTrend, channelMix, alerts, activity: list(raw.activity).map(adaptAudit),
   };
@@ -557,162 +625,36 @@ function adaptSettings(payload: unknown): AdminSettings {
   };
 }
 
-const users: UserRecord[] = [
-  { id: 'u_10291', nickname: '林夏', phone: '138****7204', handle: 'linxia', handleChangeCount: 1, avatar: '林', status: 'active', registeredAt: '2026-07-21 09:12', lastSeen: '刚刚在线', deviceCount: 2, messageCount: 1820 },
-  { id: 'u_10288', nickname: '江宁', phone: '186****1138', handle: 'jiangning', handleChangeCount: 0, avatar: '江', status: 'risk', registeredAt: '2026-07-20 18:44', lastSeen: '8 分钟前', deviceCount: 4, messageCount: 5931 },
-  { id: 'u_10276', nickname: '周可', phone: '159****3866', handle: 'zhouke', handleChangeCount: 2, avatar: '周', status: 'banned', registeredAt: '2026-07-19 12:31', lastSeen: '2 天前', deviceCount: 1, messageCount: 423 },
-  { id: 'u_10241', nickname: '陈屿', phone: '177****8510', handle: 'chenyu', handleChangeCount: 1, avatar: '陈', status: 'active', registeredAt: '2026-07-16 08:05', lastSeen: '35 分钟前', deviceCount: 2, messageCount: 2105 },
-  { id: 'u_10192', nickname: '苏远', phone: '131****9022', handle: 'suyuan', handleChangeCount: 0, avatar: '苏', status: 'active', registeredAt: '2026-07-10 14:09', lastSeen: '1 小时前', deviceCount: 1, messageCount: 884 },
-  { id: 'u_10134', nickname: '杨漾', phone: '185****4812', handle: 'yangyang', handleChangeCount: 2, avatar: '杨', status: 'risk', registeredAt: '2026-07-02 21:17', lastSeen: '在线', deviceCount: 5, messageCount: 12840 },
-];
-
-const groups: GroupRecord[] = [
-  { id: 'g_3912', name: '社区摄影交流', owner: '林夏', memberCount: 286, messageCount: 18520, status: 'active', createdAt: '2026-04-12', reportCount: 0 },
-  { id: 'g_3891', name: '周末徒步计划', owner: '陈屿', memberCount: 147, messageCount: 9361, status: 'active', createdAt: '2026-04-03', reportCount: 1 },
-  { id: 'g_3804', name: '数码好物分享', owner: '江宁', memberCount: 498, messageCount: 46820, status: 'muted', createdAt: '2026-03-14', reportCount: 8 },
-];
-
-const reports: ReportRecord[] = [
-  { id: 'r_8281', target: '消息 m_701188', targetType: 'message', reporter: 'u_10291', category: '疑似诈骗', excerpt: '点击链接即可领取会员退款，名额有限……', status: 'pending', risk: 'high', createdAt: '今天 10:42' },
-  { id: 'r_8277', target: '数码好物分享', targetType: 'group', reporter: 'u_10182', category: '违规营销', excerpt: '群内持续发布第三方平台导流信息', status: 'reviewing', risk: 'medium', createdAt: '今天 09:18' },
-  { id: 'r_8242', target: '消息 m_698811', targetType: 'message', reporter: 'u_10202', category: '不实信息', excerpt: '相关内容已由审核员确认并删除', status: 'resolved', risk: 'low', createdAt: '昨天 16:07' },
-];
-
-let sensitiveWords: SensitiveWord[] = [
-  { id: 'sw_1', word: '代开发票', category: '黑产', matchType: 'exact', action: 'block', createdAt: '2026-07-29' },
-  { id: 'sw_2', word: '免费领取*', category: '诈骗', matchType: 'fuzzy', action: 'review', createdAt: '2026-07-28' },
-];
-
-const auditLogs: AuditLog[] = [
-  { id: 'a_5198', actor: '安全审核员 01', action: '封禁用户 24 小时', target: 'u_10134', result: 'success', ip: '10.24.8.15', createdAt: '今天 11:06:24' },
-  { id: 'a_5197', actor: '运营管理员', action: '更新敏感词', target: '兼职刷单', result: 'success', ip: '10.24.6.11', createdAt: '今天 10:51:02' },
-];
-
-const healthServices: HealthService[] = [
-  { name: 'WuKongIM 长连接', status: 'healthy', latency: 18, uptime: '99.998%', version: 'v2.2.5', detail: '固定版本探针正常' },
-  { name: '消息服务', status: 'healthy', latency: 24, uptime: '99.995%', version: 'v0.1.0', detail: '4/4 实例正常' },
-  { name: '业务事件与命令', status: 'degraded', latency: 86, uptime: '99.940%', version: 'WuKongIM CMD', detail: '命令投递延迟偏高' },
-];
-
-let settings: AdminSettings = { allowRegistration: true, passwordMinLength: 8, maxMessageTextLength: 5000, messageRecallMinutes: 2, maxGroupMembers: 500, allowFriendRequests: true, allowSearchByHandle: true, allowSearchByPhone: false, friendRequestExpiryDays: 7, announcementPushEnabled: true, callsEnabled: true, videoCallsEnabled: true, sensitiveWordEnabled: true, reportSlaHours: 8, maintenanceMode: false, announcement: '', configurationStatus: { database: true, redis: true, objectStorage: true, otpProvider: true, pushProvider: true, liveKit: true, adminTOTP: true }, infrastructure: { pushProvider: 'getui', mediaMaxSizeMB: 100, callInviteTimeoutSeconds: 30, accessTokenMinutes: 15, refreshTokenHours: 720 }, restartRequiredKeys: ['pushProvider', 'mediaMaxSizeMB', 'callInviteTimeoutSeconds', 'accessTokenMinutes', 'refreshTokenHours'] };
-let announcements: AnnouncementRecord[] = [];
-let clientVersions: ClientVersionPolicy[] = (['android', 'ios', 'web', 'macos'] as const).map((platform) => ({ platform, minimumVersion: '1.0.0', latestVersion: '1.0.0', forceUpdate: false, rolloutPercentage: 100, releaseNotes: '', downloadUrl: '', updatedBy: 'demo_admin', updatedAt: new Date().toISOString() }));
-let moderationMoments: MomentModerationRecord[] = [{ id: 'moment_demo', authorId: 'u_10134', authorName: '林知夏', content: '周末社区活动记录', mediaKind: 'images', mediaCount: 3, visibility: 'friends', likeCount: 12, commentCount: 4, status: 'published', createdAt: '今天 10:20' }];
-let stickerCategories: StickerCategoryOperationsRecord[] = [{ id: 'daily', name: '日常', sortOrder: 10, enabled: true }];
-let moderationStickerPacks: StickerPackModerationRecord[] = [{ id: 'sticker_pack_demo', name: '邻里日常', categoryId: 'daily', categoryName: '日常', description: '社区日常表情', coverMediaId: 'media_demo_cover', status: 'reviewing', sortOrder: 10, itemCount: 0, items: [], createdBy: 'u_10826', reviewedBy: '', reviewReason: '', updatedAt: '今天 09:30' }];
-let businessChannels: BusinessChannelRecord[] = [{ id: 'community_demo', channelType: 4, category: 'community', name: '产品交流社区', avatarUrl: '', ownerId: 'u_demo', parentId: '', description: '产品使用和建议交流', visibility: 'public', joinPolicy: 'open', postingPolicy: 'members', slowModeSeconds: 0, memberCount: 126, ban: false, disband: false, sendBan: false, allowStranger: false, metadata: {}, createdAt: '今天 08:00', updatedAt: '刚刚' }];
-const businessChannelMembers: BusinessChannelMemberRecord[] = [{ channelId: 'community_demo', userId: 'u_demo', name: '演示用户', handle: 'demo', avatarUrl: '', role: 'owner', joinedAt: '今天 08:00', updatedAt: '今天 08:00' }];
-const businessChannelAccess: BusinessChannelAccessRecord[] = [];
-let supportSkills: SupportSkillRecord[] = [{ id: 'support_general', name: '综合咨询', description: '通用咨询队列', routingStrategy: 'least_active', maxConcurrentPerAgent: 5, enabled: true, queueCount: 2, availableAgents: 1, createdAt: '今天 08:00', updatedAt: '刚刚' }];
-let supportAgents: SupportAgentRecord[] = [{ userId: 'u_support', name: '演示坐席', handle: 'support', avatarUrl: '', status: 'available', maxConcurrent: 5, activeSessions: 1, skillGroupIds: ['support_general'], createdAt: '今天 08:00', updatedAt: '刚刚' }];
-let supportSessions: SupportSessionRecord[] = [{ id: 'support_session_demo', visitorId: 'u_visitor', visitorName: '访客 A', skillGroupId: 'support_general', skillGroupName: '综合咨询', channelId: 'u_visitor', channelType: 10, subject: '账号登录问题', status: 'active', queuePosition: 0, assignedAgentId: 'u_support', agentName: '演示坐席', transferCount: 0, rating: 0, ratingComment: '', createdAt: '5 分钟前', updatedAt: '刚刚' }];
-let wukongSystemUsers: WukongSystemUser[] = [{ userId: 'u_notice', name: '系统通知', enabled: true, syncStatus: 'synced', updatedBy: 'demo', reason: '初始化系统通知账号', updatedAt: new Date().toISOString() }];
-
-const demoApi: AdminApi = {
-  async getDashboard() {
-    await wait();
-    return {
-      metrics: [
-        { label: '在线用户', value: '8,429', delta: '较昨日 +12.4%', tone: 'success' },
-        { label: '今日消息', value: '1.82M', delta: '峰值 3,214 条/秒', tone: 'info' },
-        { label: '待审举报', value: '23', delta: '其中高风险 4 条', tone: 'warning' },
-        { label: '消息成功率', value: '99.993%', delta: '近 24 小时', tone: 'success' },
-      ],
-      messageTrend: [{ time: '00:00', count: 30 }, { time: '04:00', count: 18 }, { time: '08:00', count: 62 }, { time: '12:00', count: 68 }, { time: '16:00', count: 92 }, { time: '20:00', count: 100 }],
-      channelMix: [{ label: '单聊', value: 68, color: 'var(--primary)' }, { label: '群聊', value: 27, color: 'var(--info)' }, { label: '系统消息', value: 5, color: 'var(--warning)' }],
-      alerts: [{ id: 'al_1', title: '业务命令投递延迟偏高', detail: '请检查业务 Outbox 与 WuKongIM CMD 投递状态', severity: 'warning', time: '3 分钟前' }],
-      activity: auditLogs,
-    };
-  },
-  async getUsers(query = '', status = '', page = 1, pageSize = 20) { await wait(); const needle = query.toLowerCase(); return demoPageResult(users.filter((u) => (!needle || `${u.nickname}${u.id}${u.phone}`.toLowerCase().includes(needle)) && (!status || u.status === status)), page, pageSize); },
-  async banUser(id) { await wait(); const user = users.find((u) => u.id === id); if (user) user.status = 'banned'; },
-  async unbanUser(id) { await wait(); const user = users.find((u) => u.id === id); if (user) user.status = 'active'; },
-  async getGroups(query = '', status = '', page = 1, pageSize = 20) { await wait(); const needle = query.toLowerCase(); return demoPageResult(groups.filter((g) => (!needle || `${g.name}${g.id}${g.owner}`.toLowerCase().includes(needle)) && (!status || g.status===status)), page, pageSize); },
-  async disbandGroup(id) { await wait(); const group = groups.find((g) => g.id === id); if (group) group.status = 'dissolved'; },
-  async getReports(query = '', status = '', page = 1, pageSize = 20) { await wait(); const needle = query.toLowerCase(); return demoPageResult(reports.filter((r) => (!needle || `${r.id}${r.reporter}${r.target}${r.category}${r.excerpt}`.toLowerCase().includes(needle)) && (!status || r.status === status)), page, pageSize); },
-  async resolveReport(id, action) { await wait(); const report = reports.find((r) => r.id === id); const status = action === 'dismiss' || action === 'no_violation' ? 'rejected' : 'resolved'; if (report) report.status = status; return { status, action }; },
-  async getSensitiveWords() { await wait(); return [...sensitiveWords]; },
-  async addSensitiveWord(input) { await wait(); const item = { ...input, id: `sw_${Date.now()}`, createdAt: new Date().toISOString().slice(0, 10) }; sensitiveWords = [item, ...sensitiveWords]; return item; },
-  async deleteSensitiveWord(id) { await wait(); sensitiveWords = sensitiveWords.filter((word) => word.id !== id); },
-  async getHealth() { await wait(); return healthServices; },
-  async getAuditLogs(query = '', status = '', page = 1, pageSize = 20) { await wait(); const needle = query.toLowerCase(); return demoPageResult(auditLogs.filter((log) => (!needle || `${log.actor}${log.action}${log.target}${log.ip}`.toLowerCase().includes(needle)) && (!status || log.result === status)), page, pageSize); },
-  async getMessages(_query = '', _type = '', page = 1, pageSize = 20) { await wait(); return demoPageResult<MessageRecord>([], page, pageSize); },
-  async getMedia(_query = '', _status = '', page = 1, pageSize = 20) { await wait(); return demoPageResult<MediaRecord>([], page, pageSize); },
-  async getOnline() { await wait(); return [] as OnlineRecord[]; },
-  async getFriendships(query='',page=1,pageSize=20){await wait();const sample:FriendshipRecord[]=[{userId:'u_10134',friendUserId:'u_10826',userName:'林知夏',friendName:'周与安',createdAt:'2026-07-28 09:24',updatedAt:'2026-07-31 18:12'},{userId:'u_10942',friendUserId:'u_11703',userName:'陈默',friendName:'沈清禾',createdAt:'2026-07-26 14:08',updatedAt:'2026-07-30 21:46'}];const needle=query.toLowerCase();return demoPageResult(sample.filter(item=>!needle||`${item.userId}${item.friendUserId}${item.userName}${item.friendName}`.toLowerCase().includes(needle)),page,pageSize);},
-  async getFeedback(query='',category='',page=1,pageSize=20){await wait();const sample:FeedbackRecord[]=[{id:'fb_7031',userId:'u_10826',userName:'周与安',category:'bug',content:'切换网络后图片发送状态停留在处理中。',contact:'应用内回复',createdAt:'2026-07-31 20:18'},{id:'fb_7026',userId:'u_11703',userName:'沈清禾',category:'feature',content:'希望群公告支持置顶和已读人数。',contact:'未提供',createdAt:'2026-07-31 16:42'}];const needle=query.toLowerCase();return demoPageResult(sample.filter(item=>(!needle||`${item.userId}${item.userName}${item.content}${item.contact}`.toLowerCase().includes(needle))&&(!category||item.category===category)),page,pageSize);},
-  async getOperationsStatus(){await wait();return {push:{providers:[{provider:'getui',activeDevices:8342,disabledDevices:126},{provider:'apns_voip',activeDevices:6128,disabledDevices:84}],queue:[{status:'pending',count:18,attempts:20},{status:'sent',count:42861,attempts:43102}]},backups:{configured:true,available:true,status:'healthy',lastStatus:true,running:false,lastDurationSeconds:37,incompleteGenerations:0,offsiteEnabled:false,lastAttemptAt:'2026-08-13T02:00:00Z',lastSuccessAt:'2026-08-13T02:00:00Z'},diagnostics:{summary:{windowHours:24,crashes:0,connectionFailures:1,callFailures:0,performanceSamples:12,performanceP95Ms:1380},items:[{id:'diag_demo',userId:'u_10134',kind:'performance',name:'app_start',fingerprint:'a'.repeat(64),platform:'android',appVersion:'1.0.0+1',durationMs:920,occurredAt:'2026-08-13T02:00:00Z'}]},tasks:{scheduledMessages:{pending:7,processing:0,failed:0},messageExpiry:{waiting:124},mediaCleanup:{status:'healthy',lastRun:'2026-08-01 01:45'},wukongOutbox:{pending:0,processing:0,failed:0,oldestPendingSeconds:0,lastCompletedAt:'2026-08-13T00:00:00Z',reconcilePending:0,reconcileCompleted:12,reconcileFailed:0},wukongWebhook:{pending:0,processing:0,failed:0,oldestPendingSeconds:0,lastCompletedAt:'2026-08-13T00:00:00Z'}},access:{current:{id:'demo',role:'platform_admin'},administrators:[{id:'demo',role:'platform_admin',source:'演示环境',mutable:false}],roles:[{id:'platform_admin',permissions:['全部管理权限']},{id:'system_operator',permissions:['系统运维','版本策略']},{id:'moderator',permissions:['用户处置','举报处置','内容审核']},{id:'content_operator',permissions:['内容运营','公告']},{id:'support_agent',permissions:['客服工作台']},{id:'support',permissions:['只读']}],note:'角色权限由服务端强制执行，管理员凭据不会在页面回显。'}} satisfies OperationsStatus;},
-  async getAnnouncements(query = '', status = '', page = 1, pageSize = 20) { await wait(); const needle = query.toLowerCase(); return demoPageResult(announcements.filter((item) => (!needle || `${item.id}${item.title}${item.content}`.toLowerCase().includes(needle)) && (!status || item.status === status)), page, pageSize); },
-  async createAnnouncement(input: AnnouncementInput) { await wait(); const item: AnnouncementRecord = { ...input, id: `announcement_${Date.now()}`, createdBy: 'demo_admin', createdAt: new Date().toISOString() }; announcements = [item, ...announcements]; return item; },
-  async updateAnnouncement(id, input) { await wait(); const item = announcements.find((value) => value.id === id); if (!item) throw new ApiError('公告不存在', 404, 'NOT_FOUND'); Object.assign(item, input); return { ...item }; },
-  async publishAnnouncement(id, enqueuePush) { await wait(); const item = announcements.find((value) => value.id === id); if (!item) throw new ApiError('公告不存在', 404, 'NOT_FOUND'); item.status = 'published'; item.pushOnPublish = enqueuePush; item.publishedAt = new Date().toISOString(); item.scheduledAt = undefined; return { ...item }; },
-  async withdrawAnnouncement(id) { await wait(); const item = announcements.find((value) => value.id === id); if (!item) throw new ApiError('公告不存在', 404, 'NOT_FOUND'); item.status = 'withdrawn'; return { ...item }; },
-  async deleteAnnouncement(id) { await wait(); announcements = announcements.filter((value) => value.id !== id); },
-  async getCalls(_query = '', _status = '', page = 1, pageSize = 20) { await wait(); return demoPageResult<CallRecord>([], page, pageSize); },
-  async getSettings() { await wait(); return { ...settings }; },
-  async updateSettings(next) { await wait(); settings = { ...next }; return { ...settings }; },
-  async getClientVersions() { await wait(); return clientVersions.map((item) => ({ ...item })); },
-  async updateClientVersion(next) { await wait(); const updated = { ...next, updatedBy: 'demo_admin', updatedAt: new Date().toISOString() }; clientVersions = clientVersions.filter((item) => item.platform !== next.platform); clientVersions.push(updated); return { ...updated }; },
-  async getModerationMoments(query = '', status = '', page = 1, pageSize = 20) { await wait(); const needle = query.toLowerCase(); return demoPageResult(moderationMoments.filter((item) => (!needle || `${item.id}${item.authorId}${item.authorName}${item.content}`.toLowerCase().includes(needle)) && (!status || item.status === status)), page, pageSize); },
-  async moderateMoment(id, status) { await wait(); const item = moderationMoments.find((value) => value.id === id); if (item) item.status = status; },
-  async getModerationStickerPacks(query = '', status = '', page = 1, pageSize = 20) { await wait(); const needle = query.toLowerCase(); return demoPageResult(moderationStickerPacks.filter((item) => (!needle || `${item.id}${item.name}${item.categoryName}${item.createdBy}`.toLowerCase().includes(needle)) && (!status || item.status === status)), page, pageSize); },
-  async reviewStickerPack(id, status, reason) { await wait(); const item = moderationStickerPacks.find((value) => value.id === id); if (!item) throw new ApiError('表情包不存在', 404, 'NOT_FOUND'); item.status = status; item.reviewReason = reason; item.reviewedBy = 'demo_admin'; return { ...item }; },
-  async getStickerCategories() { await wait(); return stickerCategories.map((item) => ({ ...item })); },
-  async saveStickerCategory(input) { await wait(); const item = { id: input.id ?? `category_${Date.now()}`, name: input.name, sortOrder: input.sortOrder, enabled: input.enabled }; stickerCategories = [item, ...stickerCategories.filter((value) => value.id !== item.id)]; return { ...item }; },
-  async saveStickerPack(input) { await wait(); const existing = moderationStickerPacks.find((value) => value.id === input.id); const item: StickerPackModerationRecord = { id: input.id ?? `pack_${Date.now()}`, name: input.name, categoryId: input.categoryId, categoryName: stickerCategories.find((value) => value.id === input.categoryId)?.name ?? input.categoryId, description: input.description, coverMediaId: input.coverMediaId, status: input.status, sortOrder: input.sortOrder, itemCount: existing?.itemCount ?? 0, items: existing?.items ?? [], createdBy: existing?.createdBy ?? 'demo_admin', reviewedBy: '', reviewReason: '', updatedAt: new Date().toISOString() }; moderationStickerPacks = [item, ...moderationStickerPacks.filter((value) => value.id !== item.id)]; return { ...item }; },
-  async saveStickerItem(packId, input) { await wait(); const pack = moderationStickerPacks.find((value) => value.id === packId); if (!pack) throw new ApiError('表情包不存在', 404, 'NOT_FOUND'); const item: StickerItemOperationsRecord = { id: input.id ?? `sticker_${Date.now()}`, packId, name: input.name, mediaId: input.mediaId, emoji: input.emoji, sortOrder: input.sortOrder, status: input.status }; pack.items = [...(pack.items ?? []).filter((value) => value.id !== item.id), item]; pack.itemCount = pack.items.length; return item; },
-  async getWukongOverview() { await wait(); return { serverId: '1', version: 'v2.2.5-20260422', uptime: '2h16m', connections: 126, userHandlers: 113, cpu: 12.4, memoryBytes: 512 * 1024 * 1024, goroutines: 284, inMessages: 128420, outMessages: 256801, retryQueue: 0 }; },
-  async getWukongSettings() { await wait(); return { traceEnabled: false, lokiEnabled: false, prometheusEnabled: true, stressEnabled: false }; },
-  async getWukongNodes() { await wait(); return [{ id: 1, online: true, leader: true, apiAddress: 'internal', version: 'v2.2.5-20260422', slotCount: 64, slotLeaderCount: 64 }]; },
-  async getWukongConnections(uid = '', page = 1, pageSize = 20) { await wait(); const items: WukongConnection[] = [{ id: 1, uid: 'u_demo', ip: '127.0.0.1', device: 'Web', deviceId: 'demo-web', nodeId: 1, lastActivity: '刚刚', inMessages: 18, outMessages: 34 }]; return demoPageResult(items.filter((item) => !uid || item.uid.includes(uid)), page, pageSize); },
-  async getWukongChannels() { await wait(); return [{ channelId: 'group_demo', channelType: 2, subscriberCount: 8, denylistCount: 0, allowlistCount: 0, banned: false, disbanded: false, createdAt: Date.now() }]; },
-  async getWukongMessages() { await wait(); return [] as WukongStoredMessage[]; },
-  async getWukongDevices(uid = '') { await wait(); const items: WukongDevice[] = [{ uid: 'u_demo', deviceFlag: 1, deviceLevel: 1, tokenPresent: true, createdAt: Date.now(), updatedAt: Date.now() }]; return items.filter((item) => !uid || item.uid.includes(uid)); },
-  async quitWukongDevice() { await wait(); },
-  async getWukongSystemUsers() { await wait(); return [...wukongSystemUsers]; },
-  async setWukongSystemUser(uid, enabled, reason) { await wait(); const existing = wukongSystemUsers.find((item) => item.userId === uid); const item: WukongSystemUser = { userId: uid, name: existing?.name ?? uid, enabled, syncStatus: 'pending', updatedBy: 'demo', reason, updatedAt: new Date().toISOString() }; wukongSystemUsers = [item, ...wukongSystemUsers.filter((value) => value.userId !== uid)]; return item; },
-  async getWukongPlugins() { await wait(); return [{ no: 'wk.plugin.im-policy', nodeId: 1, name: 'wk.plugin.im-policy-linux-amd64.wkp', version: '1.0.0', status: 'normal', methods: ['Send'], priority: 1, isAi: false, config: { endpoint: 'http://server/internal/wukong/policy/send', secret: '******' }, managed: false, verified: true, builtIn: true, lifecycleStatus: 'active', fileName: 'wk.plugin.im-policy-linux-amd64.wkp', sha256: '', keyId: '', installedAt: '', updatedAt: '' }]; },
-  async installWukongPlugin(_bundle, manifest, _signature, nodeId) { await wait(); const raw = JSON.parse(await manifest.text()) as Record<string, unknown>; return { pluginNo: String(raw.pluginNo), nodeId, name: String(raw.name), fileName: String(raw.fileName), version: String(raw.version), methods: Array.isArray(raw.methods) ? raw.methods.map(String) : [], sha256: String(raw.sha256), sizeBytes: Number(raw.size), keyId: String(raw.keyId), status: 'active', lastActor: 'demo', lastReason: 'demo', installedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; },
-  async upgradeWukongPlugin(_no, _bundle, manifest, _signature, nodeId) { await wait(); const raw = JSON.parse(await manifest.text()) as Record<string, unknown>; return { pluginNo: String(raw.pluginNo), nodeId, name: String(raw.name), fileName: String(raw.fileName), version: String(raw.version), methods: Array.isArray(raw.methods) ? raw.methods.map(String) : [], sha256: String(raw.sha256), sizeBytes: Number(raw.size), keyId: String(raw.keyId), status: 'active', lastActor: 'demo', lastReason: 'demo', installedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; },
-  async setWukongPluginEnabled(no, nodeId, enabled) { await wait(); return { pluginNo: no, nodeId, name: no, fileName: `${no}-linux-amd64.wkp`, version: '1.0.0', methods: [], sha256: '', sizeBytes: 0, keyId: '', status: enabled ? 'active' : 'disabled', lastActor: 'demo', lastReason: 'demo', installedAt: '', updatedAt: new Date().toISOString() }; },
-  async getWukongPluginEvents() { await wait(); return []; },
-  async getWukongPluginLogs() { await wait(); return [{ sequence: 1, stream: 'stdout', timestamp: Date.now(), message: 'policy plugin ready' }]; },
-  async updateWukongPluginConfig() { await wait(); },
-  async uninstallWukongPlugin() { await wait(); },
-  async getLiveKitRooms() { await wait(); return [{ sid: 'RM_demo', name: 'call_demo', createdAt: '刚刚', participantCount: 2, publisherCount: 2, maxParticipants: 9, activeRecording: false }]; },
-  async getLiveKitMetrics() { await wait(); return { healthy: true, activeRooms: 1, activeParticipants: 2, cpuPercent: 2.4, residentMemoryBytes: 96 * 1024 * 1024, networkReceiveBytesPerSecond: 2048, networkTransmitBytesPerSecond: 4096, packetLossPercent: 0, participantJoinsLastHour: 8, roomsCompletedLastHour: 3, sampledAt: new Date().toISOString() }; },
-  async getLiveKitParticipants() { await wait(); return [{ sid: 'PA_demo', identity: 'u_demo', name: '演示用户', state: 'ACTIVE', joinedAt: '刚刚', trackCount: 2, screenSharing: false }]; },
-  async removeLiveKitParticipant() { await wait(); },
-  async deleteLiveKitRoom() { await wait(); },
-  async getBusinessChannels(query = '', channelType = 0, category = '', page = 1, pageSize = 20) { await wait(); const needle = query.toLowerCase(); return demoPageResult(businessChannels.filter((item) => (!needle || `${item.id}${item.name}${item.ownerId}`.toLowerCase().includes(needle)) && (!channelType || item.channelType === channelType) && (!category || item.category === category)), page, pageSize); },
-  async createBusinessChannel(input) { await wait(); const item: BusinessChannelRecord = { id: `${input.channelType === 5 ? `${input.parentId}@topic` : input.channelType === 4 ? 'community' : input.channelType === 6 ? 'info' : 'live'}_${Date.now()}`, category: input.channelType === 4 ? 'community' : input.channelType === 5 ? 'community_topic' : input.channelType === 6 ? 'info' : 'live', name: input.name, avatarUrl: input.avatarUrl ?? '', ownerId: input.ownerId, parentId: input.parentId ?? '', description: input.description ?? '', visibility: input.visibility, joinPolicy: input.joinPolicy, postingPolicy: input.postingPolicy, slowModeSeconds: input.slowModeSeconds, memberCount: 1, ban: false, disband: false, sendBan: false, allowStranger: false, metadata: input.metadata ?? {}, channelType: input.channelType, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; businessChannels = [item, ...businessChannels]; return { ...item }; },
-  async updateBusinessChannel(id, _channelType, update) { await wait(); const item = businessChannels.find((value) => value.id === id); if (!item) throw new ApiError('频道不存在', 404, 'NOT_FOUND'); Object.assign(item, update, { updatedAt: new Date().toISOString() }); return { ...item }; },
-  async getBusinessChannelMembers(id) { await wait(); return { items: businessChannelMembers.filter((item) => item.channelId === id) }; },
-  async addBusinessChannelMember(id, _channelType, userId, expiresAt) { await wait(); businessChannelMembers.push({ channelId: id, userId, name: userId, handle: '', avatarUrl: '', role: 'member', expiresAt, joinedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }); },
-  async updateBusinessChannelMember(id, _channelType, userId, update) { await wait(); const item = businessChannelMembers.find((value) => value.channelId === id && value.userId === userId); if (!item) throw new ApiError('成员不存在', 404, 'NOT_FOUND'); if (update.role) item.role = update.role; if (update.clearMute) item.mutedUntil = undefined; else if (update.mutedUntil) item.mutedUntil = update.mutedUntil; if (update.clearExpiry) item.expiresAt = undefined; else if (update.expiresAt) item.expiresAt = update.expiresAt; },
-  async removeBusinessChannelMember(id, _channelType, userId) { await wait(); const index = businessChannelMembers.findIndex((item) => item.channelId === id && item.userId === userId); if (index >= 0) businessChannelMembers.splice(index, 1); },
-  async getBusinessChannelAccess(id) { await wait(); return businessChannelAccess.filter((item) => item.channelId === id); },
-  async setBusinessChannelAccess(id, _channelType, userId, accessType, enabled, reason) { await wait(); const index = businessChannelAccess.findIndex((item) => item.channelId === id && item.userId === userId); if (index >= 0) businessChannelAccess.splice(index, 1); if (enabled) businessChannelAccess.push({ channelId: id, userId, name: userId, handle: '', avatarUrl: '', accessType, reason, createdBy: 'demo_admin', createdAt: new Date().toISOString() }); },
-  async getSupportSkills() { await wait(); return supportSkills.map((item) => ({ ...item })); },
-  async saveSupportSkill(input) { await wait(); const item: SupportSkillRecord = { id: input.id ?? `support_skill_${Date.now()}`, name: input.name, description: input.description ?? '', routingStrategy: input.routingStrategy, maxConcurrentPerAgent: input.maxConcurrentPerAgent, enabled: input.enabled, queueCount: 0, availableAgents: 0, createdAt: input.createdAt ?? new Date().toISOString(), updatedAt: new Date().toISOString() }; supportSkills = supportSkills.filter((value) => value.id !== item.id); supportSkills.push(item); return { ...item }; },
-  async getSupportAgents(skillGroupId = '') { await wait(); return supportAgents.filter((item) => !skillGroupId || item.skillGroupIds.includes(skillGroupId)).map((item) => ({ ...item })); },
-  async saveSupportAgent(userId, input) { await wait(); const current = supportAgents.find((item) => item.userId === userId); const item: SupportAgentRecord = { userId, name: current?.name ?? userId, handle: current?.handle ?? '', avatarUrl: current?.avatarUrl ?? '', status: input.status, maxConcurrent: input.maxConcurrent, activeSessions: current?.activeSessions ?? 0, skillGroupIds: input.skillGroupIds, lastAssignedAt: current?.lastAssignedAt, createdAt: current?.createdAt ?? new Date().toISOString(), updatedAt: new Date().toISOString() }; supportAgents = supportAgents.filter((value) => value.userId !== userId); supportAgents.push(item); return { ...item }; },
-  async getSupportSessions(query = '', status = '', skillGroupId = '', page = 1, pageSize = 20) { await wait(); const needle = query.toLowerCase(); return demoPageResult(supportSessions.filter((item) => (!needle || `${item.id}${item.visitorName}${item.subject}`.toLowerCase().includes(needle)) && (!status || item.status === status) && (!skillGroupId || item.skillGroupId === skillGroupId)), page, pageSize); },
-  async claimSupportSession(id, agentId) { await wait(); const item = supportSessions.find((value) => value.id === id); if (!item) throw new ApiError('客服会话不存在', 404, 'NOT_FOUND'); item.status = 'active'; item.assignedAgentId = agentId; item.agentName = agentId; return { ...item }; },
-  async transferSupportSession(id, targetAgentId) { await wait(); const item = supportSessions.find((value) => value.id === id); if (!item) throw new ApiError('客服会话不存在', 404, 'NOT_FOUND'); item.assignedAgentId = targetAgentId; item.agentName = targetAgentId; item.transferCount += 1; return { ...item }; },
-  async endSupportSession(id) { await wait(); const item = supportSessions.find((value) => value.id === id); if (!item) throw new ApiError('客服会话不存在', 404, 'NOT_FOUND'); item.status = 'ended'; return { ...item }; },
-};
-
 const baseUrl = import.meta.env.VITE_ADMIN_API_URL ?? '/api/v2/admin';
+const jsonRequestTimeoutMs = 20_000;
+const uploadRequestTimeoutMs = 120_000;
 
 async function request(path: string, token: string, init?: RequestInit, emitUnauthorized = true): Promise<unknown> {
   const formBody = typeof FormData !== 'undefined' && init?.body instanceof FormData;
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    cache: 'no-store',
-    credentials: 'same-origin',
-    headers: { ...(formBody ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: `Bearer ${token}` } : {}), ...init?.headers },
-  });
+  const timeoutController = new AbortController();
+  const upstreamSignal = init?.signal;
+  const forwardAbort = () => timeoutController.abort(upstreamSignal?.reason);
+  if (upstreamSignal?.aborted) forwardAbort();
+  else upstreamSignal?.addEventListener('abort', forwardAbort, { once: true });
+  const timeout = window.setTimeout(() => timeoutController.abort('request-timeout'), formBody ? uploadRequestTimeoutMs : jsonRequestTimeoutMs);
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}${path}`, {
+      ...init,
+      cache: 'no-store',
+      credentials: 'same-origin',
+      signal: timeoutController.signal,
+      headers: { ...(formBody ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: `Bearer ${token}` } : {}), ...init?.headers },
+    });
+  } catch (cause) {
+    if (timeoutController.signal.aborted && !upstreamSignal?.aborted) {
+      throw new ApiError('请求超时，请检查网络或服务状态后重试', 0, 'REQUEST_TIMEOUT');
+    }
+    throw cause;
+  } finally {
+    window.clearTimeout(timeout);
+    upstreamSignal?.removeEventListener('abort', forwardAbort);
+  }
   if (!response.ok) {
     const requestId = response.headers.get('x-request-id') ?? '';
     let code = 'HTTP_ERROR';
@@ -724,26 +666,95 @@ async function request(path: string, token: string, init?: RequestInit, emitUnau
       message = string(error.message, string(payload.message, message));
     } catch { /* retain status error */ }
     if (response.status === 401 && emitUnauthorized) window.dispatchEvent(new CustomEvent('nexachat:unauthorized'));
-    throw new ApiError(message, response.status, code, requestId);
+    throw new ApiError(localizedApiErrorMessage(code, message, response.status), response.status, code, requestId);
   }
   if (response.status === 204) return undefined;
   return response.json();
+}
+
+function adaptWukongRobotProfile(value: unknown): WukongRobotProfile {
+  const raw = object(value);
+  return {
+    userId: string(raw.userId), name: string(raw.name), username: string(raw.username),
+    placeholder: string(raw.placeholder), enabled: boolean(raw.enabled), inlineOn: boolean(raw.inlineOn),
+    version: number(raw.version), menus: list(raw.menus).map((value) => {
+      const menu = object(value);
+      return { cmd: string(menu.cmd), remark: string(menu.remark), type: 'command' as const };
+    }),
+    updatedBy: string(raw.updatedBy), reason: string(raw.reason), updatedAt: formatDate(raw.updatedAt),
+  };
+}
+
+function adaptUserOverview(value: unknown): UserOverview {
+  const raw = object(value);
+  const userRaw = object(raw.user);
+  const user = adaptUser({
+    ...userRaw,
+    deviceCount: number(raw.deviceCount, number(userRaw.deviceCount)),
+  });
+  return {
+    user,
+    signature: string(userRaw.signature),
+    gender: userRaw.gender === 'male' || userRaw.gender === 'female' ? userRaw.gender : 'unspecified',
+    deviceCount: number(raw.deviceCount, user.deviceCount),
+    friendCount: number(raw.friendCount),
+    groupCount: number(raw.groupCount),
+    handleChangesUsed: number(raw.handleChangesUsed, user.handleChangeCount),
+    handleChangesRemaining: number(raw.handleChangesRemaining, Math.max(0, 2 - user.handleChangeCount)),
+  };
+}
+
+function adaptGroupOverview(value: unknown): GroupOverview {
+  const raw = object(value);
+  return {
+    id: string(raw.id, 'unknown'),
+    title: string(raw.title, '未命名群组'),
+    ownerId: string(raw.ownerId, '暂无'),
+    announcement: string(raw.announcement),
+    announcementVersion: number(raw.announcementVersion),
+    joinPolicy: string(raw.joinPolicy, 'approval'),
+    allowMemberAddFriend: boolean(raw.allowMemberAddFriend),
+    messageCount: number(raw.messageCount),
+    memberCount: number(raw.memberCount),
+  };
+}
+
+function adaptGroupMember(value: unknown): GroupMemberRecord {
+  const raw = object(value);
+  return {
+    conversationId: string(raw.conversationId),
+    userId: string(raw.userId, string(raw.id, 'unknown')),
+    name: string(raw.name, '未命名用户'),
+    handle: string(raw.handle, '未设置'),
+    avatarUrl: string(raw.avatarUrl),
+    role: string(raw.role, 'member'),
+    mutedUntil: string(raw.mutedUntil) || undefined,
+    lastReadSeq: number(raw.lastReadSeq),
+    lastDeliveredSeq: number(raw.lastDeliveredSeq),
+    groupNickname: string(raw.groupNickname),
+    joinedAt: formatDate(raw.joinedAt),
+  };
 }
 
 function liveApi(token: string): AdminApi {
   return {
     async getDashboard() { return adaptDashboard(await request('/dashboard', token)); },
     async getUsers(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/users?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptUser, page, pageSize); },
+    async getUserOverview(id) { return adaptUserOverview(await request(`/users/${encodeURIComponent(id)}`, token)); },
     async banUser(id, reason, durationHours) { await request(`/users/${encodeURIComponent(id)}/ban`, token, { method: 'POST', body: JSON.stringify({ reason, durationHours, confirmed: true }) }); },
     async unbanUser(id, reason) { await request(`/users/${encodeURIComponent(id)}/unban`, token, { method: 'POST', body: JSON.stringify({ reason, confirmed: true }) }); },
     async getGroups(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/groups?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptGroup, page, pageSize); },
+    async getGroupOverview(id) { return adaptGroupOverview(await request(`/groups/${encodeURIComponent(id)}`, token)); },
+    async getGroupMembers(id, q = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/groups/${encodeURIComponent(id)}/members?q=${encodeURIComponent(q)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptGroupMember, page, pageSize); },
+    async updateGroupMember(id, userId, update, reason) { await request(`/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, token, { method: 'PATCH', body: JSON.stringify({ ...update, reason, confirmed: true }) }); },
+    async removeGroupMember(id, userId, reason) { await request(`/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, token, { method: 'DELETE', body: JSON.stringify({ reason, confirmed: true }) }); },
     async disbandGroup(id, reason) { await request(`/groups/${encodeURIComponent(id)}/disband`, token, { method: 'POST', body: JSON.stringify({ reason, confirmed: true }) }); },
     async getReports(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/reports?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptReport, page, pageSize); },
     async resolveReport(id, action, note) { const raw = object(await request(`/reports/${encodeURIComponent(id)}/resolve`, token, { method: 'POST', body: JSON.stringify({ action, reason: note, confirmed: true }) })); const status = raw.status === 'rejected' ? 'rejected' : 'resolved'; const responseAction = string(raw.action, action); return { status, action: reportResolutionActions.includes(responseAction as ReportResolutionAction) ? responseAction as ReportResolutionAction : action } satisfies ReportResolutionResult; },
     async getSensitiveWords() { const source = unwrapItems(await request('/sensitive-words', token)); return source.items.map((value) => { const raw = object(value); const word = string(raw.word); return { id: string(raw.id), word, category: string(raw.category, '其他'), matchType: 'exact' as const, action: 'block' as const, createdAt: formatDate(raw.createdAt) }; }); },
     async addSensitiveWord(input, reason) { const raw = object(await request('/sensitive-words', token, { method: 'POST', body: JSON.stringify({ word: input.word, category: input.category, reason, confirmed: true }) })); return { ...input, matchType: 'exact', action: 'block', id: string(raw.id), word: string(raw.word, input.word), category: string(raw.category, input.category), createdAt: formatDate(raw.createdAt ?? new Date().toISOString()) }; },
     async deleteSensitiveWord(id, reason) { await request(`/sensitive-words/${encodeURIComponent(id)}`, token, { method: 'DELETE', body: JSON.stringify({ reason, confirmed: true }) }); },
-    async getHealth() { const payload = await request('/health', token); const source = unwrapItems(payload); if (source.items.length) return source.items.map((value) => { const raw = object(value); const status = raw.status === 'down' || raw.status === 'degraded' ? raw.status : 'healthy'; return { name: string(raw.name, '服务'), status, latency: number(raw.latency), uptime: string(raw.uptime, '暂无'), version: string(raw.version, '暂无'), detail: string(raw.detail, '服务已响应') }; }); const raw = object(payload); return [{ name: string(raw.service, 'IM API'), status: raw.status === 'ok' ? 'healthy' : 'down', latency: 0, uptime: typeof raw.uptimeSeconds === 'number' ? `${Math.floor(raw.uptimeSeconds / 60)} 分钟` : '暂无', version: '暂无', detail: raw.status === 'ok' ? 'API 进程运行正常' : 'API 返回异常状态' }]; },
+    async getHealth() { const payload = await request('/health', token); const source = unwrapItems(payload); if (source.items.length) return source.items.map((value) => { const raw = object(value); const status = raw.status === 'healthy' || raw.status === 'down' || raw.status === 'degraded' ? raw.status : 'unknown'; return { name: string(raw.name, '服务'), status, latency: number(raw.latency), uptime: string(raw.uptime, '暂无'), version: string(raw.version, '暂无'), detail: string(raw.detail, status === 'unknown' ? '服务未返回健康状态' : '服务已响应') }; }); const raw = object(payload); const status = raw.status === 'ok' ? 'healthy' : raw.status ? 'down' : 'unknown'; return [{ name: string(raw.service, 'IM API'), status, latency: 0, uptime: typeof raw.uptimeSeconds === 'number' ? `${Math.floor(raw.uptimeSeconds / 60)} 分钟` : '暂无', version: '暂无', detail: status === 'healthy' ? 'API 进程运行正常' : status === 'unknown' ? '健康接口未返回有效状态' : 'API 返回异常状态' }]; },
     async getAuditLogs(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/audit-logs?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptAudit, page, pageSize); },
     async getMessages(q = '', type = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/messages?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptMessage, page, pageSize); },
     async getMedia(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/media?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptMedia, page, pageSize); },
@@ -780,6 +791,8 @@ function liveApi(token: string): AdminApi {
     async quitWukongDevice(uid, deviceFlag, reason) { await request(`/wukong/devices/${encodeURIComponent(uid)}/quit`, token, { method: 'POST', body: JSON.stringify({ deviceFlag, reason, confirmed: true }) }); },
     async getWukongSystemUsers() { return unwrapItems(await request('/wukong/system-users', token)).items.map(adaptWukongSystemUser); },
     async setWukongSystemUser(uid, enabled, reason) { return adaptWukongSystemUser(unwrapItem(await request(`/wukong/system-users/${encodeURIComponent(uid)}`, token, { method: 'PUT', body: JSON.stringify({ enabled, reason, confirmed: true }) }))); },
+    async getWukongRobots() { return unwrapItems(await request('/wukong/robots', token)).items.map(adaptWukongRobotProfile); },
+    async setWukongRobot(uid, input, reason) { return adaptWukongRobotProfile(unwrapItem(await request(`/wukong/robots/${encodeURIComponent(uid)}`, token, { method: 'PUT', body: JSON.stringify({ ...input, reason, confirmed: true }) }))); },
     async getWukongPlugins(nodeId = 0) { return unwrapItems(await request(`/wukong/plugins?nodeId=${nodeId}`, token)).items.map(adaptWukongPlugin); },
     async installWukongPlugin(bundle, manifest, signature, nodeId, reason) { const form = new FormData(); form.set('bundle', bundle); form.set('manifest', await manifest.text()); form.set('signature', signature.trim()); form.set('nodeId', String(nodeId)); form.set('reason', reason); form.set('confirmed', 'true'); return adaptWukongPluginRelease(unwrapItem(await request('/wukong/plugins/install', token, { method: 'POST', body: form }))); },
     async upgradeWukongPlugin(no, bundle, manifest, signature, nodeId, reason) { const form = new FormData(); form.set('bundle', bundle); form.set('manifest', await manifest.text()); form.set('signature', signature.trim()); form.set('nodeId', String(nodeId)); form.set('reason', reason); form.set('confirmed', 'true'); return adaptWukongPluginRelease(unwrapItem(await request(`/wukong/plugins/${encodeURIComponent(no)}/upgrade`, token, { method: 'PUT', body: form }))); },
@@ -813,8 +826,8 @@ function liveApi(token: string): AdminApi {
   };
 }
 
-export function getApi(mode: 'demo' | 'live', token = ''): AdminApi {
-  return demoAllowed && mode === 'demo' ? demoApi : liveApi(token);
+export function getApi(token = ''): AdminApi {
+  return liveApi(token);
 }
 
 function adaptRole(value: unknown): AdminRole {
@@ -827,10 +840,21 @@ function adaptRole(value: unknown): AdminRole {
 }
 
 export async function loginAdmin(email: string, password: string, totp = ''): Promise<AdminSession> {
-  const payload = object(await request('/auth/login', '', {
-    method: 'POST',
-    body: JSON.stringify({ email, password, ...(totp ? { totp } : {}) }),
-  }, false));
+  let response: unknown;
+  try {
+    response = await request('/auth/login', '', {
+      method: 'POST',
+      body: JSON.stringify({ email, password, ...(totp ? { totp } : {}) }),
+    }, false);
+  } catch (cause) {
+    // 登录请求本身没有现有管理员会话。部分旧服务端仍把凭据错误
+    // 返回为 UNAUTHENTICATED；这里不能把它误报成“会话已失效”。
+    if (cause instanceof ApiError && cause.status === 401 && cause.code !== 'TOTP_REQUIRED' && cause.code !== 'INVALID_TOTP') {
+      throw new ApiError('邮箱、密码或动态验证码不正确', 401, 'INVALID_CREDENTIALS', cause.requestId);
+    }
+    throw cause;
+  }
+  const payload = object(response);
   const raw = object(payload.data ?? payload);
   const token = string(raw.accessToken, string(raw.token));
   if (!token) throw new ApiError('登录响应缺少访问令牌', 502, 'INVALID_AUTH_RESPONSE');

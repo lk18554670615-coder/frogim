@@ -89,6 +89,16 @@ type AdminOperationsStore interface {
 	ListAdminGroupMembers(context.Context, string, string, string, int) ([]*model.ConversationMember, int64, string, error)
 	RecordAdminAudit(context.Context, *model.AuditEntry) error
 }
+
+type AdminGroupMemberAction struct {
+	ActorID, ConversationID, TargetID, Action, Role, Reason string
+	MutedUntil                                              *time.Time
+	At                                                      time.Time
+}
+
+type AdminGroupModerationStore interface {
+	AdminApplyGroupMemberAction(context.Context, AdminGroupMemberAction) error
+}
 type AuthStore interface {
 	LoginOrCreateUser(context.Context, string, string, string, time.Time) (*model.User, error)
 }
@@ -102,6 +112,32 @@ type RefreshSessionStore interface {
 	RotateRefreshSession(context.Context, string, string, []byte, time.Time, string) error
 	RevokeRefreshSession(context.Context, string, string) error
 	RevokeUserRefreshSessions(context.Context, string) error
+}
+type QRLoginTicket struct {
+	ID, UserID, ClientPlatform, ClientName string
+	QRTokenHash, PollTokenHash             []byte
+	CreatedAt, ExpiresAt                   time.Time
+	ConfirmedAt, ConsumedAt                *time.Time
+}
+
+func (ticket QRLoginTicket) State(at time.Time) string {
+	if ticket.ConsumedAt != nil {
+		return "consumed"
+	}
+	if !at.Before(ticket.ExpiresAt) {
+		return "expired"
+	}
+	if ticket.ConfirmedAt != nil {
+		return "confirmed"
+	}
+	return "pending"
+}
+
+type QRLoginStore interface {
+	CreateQRLoginTicket(context.Context, QRLoginTicket) error
+	GetQRLoginTicketByToken(context.Context, []byte) (QRLoginTicket, error)
+	ConfirmQRLoginTicket(context.Context, []byte, string, time.Time) (QRLoginTicket, error)
+	ConsumeQRLoginTicket(context.Context, string, []byte, time.Time) (QRLoginTicket, bool, error)
 }
 type AccountStore interface {
 	AccountDeleted(context.Context, string) (bool, error)
@@ -299,6 +335,13 @@ func (p *WithRedis) RecordAdminAudit(ctx context.Context, entry *model.AuditEntr
 	}
 	return ErrUnsupported
 }
+
+func (p *WithRedis) AdminApplyGroupMemberAction(ctx context.Context, action AdminGroupMemberAction) error {
+	if s, ok := p.base.(AdminGroupModerationStore); ok {
+		return s.AdminApplyGroupMemberAction(ctx, action)
+	}
+	return ErrUnsupported
+}
 func (p *WithRedis) LoginOrCreateUser(ctx context.Context, phone, name, id string, created time.Time) (*model.User, error) {
 	if s, ok := p.base.(AuthStore); ok {
 		return s.LoginOrCreateUser(ctx, phone, name, id, created)
@@ -346,6 +389,30 @@ func (p *WithRedis) RevokeUserRefreshSessions(ctx context.Context, uid string) e
 		return s.RevokeUserRefreshSessions(ctx, uid)
 	}
 	return ErrUnsupported
+}
+func (p *WithRedis) CreateQRLoginTicket(ctx context.Context, ticket QRLoginTicket) error {
+	if s, ok := p.base.(QRLoginStore); ok {
+		return s.CreateQRLoginTicket(ctx, ticket)
+	}
+	return ErrUnsupported
+}
+func (p *WithRedis) GetQRLoginTicketByToken(ctx context.Context, hash []byte) (QRLoginTicket, error) {
+	if s, ok := p.base.(QRLoginStore); ok {
+		return s.GetQRLoginTicketByToken(ctx, hash)
+	}
+	return QRLoginTicket{}, ErrUnsupported
+}
+func (p *WithRedis) ConfirmQRLoginTicket(ctx context.Context, hash []byte, uid string, at time.Time) (QRLoginTicket, error) {
+	if s, ok := p.base.(QRLoginStore); ok {
+		return s.ConfirmQRLoginTicket(ctx, hash, uid, at)
+	}
+	return QRLoginTicket{}, ErrUnsupported
+}
+func (p *WithRedis) ConsumeQRLoginTicket(ctx context.Context, id string, hash []byte, at time.Time) (QRLoginTicket, bool, error) {
+	if s, ok := p.base.(QRLoginStore); ok {
+		return s.ConsumeQRLoginTicket(ctx, id, hash, at)
+	}
+	return QRLoginTicket{}, false, ErrUnsupported
 }
 func (p *WithRedis) AccountDeleted(ctx context.Context, uid string) (bool, error) {
 	if s, ok := p.base.(AccountStore); ok {
@@ -481,6 +548,28 @@ type WukongSystemUserStore interface {
 	IsWukongSystemUser(context.Context, string) (bool, error)
 	ListWukongSystemUsers(context.Context) ([]*WukongSystemUser, error)
 	SetWukongSystemUser(context.Context, string, bool, string, string, time.Time) (*WukongSystemUser, error)
+}
+
+type RobotMenu struct {
+	Command string `json:"cmd"`
+	Remark  string `json:"remark"`
+	Type    string `json:"type"`
+}
+
+type RobotProfile struct {
+	UserID, Name, Username, Placeholder, UpdatedBy, Reason string
+	Enabled, InlineOn                                      bool
+	Version                                                int64
+	Menus                                                  []RobotMenu
+	UpdatedAt                                              time.Time
+}
+
+// RobotStore owns administrator-configured robot metadata and exposes only
+// robots that belong to conversations the current user can access.
+type RobotStore interface {
+	ListRobotProfiles(context.Context) ([]*RobotProfile, error)
+	RobotProfilesForConversation(context.Context, string, string) ([]*RobotProfile, error)
+	ConfigureRobotProfile(context.Context, RobotProfile, string, string, time.Time) (*RobotProfile, error)
 }
 
 // BusinessChannel is the business-owned metadata for WuKongIM channel types
@@ -956,10 +1045,13 @@ type CallInvite struct {
 	InvitedAt, ExpiresAt                                    time.Time
 }
 type UserProfileUpdate struct {
-	Name          *string `json:"name,omitempty"`
-	Handle        *string `json:"handle,omitempty"`
-	Signature     *string `json:"signature,omitempty"`
-	AvatarMediaID *string `json:"avatarMediaId,omitempty"`
+	Name                *string `json:"name,omitempty"`
+	Handle              *string `json:"handle,omitempty"`
+	Signature           *string `json:"signature,omitempty"`
+	Gender              *string `json:"gender,omitempty"`
+	AvatarMediaID       *string `json:"avatarMediaId,omitempty"`
+	AllowSearchByHandle *bool   `json:"allowSearchByHandle,omitempty"`
+	AllowSearchByPhone  *bool   `json:"allowSearchByPhone,omitempty"`
 }
 
 func (p *WithRedis) InviteCall(ctx context.Context, in CallInvite) (*model.CallSession, bool, error) {
@@ -1239,6 +1331,7 @@ type BanExpiryStore interface {
 
 type ConversationPreferences struct {
 	Pinned             *bool `json:"pinned,omitempty"`
+	Saved              *bool `json:"saved,omitempty"`
 	Archived           *bool `json:"archived,omitempty"`
 	NotificationsMuted *bool `json:"notificationsMuted,omitempty"`
 	ManualUnread       *bool `json:"manualUnread,omitempty"`

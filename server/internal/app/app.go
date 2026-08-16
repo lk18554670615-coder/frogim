@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/linli/im/server/internal/model"
 	"github.com/linli/im/server/internal/store"
@@ -30,10 +33,12 @@ var (
 	ErrUnavailable = errors.New("service unavailable")
 )
 
-var handlePattern = regexp.MustCompile(`^[a-z0-9_]{6,24}$`)
+var handlePattern = regexp.MustCompile(`^[a-z0-9_]{4,24}$`)
+var phonePattern = regexp.MustCompile(`^\+?[0-9]{6,32}$`)
 var callIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`)
 var diagnosticNamePattern = regexp.MustCompile(`^[a-z0-9_.-]{1,64}$`)
 var diagnosticFingerprintPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+var robotUsernamePattern = regexp.MustCompile(`^[a-z0-9_]{2,32}$`)
 var allowedMessageReactions = map[string]bool{"👍": true, "❤️": true, "😂": true, "😮": true, "😢": true, "😡": true, "👏": true, "🎉": true, "🙏": true}
 
 var reservedHandles = map[string]struct{}{
@@ -43,11 +48,12 @@ var reservedHandles = map[string]struct{}{
 }
 
 func defaultHandle(userID string) string {
-	compact := strings.ToLower(strings.ReplaceAll(userID, "_", ""))
-	if len(compact) > 20 {
-		compact = compact[len(compact)-20:]
-	}
-	return "ll_" + compact
+	digest := sha256.Sum256([]byte(userID))
+	return "gg_" + hex.EncodeToString(digest[:])[:20]
+}
+
+func ValidPhoneNumber(phone string) bool {
+	return phonePattern.MatchString(strings.TrimSpace(phone))
 }
 
 func validHandle(handle string) bool {
@@ -137,6 +143,8 @@ type App struct {
 	readState          ReadStateTransport
 	Metrics            Metrics
 	refreshSessions    map[string]refreshSession
+	qrLoginMu          sync.Mutex
+	qrLoginTickets     map[string]store.QRLoginTicket
 	passwordHashes     map[string]string
 	callMu             sync.Mutex
 	calls              map[string]*model.CallSession
@@ -164,7 +172,7 @@ func New(ctx context.Context, p store.Persistence) (*App, error) {
 		}
 		s = loaded
 	}
-	a := &App{state: s, persistence: p, refreshSessions: map[string]refreshSession{}, passwordHashes: map[string]string{}, calls: map[string]*model.CallSession{}, announcements: map[string]*model.Announcement{}, announcementReads: map[string]map[string]time.Time{}, callInviteTTL: 30 * time.Second, friendMetadata: map[string]store.FriendMetadata{}, mediaBindings: map[string][]store.MediaChannelBinding{}}
+	a := &App{state: s, persistence: p, refreshSessions: map[string]refreshSession{}, qrLoginTickets: map[string]store.QRLoginTicket{}, passwordHashes: map[string]string{}, calls: map[string]*model.CallSession{}, announcements: map[string]*model.Announcement{}, announcementReads: map[string]map[string]time.Time{}, callInviteTTL: 30 * time.Second, friendMetadata: map[string]store.FriendMetadata{}, mediaBindings: map[string][]store.MediaChannelBinding{}}
 	a.ensureMaps()
 	a.refreshPolicySettings(true)
 	return a, nil
@@ -309,6 +317,66 @@ func (a *App) SetWukongSystemUser(ctx context.Context, userID string, enabled bo
 		return item, mapStoreError(err)
 	}
 	return nil, store.ErrUnsupported
+}
+
+func (a *App) RobotProfiles(ctx context.Context) ([]*store.RobotProfile, error) {
+	if robots, ok := a.persistence.(store.RobotStore); ok {
+		return robots.ListRobotProfiles(ctx)
+	}
+	return nil, ErrUnavailable
+}
+
+func (a *App) RobotProfilesForConversation(ctx context.Context, userID, conversationID string) ([]*store.RobotProfile, error) {
+	if robots, ok := a.persistence.(store.RobotStore); ok {
+		items, err := robots.RobotProfilesForConversation(ctx, strings.TrimSpace(userID), strings.TrimSpace(conversationID))
+		return items, mapStoreError(err)
+	}
+	return nil, ErrUnavailable
+}
+
+func normalizeRobotProfile(profile store.RobotProfile) (store.RobotProfile, error) {
+	profile.UserID = strings.TrimSpace(profile.UserID)
+	profile.Username = strings.ToLower(strings.TrimSpace(profile.Username))
+	profile.Placeholder = strings.TrimSpace(profile.Placeholder)
+	if profile.UserID == "" || len([]rune(profile.Placeholder)) > 80 || (profile.Username != "" && !robotUsernamePattern.MatchString(profile.Username)) || len(profile.Menus) > 12 {
+		return store.RobotProfile{}, ErrInvalid
+	}
+	seen := map[string]bool{}
+	menus := make([]store.RobotMenu, 0, len(profile.Menus))
+	for _, menu := range profile.Menus {
+		menu.Command = strings.TrimSpace(menu.Command)
+		menu.Remark = strings.TrimSpace(menu.Remark)
+		menu.Type = strings.ToLower(strings.TrimSpace(menu.Type))
+		if menu.Type == "" {
+			menu.Type = "command"
+		}
+		if menu.Type != "command" || menu.Command == "" || len([]rune(menu.Command)) > 40 || len([]rune(menu.Remark)) > 30 || seen[menu.Command] {
+			return store.RobotProfile{}, ErrInvalid
+		}
+		seen[menu.Command] = true
+		menus = append(menus, menu)
+	}
+	if profile.Enabled && len(menus) == 0 {
+		return store.RobotProfile{}, ErrInvalid
+	}
+	profile.Menus = menus
+	return profile, nil
+}
+
+func (a *App) ConfigureRobotProfile(ctx context.Context, profile store.RobotProfile, actorID, reason string, at time.Time) (*store.RobotProfile, error) {
+	normalized, err := normalizeRobotProfile(profile)
+	if err != nil {
+		return nil, err
+	}
+	if robots, ok := a.persistence.(store.RobotStore); ok {
+		item, configureErr := robots.ConfigureRobotProfile(ctx, normalized, strings.TrimSpace(actorID), strings.TrimSpace(reason), at)
+		if configureErr != nil {
+			return nil, mapStoreError(configureErr)
+		}
+		a.publish([]string{item.UserID}, "robot.updated", map[string]any{"robotId": item.UserID, "version": item.Version, "enabled": item.Enabled})
+		return item, nil
+	}
+	return nil, ErrUnavailable
 }
 
 // AuthorizeWukongMessage resolves the business conversation to the canonical
@@ -813,8 +881,9 @@ func (a *App) SeedDemo() error {
 		return nil
 	}
 	now := time.Now()
-	users := []*model.User{{ID: "usr_alice", Phone: "13800000001", Name: "Alice", CreatedAt: now}, {ID: "usr_bob", Phone: "13800000002", Name: "Bob", CreatedAt: now}, {ID: "usr_admin", Phone: "13800000000", Name: "Admin", CreatedAt: now}}
+	users := []*model.User{{ID: "usr_alice", Phone: "13800000001", Name: "Alice", Gender: "unspecified", AllowSearchByHandle: true, CreatedAt: now}, {ID: "usr_bob", Phone: "13800000002", Name: "Bob", Gender: "unspecified", AllowSearchByHandle: true, CreatedAt: now}, {ID: "usr_admin", Phone: "13800000000", Name: "Admin", Gender: "unspecified", AllowSearchByHandle: true, CreatedAt: now}}
 	for _, u := range users {
+		u.Handle = defaultHandle(u.ID)
 		a.state.Users[u.ID] = u
 		a.state.PhoneToUser[u.Phone] = u.ID
 	}
@@ -823,7 +892,7 @@ func (a *App) SeedDemo() error {
 
 func (a *App) Login(phone, name string) (*model.User, error) {
 	phone = strings.TrimSpace(phone)
-	if phone == "" || len(phone) > 32 {
+	if !ValidPhoneNumber(phone) {
 		return nil, ErrInvalid
 	}
 	name = strings.TrimSpace(name)
@@ -851,7 +920,7 @@ func (a *App) Login(phone, name string) (*model.User, error) {
 		}
 		return u, nil
 	}
-	u := &model.User{ID: id("usr"), Phone: phone, Name: name, CreatedAt: time.Now()}
+	u := &model.User{ID: id("usr"), Phone: phone, Name: name, Gender: "unspecified", AllowSearchByHandle: true, CreatedAt: time.Now()}
 	u.Handle = defaultHandle(u.ID)
 	a.state.Users[u.ID] = u
 	a.state.PhoneToUser[phone] = u.ID
@@ -931,7 +1000,41 @@ func (a *App) settingIntLocked(key string, fallback int) int {
 }
 
 func (a *App) validPassword(password string) bool {
-	return len(password) >= a.settingInt("passwordMinLength", 8) && len(password) <= 72
+	policy := a.AuthPolicy()
+	return utf8.RuneCountInString(password) >= policy.PasswordMinLength && len(password) <= policy.PasswordMaxBytes
+}
+
+type PublicAuthPolicy struct {
+	RegistrationEnabled bool `json:"registrationEnabled"`
+	PasswordMinLength   int  `json:"passwordMinLength"`
+	PasswordMaxBytes    int  `json:"passwordMaxBytes"`
+}
+
+func (a *App) AuthPolicy() PublicAuthPolicy {
+	settings := a.Settings()
+	registrationEnabled := true
+	if value, ok := settings["registrationEnabled"].(bool); ok {
+		registrationEnabled = value
+	} else if value, ok := settings["allowRegistration"].(bool); ok {
+		registrationEnabled = value
+	}
+	minimum := 8
+	switch value := settings["passwordMinLength"].(type) {
+	case float64:
+		minimum = int(value)
+	case int:
+		minimum = value
+	}
+	if minimum < 8 {
+		minimum = 8
+	} else if minimum > 16 {
+		minimum = 16
+	}
+	return PublicAuthPolicy{
+		RegistrationEnabled: registrationEnabled,
+		PasswordMinLength:   minimum,
+		PasswordMaxBytes:    72,
+	}
 }
 
 // MaintenanceStatus exposes only the public maintenance state. It deliberately
@@ -948,7 +1051,7 @@ func (a *App) MaintenanceStatus() (bool, string) {
 func (a *App) RegisterWithPassword(phone, name, password string) (*model.User, error) {
 	phone = strings.TrimSpace(phone)
 	name = strings.TrimSpace(name)
-	if phone == "" || len(phone) > 32 || name == "" || len([]rune(name)) > 40 || !a.validPassword(password) {
+	if !ValidPhoneNumber(phone) || name == "" || len([]rune(name)) > 40 || !a.validPassword(password) {
 		return nil, ErrInvalid
 	}
 	settings := a.Settings()
@@ -976,7 +1079,7 @@ func (a *App) RegisterWithPassword(phone, name, password string) (*model.User, e
 	if a.state.PhoneToUser[phone] != "" {
 		return nil, ErrConflict
 	}
-	u := &model.User{ID: id("usr"), Phone: phone, Name: name, CreatedAt: time.Now()}
+	u := &model.User{ID: id("usr"), Phone: phone, Name: name, Gender: "unspecified", AllowSearchByHandle: true, CreatedAt: time.Now()}
 	u.Handle = defaultHandle(u.ID)
 	a.state.Users[u.ID] = u
 	a.state.PhoneToUser[phone] = u.ID
@@ -989,7 +1092,7 @@ func (a *App) RegisterWithPassword(phone, name, password string) (*model.User, e
 
 func (a *App) PasswordLogin(phone, password string) (*model.User, error) {
 	phone = strings.TrimSpace(phone)
-	if phone == "" || password == "" {
+	if !ValidPhoneNumber(phone) || password == "" {
 		return nil, ErrForbidden
 	}
 	const dummyHash = "$2a$12$rAyv6obDffJSqZ1aaqOCR.ER2UXp8ZPsEl2bJCTovnsJJrFshtxNW"
@@ -1021,7 +1124,7 @@ func (a *App) PasswordLogin(phone, password string) (*model.User, error) {
 
 func (a *App) ResetPassword(phone, password string) error {
 	phone = strings.TrimSpace(phone)
-	if phone == "" || !a.validPassword(password) {
+	if !ValidPhoneNumber(phone) || !a.validPassword(password) {
 		return ErrInvalid
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
@@ -1174,8 +1277,14 @@ func (a *App) DeleteAccount(uid string) (bool, error) {
 }
 
 func (a *App) UpdateUserProfile(uid string, update store.UserProfileUpdate) (*model.User, error) {
-	if update.Name == nil && update.Handle == nil && update.Signature == nil && update.AvatarMediaID == nil {
+	if update.Name == nil && update.Handle == nil && update.Signature == nil && update.Gender == nil && update.AvatarMediaID == nil && update.AllowSearchByHandle == nil && update.AllowSearchByPhone == nil {
 		return nil, ErrInvalid
+	}
+	if update.AllowSearchByHandle != nil && *update.AllowSearchByHandle && !a.settingBool("allowSearchByHandle", true) {
+		return nil, ErrForbidden
+	}
+	if update.AllowSearchByPhone != nil && *update.AllowSearchByPhone && !a.settingBool("allowSearchByPhone", false) {
+		return nil, ErrForbidden
 	}
 	if update.Name != nil {
 		v := strings.TrimSpace(*update.Name)
@@ -1197,6 +1306,13 @@ func (a *App) UpdateUserProfile(uid string, update store.UserProfileUpdate) (*mo
 			return nil, ErrInvalid
 		}
 		update.Signature = &v
+	}
+	if update.Gender != nil {
+		v := strings.ToLower(strings.TrimSpace(*update.Gender))
+		if v != "unspecified" && v != "male" && v != "female" {
+			return nil, ErrInvalid
+		}
+		update.Gender = &v
 	}
 	if s, ok := a.persistence.(store.ProfileStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1241,6 +1357,9 @@ func (a *App) UpdateUserProfile(uid string, update store.UserProfileUpdate) (*mo
 	if update.Signature != nil {
 		u.Signature = *update.Signature
 	}
+	if update.Gender != nil {
+		u.Gender = *update.Gender
+	}
 	if update.AvatarMediaID != nil {
 		if *update.AvatarMediaID != "" {
 			m := a.state.Media[*update.AvatarMediaID]
@@ -1257,6 +1376,12 @@ func (a *App) UpdateUserProfile(uid string, update store.UserProfileUpdate) (*mo
 			u.AvatarURL = "/v2/media/" + u.AvatarMediaID
 		}
 	}
+	if update.AllowSearchByHandle != nil {
+		u.AllowSearchByHandle = *update.AllowSearchByHandle
+	}
+	if update.AllowSearchByPhone != nil {
+		u.AllowSearchByPhone = *update.AllowSearchByPhone
+	}
 	if err := a.saveLocked(); err != nil {
 		return nil, err
 	}
@@ -1266,7 +1391,7 @@ func (a *App) UpdateUserProfile(uid string, update store.UserProfileUpdate) (*mo
 
 func (a *App) UpdateUserPhone(uid, phone string) (*model.User, error) {
 	phone = strings.TrimSpace(phone)
-	if phone == "" || len(phone) > 32 {
+	if !ValidPhoneNumber(phone) {
 		return nil, ErrInvalid
 	}
 	if s, ok := a.persistence.(store.ProfileStore); ok {
@@ -1410,14 +1535,19 @@ func (a *App) RecordClientDiagnostic(uid string, item store.ClientDiagnostic) er
 	return store.ErrUnsupported
 }
 func (a *App) SearchUsers(query string) []*model.User {
+	out, _ := a.SearchUsersContext(context.Background(), query)
+	return out
+}
+
+func (a *App) SearchUsersContext(parent context.Context, query string) ([]*model.User, error) {
 	if q, ok := a.persistence.(store.QueryStore); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 		defer cancel()
 		out, err := q.SearchUsers(ctx, strings.TrimSpace(query), 50)
-		if err == nil {
-			return out
+		if err != nil {
+			return nil, mapStoreError(err)
 		}
-		return []*model.User{}
+		return out, nil
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -1434,7 +1564,7 @@ func (a *App) SearchUsers(query string) []*model.User {
 	if len(out) > 50 {
 		out = out[:50]
 	}
-	return out
+	return out, nil
 }
 
 func (a *App) SearchUsersByIdentifier(query, by string) ([]*model.User, error) {
@@ -1469,8 +1599,8 @@ func (a *App) SearchUsersByIdentifier(query, by string) ([]*model.User, error) {
 	defer a.mu.RUnlock()
 	out := []*model.User{}
 	for _, u := range a.state.Users {
-		matched := by == "handle" && strings.EqualFold(u.Handle, query)
-		matched = matched || (by == "phone" && u.Phone == query)
+		matched := by == "handle" && u.AllowSearchByHandle && strings.EqualFold(u.Handle, query)
+		matched = matched || (by == "phone" && u.AllowSearchByPhone && u.Phone == query)
 		if matched {
 			copy := *u
 			copy.Phone = ""
@@ -1482,8 +1612,9 @@ func (a *App) SearchUsersByIdentifier(query, by string) ([]*model.User, error) {
 
 func (a *App) SearchCapabilities() map[string]bool {
 	return map[string]bool{
-		"allowSearchByHandle": a.settingBool("allowSearchByHandle", true),
-		"allowSearchByPhone":  a.settingBool("allowSearchByPhone", false),
+		"allowSearchByHandle":      a.settingBool("allowSearchByHandle", true),
+		"allowSearchByPhone":       a.settingBool("allowSearchByPhone", false),
+		"canUpdatePrivacySettings": true,
 	}
 }
 
@@ -1491,9 +1622,12 @@ func (a *App) DecorateOwnProfile(u *model.User) {
 	if u == nil {
 		return
 	}
+	if u.Gender != "male" && u.Gender != "female" {
+		u.Gender = "unspecified"
+	}
 	u.HandleChangesRemaining = max(0, 2-u.HandleChangeCount)
-	u.AllowSearchByHandle = a.settingBool("allowSearchByHandle", true)
-	u.AllowSearchByPhone = a.settingBool("allowSearchByPhone", false)
+	u.AllowSearchByHandle = u.AllowSearchByHandle && a.settingBool("allowSearchByHandle", true)
+	u.AllowSearchByPhone = u.AllowSearchByPhone && a.settingBool("allowSearchByPhone", false)
 }
 
 func (a *App) RequestFriend(from, to, message string) (*model.FriendRequest, error) {
@@ -1559,14 +1693,19 @@ func (a *App) RequestFriendWithContext(from, to, message, source, sourceID strin
 	return request, nil
 }
 func (a *App) FriendRequests(uid string) []*model.FriendRequest {
+	out, _ := a.FriendRequestsContext(context.Background(), uid)
+	return out
+}
+
+func (a *App) FriendRequestsContext(parent context.Context, uid string) ([]*model.FriendRequest, error) {
 	if q, ok := a.persistence.(store.QueryStore); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 		defer cancel()
 		out, err := q.ListFriendRequests(ctx, uid)
-		if err == nil {
-			return out
+		if err != nil {
+			return nil, mapStoreError(err)
 		}
-		return []*model.FriendRequest{}
+		return out, nil
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -1577,17 +1716,22 @@ func (a *App) FriendRequests(uid string) []*model.FriendRequest {
 			out = append(out, &c)
 		}
 	}
-	return out
+	return out, nil
 }
 func (a *App) Friends(uid string) []*model.User {
+	out, _ := a.FriendsContext(context.Background(), uid)
+	return out
+}
+
+func (a *App) FriendsContext(parent context.Context, uid string) ([]*model.User, error) {
 	if q, ok := a.persistence.(store.QueryStore); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 		defer cancel()
 		out, err := q.ListFriends(ctx, uid)
-		if err == nil {
-			return out
+		if err != nil {
+			return nil, mapStoreError(err)
 		}
-		return []*model.User{}
+		return out, nil
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -1602,7 +1746,7 @@ func (a *App) Friends(uid string) []*model.User {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
+	return out, nil
 }
 
 func (a *App) BlockedUsers(uid string) ([]*model.User, error) {
@@ -1625,7 +1769,15 @@ func (a *App) BlockedUsers(uid string) ([]*model.User, error) {
 	return items, nil
 }
 func (a *App) AcceptFriend(uid, rid string) error {
-	_, _, err := a.TransitionFriendRequest(uid, rid, "accept")
+	request, _, err := a.TransitionFriendRequest(uid, rid, "accept")
+	if err != nil {
+		return err
+	}
+	peerID := request.FromUserID
+	if peerID == uid {
+		peerID = request.ToUserID
+	}
+	_, err = a.DirectConversation(uid, peerID)
 	return err
 }
 func (a *App) RejectFriend(uid, rid string) error {
@@ -3338,7 +3490,7 @@ func (a *App) Delivered(uid, cid string, seq int64) (int64, error) {
 }
 
 func (a *App) UpdateConversationPreferences(uid, cid string, preferences store.ConversationPreferences) error {
-	if preferences.Pinned == nil && preferences.Archived == nil && preferences.NotificationsMuted == nil && preferences.ManualUnread == nil {
+	if preferences.Pinned == nil && preferences.Saved == nil && preferences.Archived == nil && preferences.NotificationsMuted == nil && preferences.ManualUnread == nil {
 		return ErrInvalid
 	}
 	if s, ok := a.persistence.(store.RuntimeMutationStore); ok {
@@ -3364,6 +3516,9 @@ func (a *App) UpdateConversationPreferences(uid, cid string, preferences store.C
 	if preferences.Pinned != nil {
 		m.Pinned = *preferences.Pinned
 	}
+	if preferences.Saved != nil {
+		m.Saved = *preferences.Saved
+	}
 	if preferences.Archived != nil {
 		m.Archived = *preferences.Archived
 	}
@@ -3373,7 +3528,7 @@ func (a *App) UpdateConversationPreferences(uid, cid string, preferences store.C
 	if preferences.ManualUnread != nil {
 		m.ManualUnread = *preferences.ManualUnread
 	}
-	a.businessEventLocked(uid, "conversation.preferences.updated", map[string]any{"conversationId": cid, "pinned": m.Pinned, "archived": m.Archived, "notificationsMuted": m.NotificationsMuted, "manualUnread": m.ManualUnread})
+	a.businessEventLocked(uid, "conversation.preferences.updated", map[string]any{"conversationId": cid, "pinned": m.Pinned, "saved": m.Saved, "archived": m.Archived, "notificationsMuted": m.NotificationsMuted, "manualUnread": m.ManualUnread})
 	return a.saveLocked()
 }
 
@@ -3889,14 +4044,26 @@ func (a *App) Report(uid, targetType, targetID, reason, details string) (*model.
 	return r, nil
 }
 func (a *App) AdminStats() map[string]any {
-	if s, ok := a.persistence.(store.AdminOperationsStore); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if stats, err := s.AdminStats(ctx); err == nil {
-			return stats
-		}
+	stats, _ := a.AdminStatsContext(context.Background())
+	if stats == nil {
+		return map[string]any{}
 	}
-	_ = a.refresh()
+	return stats
+}
+
+func (a *App) AdminStatsContext(parent context.Context) (map[string]any, error) {
+	if s, ok := a.persistence.(store.AdminOperationsStore); ok {
+		ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+		defer cancel()
+		stats, err := s.AdminStats(ctx)
+		if err != nil {
+			return nil, mapStoreError(err)
+		}
+		return stats, nil
+	}
+	if err := a.refresh(); err != nil {
+		return nil, err
+	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	pending := 0
@@ -3911,7 +4078,7 @@ func (a *App) AdminStats() map[string]any {
 			banned++
 		}
 	}
-	return map[string]any{"users": len(a.state.Users), "bannedUsers": banned, "conversations": len(a.state.Conversations), "messages": 0, "pendingReports": pending}
+	return map[string]any{"users": len(a.state.Users), "bannedUsers": banned, "conversations": len(a.state.Conversations), "messages": 0, "pendingReports": pending}, nil
 }
 func (a *App) AdminUsers(q string) []*model.User { return a.SearchUsers(q) }
 func (a *App) AdminUsersPage(q, status, cursor string, limit int) ([]*model.User, int64, string, error) {
@@ -3920,7 +4087,10 @@ func (a *App) AdminUsersPage(q, status, cursor string, limit int) ([]*model.User
 		defer cancel()
 		return s.ListAdminUsers(ctx, q, status, cursor, limit)
 	}
-	all := a.AdminUsers(q)
+	all, err := a.SearchUsersContext(context.Background(), q)
+	if err != nil {
+		return nil, 0, "", err
+	}
 	items := make([]*model.User, 0, len(all))
 	for _, user := range all {
 		if status == "" || (status == "active" && !user.Banned) || (status == "banned" && user.Banned) {
@@ -4004,6 +4174,67 @@ func (a *App) AdminGroupMembers(id, q, cursor string, limit int) ([]*model.Conve
 	}
 	return nil, 0, "", store.ErrUnsupported
 }
+func (a *App) AdminModerateGroupMember(actor, conversationID, targetID, action, role, reason string, mutedUntil *time.Time) error {
+	actor, conversationID, targetID = strings.TrimSpace(actor), strings.TrimSpace(conversationID), strings.TrimSpace(targetID)
+	action, role, reason = strings.TrimSpace(action), strings.TrimSpace(role), strings.TrimSpace(reason)
+	if actor == "" || conversationID == "" || targetID == "" || reason == "" || len([]rune(reason)) > 500 {
+		return ErrInvalid
+	}
+	if action != "remove" && action != "role" && action != "mute" {
+		return ErrInvalid
+	}
+	if action == "role" && role != "member" && role != "admin" {
+		return ErrInvalid
+	}
+	if action == "mute" && mutedUntil != nil && !mutedUntil.After(time.Now()) {
+		return ErrInvalid
+	}
+	now := time.Now()
+	if s, ok := a.persistence.(store.AdminGroupModerationStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err := s.AdminApplyGroupMemberAction(ctx, store.AdminGroupMemberAction{ActorID: actor, ConversationID: conversationID, TargetID: targetID, Action: action, Role: role, Reason: reason, MutedUntil: mutedUntil, At: now})
+		if err != nil {
+			return mapStoreError(err)
+		}
+		recipients, _ := a.InternalConversationMemberIDs(ctx, conversationID)
+		recipients = append(recipients, targetID)
+		a.publish(recipients, "group.members.updated", map[string]any{"conversationId": conversationID, "userId": targetID, "action": action})
+		return nil
+	}
+	if err := a.refresh(); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	conversation := a.state.Conversations[conversationID]
+	members := a.state.Members[conversationID]
+	target := members[targetID]
+	if conversation == nil || conversation.Type != "group" || target == nil {
+		a.mu.Unlock()
+		return ErrNotFound
+	}
+	if target.Role == "owner" {
+		a.mu.Unlock()
+		return ErrForbidden
+	}
+	switch action {
+	case "remove":
+		delete(members, targetID)
+	case "role":
+		target.Role = role
+	case "mute":
+		target.MutedUntil = mutedUntil
+	}
+	a.auditLocked(actor, "group.member."+action, "group_member", conversationID+":"+targetID, map[string]any{"reason": reason, "role": role, "mutedUntil": mutedUntil})
+	recipients := append(memberIDs(members), targetID)
+	err := a.saveLocked()
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	a.publish(recipients, "group.members.updated", map[string]any{"conversationId": conversationID, "userId": targetID, "action": action})
+	return nil
+}
 func (a *App) RecordAdminAudit(actor, action, targetType, targetID, result, ip string, metadata map[string]any) {
 	if s, ok := a.persistence.(store.AdminOperationsStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -4084,6 +4315,111 @@ func (a *App) CreateRefreshSession(id, uid string, hash []byte, exp time.Time) e
 	a.refreshSessions[id] = refreshSession{UserID: uid, Hash: append([]byte(nil), hash...), ExpiresAt: exp}
 	return nil
 }
+
+func (a *App) CreateQRLoginTicket(ticket store.QRLoginTicket) error {
+	if ticket.ID == "" || len(ticket.QRTokenHash) != sha256.Size || len(ticket.PollTokenHash) != sha256.Size ||
+		(ticket.ClientPlatform != "web" && ticket.ClientPlatform != "macos") || strings.TrimSpace(ticket.ClientName) == "" ||
+		!ticket.ExpiresAt.After(ticket.CreatedAt) || ticket.ExpiresAt.Sub(ticket.CreatedAt) > 5*time.Minute {
+		return ErrInvalid
+	}
+	if s, ok := a.persistence.(store.QRLoginStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		return mapStoreError(s.CreateQRLoginTicket(ctx, ticket))
+	}
+	a.qrLoginMu.Lock()
+	defer a.qrLoginMu.Unlock()
+	for id, existing := range a.qrLoginTickets {
+		if ticket.CreatedAt.After(existing.ExpiresAt.Add(24 * time.Hour)) {
+			delete(a.qrLoginTickets, id)
+		}
+	}
+	copy := ticket
+	copy.QRTokenHash = append([]byte(nil), ticket.QRTokenHash...)
+	copy.PollTokenHash = append([]byte(nil), ticket.PollTokenHash...)
+	a.qrLoginTickets[ticket.ID] = copy
+	return nil
+}
+
+func (a *App) QRLoginTicketByToken(hash []byte) (store.QRLoginTicket, error) {
+	if len(hash) != sha256.Size {
+		return store.QRLoginTicket{}, ErrInvalid
+	}
+	if s, ok := a.persistence.(store.QRLoginStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		ticket, err := s.GetQRLoginTicketByToken(ctx, hash)
+		return ticket, mapStoreError(err)
+	}
+	a.qrLoginMu.Lock()
+	defer a.qrLoginMu.Unlock()
+	for _, ticket := range a.qrLoginTickets {
+		if subtle.ConstantTimeCompare(ticket.QRTokenHash, hash) == 1 {
+			return ticket, nil
+		}
+	}
+	return store.QRLoginTicket{}, ErrNotFound
+}
+
+func (a *App) ConfirmQRLoginTicket(hash []byte, uid string, at time.Time) (store.QRLoginTicket, error) {
+	if len(hash) != sha256.Size || uid == "" {
+		return store.QRLoginTicket{}, ErrInvalid
+	}
+	if !a.IsActiveUser(uid) {
+		return store.QRLoginTicket{}, ErrForbidden
+	}
+	if s, ok := a.persistence.(store.QRLoginStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		ticket, err := s.ConfirmQRLoginTicket(ctx, hash, uid, at)
+		return ticket, mapStoreError(err)
+	}
+	a.qrLoginMu.Lock()
+	defer a.qrLoginMu.Unlock()
+	for id, ticket := range a.qrLoginTickets {
+		if subtle.ConstantTimeCompare(ticket.QRTokenHash, hash) != 1 {
+			continue
+		}
+		if ticket.State(at) == "expired" || ticket.ConsumedAt != nil {
+			return store.QRLoginTicket{}, ErrForbidden
+		}
+		if ticket.ConfirmedAt != nil {
+			if ticket.UserID == uid {
+				return ticket, nil
+			}
+			return store.QRLoginTicket{}, ErrConflict
+		}
+		ticket.UserID, ticket.ConfirmedAt = uid, &at
+		a.qrLoginTickets[id] = ticket
+		return ticket, nil
+	}
+	return store.QRLoginTicket{}, ErrNotFound
+}
+
+func (a *App) ConsumeQRLoginTicket(id string, pollHash []byte, at time.Time) (store.QRLoginTicket, bool, error) {
+	if id == "" || len(pollHash) != sha256.Size {
+		return store.QRLoginTicket{}, false, ErrInvalid
+	}
+	if s, ok := a.persistence.(store.QRLoginStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		ticket, consumed, err := s.ConsumeQRLoginTicket(ctx, id, pollHash, at)
+		return ticket, consumed, mapStoreError(err)
+	}
+	a.qrLoginMu.Lock()
+	defer a.qrLoginMu.Unlock()
+	ticket, ok := a.qrLoginTickets[id]
+	if !ok || subtle.ConstantTimeCompare(ticket.PollTokenHash, pollHash) != 1 {
+		return store.QRLoginTicket{}, false, ErrNotFound
+	}
+	if ticket.State(at) == "confirmed" {
+		ticket.ConsumedAt = &at
+		a.qrLoginTickets[id] = ticket
+		return ticket, true, nil
+	}
+	return ticket, false, nil
+}
+
 func (a *App) RotateRefreshSession(oldID, newID, uid string, hash []byte, exp time.Time) error {
 	if s, ok := a.persistence.(store.RefreshSessionStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

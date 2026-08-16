@@ -3,16 +3,21 @@ import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:linli_im/core/app_controller.dart';
 import 'package:linli_im/core/app_theme.dart';
+import 'package:linli_im/core/auth_validation.dart';
 import 'package:linli_im/core/models.dart';
 import 'package:linli_im/data/demo_repository.dart';
+import 'package:linli_im/data/live_repository.dart';
 import 'package:linli_im/main.dart';
 import 'package:linli_im/ui/screens/chat_screen.dart';
 import 'package:linli_im/ui/screens/group_management_screens.dart';
 import 'package:linli_im/ui/screens/home_screen.dart';
+import 'package:linli_im/ui/screens/relationship_screens.dart';
+import 'package:linli_im/ui/screens/settings_screens.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -20,7 +25,115 @@ void main() {
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
-  testWidgets('开发登录进入消息首页', (tester) async {
+  testWidgets('未配置服务地址时显示真实错误登录页而不是白屏', (tester) async {
+    await tester.pumpWidget(LinliApp(repository: ResilientImRepository()));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 700));
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('登录青蛙呱呱'), findsOneWidget);
+    expect(find.text('客户端尚未配置服务地址'), findsOneWidget);
+  });
+
+  testWidgets('会话恢复期间启动页保持完整品牌而不是空白转圈', (tester) async {
+    await tester.pumpWidget(LinliApp(repository: _PendingRestoreRepository()));
+    await tester.pump();
+
+    expect(find.bySemanticsLabel('青蛙呱呱正在启动'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.text('正在启动，请稍候…'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is Image &&
+            widget.image is AssetImage &&
+            widget.width == 160 &&
+            widget.height == 160 &&
+            (widget.image as AssetImage).assetName ==
+                'assets/brand/qingwaguagua-mark-transparent.png',
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('未登录启动不等待远程账号策略即可进入登录页', (tester) async {
+    final repository = _PendingPolicyRepository();
+    addTearDown(repository.completePolicy);
+
+    await tester.pumpWidget(LinliApp(repository: repository));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 700));
+
+    expect(find.text('登录青蛙呱呱'), findsOneWidget);
+    expect(find.byKey(const Key('open-register')), findsOneWidget);
+    expect(find.byKey(const Key('auth-policy-status-notice')), findsNothing);
+    expect(find.bySemanticsLabel('青蛙呱呱正在启动'), findsNothing);
+    expect(repository.policyRequests, 1);
+
+    // Resolve the deliberately pending request so its timeout timer is
+    // cancelled before the widget-test binding verifies pending timers.
+    repository.completePolicy();
+    await tester.pump();
+  });
+
+  testWidgets('已登录冷启动先进入消息壳层而不等待远程会话列表', (tester) async {
+    final repository = _PendingRestoredCoreRepository();
+    addTearDown(repository.completeCore);
+
+    await tester.pumpWidget(LinliApp(repository: repository));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 700));
+
+    expect(find.bySemanticsLabel('青蛙呱呱正在启动'), findsNothing);
+    expect(find.text('消息'), findsWidgets);
+    expect(find.byType(CupertinoActivityIndicator), findsWidgets);
+
+    repository.completeCore();
+    await tester.pumpAndSettle();
+    expect(find.text('林屿'), findsWidgets);
+  });
+
+  testWidgets('首次验证码登录成功后立即进入消息壳层并后台同步会话', (tester) async {
+    final repository = _PendingFreshLoginCoreRepository();
+    addTearDown(repository.completeCore);
+
+    await tester.pumpWidget(LinliApp(repository: repository));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextFormField).first, '13800138000');
+    await tester.enterText(find.byKey(const Key('code-field')), '123456');
+    await tester.tap(find.byKey(const Key('policy-consent-checkbox')));
+    await tester.tap(find.byKey(const Key('login-button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(find.text('登录青蛙呱呱'), findsNothing);
+    expect(find.text('消息'), findsWidgets);
+    expect(find.byType(CupertinoActivityIndicator), findsWidgets);
+
+    repository.completeCore();
+    await tester.pumpAndSettle();
+    expect(find.text('林屿'), findsWidgets);
+  });
+
+  testWidgets('缓存会话被服务端撤销后退出旧壳层并要求重新登录', (tester) async {
+    final repository = _ExpiredRestoredSessionRepository();
+    addTearDown(repository.completeCore);
+
+    await tester.pumpWidget(LinliApp(repository: repository));
+    await tester.pump();
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    expect(find.text('登录青蛙呱呱'), findsOneWidget);
+    expect(find.text('登录状态已失效，请重新登录'), findsOneWidget);
+    expect(find.text('林屿'), findsNothing);
+
+    repository.completeCore();
+    await tester.pump();
+  });
+
+  testWidgets('真实登录表单进入消息首页且不展示演示入口', (tester) async {
     tester.view.physicalSize = const Size(375, 812);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -32,8 +145,13 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('登录邻里通讯'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('demo-login-button')));
+    expect(find.text('登录青蛙呱呱'), findsOneWidget);
+    expect(find.text('预览演示环境'), findsNothing);
+    expect(find.textContaining('开发环境'), findsNothing);
+    await tester.enterText(find.byType(TextFormField).first, '13800138000');
+    await tester.enterText(find.byKey(const Key('code-field')), '123456');
+    await tester.tap(find.byKey(const Key('policy-consent-checkbox')));
+    await tester.tap(find.byKey(const Key('login-button')));
     await tester.pumpAndSettle();
     expect(find.text('消息'), findsWidgets);
     expect(find.text('邻里产品小组'), findsOneWidget);
@@ -60,6 +178,14 @@ void main() {
 
     final header = tester.getRect(find.byKey(const Key('messages-header')));
     expect(header.height, lessThanOrEqualTo(160));
+    expect(
+      tester.getSize(find.byKey(const Key('messages-plus-menu'))),
+      const Size.square(44),
+    );
+    expect(
+      tester.getSize(find.byKey(const Key('messages-plus-icon'))),
+      const Size.square(28),
+    );
     expect(find.byKey(const Key('messages-signal-accent')), findsNothing);
     expect(find.text('置顶'), findsOneWidget);
     expect(
@@ -70,6 +196,32 @@ void main() {
       tester.getSize(find.byKey(const ValueKey('conversation-avatar-c-team'))),
       const Size.square(48),
     );
+    expect(
+      find.byKey(const Key('system-notification-section')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('system-notification-surface')),
+      findsOneWidget,
+    );
+    final avatarRect = tester.getRect(
+      find.byKey(const ValueKey('conversation-avatar-c-team')),
+    );
+    final conversationContentFinder = find.byKey(
+      const ValueKey('conversation-content-c-team'),
+    );
+    final conversationContentRect = tester.getRect(conversationContentFinder);
+    expect(conversationContentRect.left, greaterThan(avatarRect.right));
+    final conversationContent = tester.widget<Container>(
+      conversationContentFinder,
+    );
+    final conversationDecoration =
+        conversationContent.decoration! as BoxDecoration;
+    expect(conversationDecoration.border?.bottom.width, .75);
+    expect(
+      conversationDecoration.border?.bottom.color,
+      const Color(0xFFD7E0DB),
+    );
     final conversationTitle = tester.widget<Text>(
       find.byKey(const ValueKey('conversation-title-c-team')),
     );
@@ -79,6 +231,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('林屿'), findsOneWidget);
     expect(find.text('邻里产品小组'), findsNothing);
+    expect(find.byKey(const Key('system-notification-section')), findsNothing);
 
     await tester.tap(find.text('群聊'));
     await tester.pumpAndSettle();
@@ -119,6 +272,230 @@ void main() {
     expect(
       find.byKey(const Key('mentioned-conversation-filter')),
       findsNothing,
+    );
+  });
+
+  testWidgets('消息服务离线时首页和聊天页明确阻止发送并可重试', (tester) async {
+    final repository = OfflineConnectionRepository();
+    final controller = AppController(repository);
+    await tester.runAsync(() async {
+      await controller.loginAsDemo();
+      await Future<void>.delayed(Duration.zero);
+    });
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: Scaffold(body: ConversationsTab(controller: controller)),
+      ),
+    );
+    await tester.pump();
+    expect(
+      find.byKey(const Key('messaging-connection-banner')),
+      findsOneWidget,
+    );
+    expect(find.text('消息服务未连接，发送暂不可用'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('retry-messaging-connection')));
+    await tester.pumpAndSettle();
+    expect(repository.connectCalls, greaterThanOrEqualTo(2));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: ChatScreen(
+          controller: controller,
+          conversation: controller.conversations.first,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(
+      find.byKey(const Key('messaging-connection-banner')),
+      findsOneWidget,
+    );
+    expect(find.byType(ChatComposer), findsNothing);
+    await tester.pump(const Duration(milliseconds: 200));
+  });
+
+  testWidgets('通讯录只展示服务端标记为已保存的群聊并可进入会话', (tester) async {
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: Scaffold(body: ContactsTab(controller: controller)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('contacts-saved-groups')));
+    await tester.pumpAndSettle();
+    expect(find.text('保存的群聊'), findsWidgets);
+    expect(find.byKey(const Key('saved-groups-list')), findsOneWidget);
+    expect(find.text('邻里产品小组'), findsOneWidget);
+
+    await tester.tap(find.text('邻里产品小组'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('message-input')), findsOneWidget);
+  });
+
+  testWidgets('陌生人资料先显示添加好友，申请后进入等待状态而不是直接发消息', (tester) async {
+    final repository = RelationshipStateRepository();
+    final controller = AppController(repository);
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: FriendProfileScreen(
+          controller: controller,
+          user: RelationshipStateRepository.stranger,
+          requestSource: 'qr',
+          requestSourceId: RelationshipStateRepository.stranger.id,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('添加好友'), findsOneWidget);
+    expect(find.text('发消息'), findsNothing);
+    await tester.tap(find.byKey(const Key('friend-primary-action')));
+    await tester.pumpAndSettle();
+    expect(find.text('添加 扫码用户'), findsOneWidget);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('friend-verification-input')))
+          .controller
+          ?.text,
+      '你好，我是许言',
+    );
+
+    await tester.tap(find.text('发送好友申请'));
+    await tester.pumpAndSettle();
+    expect(repository.lastSource, 'qr');
+    expect(find.text('等待对方通过'), findsOneWidget);
+    expect(find.text('好友申请已发送'), findsOneWidget);
+  });
+
+  testWidgets('同意好友申请后红点清除且消息页立即出现单聊', (tester) async {
+    final repository = RelationshipStateRepository(incoming: true);
+    final controller = AppController(repository);
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+    expect(controller.pendingIncomingFriendRequestCount, 1);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: FriendProfileScreen(
+          controller: controller,
+          user: RelationshipStateRepository.stranger,
+          requestSource: 'qr',
+          requestSourceId: RelationshipStateRepository.stranger.id,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('同意添加'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('friend-primary-action')));
+    await tester.pumpAndSettle();
+    expect(controller.pendingIncomingFriendRequestCount, 0);
+    expect(find.text('发消息'), findsOneWidget);
+    expect(find.text('已添加 扫码用户 为好友'), findsOneWidget);
+    expect(
+      controller.conversations.any(
+        (conversation) =>
+            conversation.kind == ConversationKind.direct &&
+            conversation.members.any(
+              (member) => member.id == RelationshipStateRepository.stranger.id,
+            ),
+      ),
+      isTrue,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: ConversationsTab(controller: controller),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('扫码用户'), findsOneWidget);
+    expect(find.text('你们已是好友，开始聊天吧'), findsOneWidget);
+  });
+
+  testWidgets('好友申请已发送但列表刷新失败时仍保持等待状态', (tester) async {
+    final repository = RelationshipStateRepository(failRefreshAfterSend: true);
+    final controller = AppController(repository);
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: FriendProfileScreen(
+          controller: controller,
+          user: RelationshipStateRepository.stranger,
+          requestSource: 'qr',
+          requestSourceId: RelationshipStateRepository.stranger.id,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('friend-primary-action')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('发送好友申请'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('好友申请已发送'), findsOneWidget);
+    expect(find.text('等待对方通过'), findsOneWidget);
+    expect(find.text('添加好友'), findsNothing);
+  });
+
+  testWidgets('群资料页可将群聊移出并重新保存到通讯录', (tester) async {
+    tester.view.physicalSize = const Size(375, 812);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+    final group = controller.conversations.firstWhere(
+      (conversation) => conversation.kind == ConversationKind.group,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: GroupManagementScreen(
+          controller: controller,
+          conversation: group,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(group.saved, isTrue);
+    expect(find.byKey(const Key('group-save-to-contacts')), findsOneWidget);
+    await tester.tap(find.byType(CupertinoSwitch).first);
+    await tester.pumpAndSettle();
+    expect(
+      controller.conversations.firstWhere((item) => item.id == group.id).saved,
+      isFalse,
+    );
+
+    await tester.tap(find.byType(CupertinoSwitch).first);
+    await tester.pumpAndSettle();
+    expect(
+      controller.conversations.firstWhere((item) => item.id == group.id).saved,
+      isTrue,
     );
   });
 
@@ -363,12 +740,108 @@ void main() {
       await tester.pumpAndSettle();
       final header = find.byKey(ValueKey('top-level-header-${entry.$2}'));
       expect(header, findsOneWidget);
-      expect(tester.getSize(header).height, 66);
+      expect(tester.getSize(header).height, 60);
       expect(
         find.byKey(ValueKey('top-level-content-${entry.$2}')),
         findsOneWidget,
       );
     }
+
+    expect(find.byKey(const Key('profile-favorites')), findsOneWidget);
+    expect(find.byKey(const Key('profile-devices')), findsOneWidget);
+    expect(find.byKey(const Key('profile-settings')), findsOneWidget);
+    expect(find.byKey(const Key('profile-help')), findsOneWidget);
+  });
+
+  testWidgets('底部菜单按下不透明闪烁且重复点击不触发多余切换', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: HomeScreen(controller: controller, onToggleTheme: () {}),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    for (var i = 0; i < 4; i++) {
+      final button = tester.widget<CupertinoButton>(
+        find.byKey(Key('home-tab-$i')),
+      );
+      expect(button.pressedOpacity, 1);
+    }
+
+    final contactGesture = await tester.startGesture(
+      tester.getCenter(find.byKey(const Key('home-tab-1'))),
+    );
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(find.byKey(const Key('messages-header')), findsOneWidget);
+
+    await contactGesture.up();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('top-level-header-联系人')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('home-tab-1')));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('top-level-header-联系人')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('我的页常用入口可触达真实功能且点击区域不小于 44 点', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: HomeScreen(controller: controller, onToggleTheme: () {}),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('home-tab-3')));
+    await tester.pumpAndSettle();
+
+    for (final key in const [
+      Key('profile-favorites'),
+      Key('profile-devices'),
+      Key('profile-settings'),
+      Key('profile-help'),
+    ]) {
+      expect(tester.getSize(find.byKey(key)).height, greaterThanOrEqualTo(44));
+    }
+
+    await tester.tap(find.byKey(const Key('profile-favorites')));
+    await tester.pumpAndSettle();
+    expect(find.byType(FavoritesScreen), findsOneWidget);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('profile-devices')));
+    await tester.pumpAndSettle();
+    expect(find.byType(DevicesScreen), findsOneWidget);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('profile-settings')));
+    await tester.pumpAndSettle();
+    expect(find.byType(SettingsScreen), findsOneWidget);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('profile-help')));
+    await tester.pumpAndSettle();
+    expect(find.byType(HelpFeedbackScreen), findsOneWidget);
   });
 
   test('发送消息经过 sending 到 sent 状态', () async {
@@ -428,6 +901,23 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
+    String? copiedText;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copiedText =
+              (call.arguments as Map<Object?, Object?>)['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
     final controller = AppController(DemoImRepository(latency: Duration.zero));
     await tester.runAsync(controller.loginAsDemo);
     addTearDown(controller.dispose);
@@ -470,15 +960,23 @@ void main() {
     expect(find.byKey(const Key('message-context-menu')), findsOneWidget);
     expect(find.text('回复'), findsOneWidget);
     expect(find.text('复制'), findsOneWidget);
+    expect(find.text('选择文字'), findsOneWidget);
     expect(find.text('转发'), findsOneWidget);
     expect(find.text('收藏'), findsWidgets);
     expect(find.text('多选'), findsOneWidget);
     expect(find.text('举报'), findsOneWidget);
     expect(find.text('删除本机记录'), findsOneWidget);
 
-    await tester.tapAt(const Offset(2, 400));
+    await tester.tap(find.text('选择文字'));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('message-context-menu')), findsNothing);
+    expect(find.byKey(const Key('selectable-message-text')), findsOneWidget);
+    expect(find.text('长按文字后拖动选区，可复制其中一部分。'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('copy-all-message-text')));
+    await tester.pumpAndSettle();
+    expect(copiedText, '太好了，我已经把新的动效稿上传了。');
+    expect(find.byKey(const Key('selectable-message-text')), findsNothing);
 
     await tester.longPress(find.text('太好了，我已经把新的动效稿上传了。'));
     await tester.pumpAndSettle();
@@ -486,6 +984,231 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('已选择 1 条'), findsOneWidget);
     expect(find.text('删除'), findsOneWidget);
+  });
+
+  testWidgets('图片消息保持原比例并支持全屏缩放预览', (tester) async {
+    tester.view.physicalSize = const Size(375, 812);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final message = ChatMessage(
+      id: 'image-preview-message',
+      conversationId: 'image-preview-conversation',
+      senderId: 'me',
+      senderName: '我',
+      text: '[图片]',
+      sentAt: DateTime(2026, 8, 16, 10, 20),
+      isMine: true,
+      kind: MessageContentKind.image,
+      mediaUrl: 'assets/brand/qingwaguagua-mark-transparent.png',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: Scaffold(body: MessageBubble(message: message)),
+      ),
+    );
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 80)),
+    );
+    await tester.pumpAndSettle();
+
+    final thumbnail = tester.widget<Image>(
+      find.byKey(const Key('message-image-render-image-preview-message')),
+    );
+    expect(thumbnail.fit, BoxFit.contain);
+    expect(thumbnail.width, 220);
+    expect(thumbnail.height, 180);
+    final thumbnailRawImage = find.descendant(
+      of: find.byKey(const Key('message-image-render-image-preview-message')),
+      matching: find.byType(RawImage),
+    );
+    expect(
+      tester.renderObject<RenderImage>(thumbnailRawImage).image,
+      isNotNull,
+    );
+
+    await tester.tap(
+      find.byKey(const Key('message-image-image-preview-message')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('message-image-preview')), findsOneWidget);
+    final preview = tester.widget<Image>(
+      find.byKey(const Key('message-image-preview-render')),
+    );
+    expect(preview.fit, BoxFit.contain);
+    final viewer = tester.widget<InteractiveViewer>(
+      find.byKey(const Key('message-image-interactive-viewer')),
+    );
+    expect(viewer.minScale, 1);
+    expect(viewer.maxScale, 5);
+    final previewCenter = tester.getCenter(
+      find.byKey(const Key('message-image-preview-render')),
+    );
+    await tester.tapAt(previewCenter);
+    await tester.pump(const Duration(milliseconds: 60));
+    await tester.tapAt(previewCenter);
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.byKey(const Key('message-image-preview')), findsOneWidget);
+    expect(
+      viewer.transformationController!.value.getMaxScaleOnAxis(),
+      greaterThan(1),
+    );
+
+    await tester.tapAt(previewCenter);
+    // onTap and onDoubleTap share a gesture arena, so a lone tap is resolved
+    // only after the platform double-tap timeout has elapsed.
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('message-image-preview')), findsNothing);
+  });
+
+  testWidgets('首次加载图片时预留稳定高度避免消息列表跳动', (tester) async {
+    PaintingBinding.instance.imageCache
+      ..clear()
+      ..clearLiveImages();
+    final message = ChatMessage(
+      id: 'image-loading-placeholder',
+      conversationId: 'image-loading-conversation',
+      senderId: 'peer',
+      senderName: '林屿',
+      text: '[图片]',
+      sentAt: DateTime(2026, 8, 16, 10, 20),
+      isMine: false,
+      kind: MessageContentKind.image,
+      mediaUrl: 'assets/brand/qingwaguagua-mark-transparent.png',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: Scaffold(body: MessageBubble(message: message)),
+      ),
+    );
+
+    final placeholder = find.byKey(
+      const Key('message-image-placeholder-image-loading-placeholder'),
+    );
+    expect(placeholder, findsOneWidget);
+    expect(tester.getSize(placeholder), const Size(220, 180));
+
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 80)),
+    );
+    await tester.pump();
+    expect(placeholder, findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('图片消息按原始比例预留空间且不等待网络解码', (tester) async {
+    PaintingBinding.instance.imageCache
+      ..clear()
+      ..clearLiveImages();
+    final message = ChatMessage(
+      id: 'portrait-image-slot',
+      conversationId: 'image-loading-conversation',
+      senderId: 'peer',
+      senderName: '林屿',
+      text: '[图片]',
+      sentAt: DateTime(2026, 8, 16, 10, 20),
+      isMine: false,
+      kind: MessageContentKind.image,
+      mediaUrl: 'assets/brand/qingwaguagua-mark-transparent.png',
+      mediaWidth: 600,
+      mediaHeight: 800,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: Scaffold(body: MessageBubble(message: message)),
+      ),
+    );
+
+    final placeholder = find.byKey(
+      const Key('message-image-placeholder-portrait-image-slot'),
+    );
+    expect(placeholder, findsOneWidget);
+    expect(tester.getSize(placeholder), const Size(210, 280));
+    expect(
+      tester.getSize(
+        find.byKey(const Key('message-image-portrait-image-slot')),
+      ),
+      const Size(210, 280),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('图片预览提供连续浏览、编辑、转发和保存入口', (tester) async {
+    tester.view.physicalSize = const Size(375, 812);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+    final conversation = controller.conversations.firstWhere(
+      (item) => item.kind == ConversationKind.direct,
+    );
+    await tester.runAsync(() => controller.loadMessages(conversation.id));
+    await tester.runAsync(
+      () => controller.sendMedia(
+        conversation.id,
+        MediaUpload(
+          bytes: Uint8List.fromList(const [1, 2, 3]),
+          fileName: 'second.png',
+          mimeType: 'image/png',
+          kind: MessageContentKind.image,
+          localPath: 'assets/brand/qingwaguagua-mark-transparent.png',
+        ),
+      ),
+    );
+    final images = controller
+        .messagesFor(conversation.id)
+        .where((message) => message.kind == MessageContentKind.image)
+        .toList();
+    expect(images, hasLength(2));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: Scaffold(
+          body: MessageBubble(message: images.first, controller: controller),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final previewTrigger = tester.widget<InkWell>(
+      find.byKey(Key('message-image-${images.first.clientMessageId}')),
+    );
+    previewTrigger.onTap!();
+    await tester.pumpAndSettle();
+
+    expect(find.text('1 / 2'), findsOneWidget);
+    expect(find.byKey(const Key('edit-message-image-preview')), findsOneWidget);
+    expect(
+      find.byKey(const Key('forward-message-image-preview')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('save-message-image-preview')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('more-message-image-preview')));
+    await tester.pumpAndSettle();
+    expect(find.text('编辑'), findsWidgets);
+    expect(find.text('转发'), findsWidgets);
+    expect(find.text('保存原图'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+
+    await tester.drag(
+      find.byKey(const Key('message-image-interactive-viewer')),
+      const Offset(-260, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('2 / 2'), findsOneWidget);
   });
 
   testWidgets('直播频道显示并发送结构化直播互动', (tester) async {
@@ -655,7 +1378,7 @@ void main() {
 
     expect(find.text('聊天信息'), findsOneWidget);
     expect(find.text('联系人'), findsOneWidget);
-    expect(find.textContaining('邻里号：'), findsOneWidget);
+    expect(find.textContaining('呱呱号：'), findsOneWidget);
     expect(find.text('联系人资料'), findsNothing);
     expect(find.text('置顶聊天'), findsOneWidget);
     expect(find.text('消息免打扰'), findsOneWidget);
@@ -761,7 +1484,7 @@ void main() {
   test('浅色和深色主题保持品牌色与可读对比', () {
     final light = buildLinliTheme(Brightness.light);
     final dark = buildLinliTheme(Brightness.dark);
-    expect(light.colorScheme.primary, LinliColors.yellow);
+    expect(light.colorScheme.primary, LinliColors.brandGreen);
     expect(light.scaffoldBackgroundColor, LinliColors.background);
     expect(light.textTheme.headlineLarge?.fontSize, 32);
     expect(light.textTheme.titleLarge?.fontSize, 17);
@@ -773,6 +1496,209 @@ void main() {
     expect(dark.colorScheme.surface, isNot(light.colorScheme.surface));
     expect(dark.colorScheme.onSurface, isNot(light.colorScheme.onSurface));
   });
+}
+
+class _PendingRestoreRepository extends DemoImRepository {
+  _PendingRestoreRepository() : super(latency: Duration.zero);
+
+  @override
+  Future<bool> restoreSession() => Completer<bool>().future;
+}
+
+class _PendingPolicyRepository extends DemoImRepository {
+  _PendingPolicyRepository() : super(latency: Duration.zero);
+
+  final Completer<AuthPolicy> _policy = Completer<AuthPolicy>();
+  int policyRequests = 0;
+
+  @override
+  Future<AuthPolicy> authPolicy() {
+    policyRequests += 1;
+    return _policy.future;
+  }
+
+  void completePolicy() {
+    if (!_policy.isCompleted) _policy.complete(const AuthPolicy());
+  }
+}
+
+class _PendingRestoredCoreRepository extends DemoImRepository {
+  _PendingRestoredCoreRepository() : super(latency: Duration.zero);
+
+  final Completer<List<Conversation>> _core = Completer<List<Conversation>>();
+
+  @override
+  Future<bool> restoreSession() async => true;
+
+  @override
+  Future<List<Conversation>> conversations() => _core.future;
+
+  void completeCore() {
+    if (!_core.isCompleted) _core.complete(super.conversations());
+  }
+}
+
+class _PendingFreshLoginCoreRepository extends DemoImRepository {
+  _PendingFreshLoginCoreRepository() : super(latency: Duration.zero);
+
+  final Completer<List<Conversation>> _core = Completer<List<Conversation>>();
+
+  @override
+  Future<List<Conversation>> conversations() => _core.future;
+
+  void completeCore() {
+    if (!_core.isCompleted) _core.complete(super.conversations());
+  }
+}
+
+class _ExpiredRestoredSessionRepository extends DemoImRepository {
+  _ExpiredRestoredSessionRepository() : super(latency: Duration.zero);
+
+  final Completer<List<Conversation>> _core = Completer<List<Conversation>>();
+  AppUser? _sessionUser = DemoImRepository.demoUser;
+
+  @override
+  AppUser? get currentUser => _sessionUser;
+
+  @override
+  Future<bool> restoreSession() async => true;
+
+  @override
+  Future<AppUser> profile() async {
+    _sessionUser = null;
+    throw StateError('refresh token revoked');
+  }
+
+  @override
+  Future<List<Conversation>> conversations() => _core.future;
+
+  void completeCore() {
+    if (!_core.isCompleted) _core.complete(const <Conversation>[]);
+  }
+}
+
+class OfflineConnectionRepository extends DemoImRepository {
+  OfflineConnectionRepository() : super(latency: Duration.zero);
+
+  final StreamController<bool> _connection = StreamController<bool>.broadcast();
+  int connectCalls = 0;
+
+  @override
+  Stream<bool> get connectionChanges => _connection.stream;
+
+  @override
+  Future<void> connect() async {
+    connectCalls++;
+    _connection.add(false);
+  }
+
+  @override
+  Future<void> close() async {
+    await _connection.close();
+    await super.close();
+  }
+}
+
+class RelationshipStateRepository extends DemoImRepository {
+  RelationshipStateRepository({
+    bool incoming = false,
+    this.failRefreshAfterSend = false,
+  }) : _requests = incoming
+           ? [
+               FriendRequest(
+                 id: 'friend-request-incoming',
+                 user: stranger,
+                 note: '你好，想加你为好友',
+                 outgoing: false,
+                 source: 'qr',
+                 createdAt: DateTime(2026, 8, 15, 10),
+               ),
+             ]
+           : [],
+       super(latency: Duration.zero);
+
+  static const stranger = AppUser(
+    id: 'scan-user-1',
+    name: '扫码用户',
+    handle: 'scan_user_1',
+    presence: '通过二维码认识',
+  );
+
+  final List<FriendRequest> _requests;
+  final bool failRefreshAfterSend;
+  Conversation? _acceptedConversation;
+  bool accepted = false;
+  bool sent = false;
+  String? lastSource;
+
+  @override
+  Future<List<AppUser>> contacts() async => accepted ? [stranger] : [];
+
+  @override
+  Future<List<Conversation>> conversations() async {
+    final items = await super.conversations();
+    final conversation = _acceptedConversation;
+    if (conversation == null) return items;
+    return [
+      conversation,
+      ...items.where(
+        (item) =>
+            item.id != conversation.id &&
+            !item.members.any((member) => member.id == stranger.id),
+      ),
+    ];
+  }
+
+  @override
+  Future<Conversation> createDirect(AppUser user) async =>
+      _acceptedConversation ??= Conversation(
+        id: 'new-friend-conversation',
+        title: user.name,
+        subtitle: '你们已是好友，开始聊天吧',
+        updatedAt: DateTime(2026, 8, 16, 10),
+        kind: ConversationKind.direct,
+        channelId: user.id,
+        channelType: 1,
+        members: [user],
+      );
+
+  @override
+  Future<List<FriendRequest>> friendRequests() async {
+    if (failRefreshAfterSend && sent) {
+      throw StateError('friend request refresh unavailable');
+    }
+    return List.of(_requests);
+  }
+
+  @override
+  Future<void> sendFriendRequest(
+    String userId,
+    String note, {
+    String source = 'search',
+    String? sourceId,
+  }) async {
+    lastSource = source;
+    sent = true;
+    _requests.add(
+      FriendRequest(
+        id: 'friend-request-outgoing',
+        user: stranger,
+        note: note,
+        outgoing: true,
+        source: source,
+        sourceId: sourceId,
+        createdAt: DateTime(2026, 8, 15, 10),
+      ),
+    );
+  }
+
+  @override
+  Future<void> acceptFriendRequest(String requestId) async {
+    final index = _requests.indexWhere((request) => request.id == requestId);
+    if (index < 0) throw StateError('friend request not found');
+    _requests[index] = _requests[index].copyWith(status: 'accepted');
+    accepted = true;
+  }
 }
 
 class ControlledSendRepository extends DemoImRepository {

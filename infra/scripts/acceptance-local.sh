@@ -267,7 +267,7 @@ fi
 
 step="消息发送幂等"
 client_msg_id="qa-message-$suffix"
-send_body="$(jq -nc --arg id "$client_msg_id" '{clientMsgId:$id,type:"text",body:{text:"邻里通讯本地验收消息"}}')"
+send_body="$(jq -nc --arg id "$client_msg_id" '{clientMsgId:$id,type:"text",body:{text:"青蛙呱呱本地验收消息"}}')"
 status="$(request POST "/v2/messages/conversations/$direct_id/send" "$token_a" "$send_body")"
 expect_status 201 "$status"
 message_id="$(json_value '.message.id')"

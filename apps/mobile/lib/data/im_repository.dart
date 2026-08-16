@@ -1,3 +1,4 @@
+import '../core/auth_validation.dart';
 import '../core/models.dart';
 
 abstract interface class ImRepository {
@@ -7,11 +8,16 @@ abstract interface class ImRepository {
   bool get supportsDemo;
   AppUser? get currentUser;
 
+  Future<AuthPolicy> authPolicy();
   Future<bool> restoreSession();
   Future<String?> requestCode(String phone);
   Future<void> enterDemo();
   Future<AppUser> login(String phone, String code);
   Future<AppUser> passwordLogin(String phone, String password);
+  Future<QrLoginTicket> createQrLoginTicket({required String clientName});
+  Future<AppUser?> pollQrLoginTicket(QrLoginTicket ticket);
+  Future<QrLoginRequest> inspectQrLogin(String token);
+  Future<void> confirmQrLogin(String token);
   Future<AppUser> register({
     required String phone,
     required String code,
@@ -30,7 +36,10 @@ abstract interface class ImRepository {
     String? name,
     String? handle,
     String? signature,
+    String? gender,
     String? avatarMediaId,
+    bool? allowSearchByHandle,
+    bool? allowSearchByPhone,
   });
   Future<String> uploadAvatar(MediaUpload upload);
   Future<void> requestPhoneChangeCode(String phone);
@@ -112,6 +121,7 @@ abstract interface class ImRepository {
   );
   Future<void> markGroupAnnouncementRead(String conversationId);
   Future<List<GroupMember>> groupMembers(String conversationId);
+  Future<List<RobotProfile>> robotProfiles(String conversationId);
   Future<void> addGroupMembers(String conversationId, List<String> userIds);
   Future<void> inviteGroupMember(String conversationId, String userId);
   Future<List<GroupInvitation>> groupInvitations();
@@ -168,6 +178,7 @@ abstract interface class ImRepository {
   Future<void> updateConversationPreferences(
     String conversationId, {
     bool? pinned,
+    bool? saved,
     bool? notificationsMuted,
     bool? manualUnread,
     bool? archived,
@@ -199,4 +210,28 @@ abstract interface class ImRepository {
   Future<void> syncNow();
   Future<void> connect();
   Future<void> close();
+}
+
+/// Optional capability for repositories backed by server-side message history.
+///
+/// The regular [ImRepository] contract stays compatible with lightweight test
+/// repositories, while production repositories can expose WuKongIM-style
+/// sequence pagination without pretending that a latest-page refresh is a full
+/// conversation history.
+abstract interface class PaginatedMessageRepository {
+  Future<List<ChatMessage>> olderMessages(
+    String conversationId, {
+    required int beforeSequence,
+    int limit = 50,
+  });
+}
+
+/// Optional capability for repositories that can return a local message page
+/// without waiting for the network.
+///
+/// Chat surfaces use this to paint the last known messages immediately, then
+/// reconcile them with [ImRepository.messages]. This mirrors mature IM clients:
+/// local history is the first frame, while remote sync remains authoritative.
+abstract interface class CachedMessageRepository {
+  Future<List<ChatMessage>> cachedMessages(String conversationId);
 }

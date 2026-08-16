@@ -49,6 +49,16 @@ probe_websocket_upgrade() {
 
 curl --fail --silent --show-error --retry 12 --retry-delay 5 "$BASE_URL/healthz" >/dev/null
 curl --fail --silent --show-error --retry 12 --retry-delay 5 "$BASE_URL/health" >/dev/null
+curl --fail --silent --show-error --retry 12 --retry-delay 5 "$BASE_URL/ready" \
+  | jq -e '.status == "ready"' >/dev/null
+curl --fail --silent --show-error --retry 12 --retry-delay 5 "$BASE_URL/v2/config/auth" \
+  | jq -e '
+      (.registrationEnabled | type) == "boolean" and
+      (.passwordMinLength | type) == "number" and
+      .passwordMinLength >= 8 and .passwordMinLength <= 16 and
+      (.passwordMaxBytes | type) == "number" and
+      .passwordMaxBytes == 72
+    ' >/dev/null
 curl --fail --silent --show-error --retry 12 --retry-delay 5 -D "$HEADERS_FILE" "$BASE_URL/" >/dev/null
 
 grep -qi '^strict-transport-security:' "$HEADERS_FILE"

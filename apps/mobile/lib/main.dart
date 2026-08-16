@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter/semantics.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'calls/call_screen.dart';
@@ -18,12 +20,31 @@ import 'data/live_repository.dart';
 import 'ui/screens/home_screen.dart';
 import 'ui/screens/client_upgrade_screen.dart';
 import 'ui/screens/login_screen.dart';
+import 'ui/widgets/keyboard_dismiss_region.dart';
+
+SemanticsHandle? _webSemanticsHandle;
+
+@visibleForTesting
+void enablePersistentWebSemantics({bool? isWebOverride}) {
+  if (!(isWebOverride ?? kIsWeb)) return;
+  _webSemanticsHandle ??= SemanticsBinding.instance.ensureSemantics();
+}
+
+@visibleForTesting
+void disposePersistentWebSemanticsForTest() {
+  _webSemanticsHandle?.dispose();
+  _webSemanticsHandle = null;
+}
 
 void main() {
   final startup = Stopwatch()..start();
   final diagnostics = ClientDiagnostics.instance;
   runZonedGuarded(() {
     WidgetsFlutterBinding.ensureInitialized();
+    // Flutter Web otherwise exposes only a one-time "Enable accessibility"
+    // gate. Keep the semantic tree available from first paint so keyboard and
+    // assistive-technology users can reach the real application UI.
+    enablePersistentWebSemantics();
     FlutterError.onError = (details) {
       FlutterError.presentError(details);
       diagnostics.captureError(
@@ -56,10 +77,14 @@ class LinliApp extends StatefulWidget {
 }
 
 class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
+  static const _minimumLaunchVisibility = Duration(milliseconds: 650);
+
   final navigatorKey = GlobalKey<NavigatorState>();
   late final AppController controller;
   late final PushCoordinator pushCoordinator;
   late final ClientUpgradeService upgradeService;
+  Timer? _launchReleaseTimer;
+  bool _launchVisible = true;
   ThemeMode themeMode = ThemeMode.system;
   ClientUpgradeDecision? upgradeDecision;
   String? promptedUpgradeKey;
@@ -79,6 +104,12 @@ class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
     unawaited(controller.initialize());
     unawaited(_restoreTheme());
     unawaited(_checkUpgrade());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _launchReleaseTimer = Timer(_minimumLaunchVisibility, () {
+        if (mounted) setState(() => _launchVisible = false);
+      });
+    });
   }
 
   void _refreshRoot() {
@@ -89,6 +120,7 @@ class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     controller.removeListener(_refreshRoot);
+    _launchReleaseTimer?.cancel();
     unawaited(pushCoordinator.dispose());
     controller.dispose();
     super.dispose();
@@ -102,7 +134,7 @@ class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) => MaterialApp(
     navigatorKey: navigatorKey,
-    title: '邻里通讯',
+    title: '青蛙呱呱',
     debugShowCheckedModeBanner: false,
     theme: buildLinliTheme(Brightness.light),
     darkTheme: buildLinliTheme(Brightness.dark),
@@ -117,7 +149,7 @@ class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
     themeAnimationDuration: Duration.zero,
     builder: (context, child) => CallUiHost(
       controller: controller.callController,
-      child: child ?? const SizedBox.shrink(),
+      child: KeyboardDismissRegion(child: child ?? const SizedBox.shrink()),
     ),
     home: upgradeDecision?.forceUpdate == true
         ? ForcedUpgradeScreen(
@@ -127,14 +159,14 @@ class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
           )
         : AnimatedSwitcher(
             duration: Duration.zero,
-            child: controller.authenticated
+            child: _launchVisible || controller.initializing
+                ? const _LaunchScreen(key: ValueKey('launch'))
+                : controller.authenticated
                 ? HomeScreen(
                     key: const ValueKey('home'),
                     controller: controller,
                     onToggleTheme: _toggleTheme,
                   )
-                : controller.initializing
-                ? const _LaunchScreen(key: ValueKey('launch'))
                 : LoginScreen(
                     key: const ValueKey('login'),
                     controller: controller,
@@ -198,16 +230,48 @@ class _LaunchScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    backgroundColor: LinliColors.navy,
+    backgroundColor: Colors.white,
     body: SafeArea(
       child: Center(
         child: Semantics(
-          label: '邻里通讯正在启动',
-          child: const SizedBox.square(
-            dimension: 26,
-            child: CircularProgressIndicator(
-              color: LinliColors.yellow,
-              strokeWidth: 2.5,
+          label: '青蛙呱呱正在启动',
+          child: SizedBox.square(
+            dimension: 300,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                ExcludeSemantics(
+                  child: Image.asset(
+                    'assets/brand/qingwaguagua-mark-transparent.png',
+                    width: 160,
+                    height: 160,
+                  ),
+                ),
+                Transform.translate(
+                  offset: const Offset(0, 116),
+                  child: const SizedBox.square(
+                    dimension: 22,
+                    child: CircularProgressIndicator(
+                      color: LinliColors.brandGreenDeep,
+                      strokeWidth: 2,
+                    ),
+                  ),
+                ),
+                Transform.translate(
+                  offset: const Offset(0, 150),
+                  child: const ExcludeSemantics(
+                    child: Text(
+                      '正在启动，请稍候…',
+                      style: TextStyle(
+                        color: LinliColors.preview,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                        letterSpacing: .2,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ),

@@ -3,6 +3,31 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:linli_im/ui/screens/moments_screen.dart';
 
 void main() {
+  testWidgets('朋友圈错误态说明数据安全并支持按钮和下拉重试', (tester) async {
+    var refreshCount = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MomentsErrorState(onRefresh: () async => refreshCount++),
+        ),
+      ),
+    );
+
+    expect(find.text('朋友圈暂时无法加载'), findsOneWidget);
+    expect(find.textContaining('已经发布的内容仍保存在服务器'), findsOneWidget);
+    expect(find.byType(RefreshIndicator), findsOneWidget);
+
+    await tester.tap(find.text('重新加载'));
+    await tester.pump();
+    expect(refreshCount, 1);
+
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, 500));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(refreshCount, 2);
+  });
+
   testWidgets('朋友圈空态提供发布入口并保留下拉刷新', (tester) async {
     var publishCount = 0;
     var refreshCount = 0;

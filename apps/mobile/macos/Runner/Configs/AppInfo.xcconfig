@@ -5,10 +5,10 @@
 // 'flutter create' template.
 
 // The application's name. By default this is also the title of the Flutter window.
-PRODUCT_NAME = 邻里通讯
+PRODUCT_NAME = 青蛙呱呱
 
 // The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = com.linlitong.imapp
+PRODUCT_BUNDLE_IDENTIFIER = com.qingwaguagua.imapp
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 邻里通讯. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 青蛙呱呱. All rights reserved.

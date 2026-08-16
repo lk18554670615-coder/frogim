@@ -18,6 +18,7 @@ import (
 )
 
 func TestWebPushSendsEncryptedPrivacySafeNotification(t *testing.T) {
+	const privateConversationID = "conversation-private-routing-marker-4f7d8b2c"
 	var body []byte
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.Header.Get("Authorization") == "" || r.Header.Get("TTL") != "259200" {
@@ -35,7 +36,7 @@ func TestWebPushSendsEncryptedPrivacySafeNotification(t *testing.T) {
 	item := store.OutboxItem{
 		ID: 7, UserID: "u1", EventType: "message.created",
 		Payload: map[string]any{"message": map[string]any{
-			"id": "m1", "conversationId": "c1", "type": "text",
+			"id": "m1", "conversationId": privateConversationID, "type": "text",
 			"text": "private message body must not be forwarded",
 		}},
 		Devices: []store.Device{{
@@ -46,7 +47,7 @@ func TestWebPushSendsEncryptedPrivacySafeNotification(t *testing.T) {
 	if err := provider.Send(context.Background(), item); err != nil {
 		t.Fatalf("send Web Push: %v", err)
 	}
-	if len(body) == 0 || strings.Contains(string(body), "private message body") || strings.Contains(string(body), "c1") {
+	if len(body) == 0 || strings.Contains(string(body), "private message body") || strings.Contains(string(body), privateConversationID) {
 		t.Fatalf("payload was not encrypted or leaked routing data: %q", body)
 	}
 }

@@ -1,6 +1,6 @@
 # 配置中心
 
-本文件是邻里通讯部署配置的统一索引。真实密钥只保存在服务器 `.env.production`、受控配置文件或密钥管理服务中，权限必须为 `600`，禁止提交 Git。可热更新的业务规则位于运营后台“系统设置”；基础设施与密钥项只展示配置状态，不回显明文。
+本文件是青蛙呱呱部署配置的统一索引。真实密钥只保存在服务器 `.env.production`、受控配置文件或密钥管理服务中，权限必须为 `600`，禁止提交 Git。可热更新的业务规则位于运营后台“系统设置”；基础设施与密钥项只展示配置状态，不回显明文。
 
 ## 配置分层
 
@@ -112,7 +112,7 @@ IM_WUKONG_PLUGIN_MAX_BYTES=67108864
 | `IM_PUSH_WEBHOOK_TOKEN` | 推送网关令牌 | 密钥项，不回显 |
 | `IM_APNS_VOIP_KEY_ID` | Apple APNs Key ID | 10 位大写字母或数字 |
 | `IM_APNS_VOIP_TEAM_ID` | Apple Developer Team ID | 10 位大写字母或数字 |
-| `IM_APNS_VOIP_BUNDLE_ID` | App Bundle ID | 填 `com.linlitong.imapp`，不要自行追加 `.voip` |
+| `IM_APNS_VOIP_BUNDLE_ID` | App Bundle ID | 填 `com.qingwaguagua.imapp`，不要自行追加 `.voip` |
 | `IM_APNS_VOIP_PRIVATE_KEY_FILE` | APNs `.p8` 私钥容器内路径 | 只读挂载，禁止进入镜像、Git、日志或后台接口 |
 | `IM_APNS_VOIP_SANDBOX` | APNs 环境 | Debug 开发包为 `true`；TestFlight/App Store 为 `false` |
 
@@ -133,7 +133,7 @@ go run ./cmd/webpush-keygen https://chat.example.com
 
 三项必须同时配置或同时留空。Web 端只在用户主动授予通知权限后注册 `webpush` 设备；订阅失效（HTTP 404/410）会自动停用，临时失败进入现有耐久推送队列重试。专用 `linli_push_worker.js` 使用窄作用域，与 Flutter 的离线缓存 Service Worker 并存。
 
-`getui_apns_voip` 会继续通过个推发送 Android 和普通消息；iOS `call.invited` 改走 PushKit，避免同一来电同时出现 CallKit 和普通通知。VoIP 请求固定使用 HTTP/2、TLS 1.2 以上、`apns-push-type: voip`、`apns-topic: com.linlitong.imapp.voip`、优先级 10 和过期时间 0。payload 只包含 `callId`、`conversationId`、`mediaType` 和通用展示文案，不包含姓名、手机号、消息、SDP/ICE 或凭据。
+`getui_apns_voip` 会继续通过个推发送 Android 和普通消息；iOS `call.invited` 改走 PushKit，避免同一来电同时出现 CallKit 和普通通知。VoIP 请求固定使用 HTTP/2、TLS 1.2 以上、`apns-push-type: voip`、`apns-topic: com.qingwaguagua.imapp.voip`、优先级 10 和过期时间 0。payload 只包含 `callId`、`conversationId`、`mediaType` 和通用展示文案，不包含姓名、手机号、消息、SDP/ICE 或凭据。
 
 Apple 返回 410、`BadDeviceToken` 或 `DeviceTokenNotForTopic` 后，服务端会清空并停用对应 `apns_voip` token；429、500、503 和网络错误进入耐久队列重试；认证、topic、payload 等永久错误直接进入失败态。生产选择 `apns_voip` 或 `getui_apns_voip` 时，任一配置或 `.p8` 解析失败都会拒绝启动。
 

@@ -36,6 +36,12 @@ build/
 *.log
 __pycache__/
 
+# Local runtime screenshots, UI dumps, APK probes, and audit evidence.
+# These are reproducible test outputs rather than source code.
+/artifacts/
+/apps/*/artifacts/
+/NUL
+
 # Local service state
 .data/
 

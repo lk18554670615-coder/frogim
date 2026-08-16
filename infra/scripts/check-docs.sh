@@ -66,6 +66,26 @@ for compose_file in infra/compose.wukong.yaml infra/compose.wukong.production.ya
     exit 1
   fi
 done
+
+# Real data is the default in every runnable stack. Demo accounts remain an
+# explicit development-only fixture and must never reappear through a Compose
+# interpolation default or a checked-in example environment.
+if ! grep -Fq 'IM_SEED_DEMO: ${IM_SEED_DEMO:-false}' "$ROOT_DIR/infra/compose.yaml"; then
+  echo "local Compose must keep demo seeding opt-in" >&2
+  exit 1
+fi
+for compose_file in infra/compose.production.yaml infra/compose.ip.yaml; do
+  if ! grep -Fq 'IM_SEED_DEMO: "false"' "$ROOT_DIR/$compose_file"; then
+    echo "$compose_file must disable demo seeding" >&2
+    exit 1
+  fi
+done
+for env_example in .env.example server/.env.example; do
+  if ! grep -Fq 'IM_SEED_DEMO=false' "$ROOT_DIR/$env_example"; then
+    echo "$env_example must document the real-data default" >&2
+    exit 1
+  fi
+done
 if ! grep -Fq 'image: ${WUKONG_IMAGE:?set WUKONG_IMAGE to the promoted repository@sha256 digest}' "$ROOT_DIR/infra/compose.wukong.production.yaml"; then
   echo "production WuKongIM must use the promoted WUKONG_IMAGE digest" >&2
   exit 1
@@ -139,6 +159,15 @@ if ! grep -Fq 'apksigner verify --verbose --print-certs' "$android_release_scrip
   echo "Android release script must verify both APK and AAB signatures" >&2
   exit 1
 fi
+for release_gate in \
+  "$android_release_script" \
+  "$ROOT_DIR/infra/scripts/build-apple-release.sh" \
+  "$ROOT_DIR/infra/scripts/smoke.sh"; do
+  if ! grep -Fq '/v2/config/auth' "$release_gate"; then
+    echo "release gate must reject a server without the public authentication contract: $release_gate" >&2
+    exit 1
+  fi
+done
 if ! grep -Fq '/v2/admin/client-versions/$platform' "$ROOT_DIR/infra/scripts/publish-client-version.sh" ||
    ! grep -Fq 'release-verification' "$ROOT_DIR/infra/scripts/publish-client-version.sh"; then
   echo "client version publication must use the audited admin API and verify the public decision" >&2

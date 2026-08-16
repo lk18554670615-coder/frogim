@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import '../core/models.dart';
+import '../core/user_identity.dart';
 import 'call_media_engine.dart';
 import 'call_models.dart';
 import 'call_repository.dart';
@@ -56,6 +57,11 @@ class CallController extends ChangeNotifier {
   bool _answering = false;
   bool _joining = false;
   bool _failing = false;
+  bool _changingMute = false;
+  bool _changingSpeaker = false;
+  bool _changingCamera = false;
+  bool _changingScreenShare = false;
+  bool _switchingCameraLens = false;
   bool _cameraSuspendedByLifecycle = false;
   bool _disposed = false;
   Conversation? _draftConversation;
@@ -128,7 +134,7 @@ class CallController extends ChangeNotifier {
           _systemCalls.showOutgoing(
             session: session!,
             calleeName: callee.name,
-            calleeHandle: callee.handle,
+            calleeHandle: publicUserHandle(callee.handle),
             avatarUrl: callee.avatarUrl,
           ),
         );
@@ -193,47 +199,112 @@ class CallController extends ChangeNotifier {
   }
 
   Future<void> toggleMute() async {
-    muted = !muted;
-    await _engine?.setMuted(muted);
-    final callId = session?.id;
-    if (callId != null) unawaited(_systemCalls.setMuted(callId, muted));
+    if (_changingMute) return;
+    final previous = muted;
+    final target = !previous;
+    _changingMute = true;
+    muted = target;
     notifyListeners();
+    try {
+      await _engine?.setMuted(target);
+      final callId = session?.id;
+      if (callId != null) unawaited(_systemCalls.setMuted(callId, target));
+      errorMessage = null;
+    } catch (error) {
+      muted = previous;
+      errorMessage = _readableError(error, '麦克风状态切换失败，请重试');
+    } finally {
+      _changingMute = false;
+      if (!_disposed) notifyListeners();
+    }
   }
 
   Future<void> setMuted(bool value) async {
     if (muted == value) return;
+    if (_changingMute) return;
+    final previous = muted;
+    _changingMute = true;
     muted = value;
-    await _engine?.setMuted(value);
     notifyListeners();
-  }
-
-  Future<void> toggleSpeaker() async {
-    speakerEnabled = !speakerEnabled;
-    await _engine?.setSpeakerEnabled(speakerEnabled);
-    notifyListeners();
-  }
-
-  Future<void> toggleCamera() async {
-    if (!isVideo) return;
-    cameraEnabled = !cameraEnabled;
-    await _engine?.setCameraEnabled(cameraEnabled);
-    notifyListeners();
-  }
-
-  Future<void> toggleScreenShare() async {
-    if (!supportsScreenShare) return;
-    final target = !screenShareEnabled;
     try {
-      await _engine?.setScreenShareEnabled(target);
-      screenShareEnabled = target;
-      notifyListeners();
+      await _engine?.setMuted(value);
+      errorMessage = null;
     } catch (error) {
-      errorMessage = _readableError(error, '无法共享屏幕');
-      notifyListeners();
+      muted = previous;
+      errorMessage = _readableError(error, '麦克风状态切换失败，请重试');
+    } finally {
+      _changingMute = false;
+      if (!_disposed) notifyListeners();
     }
   }
 
-  Future<void> switchCamera() => _engine?.switchCamera() ?? Future.value();
+  Future<void> toggleSpeaker() async {
+    if (_changingSpeaker) return;
+    final previous = speakerEnabled;
+    final target = !previous;
+    _changingSpeaker = true;
+    speakerEnabled = target;
+    notifyListeners();
+    try {
+      await _engine?.setSpeakerEnabled(target);
+      errorMessage = null;
+    } catch (error) {
+      speakerEnabled = previous;
+      errorMessage = _readableError(error, '扬声器切换失败，请重试');
+    } finally {
+      _changingSpeaker = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  Future<void> toggleCamera() async {
+    if (!isVideo || _changingCamera) return;
+    final previous = cameraEnabled;
+    final target = !previous;
+    _changingCamera = true;
+    cameraEnabled = target;
+    notifyListeners();
+    try {
+      await _engine?.setCameraEnabled(target);
+      errorMessage = null;
+    } catch (error) {
+      cameraEnabled = previous;
+      errorMessage = _readableError(error, '摄像头状态切换失败，请重试');
+    } finally {
+      _changingCamera = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  Future<void> toggleScreenShare() async {
+    if (!supportsScreenShare || _changingScreenShare) return;
+    final target = !screenShareEnabled;
+    _changingScreenShare = true;
+    try {
+      await _engine?.setScreenShareEnabled(target);
+      screenShareEnabled = target;
+      errorMessage = null;
+    } catch (error) {
+      errorMessage = _readableError(error, '无法共享屏幕');
+    } finally {
+      _changingScreenShare = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  Future<void> switchCamera() async {
+    if (!isVideo || _switchingCameraLens) return;
+    _switchingCameraLens = true;
+    try {
+      await _engine?.switchCamera();
+      errorMessage = null;
+    } catch (error) {
+      errorMessage = _readableError(error, '摄像头切换失败，请重试');
+    } finally {
+      _switchingCameraLens = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
 
   void handleAppLifecycle(AppLifecycleState state) {
     if (!isVideo || _engine == null) return;
@@ -395,7 +466,7 @@ class CallController extends ChangeNotifier {
     final managedBySystem = await _systemCalls.showIncoming(
       session: incoming,
       callerName: peer?.name ?? conversation?.title ?? '联系人',
-      callerHandle: peer?.handle,
+      callerHandle: publicUserHandle(peer?.handle),
       avatarUrl: peer?.avatarUrl ?? conversation?.avatarUrl,
     );
     if (!managedBySystem) _startRinging();

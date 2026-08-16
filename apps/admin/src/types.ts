@@ -1,4 +1,3 @@
-export type DataMode = 'demo' | 'live';
 export type AdminRole = 'platform_admin' | 'system_operator' | 'moderator' | 'content_operator' | 'support_agent' | 'support';
 export type ClientPlatform = 'android' | 'ios' | 'web' | 'macos';
 export type StatusTone = 'success' | 'warning' | 'danger' | 'info' | 'neutral';
@@ -49,6 +48,17 @@ export interface UserRecord {
   messageCount: number;
 }
 
+export interface UserOverview {
+  user: UserRecord;
+  signature: string;
+  gender: 'unspecified' | 'male' | 'female';
+  deviceCount: number;
+  friendCount: number;
+  groupCount: number;
+  handleChangesUsed: number;
+  handleChangesRemaining: number;
+}
+
 export interface GroupRecord {
   id: string;
   name: string;
@@ -58,6 +68,32 @@ export interface GroupRecord {
   status: 'active' | 'muted' | 'dissolved';
   createdAt: string;
   reportCount: number;
+}
+
+export interface GroupOverview {
+  id: string;
+  title: string;
+  ownerId: string;
+  announcement: string;
+  announcementVersion: number;
+  joinPolicy: string;
+  allowMemberAddFriend: boolean;
+  messageCount: number;
+  memberCount: number;
+}
+
+export interface GroupMemberRecord {
+  conversationId: string;
+  userId: string;
+  name: string;
+  handle: string;
+  avatarUrl: string;
+  role: string;
+  mutedUntil?: string;
+  lastReadSeq: number;
+  lastDeliveredSeq: number;
+  groupNickname: string;
+  joinedAt: string;
 }
 
 export interface ReportRecord {
@@ -83,7 +119,7 @@ export interface SensitiveWord {
 
 export interface HealthService {
   name: string;
-  status: 'healthy' | 'degraded' | 'down';
+  status: 'healthy' | 'degraded' | 'down' | 'unknown';
   latency: number;
   uptime: string;
   version: string;
@@ -95,7 +131,7 @@ export interface AuditLog {
   actor: string;
   action: string;
   target: string;
-  result: 'success' | 'failed';
+  result: 'success' | 'failed' | 'unknown';
   ip: string;
   createdAt: string;
 }
@@ -322,21 +358,21 @@ export interface WukongOverview {
   serverId: string;
   version: string;
   uptime: string;
-  connections: number;
-  userHandlers: number;
-  cpu: number;
-  memoryBytes: number;
-  goroutines: number;
-  inMessages: number;
-  outMessages: number;
-  retryQueue: number;
+  connections: number | null;
+  userHandlers: number | null;
+  cpu: number | null;
+  memoryBytes: number | null;
+  goroutines: number | null;
+  inMessages: number | null;
+  outMessages: number | null;
+  retryQueue: number | null;
 }
 
 export interface WukongRuntimeSettings {
-  traceEnabled: boolean;
-  lokiEnabled: boolean;
-  prometheusEnabled: boolean;
-  stressEnabled: boolean;
+  traceEnabled: boolean | null;
+  lokiEnabled: boolean | null;
+  prometheusEnabled: boolean | null;
+  stressEnabled: boolean | null;
 }
 
 export interface WukongNode {
@@ -396,6 +432,26 @@ export interface WukongSystemUser {
   name: string;
   enabled: boolean;
   syncStatus: 'pending' | 'processing' | 'synced' | 'failed';
+  updatedBy: string;
+  reason: string;
+  updatedAt: string;
+}
+
+export interface WukongRobotMenu {
+  cmd: string;
+  remark: string;
+  type: 'command';
+}
+
+export interface WukongRobotProfile {
+  userId: string;
+  name: string;
+  username: string;
+  placeholder: string;
+  enabled: boolean;
+  inlineOn: boolean;
+  version: number;
+  menus: WukongRobotMenu[];
   updatedBy: string;
   reason: string;
   updatedAt: string;
@@ -603,9 +659,14 @@ export interface SupportSessionRecord {
 export interface AdminApi {
   getDashboard(): Promise<DashboardData>;
   getUsers(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<UserRecord>>;
+  getUserOverview(id: string): Promise<UserOverview>;
   banUser(id: string, reason: string, durationHours: number): Promise<void>;
   unbanUser(id: string, reason: string): Promise<void>;
   getGroups(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<GroupRecord>>;
+  getGroupOverview(id: string): Promise<GroupOverview>;
+  getGroupMembers(id: string, query?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<GroupMemberRecord>>;
+  updateGroupMember(id: string, userId: string, update: { action: 'role' | 'mute'; role?: 'member' | 'admin'; mutedUntil?: string }, reason: string): Promise<void>;
+  removeGroupMember(id: string, userId: string, reason: string): Promise<void>;
   disbandGroup(id: string, reason: string): Promise<void>;
   getReports(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<ReportRecord>>;
   resolveReport(id: string, action: ReportResolutionAction, note: string): Promise<ReportResolutionResult>;
@@ -649,6 +710,8 @@ export interface AdminApi {
   quitWukongDevice(uid: string, deviceFlag: number, reason: string): Promise<void>;
   getWukongSystemUsers(): Promise<WukongSystemUser[]>;
   setWukongSystemUser(uid: string, enabled: boolean, reason: string): Promise<WukongSystemUser>;
+  getWukongRobots(): Promise<WukongRobotProfile[]>;
+  setWukongRobot(uid: string, input: Pick<WukongRobotProfile, 'enabled' | 'username' | 'placeholder' | 'inlineOn' | 'menus'>, reason: string): Promise<WukongRobotProfile>;
   getWukongPlugins(nodeId?: number): Promise<WukongPlugin[]>;
   installWukongPlugin(bundle: File, manifest: File, signature: string, nodeId: number, reason: string): Promise<WukongPluginRelease>;
   upgradeWukongPlugin(no: string, bundle: File, manifest: File, signature: string, nodeId: number, reason: string): Promise<WukongPluginRelease>;

@@ -1,6 +1,6 @@
-# 邻里通讯 Flutter 客户端
+# 青蛙呱呱 Flutter 客户端
 
-高完成度 Flutter 即时通讯客户端，默认可在无后端环境下使用内置 Demo；连接真实环境后使用业务 REST、WuKongIM 消息链路和 LiveKit 音视频。
+高完成度 Flutter 即时通讯客户端。运行时只连接真实业务 REST、WuKongIM 消息链路和 LiveKit 音视频，不提供 Demo 登录，也不会在真实请求失败时回退到演示数据。
 
 ## 运行
 
@@ -9,9 +9,7 @@ fvm flutter pub get
 fvm flutter run
 ```
 
-Demo 登录可直接点击「一键进入安全演示」，或使用任意有效手机号和至少 4 位验证码。演示消息通过 `shared_preferences` 轻量持久化。
-
-连接真实服务端：
+启动前必须配置真实服务端：
 
 ```bash
 fvm flutter run \
@@ -42,7 +40,7 @@ fvm flutter run -d emulator-5554 \
 `GETUI_ENABLED=true`、`GETUI_APP_ID`、`GETUI_APP_KEY` 和
 `GETUI_APP_SECRET`；`MasterSecret` 只允许配置在服务端环境变量中。
 
-开发后端验证码由部署环境配置。`staging` 和 `production` 缺少服务地址或启用 Demo 时会直接启动失败；`production` 还强制要求 HTTPS。WuKong TCP/WSS 和 LiveKit 地址只接受鉴权后的 `ImSession`/通话接口下发，不允许由客户端构建参数覆盖。开发构建未配置服务地址时可显式进入 Demo，真实请求失败时不会自动伪装成 Demo 成功结果。
+开发后端验证码由部署环境配置。任何环境启用 Demo 都会直接启动失败；`staging` 和 `production` 还必须配置服务地址，`production` 强制要求 HTTPS。WuKong TCP/WSS 和 LiveKit 地址只接受鉴权后的 `ImSession`/通话接口下发，不允许由客户端构建参数覆盖。真实请求失败时会如实显示错误，不会伪装成成功结果。
 
 正式构建还必须提供法务审核后的 `TERMS_URL` 和 `PRIVACY_URL` HTTPS 地址。Release 模式默认按 `production` 校验，即使遗漏 `APP_ENV` 也不会静默打出 Demo 包。
 
@@ -97,7 +95,7 @@ bash infra/scripts/publish-client-version.sh android 1.0.0 1.0.0 \
 ## 分层
 
 - `lib/core`：环境配置、模型、主题与应用状态机。
-- `lib/data`：业务仓储、WuKongIM 平台 Gateway、消息映射、本地会话缓存和可持久化 Demo。
+- `lib/data`：业务仓储、WuKongIM 平台 Gateway、消息映射和本地会话缓存；演示仓储仅供自动化测试与组件预览使用，不进入运行时。
 - `lib/ui/screens`：登录、消息、联系人、搜索、聊天、群组、隐私和安全流程。
 - `lib/ui/widgets`：头像、搜索、状态面板、设置项、消息回执等设计组件。
 - `lib/previews.dart`：Flutter Widget Previewer 的浅色/深色页面与关键组件预览。
@@ -116,4 +114,4 @@ flutter widget-preview start
 
 正式四端构建统一入口见 [Flutter 四端构建入口](../../docs/FLUTTER_BUILD_AUTOMATION.md)。
 
-测试覆盖登录退出、四端会话/消息映射、并发 401 单飞续签、WuKong 连接状态、引用消息、媒体上传顺序、图片编辑、小视频、群聊/群通话页面和深浅主题。Windows/Skia 像素基线另覆盖移动登录、会话、群聊、桌面双栏和图片编辑器；基线使用固定消息时间与显式字体加载，只有确认设计变更后才使用 `fvm flutter test test/visual_regression_test.dart --update-goldens` 更新。当前全量共 199 项测试。生产范围与外部验收门槛见 `PRODUCT_SCOPE.md`。
+测试覆盖登录退出、四端会话/消息映射、并发 401 单飞续签、WuKong 连接状态、引用消息、媒体上传顺序、图片编辑、小视频、群聊/群通话页面和深浅主题。Windows/Skia 像素基线另覆盖移动登录、会话、群聊、桌面双栏和图片编辑器；基线使用固定消息时间与显式字体加载，只有确认设计变更后才使用 `fvm flutter test test/visual_regression_test.dart --update-goldens` 更新。当前全量共 232 项测试。生产范围与外部验收门槛见 `PRODUCT_SCOPE.md`。

@@ -27,7 +27,7 @@
 - [ ] 执行 `make production-validate` 与 `make production-config`。
 - [ ] 使用受控部署流程更新服务，不删除 volume。
 - [ ] 观察迁移、启动、健康检查和错误日志。
-- [ ] `/health`、`/ready`、HTTPS/WSS、安全响应头和未授权拒绝均正常。
+- [ ] `/health`、`/ready`、匿名 `/v2/config/auth` 契约、HTTPS/WSS、安全响应头和未授权拒绝均正常。
 - [ ] 完成双用户登录、好友、单聊、群聊、媒体、同步、撤回和后台登录冒烟。
 - [ ] 使用真机验证前台、后台、杀进程离线通知及点击跳转。
 

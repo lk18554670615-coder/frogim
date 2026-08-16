@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import '../calls/call_models.dart';
 import '../calls/call_repository.dart';
 import '../core/app_config.dart';
+import '../core/auth_validation.dart';
 import '../core/models.dart';
 import '../im/business_repository.dart';
 import '../im/business_features.dart';
@@ -17,7 +18,6 @@ import '../im/message_content_registry.dart';
 import '../im/message_mapper.dart';
 import '../im/structured_event_text.dart';
 import '../im/wukong_gateway.dart';
-import 'demo_repository.dart';
 import 'im_repository.dart';
 import 'secure_local_store.dart';
 
@@ -52,7 +52,12 @@ class ImApiException implements Exception {
 }
 
 class LiveImRepository
-    implements ImRepository, CallRepository, BusinessFeatureRepository {
+    implements
+        ImRepository,
+        CachedMessageRepository,
+        PaginatedMessageRepository,
+        CallRepository,
+        BusinessFeatureRepository {
   LiveImRepository({
     http.Client? client,
     SecureLocalStore? store,
@@ -169,7 +174,49 @@ class LiveImRepository
         response = await _rawRequest(method, path, encodedBody);
       }
     }
-    return _decode(response);
+    try {
+      return _decode(response);
+    } on ImApiException catch (error) {
+      _logRequestFailure(
+        method: method,
+        path: path,
+        statusCode: error.statusCode,
+        code: error.code,
+      );
+      rethrow;
+    } on FormatException {
+      _logRequestFailure(
+        method: method,
+        path: path,
+        statusCode: response.statusCode,
+        code: 'INVALID_RESPONSE',
+      );
+      rethrow;
+    }
+  }
+
+  void _logRequestFailure({
+    required String method,
+    required String path,
+    required int statusCode,
+    required String code,
+  }) {
+    if (!kDebugMode && !kProfileMode) return;
+    debugPrint(
+      '[im-api] request failed: method=$method '
+      'route=${_safeDiagnosticRoute(path)} status=$statusCode code=$code',
+    );
+  }
+
+  String _safeDiagnosticRoute(String path) {
+    final segments = Uri.parse(path).pathSegments;
+    if (segments.length < 2) return '/';
+    final route = <String>[segments[0], segments[1]];
+    if (segments.length >= 3 &&
+        const {'auth', 'contacts'}.contains(segments[1])) {
+      route.add(segments[2]);
+    }
+    return '/${route.join('/')}';
   }
 
   Future<http.Response> _rawRequest(
@@ -180,10 +227,20 @@ class LiveImRepository
     final request = http.Request(method, _uri(path));
     request.headers.addAll(_headers);
     if (encodedBody != null) request.body = encodedBody;
-    final streamed = await _client
-        .send(request)
-        .timeout(const Duration(seconds: 10));
-    return http.Response.fromStream(streamed);
+    try {
+      final streamed = await _client
+          .send(request)
+          .timeout(const Duration(seconds: 10));
+      return http.Response.fromStream(streamed);
+    } catch (error) {
+      if (kDebugMode || kProfileMode) {
+        debugPrint(
+          '[im-api] transport failed: method=$method '
+          'route=${_safeDiagnosticRoute(path)} type=${error.runtimeType}',
+        );
+      }
+      rethrow;
+    }
   }
 
   Map<String, Object?> _decode(http.Response response) {
@@ -198,7 +255,10 @@ class LiveImRepository
       throw ImApiException(
         statusCode: response.statusCode,
         code: error?['code'] as String? ?? 'HTTP_${response.statusCode}',
-        message: error?['message'] as String? ?? '服务暂时不可用，请稍后重试',
+        message: _localizedApiErrorMessage(
+          error?['code'] as String? ?? 'HTTP_${response.statusCode}',
+          error?['message'] as String?,
+        ),
       );
     }
     if (decoded is! Map<String, Object?>) {
@@ -208,6 +268,54 @@ class LiveImRepository
         ? decoded['data']! as Map<String, Object?>
         : decoded;
   }
+
+  String _localizedApiErrorMessage(String code, String? serverMessage) {
+    final normalizedCode = code.trim().toUpperCase();
+    final localized = switch (normalizedCode) {
+      'ACCOUNT_EXISTS' => '该手机号已注册，请直接登录',
+      'INVALID_CREDENTIALS' => '手机号、密码或验证码不正确',
+      'INVALID_CODE' => '验证码无效或已过期，请重新获取',
+      'UNAUTHENTICATED' ||
+      'INVALID_REFRESH' ||
+      'REFRESH_REUSED' => '登录状态已失效，请重新登录',
+      'QR_LOGIN_NOT_FOUND' => '登录二维码无效，请在电脑端刷新后重试',
+      'QR_LOGIN_EXPIRED' => '登录二维码已过期，请在电脑端刷新',
+      'QR_LOGIN_USED' => '这个登录二维码已使用，请在电脑端重新获取',
+      'QR_LOGIN_ACCOUNT_UNAVAILABLE' => '当前账号暂时无法用于扫码登录',
+      'RATE_LIMITED' => '操作过于频繁，请稍后再试',
+      'SMS_NOT_CONFIGURED' || 'SMS_UNAVAILABLE' => '短信验证码服务暂时不可用，请稍后重试',
+      'MAINTENANCE' => '服务正在维护，请稍后再试',
+      'IM_DISABLED' ||
+      'IM_UNAVAILABLE' ||
+      'WUKONG_UNAVAILABLE' ||
+      'WUKONG_UPSTREAM_ERROR' ||
+      'IM_SYNC_FAILED' => '通讯服务暂时不可用，请稍后重试',
+      'LIVEKIT_UNAVAILABLE' || 'LIVEKIT_UPSTREAM_ERROR' => '音视频通话服务暂时不可用，请稍后重试',
+      'MEDIA_UNAVAILABLE' || 'INVALID_MEDIA' => '媒体文件暂时不可用，请稍后重试',
+      'DEVICE_STATE_UNAVAILABLE' => '设备状态暂时无法获取，请稍后重试',
+      'GROUP_OWNERSHIP_REQUIRED' => '请先转让群主或解散所管理的群聊',
+      'HANDLE_TAKEN' => '这个呱呱号已被使用，请换一个',
+      'HANDLE_CHANGE_LIMIT' => '呱呱号修改次数已用完',
+      'CONFIRMATION_REQUIRED' => '请完成二次确认后再继续',
+      'FORBIDDEN' || 'FORBIDDEN_ORIGIN' => '你没有权限执行此操作',
+      'NOT_FOUND' || 'CHANNEL_NOT_FOUND' => '请求的内容不存在或已被删除',
+      'CONFLICT' => '当前状态已发生变化，请刷新后重试',
+      'INVALID_ARGUMENT' ||
+      'INVALID_REQUEST' ||
+      'INVALID_PLATFORM' => '提交内容不完整或格式不正确',
+      'DATASOURCE_UNAVAILABLE' || 'NOT_READY' || 'INTERNAL' => '服务暂时不可用，请稍后重试',
+      _ => null,
+    };
+    if (localized != null) return localized;
+    final message = serverMessage?.trim() ?? '';
+    if (RegExp(r'[\u3400-\u9fff]').hasMatch(message)) return message;
+    return '服务暂时不可用，请稍后重试';
+  }
+
+  @override
+  Future<AuthPolicy> authPolicy() async => AuthPolicy.fromJson(
+    await _sendUnprotectedRequest('GET', '/v2/config/auth'),
+  );
 
   @override
   Future<bool> restoreSession() async {
@@ -225,11 +333,28 @@ class LiveImRepository
       }
     }
     if (_token == null || _userId == null) return false;
+    final storedUser = stored['user'];
+    if (storedUser is Map) {
+      try {
+        final cached = _user(
+          storedUser.map((key, value) => MapEntry(key.toString(), value)),
+        );
+        if (cached.id == _userId) _me = cached;
+      } catch (_) {
+        // A damaged cached profile must not invalidate otherwise usable tokens.
+      }
+    }
+    // The login response already bound this profile to the encrypted session.
+    // Render it immediately; the controller refreshes /users/me in background.
+    if (_me != null) return true;
     try {
       _me = _user(await _get('/v2/users/me'));
+      await _persistSession();
       return true;
-    } on ImApiException catch (_) {
-      await _clearSession();
+    } on ImApiException catch (error) {
+      if (error.statusCode == 401 || error.statusCode == 403) {
+        await _clearSession();
+      }
       return false;
     } catch (_) {
       return false;
@@ -256,7 +381,7 @@ class LiveImRepository
     final data = await _sendUnprotectedRequest('POST', '/v2/auth/login', {
       'phone': phone,
       'code': code,
-      'name': '邻里用户',
+      'name': '青蛙用户',
     });
     return _acceptSession(data);
   }
@@ -270,6 +395,77 @@ class LiveImRepository
     );
     return _acceptSession(data);
   }
+
+  @override
+  Future<QrLoginTicket> createQrLoginTicket({
+    required String clientName,
+  }) async {
+    final data = await _sendUnprotectedRequest('POST', '/v2/auth/qr/create', {
+      'clientName': clientName,
+    });
+    final id = data['id'] as String?;
+    final qrPayload = data['qrPayload'] as String?;
+    final pollToken = data['pollToken'] as String?;
+    final expiresAt = DateTime.tryParse(data['expiresAt'] as String? ?? '');
+    if (id == null ||
+        id.isEmpty ||
+        qrPayload == null ||
+        qrPayload.isEmpty ||
+        pollToken == null ||
+        pollToken.isEmpty ||
+        expiresAt == null) {
+      throw const FormatException('扫码登录响应缺少必要信息');
+    }
+    return QrLoginTicket(
+      id: id,
+      qrPayload: qrPayload,
+      pollToken: pollToken,
+      expiresAt: expiresAt.toLocal(),
+    );
+  }
+
+  @override
+  Future<AppUser?> pollQrLoginTicket(QrLoginTicket ticket) async {
+    final data = await _sendUnprotectedRequest('POST', '/v2/auth/qr/poll', {
+      'id': ticket.id,
+      'pollToken': ticket.pollToken,
+    });
+    if (data['status'] == 'pending') return null;
+    return _acceptSession(data);
+  }
+
+  @override
+  Future<QrLoginRequest> inspectQrLogin(String token) async {
+    final data = await _sendRequest('POST', '/v2/auth/qr/inspect', {
+      'token': token,
+    });
+    final id = data['id'] as String?;
+    final platform = data['clientPlatform'] as String?;
+    final name = data['clientName'] as String?;
+    final expiresAt = DateTime.tryParse(data['expiresAt'] as String? ?? '');
+    if (id == null ||
+        id.isEmpty ||
+        platform == null ||
+        platform.isEmpty ||
+        name == null ||
+        name.isEmpty ||
+        expiresAt == null) {
+      throw const FormatException('登录确认信息不完整');
+    }
+    return QrLoginRequest(
+      id: id,
+      clientPlatform: platform,
+      clientName: name,
+      expiresAt: expiresAt.toLocal(),
+    );
+  }
+
+  @override
+  Future<void> confirmQrLogin(String token) => _sendRequest(
+    'POST',
+    '/v2/auth/qr/confirm',
+    {'token': token},
+  ).then((_) {});
 
   @override
   Future<AppUser> register({
@@ -317,8 +513,9 @@ class LiveImRepository
       throw const FormatException('WuKongIM session user does not match login');
     }
     _closed = false;
+    _me = _user(rawUser);
     await _persistSession();
-    return _me = _user(rawUser);
+    return _me!;
   }
 
   WukongSession? _parseImSession(Object? raw) {
@@ -332,22 +529,36 @@ class LiveImRepository
   }
 
   @override
-  Future<AppUser> profile() async => _me = _user(await _get('/v2/users/me'));
+  Future<AppUser> profile() async {
+    final user = _user(await _get('/v2/users/me'));
+    _me = user;
+    await _persistSession();
+    return user;
+  }
 
   @override
   Future<AppUser> updateProfile({
     String? name,
     String? handle,
     String? signature,
+    String? gender,
     String? avatarMediaId,
+    bool? allowSearchByHandle,
+    bool? allowSearchByPhone,
   }) async {
     final payload = <String, Object?>{
       'name': ?name,
       'handle': ?handle,
       'signature': ?signature,
+      'gender': ?gender,
       'avatarMediaId': ?avatarMediaId,
+      'allowSearchByHandle': ?allowSearchByHandle,
+      'allowSearchByPhone': ?allowSearchByPhone,
     };
-    return _me = _user(await _sendRequest('PATCH', '/v2/users/me', payload));
+    final user = _user(await _sendRequest('PATCH', '/v2/users/me', payload));
+    _me = user;
+    await _persistSession();
+    return user;
   }
 
   @override
@@ -393,12 +604,17 @@ class LiveImRepository
   ).then((_) {});
 
   @override
-  Future<AppUser> updatePhone(String phone, String code) async => _me = _user(
-    await _sendRequest('PATCH', '/v2/users/me/phone', {
-      'phone': phone,
-      'code': code,
-    }),
-  );
+  Future<AppUser> updatePhone(String phone, String code) async {
+    final user = _user(
+      await _sendRequest('PATCH', '/v2/users/me/phone', {
+        'phone': phone,
+        'code': code,
+      }),
+    );
+    _me = user;
+    await _persistSession();
+    return user;
+  }
 
   @override
   Future<void> requestAccountDeletionCode() => _sendRequest(
@@ -608,7 +824,22 @@ class LiveImRepository
         active.wsUrl != session.wsUrl) {
       await _wukong.initialize(session);
     }
-    await _wukong.connect();
+    if (kDebugMode || kProfileMode) {
+      final tcp = Uri.tryParse(session.tcpUrl);
+      final ws = Uri.tryParse(session.wsUrl);
+      debugPrint(
+        '[wukong] connecting: tcp=${tcp?.host}:${tcp?.port} '
+        'ws=${ws?.scheme}://${ws?.host}:${ws?.hasPort == true ? ws?.port : ''}',
+      );
+    }
+    try {
+      await _wukong.connect();
+    } catch (error) {
+      if (kDebugMode || kProfileMode) {
+        debugPrint('[wukong] connection failed: type=${error.runtimeType}');
+      }
+      rethrow;
+    }
   }
 
   Future<WukongSession> _ensureImSession() async {
@@ -1312,7 +1543,11 @@ class LiveImRepository
     return Conversation(
       id: raw['id']! as String,
       title: title,
-      subtitle: preview.isEmpty ? '打开会话查看消息' : preview,
+      subtitle: preview.isEmpty
+          ? kind == ConversationKind.direct
+                ? '你们已是好友，开始聊天吧'
+                : '打开会话查看消息'
+          : preview,
       updatedAt: DateTime.parse(raw['updatedAt']! as String),
       kind: kind,
       channelId: kind == ConversationKind.direct
@@ -1325,6 +1560,7 @@ class LiveImRepository
           membership?['notificationsMuted'] as bool? ??
           membership?['mutedUntil'] != null,
       pinned: membership?['pinned'] as bool? ?? false,
+      saved: membership?['saved'] as bool? ?? false,
       archived: membership?['archived'] as bool? ?? false,
       lastMessageSeq:
           (raw['lastMessageSeq'] as num?)?.toInt() ??
@@ -1674,6 +1910,8 @@ class LiveImRepository
     return UserSearchCapabilities(
       allowSearchByHandle: data['allowSearchByHandle'] as bool? ?? false,
       allowSearchByPhone: data['allowSearchByPhone'] as bool? ?? false,
+      canUpdatePrivacySettings:
+          data['canUpdatePrivacySettings'] as bool? ?? false,
     );
   }
 
@@ -1685,9 +1923,14 @@ class LiveImRepository
         item['phone'] as String? ??
         item['id']! as String,
     presence:
-        item['signature'] as String? ?? item['presence'] as String? ?? '邻里通讯用户',
+        item['signature'] as String? ?? item['presence'] as String? ?? '青蛙呱呱用户',
     phone: item['phone'] as String?,
     signature: item['signature'] as String?,
+    gender: switch (item['gender']) {
+      'male' => 'male',
+      'female' => 'female',
+      _ => 'unspecified',
+    },
     avatarMediaId: item['avatarMediaId'] as String?,
     avatarUrl: item['avatarUrl'] as String?,
     isOnline: item['online'] as bool? ?? false,
@@ -1716,9 +1959,17 @@ class LiveImRepository
       final from = item['fromUserId']! as String;
       final outgoing = from == _userId;
       final peer = outgoing ? item['toUserId']! as String : from;
+      final embeddedUser = switch (item['user']) {
+        final Map<String, Object?> value => _user(value),
+        final Map value => _user(
+          value.map((key, value) => MapEntry(key.toString(), value)),
+        ),
+        _ => null,
+      };
       return FriendRequest(
         id: item['id']! as String,
         user:
+            embeddedUser ??
             knownUsers[peer] ??
             AppUser(
               id: peer,
@@ -1943,6 +2194,41 @@ class LiveImRepository
   }
 
   @override
+  Future<List<RobotProfile>> robotProfiles(String conversationId) async {
+    final encoded = Uri.encodeComponent(conversationId);
+    final data = await _get('/v2/robots/conversations/$encoded');
+    return (data['items'] as List<Object?>? ?? const [])
+        .whereType<Map<String, Object?>>()
+        .where((item) => (item['status'] as num?)?.toInt() == 1)
+        .map((item) {
+          final robotId = item['robot_id'] as String? ?? '';
+          final menus = (item['menus'] as List<Object?>? ?? const [])
+              .whereType<Map<String, Object?>>()
+              .map(
+                (menu) => RobotMenu(
+                  robotId: robotId,
+                  command: menu['cmd'] as String? ?? '',
+                  remark: menu['remark'] as String? ?? '',
+                  type: menu['type'] as String? ?? 'command',
+                ),
+              )
+              .where((menu) => menu.command.trim().isNotEmpty)
+              .toList(growable: false);
+          return RobotProfile(
+            id: robotId,
+            name: item['name'] as String? ?? '',
+            username: item['username'] as String? ?? '',
+            placeholder: item['placeholder'] as String? ?? '',
+            version: (item['version'] as num?)?.toInt() ?? 0,
+            inlineOn: (item['inline_on'] as num?)?.toInt() == 1,
+            menus: menus,
+          );
+        })
+        .where((item) => item.id.isNotEmpty && item.menus.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  @override
   Future<void> addGroupMembers(String conversationId, List<String> userIds) =>
       _sendRequest('POST', '/v2/channels/groups/$conversationId/members', {
         'userIds': userIds,
@@ -2148,6 +2434,221 @@ class LiveImRepository
     }
   }
 
+  @override
+  Future<List<ChatMessage>> cachedMessages(String conversationId) async {
+    // Both stores are encrypted local data. On a cold Android start either
+    // read can wait for keystore initialisation, so start them together. A
+    // damaged snapshot must not hide a healthy WuKong cache (or vice versa).
+    final pageSnapshot = _readPageMessageSnapshot(conversationId);
+    final uid = _userId;
+    final channel = _conversationChannels[conversationId];
+    final sdkSnapshot = uid == null || channel == null
+        ? Future<List<ChatMessage>>.value(const [])
+        : _readWukongMessageSnapshot(
+            conversationId: conversationId,
+            uid: uid,
+            channel: channel,
+          );
+    final snapshots = await Future.wait([pageSnapshot, sdkSnapshot]);
+    final decoded = snapshots[0];
+    final sdkCached = snapshots[1];
+
+    // The page snapshot may predate messages received while this chat was
+    // closed. WuKongIM has already committed those events to its local cache,
+    // so merge both stores instead of returning the first non-empty one. This
+    // is what lets a conversation open on the latest message without waiting
+    // for the remote history endpoint.
+    final merged = List<ChatMessage>.of(decoded);
+    for (final message in sdkCached) {
+      final index = merged.indexWhere(
+        (existing) =>
+            existing.id == message.id ||
+            existing.clientMessageId == message.clientMessageId,
+      );
+      if (index < 0) {
+        merged.add(message);
+        continue;
+      }
+      final pageMessage = merged[index];
+      merged[index] = message.copyWith(
+        replyToText: message.replyToText ?? pageMessage.replyToText,
+        linkPreview: message.linkPreview ?? pageMessage.linkPreview,
+        reactions: message.reactions.isEmpty
+            ? pageMessage.reactions
+            : message.reactions,
+      );
+    }
+    merged.sort((left, right) {
+      if (left.conversationSeq > 0 && right.conversationSeq > 0) {
+        final bySequence = left.conversationSeq.compareTo(
+          right.conversationSeq,
+        );
+        if (bySequence != 0) return bySequence;
+      }
+      final byTime = left.sentAt.compareTo(right.sentAt);
+      return byTime != 0 ? byTime : left.id.compareTo(right.id);
+    });
+    return merged;
+  }
+
+  Future<List<ChatMessage>> _readPageMessageSnapshot(
+    String conversationId,
+  ) async {
+    Object? persisted;
+    try {
+      persisted = await _store.readJson('messages.$conversationId');
+    } catch (_) {
+      return const [];
+    }
+    final decoded = <ChatMessage>[];
+    if (persisted is List<Object?> && persisted.isNotEmpty) {
+      for (final item in persisted) {
+        if (item is! Map) continue;
+        try {
+          decoded.add(
+            ChatMessage.fromJson(
+              item.map((key, value) => MapEntry(key.toString(), value)),
+            ),
+          );
+        } catch (_) {
+          // Ignore one damaged cache entry instead of blocking the chat page.
+        }
+      }
+    }
+    return decoded;
+  }
+
+  Future<List<ChatMessage>> _readWukongMessageSnapshot({
+    required String conversationId,
+    required String uid,
+    required WukongChannel channel,
+  }) async {
+    try {
+      return (await _conversationCache.readMessages(uid, channel))
+          .map(
+            (message) => _messageMapper.toChatMessage(
+              message,
+              currentUserId: uid,
+              conversationId: conversationId,
+            ),
+          )
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  @override
+  Future<List<ChatMessage>> olderMessages(
+    String conversationId, {
+    required int beforeSequence,
+    int limit = 50,
+  }) async {
+    if (beforeSequence <= 1 || limit <= 0) return const [];
+    final channel = await _channelForConversation(conversationId);
+    if (channel == null) {
+      throw const ImApiException(
+        statusCode: 404,
+        code: 'IM_CHANNEL_NOT_FOUND',
+        message: 'Conversation has no WuKongIM channel',
+      );
+    }
+    final uid = _userId;
+    if (uid == null) {
+      throw const ImApiException(
+        statusCode: 401,
+        code: 'UNAUTHENTICATED',
+        message: 'Login is required',
+      );
+    }
+
+    List<WukongMessage> synced = const [];
+    try {
+      final data = await _business.syncMessages(
+        channel: channel,
+        // WuKongIM pullMode=0 walks backward from the sequence immediately
+        // preceding the oldest message already displayed by the client.
+        startMessageSeq: max(0, beforeSequence - 1),
+        endMessageSeq: 0,
+        limit: min(limit, 100),
+        pullMode: 0,
+      );
+      final rawMessages = data['messages'] as List<Object?>? ?? const [];
+      synced =
+          rawMessages
+              .whereType<Map>()
+              .map((raw) {
+                final normalized = <String, Object?>{
+                  ...wukongObjectMap(raw),
+                  'channel_id':
+                      raw['channel_id'] ?? raw['channelId'] ?? channel.id,
+                  'channel_type':
+                      raw['channel_type'] ?? raw['channelType'] ?? channel.type,
+                };
+                return WukongMessage.fromSyncJson(normalized);
+              })
+              .where(
+                (message) =>
+                    message.messageSeq > 0 &&
+                    message.messageSeq < beforeSequence,
+              )
+              .toList()
+            ..sort((a, b) {
+              final bySequence = a.messageSeq.compareTo(b.messageSeq);
+              return bySequence != 0
+                  ? bySequence
+                  : a.timestamp.compareTo(b.timestamp);
+            });
+      await _conversationCache.mergeMessages(uid, channel, synced);
+    } catch (_) {
+      final cached = await _conversationCache.readMessages(uid, channel);
+      synced =
+          cached
+              .where(
+                (message) =>
+                    message.messageSeq > 0 &&
+                    message.messageSeq < beforeSequence,
+              )
+              .toList()
+            ..sort((a, b) => a.messageSeq.compareTo(b.messageSeq));
+      if (synced.length > limit) {
+        synced = synced.sublist(synced.length - limit);
+      }
+      if (synced.isEmpty) rethrow;
+    }
+
+    final current = await _conversationCache.readMessages(uid, channel);
+    final replySources = <String, ChatMessage>{};
+    final mappedCurrent = current.map(
+      (message) => _messageMapper.toChatMessage(
+        message,
+        currentUserId: uid,
+        conversationId: conversationId,
+      ),
+    );
+    final mappedPage = synced.map(
+      (message) => _messageMapper.toChatMessage(
+        message,
+        currentUserId: uid,
+        conversationId: conversationId,
+      ),
+    );
+    for (final message in [...mappedCurrent, ...mappedPage]) {
+      replySources[message.id] = message;
+    }
+    final result = mappedPage
+        .map(
+          (message) => message.replyToId == null
+              ? message
+              : message.copyWith(
+                  replyToText:
+                      replySources[message.replyToId]?.text ?? '原消息暂不可见',
+                ),
+        )
+        .toList();
+    return result;
+  }
+
   ChatMessage _message(Map<String, Object?> item, String conversationId) {
     final body = item['body'] as Map<String, Object?>? ?? const {};
     final kindName =
@@ -2212,9 +2713,16 @@ class LiveImRepository
           body['downloadUrl'] as String? ??
           body['localPath'] as String?,
       mediaId: body['mediaId'] as String?,
+      mediaWidth: (body['width'] as num?)?.toInt(),
+      mediaHeight: (body['height'] as num?)?.toInt(),
       stickerId: body['stickerId'] as String?,
       momentId: body['momentId'] as String?,
       event: body['event'] as String?,
+      robotId:
+          body['robot_id'] as String? ??
+          body['robotId'] as String? ??
+          item['robot_id'] as String? ??
+          item['robotId'] as String?,
       eventData: body['data'] is Map
           ? Map<String, Object?>.from(body['data']! as Map)
           : const {},
@@ -2552,6 +3060,8 @@ class LiveImRepository
       kind: upload.kind,
       mediaUrl: remoteURL,
       mediaId: mediaId,
+      mediaWidth: upload.width,
+      mediaHeight: upload.height,
       fileName: upload.fileName,
       mimeType: upload.mimeType,
       durationSeconds: upload.durationSeconds,
@@ -2655,12 +3165,14 @@ class LiveImRepository
   Future<void> updateConversationPreferences(
     String conversationId, {
     bool? pinned,
+    bool? saved,
     bool? notificationsMuted,
     bool? manualUnread,
     bool? archived,
   }) {
     final payload = <String, Object?>{};
     if (pinned != null) payload['pinned'] = pinned;
+    if (saved != null) payload['saved'] = saved;
     if (notificationsMuted != null) {
       payload['notificationsMuted'] = notificationsMuted;
     }
@@ -2786,7 +3298,27 @@ class LiveImRepository
     'refreshToken': _refreshToken,
     'userId': _userId,
     if (_imSession != null) 'imSession': _imSession!.toJson(),
+    if (_me != null) 'user': _storedUser(_me!),
   });
+
+  Map<String, Object?> _storedUser(AppUser user) => {
+    'id': user.id,
+    'name': user.name,
+    'handle': user.handle,
+    'presence': user.presence,
+    'phone': user.phone,
+    'signature': user.signature,
+    'gender': user.gender,
+    'avatarMediaId': user.avatarMediaId,
+    'avatarUrl': user.avatarUrl,
+    'online': user.isOnline,
+    'remark': user.remark,
+    'tags': user.tags,
+    'handleChangeCount': user.handleChangeCount,
+    'handleChangesRemaining': user.handleChangesRemaining,
+    'allowSearchByHandle': user.allowSearchByHandle,
+    'allowSearchByPhone': user.allowSearchByPhone,
+  };
 
   Future<void> _clearSession() async {
     _token = null;
@@ -2922,26 +3454,25 @@ class _PendingWukongSend {
   WukongSendResult? earlyResult;
 }
 
-/// Chooses Live or Demo once, explicitly. It never turns a failed production
-/// request into a fake successful Demo request.
+/// Uses the configured live service only. Network failures are surfaced to the
+/// user and are never converted into fake successful responses.
 class ResilientImRepository
-    implements ImRepository, CallRepository, BusinessFeatureRepository {
-  ResilientImRepository({this.live, this._demo});
+    implements
+        ImRepository,
+        CachedMessageRepository,
+        PaginatedMessageRepository,
+        CallRepository,
+        BusinessFeatureRepository {
+  ResilientImRepository({this.live});
 
   factory ResilientImRepository.fromEnvironment() => ResilientImRepository(
     live: AppConfig.hasLiveBackend ? LiveImRepository() : null,
-    demo: AppConfig.allowsDemo ? DemoImRepository() : null,
   );
 
   final ImRepository? live;
-  final ImRepository? _demo;
-  bool _explicitDemo = false;
 
   ImRepository get _active {
-    final demo = _demo;
-    if (_explicitDemo && demo != null) return demo;
     if (live case final live?) return live;
-    if (demo != null) return demo;
     throw const ImApiException(
       statusCode: 503,
       code: 'CLIENT_NOT_CONFIGURED',
@@ -2950,15 +3481,16 @@ class ResilientImRepository
   }
 
   @override
-  bool get isDemo => _active.isDemo;
+  bool get isDemo => live?.isDemo ?? false;
   @override
-  bool get supportsDemo => AppConfig.allowsDemo && _demo != null;
+  bool get supportsDemo => false;
   @override
-  AppUser? get currentUser => _active.currentUser;
+  AppUser? get currentUser => live?.currentUser;
   @override
-  Stream<bool> get connectionChanges => _active.connectionChanges;
+  Stream<bool> get connectionChanges =>
+      live?.connectionChanges ?? const Stream<bool>.empty();
   @override
-  Stream<ImEvent> get events => _active.events;
+  Stream<ImEvent> get events => live?.events ?? const Stream<ImEvent>.empty();
 
   CallRepository get _activeCalls {
     final active = _active;
@@ -3289,9 +3821,12 @@ class ResilientImRepository
       _activeBusiness.favoriteStickers(limit: limit);
 
   @override
-  Stream<CallSignalEvent> get callEvents => _active is CallRepository
-      ? (_active as CallRepository).callEvents
-      : const Stream<CallSignalEvent>.empty();
+  Stream<CallSignalEvent> get callEvents {
+    final active = live;
+    return active is CallRepository
+        ? (active as CallRepository).callEvents
+        : const Stream<CallSignalEvent>.empty();
+  }
 
   @override
   Future<CallConfiguration> callConfiguration() =>
@@ -3332,18 +3867,15 @@ class ResilientImRepository
 
   @override
   Future<void> enterDemo() async {
-    final demo = _demo;
-    if (!supportsDemo || demo == null) {
-      throw const ImApiException(
-        statusCode: 403,
-        code: 'DEMO_DISABLED',
-        message: '当前构建未启用演示模式',
-      );
-    }
-    _explicitDemo = true;
-    await demo.enterDemo();
+    throw const ImApiException(
+      statusCode: 403,
+      code: 'DEMO_DISABLED',
+      message: '当前应用只连接真实服务',
+    );
   }
 
+  @override
+  Future<AuthPolicy> authPolicy() => _active.authPolicy();
   @override
   Future<bool> restoreSession() => _active.restoreSession();
   @override
@@ -3354,6 +3886,17 @@ class ResilientImRepository
   @override
   Future<AppUser> passwordLogin(String phone, String password) =>
       _active.passwordLogin(phone, password);
+  @override
+  Future<QrLoginTicket> createQrLoginTicket({required String clientName}) =>
+      _active.createQrLoginTicket(clientName: clientName);
+  @override
+  Future<AppUser?> pollQrLoginTicket(QrLoginTicket ticket) =>
+      _active.pollQrLoginTicket(ticket);
+  @override
+  Future<QrLoginRequest> inspectQrLogin(String token) =>
+      _active.inspectQrLogin(token);
+  @override
+  Future<void> confirmQrLogin(String token) => _active.confirmQrLogin(token);
   @override
   Future<AppUser> register({
     required String phone,
@@ -3384,12 +3927,18 @@ class ResilientImRepository
     String? name,
     String? handle,
     String? signature,
+    String? gender,
     String? avatarMediaId,
+    bool? allowSearchByHandle,
+    bool? allowSearchByPhone,
   }) => _active.updateProfile(
     name: name,
     handle: handle,
     signature: signature,
+    gender: gender,
     avatarMediaId: avatarMediaId,
+    allowSearchByHandle: allowSearchByHandle,
+    allowSearchByPhone: allowSearchByPhone,
   );
   @override
   Future<String> uploadAvatar(MediaUpload upload) =>
@@ -3566,6 +4115,10 @@ class ResilientImRepository
   @override
   Future<List<GroupMember>> groupMembers(String conversationId) =>
       _active.groupMembers(conversationId);
+
+  @override
+  Future<List<RobotProfile>> robotProfiles(String conversationId) =>
+      _active.robotProfiles(conversationId);
   @override
   Future<void> addGroupMembers(String conversationId, List<String> userIds) =>
       _active.addGroupMembers(conversationId, userIds);
@@ -3613,6 +4166,37 @@ class ResilientImRepository
   @override
   Future<List<ChatMessage>> messages(String conversationId) =>
       _active.messages(conversationId);
+  @override
+  Future<List<ChatMessage>> cachedMessages(String conversationId) {
+    final active = _active;
+    if (active case final CachedMessageRepository cached) {
+      return cached.cachedMessages(conversationId);
+    }
+    return Future.value(const <ChatMessage>[]);
+  }
+
+  @override
+  Future<List<ChatMessage>> olderMessages(
+    String conversationId, {
+    required int beforeSequence,
+    int limit = 50,
+  }) {
+    final active = _active;
+    if (active is! PaginatedMessageRepository) {
+      throw const ImApiException(
+        statusCode: 501,
+        code: 'MESSAGE_HISTORY_UNAVAILABLE',
+        message: '当前服务暂不支持加载更早的消息',
+      );
+    }
+    final historyRepository = active as PaginatedMessageRepository;
+    return historyRepository.olderMessages(
+      conversationId,
+      beforeSequence: beforeSequence,
+      limit: limit,
+    );
+  }
+
   @override
   Future<ChatMessage> send(ChatMessage pending) => _active.send(pending);
   @override
@@ -3679,12 +4263,14 @@ class ResilientImRepository
   Future<void> updateConversationPreferences(
     String conversationId, {
     bool? pinned,
+    bool? saved,
     bool? notificationsMuted,
     bool? manualUnread,
     bool? archived,
   }) => _active.updateConversationPreferences(
     conversationId,
     pinned: pinned,
+    saved: saved,
     notificationsMuted: notificationsMuted,
     manualUnread: manualUnread,
     archived: archived,
@@ -3743,6 +4329,5 @@ class ResilientImRepository
   @override
   Future<void> close() async {
     await live?.close();
-    await _demo?.close();
   }
 }

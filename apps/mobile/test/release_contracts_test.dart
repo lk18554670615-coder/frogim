@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -502,7 +503,8 @@ void main() {
                     conversationId: 'c1',
                     senderId: 'u1',
                     senderName: '林屿',
-                    text: 'https://failed.example',
+                    text:
+                        'https://failed.example service@example.com 13800138000',
                     sentAt: now,
                     isMine: false,
                   ),
@@ -527,16 +529,25 @@ void main() {
     );
 
     expect(find.byKey(const Key('server-link-preview')), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const Key('server-link-preview'))).height,
+      greaterThanOrEqualTo(48),
+    );
     expect(find.text('服务端标题'), findsOneWidget);
-    expect(find.text('https://failed.example'), findsOneWidget);
+    final interactiveText = tester
+        .widgetList<RichText>(find.byType(RichText))
+        .firstWhere(
+          (widget) => widget.text.toPlainText().contains('service@example.com'),
+        );
+    expect(_tapRecognizerCount(interactiveText.text), 3);
+    expect(find.byKey(const Key('group-receipt-summary')), findsOneWidget);
+    expect(find.text('已送达 8 · 已读 5'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('消息已过期'),
       160,
       scrollable: find.byType(Scrollable).first,
     );
     expect(find.text('消息已过期'), findsOneWidget);
-    expect(find.byKey(const Key('group-receipt-summary')), findsOneWidget);
-    expect(find.text('已送达 8 · 已读 5'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -646,6 +657,15 @@ void main() {
     final cancel = find.byKey(Key('cancel-scheduled-${item.id}'));
     expect(tester.getSize(cancel).height, greaterThanOrEqualTo(44));
   });
+}
+
+int _tapRecognizerCount(InlineSpan span) {
+  if (span is! TextSpan) return 0;
+  var count = span.recognizer is TapGestureRecognizer ? 1 : 0;
+  for (final child in span.children ?? const <InlineSpan>[]) {
+    count += _tapRecognizerCount(child);
+  }
+  return count;
 }
 
 class _ReceiptRepository extends DemoImRepository {

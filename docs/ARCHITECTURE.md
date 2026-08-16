@@ -2,7 +2,7 @@
 
 ## 当前边界
 
-邻里通讯已经以 WuKongIM 作为唯一实时消息链路。Go 服务不再提供自研 WebSocket、消息 ACK 或离线同步协议。
+青蛙呱呱已经以 WuKongIM 作为唯一实时消息链路。Go 服务不再提供自研 WebSocket、消息 ACK 或离线同步协议。
 
 ```mermaid
 flowchart LR

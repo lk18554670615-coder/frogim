@@ -100,9 +100,12 @@ class MessageMapper {
       kind: kind,
       mediaUrl: payload['url'] as String?,
       mediaId: payload['mediaId'] as String?,
+      mediaWidth: (payload['width'] as num?)?.toInt(),
+      mediaHeight: (payload['height'] as num?)?.toInt(),
       stickerId: payload['stickerId'] as String?,
       momentId: payload['momentId'] as String?,
       event: payload['event'] as String?,
+      robotId: payload['robot_id'] as String? ?? payload['robotId'] as String?,
       eventData: payload['data'] is Map
           ? wukongObjectMap(payload['data'])
           : const {},
@@ -192,8 +195,19 @@ class MessageMapper {
   };
 
   Map<String, Object?> _body(ChatMessage message) => switch (message.kind) {
-    MessageContentKind.text ||
-    MessageContentKind.reply => {'content': message.text},
+    MessageContentKind.text || MessageContentKind.reply => {
+      'content': message.text,
+      if (message.robotId case final robotId?) ...{
+        'robot_id': robotId,
+        'entities': [
+          {
+            'type': 'bot_command',
+            'offset': 0,
+            'length': message.text.runes.length,
+          },
+        ],
+      },
+    },
     MessageContentKind.image ||
     MessageContentKind.voice ||
     MessageContentKind.video ||
@@ -206,6 +220,8 @@ class MessageMapper {
               const {'http', 'https'}.contains(Uri.parse(url).scheme))
         'url': url,
       if (message.mediaId != null) 'mediaId': message.mediaId,
+      if (message.mediaWidth != null) 'width': message.mediaWidth,
+      if (message.mediaHeight != null) 'height': message.mediaHeight,
       if (message.fileName != null) 'fileName': message.fileName,
       if (message.mimeType != null) 'mime': message.mimeType,
       if (message.durationSeconds != null) 'duration': message.durationSeconds,

@@ -166,6 +166,66 @@ func TestClientDiagnosticsSchemaIsVersioned(t *testing.T) {
 	}
 }
 
+func TestPublicGuaguaHandleMigrationIsVersioned(t *testing.T) {
+	if schemaVersion < 49 {
+		t.Fatalf("public Guagua handles require schema version 49 or newer, got %d", schemaVersion)
+	}
+	for _, fragment := range []string{
+		"SET handle='gg_'||left(md5(id),20),handle_change_count=0",
+		"lower(handle) ~ '^(ll|usr)_[a-z0-9]{12,}$'",
+	} {
+		if !strings.Contains(normalizedSchema, fragment) {
+			t.Fatalf("public Guagua handle migration is missing %q", fragment)
+		}
+	}
+}
+
+func TestQRLoginTicketSchemaIsVersioned(t *testing.T) {
+	if schemaVersion < 50 {
+		t.Fatalf("QR login tickets require schema version 50 or newer, got %d", schemaVersion)
+	}
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS im_qr_login_tickets",
+		"qr_token_hash bytea UNIQUE NOT NULL",
+		"poll_token_hash bytea NOT NULL",
+		"im_qr_login_tickets_expiry_idx",
+	} {
+		if !strings.Contains(normalizedSchema, fragment) {
+			t.Fatalf("QR login ticket schema is missing %q", fragment)
+		}
+	}
+}
+
+func TestRobotProfileSchemaIsVersioned(t *testing.T) {
+	if schemaVersion < 51 {
+		t.Fatalf("robot profiles require schema version 51 or newer, got %d", schemaVersion)
+	}
+	for _, fragment := range []string{
+		"robot_enabled boolean NOT NULL DEFAULT false",
+		"robot_version bigint NOT NULL DEFAULT 0",
+		"robot_menus jsonb NOT NULL DEFAULT '[]'::jsonb",
+		"im_wukong_robot_profiles_idx",
+	} {
+		if !strings.Contains(normalizedSchema, fragment) {
+			t.Fatalf("robot profile schema is missing %q", fragment)
+		}
+	}
+}
+
+func TestUserGenderSchemaIsVersioned(t *testing.T) {
+	if schemaVersion < 52 {
+		t.Fatalf("user gender requires schema version 52 or newer, got %d", schemaVersion)
+	}
+	for _, fragment := range []string{
+		"ADD COLUMN IF NOT EXISTS gender text NOT NULL DEFAULT 'unspecified'",
+		"CHECK(gender IN ('unspecified','male','female'))",
+	} {
+		if !strings.Contains(normalizedSchema, fragment) {
+			t.Fatalf("user gender schema is missing %q", fragment)
+		}
+	}
+}
+
 func TestTemporaryBusinessMembershipSchemaIsVersioned(t *testing.T) {
 	if schemaVersion < 39 {
 		t.Fatalf("temporary business membership requires schema version 39 or newer, got %d", schemaVersion)

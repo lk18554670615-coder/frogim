@@ -414,6 +414,31 @@ void main() {
     await repository.close();
   });
 
+  test('黑名单服务端失败必须上抛而不能伪装成空名单', () async {
+    final repository = _repository(
+      MockClient((request) async {
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/contacts/blocks') {
+          return _jsonResponse({
+            'error': {'code': 'INTERNAL', 'message': 'internal server error'},
+          }, 500);
+        }
+        return http.Response('{}', 404);
+      }),
+    );
+    await repository.login('13800138000', '123456');
+
+    await expectLater(
+      repository.blockedUsers(),
+      throwsA(
+        isA<ImApiException>()
+            .having((error) => error.statusCode, 'statusCode', 500)
+            .having((error) => error.code, 'code', 'INTERNAL'),
+      ),
+    );
+    await repository.close();
+  });
+
   test('好友拒绝撤回备注删除和拉黑使用完整服务端状态接口', () async {
     final requests = <http.Request>[];
     final repository = _repository(

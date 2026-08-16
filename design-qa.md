@@ -1,4 +1,4 @@
-# 邻里通讯设计 QA
+# 青蛙呱呱设计 QA
 
 ## Visual truth
 
@@ -40,7 +40,7 @@ The complete iteration log and fidelity checklist are in `apps/mobile/design-qa.
 
 ## Admin console QA — 2026-08-01
 
-- Visual direction: the compact left rail, dense operational tables and restrained card hierarchy were checked against `artifacts/pc-web-redesign/source-board-05.webp`; the implementation retains the existing 邻里通讯 green brand system and does not copy third-party artwork.
+- Visual direction: the compact left rail, dense operational tables and restrained card hierarchy were checked against `artifacts/pc-web-redesign/source-board-05.webp`; the implementation retains the existing 青蛙呱呱 green brand system and does not copy third-party artwork.
 - Desktop browser pass: 1280 x 720, 212 px fixed navigation rail, 15 reachable navigation items, four-column metric strip, no horizontal viewport overflow. Overview and operations pages were inspected after data loading completed.
 - Responsive browser pass: 390 x 844, navigation moves fully off canvas behind an accessible menu button, operations cards collapse to one 354 px column and no horizontal viewport overflow was found.
 - Interaction pass: the timed-ban dialog exposes all five duration choices, restores focus, traps keyboard navigation, requires an operator reason and disables confirmation when the reason is empty.

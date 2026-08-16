@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:linli_im/core/models.dart';
@@ -99,6 +101,38 @@ void main() {
 
     expect(find.text('发送失败'), findsOneWidget);
     expect(find.text('发送失败，点此重试'), findsNothing);
+  });
+
+  testWidgets('失败消息重试入口具备可读语义和至少 44 点触控区域', (tester) async {
+    var retries = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MessageBubble(
+            message: ChatMessage(
+              id: 'retryable-failed',
+              conversationId: 'direct_1',
+              senderId: 'me',
+              senderName: '我',
+              text: '请重新发送',
+              sentAt: DateTime.utc(2026, 8, 16),
+              isMine: true,
+              status: MessageStatus.failed,
+            ),
+            onRetry: () => retries++,
+          ),
+        ),
+      ),
+    );
+
+    final target = find.byKey(const Key('failed-message-retry'));
+    expect(target, findsOneWidget);
+    expect(tester.getSize(target).height, greaterThanOrEqualTo(44));
+    final semantics = tester.getSemantics(target).getSemanticsData();
+    expect(semantics.label, '消息发送失败，重新发送');
+    expect(semantics.hasAction(ui.SemanticsAction.tap), isTrue);
+    await tester.tap(target);
+    expect(retries, 1);
   });
 }
 

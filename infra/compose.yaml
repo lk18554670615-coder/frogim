@@ -55,7 +55,8 @@ services:
       IM_ADMIN_SHARED_KEY_ENABLED: "false"
       IM_ADMIN_KEY: ""
       IM_DEV_MODE: ${IM_DEV_MODE:-true}
-      IM_SEED_DEMO: ${IM_SEED_DEMO:-true}
+      # 真实数据是默认路径；演示账号只能由开发者显式设置 IM_SEED_DEMO=true 后创建。
+      IM_SEED_DEMO: ${IM_SEED_DEMO:-false}
       IM_DEV_ALLOW_CONTAINER_BIND: ${IM_DEV_ALLOW_CONTAINER_BIND:-true}
       # 本文件仅用于本机 Docker 验收；服务在容器内监听所有网卡，但宿主机端口固定绑定 127.0.0.1。
       IM_IP_TEST_ONLY: ${IM_IP_TEST_ONLY:-true}

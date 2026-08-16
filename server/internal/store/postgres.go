@@ -25,7 +25,7 @@ var normalizedSchema string
 
 type Postgres struct{ pool *pgxpool.Pool }
 
-const schemaVersion = 48
+const schemaVersion = 52
 
 type PostgresOptions struct {
 	MaxConns          int32
@@ -156,13 +156,13 @@ func (p *Postgres) Load(ctx context.Context) (*model.State, error) {
 	if err := p.pool.QueryRow(ctx, `SELECT revision FROM im_state_meta WHERE singleton=true`).Scan(&s.Revision); err != nil {
 		return nil, err
 	}
-	rows, err := p.pool.Query(ctx, `SELECT id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,banned,created_at FROM im_users`)
+	rows, err := p.pool.Query(ctx, `SELECT id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,allow_search_by_handle,allow_search_by_phone,gender,banned,created_at FROM im_users`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		u := &model.User{}
-		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.Banned, &u.CreatedAt); err != nil {
+		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.AllowSearchByHandle, &u.AllowSearchByPhone, &u.Gender, &u.Banned, &u.CreatedAt); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -244,13 +244,13 @@ func (p *Postgres) Load(ctx context.Context) (*model.State, error) {
 		s.DirectIndex[k] = v
 	}
 	rows.Close()
-	rows, err = p.pool.Query(ctx, `SELECT conversation_id,user_id,role,last_read_seq,last_delivered_seq,muted_until,pinned,archived,notifications_muted,manual_unread,hidden_until_seq,group_nickname,joined_at FROM im_members`)
+	rows, err = p.pool.Query(ctx, `SELECT conversation_id,user_id,role,last_read_seq,last_delivered_seq,muted_until,pinned,saved,archived,notifications_muted,manual_unread,hidden_until_seq,group_nickname,joined_at FROM im_members`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		m := &model.ConversationMember{}
-		if err = rows.Scan(&m.ConversationID, &m.UserID, &m.Role, &m.LastReadSeq, &m.LastDeliveredSeq, &m.MutedUntil, &m.Pinned, &m.Archived, &m.NotificationsMuted, &m.ManualUnread, &m.HiddenUntilSeq, &m.GroupNickname, &m.JoinedAt); err != nil {
+		if err = rows.Scan(&m.ConversationID, &m.UserID, &m.Role, &m.LastReadSeq, &m.LastDeliveredSeq, &m.MutedUntil, &m.Pinned, &m.Saved, &m.Archived, &m.NotificationsMuted, &m.ManualUnread, &m.HiddenUntilSeq, &m.GroupNickname, &m.JoinedAt); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -357,7 +357,7 @@ func (p *Postgres) Save(ctx context.Context, s *model.State) error {
 		return ErrConflict
 	}
 	for _, u := range s.Users {
-		_, err = tx.Exec(ctx, `INSERT INTO im_users(id,phone,name,handle,handle_change_count,signature,avatar_media_id,avatar_url,banned,created_at,updated_at) VALUES($1,$2,$3,COALESCE(NULLIF($4,''),'ll_'||right(md5($1),20)),$5,$6,NULLIF($7,''),$8,$9,$10,now()) ON CONFLICT(id) DO UPDATE SET phone=excluded.phone,name=excluded.name,handle=excluded.handle,handle_change_count=excluded.handle_change_count,signature=excluded.signature,avatar_media_id=excluded.avatar_media_id,avatar_url=excluded.avatar_url,banned=excluded.banned,updated_at=now()`, u.ID, u.Phone, u.Name, u.Handle, u.HandleChangeCount, u.Signature, u.AvatarMediaID, u.AvatarURL, u.Banned, u.CreatedAt)
+		_, err = tx.Exec(ctx, `INSERT INTO im_users(id,phone,name,handle,handle_change_count,signature,avatar_media_id,avatar_url,allow_search_by_handle,allow_search_by_phone,gender,banned,created_at,updated_at) VALUES($1,$2,$3,COALESCE(NULLIF($4,''),'ll_'||right(md5($1),20)),$5,$6,NULLIF($7,''),$8,$9,$10,COALESCE(NULLIF($11,''),'unspecified'),$12,$13,now()) ON CONFLICT(id) DO UPDATE SET phone=excluded.phone,name=excluded.name,handle=excluded.handle,handle_change_count=excluded.handle_change_count,signature=excluded.signature,avatar_media_id=excluded.avatar_media_id,avatar_url=excluded.avatar_url,allow_search_by_handle=excluded.allow_search_by_handle,allow_search_by_phone=excluded.allow_search_by_phone,gender=excluded.gender,banned=excluded.banned,updated_at=now()`, u.ID, u.Phone, u.Name, u.Handle, u.HandleChangeCount, u.Signature, u.AvatarMediaID, u.AvatarURL, u.AllowSearchByHandle, u.AllowSearchByPhone, u.Gender, u.Banned, u.CreatedAt)
 		if err != nil {
 			return err
 		}
@@ -398,7 +398,7 @@ func (p *Postgres) Save(ctx context.Context, s *model.State) error {
 	}
 	for cid, xs := range s.Members {
 		for _, m := range xs {
-			_, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,last_read_seq,last_delivered_seq,muted_until,pinned,archived,notifications_muted,manual_unread,hidden_until_seq,group_nickname,joined_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(conversation_id,user_id) DO UPDATE SET role=excluded.role,last_read_seq=GREATEST(im_members.last_read_seq,excluded.last_read_seq),last_delivered_seq=GREATEST(im_members.last_delivered_seq,excluded.last_delivered_seq),muted_until=excluded.muted_until,pinned=excluded.pinned,archived=excluded.archived,notifications_muted=excluded.notifications_muted,manual_unread=excluded.manual_unread,hidden_until_seq=excluded.hidden_until_seq,group_nickname=excluded.group_nickname`, cid, m.UserID, m.Role, m.LastReadSeq, m.LastDeliveredSeq, m.MutedUntil, m.Pinned, m.Archived, m.NotificationsMuted, m.ManualUnread, m.HiddenUntilSeq, m.GroupNickname, m.JoinedAt)
+			_, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,last_read_seq,last_delivered_seq,muted_until,pinned,saved,archived,notifications_muted,manual_unread,hidden_until_seq,group_nickname,joined_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT(conversation_id,user_id) DO UPDATE SET role=excluded.role,last_read_seq=GREATEST(im_members.last_read_seq,excluded.last_read_seq),last_delivered_seq=GREATEST(im_members.last_delivered_seq,excluded.last_delivered_seq),muted_until=excluded.muted_until,pinned=excluded.pinned,saved=excluded.saved,archived=excluded.archived,notifications_muted=excluded.notifications_muted,manual_unread=excluded.manual_unread,hidden_until_seq=excluded.hidden_until_seq,group_nickname=excluded.group_nickname`, cid, m.UserID, m.Role, m.LastReadSeq, m.LastDeliveredSeq, m.MutedUntil, m.Pinned, m.Saved, m.Archived, m.NotificationsMuted, m.ManualUnread, m.HiddenUntilSeq, m.GroupNickname, m.JoinedAt)
 			if err != nil {
 				return err
 			}
@@ -454,7 +454,7 @@ func (p *Postgres) Save(ctx context.Context, s *model.State) error {
 
 func (p *Postgres) GetUser(ctx context.Context, id string) (*model.User, error) {
 	u := &model.User{}
-	err := p.pool.QueryRow(ctx, `SELECT id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,banned,created_at FROM im_users WHERE id=$1`, id).Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.Banned, &u.CreatedAt)
+	err := p.pool.QueryRow(ctx, `SELECT id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,allow_search_by_handle,allow_search_by_phone,gender,banned,created_at FROM im_users WHERE id=$1`, id).Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.AllowSearchByHandle, &u.AllowSearchByPhone, &u.Gender, &u.Banned, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -463,7 +463,7 @@ func (p *Postgres) GetUser(ctx context.Context, id string) (*model.User, error) 
 
 func (p *Postgres) LoginOrCreateUser(ctx context.Context, phone, name, id string, created time.Time) (*model.User, error) {
 	u := &model.User{}
-	err := p.pool.QueryRow(ctx, `INSERT INTO im_users(id,phone,name,handle,created_at) VALUES($1,$2,$3,'ll_'||right($1,20),$4) ON CONFLICT(phone) DO UPDATE SET phone=excluded.phone RETURNING id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,banned,created_at`, id, phone, name, created).Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.Banned, &u.CreatedAt)
+	err := p.pool.QueryRow(ctx, `INSERT INTO im_users(id,phone,name,handle,created_at) VALUES($1,$2,$3,'gg_'||left(md5($1),20),$4) ON CONFLICT(phone) DO UPDATE SET phone=excluded.phone RETURNING id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,allow_search_by_handle,allow_search_by_phone,gender,banned,created_at`, id, phone, name, created).Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.AllowSearchByHandle, &u.AllowSearchByPhone, &u.Gender, &u.Banned, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -479,8 +479,8 @@ func (p *Postgres) RegisterPasswordUser(ctx context.Context, phone, name, id, ha
 	}
 	defer tx.Rollback(ctx)
 	u := &model.User{}
-	err = tx.QueryRow(ctx, `INSERT INTO im_users(id,phone,name,handle,password_hash,password_updated_at,created_at) VALUES($1,$2,$3,'ll_'||right($1,20),$4,$5,$5)
-		RETURNING id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,banned,created_at`, id, phone, name, hash, created).Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.Banned, &u.CreatedAt)
+	err = tx.QueryRow(ctx, `INSERT INTO im_users(id,phone,name,handle,password_hash,password_updated_at,created_at) VALUES($1,$2,$3,'gg_'||left(md5($1),20),$4,$5,$5)
+		RETURNING id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,allow_search_by_handle,allow_search_by_phone,gender,banned,created_at`, id, phone, name, hash, created).Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.AllowSearchByHandle, &u.AllowSearchByPhone, &u.Gender, &u.Banned, &u.CreatedAt)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return nil, ErrConflict
@@ -501,7 +501,7 @@ func (p *Postgres) RegisterPasswordUser(ctx context.Context, phone, name, id, ha
 func (p *Postgres) PasswordCredentials(ctx context.Context, phone string) (*model.User, string, error) {
 	u := &model.User{}
 	var hash string
-	err := p.pool.QueryRow(ctx, `SELECT id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,banned,created_at,password_hash FROM im_users WHERE phone=$1`, phone).Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.Banned, &u.CreatedAt, &hash)
+	err := p.pool.QueryRow(ctx, `SELECT id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,allow_search_by_handle,allow_search_by_phone,gender,banned,created_at,password_hash FROM im_users WHERE phone=$1`, phone).Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.AllowSearchByHandle, &u.AllowSearchByPhone, &u.Gender, &u.Banned, &u.CreatedAt, &hash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, "", ErrNotFound
 	}
@@ -672,7 +672,7 @@ func (p *Postgres) SearchUsers(ctx context.Context, query string, limit int) ([]
 		limit = 50
 	}
 	q := "%" + query + "%"
-	rows, err := p.pool.Query(ctx, `SELECT id,'',name,avatar_url,banned,created_at FROM im_users WHERE $1='' OR name ILIKE $2 OR phone ILIKE $2 ORDER BY lower(name),id LIMIT $3`, query, q, limit)
+	rows, err := p.pool.Query(ctx, `SELECT id,'',name,signature,avatar_url,gender,banned,created_at FROM im_users WHERE $1='' OR name ILIKE $2 OR phone ILIKE $2 ORDER BY lower(name),id LIMIT $3`, query, q, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -680,7 +680,7 @@ func (p *Postgres) SearchUsers(ctx context.Context, query string, limit int) ([]
 	out := make([]*model.User, 0, limit)
 	for rows.Next() {
 		u := &model.User{}
-		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.AvatarURL, &u.Banned, &u.CreatedAt); err != nil {
+		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.Signature, &u.AvatarURL, &u.Gender, &u.Banned, &u.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -702,7 +702,11 @@ func (p *Postgres) SearchUsersByIdentifier(ctx context.Context, query, by string
 	} else if by != "handle" {
 		return nil, ErrForbidden
 	}
-	rows, err := p.pool.Query(ctx, `SELECT id,'',name,COALESCE(handle,''),avatar_url,banned,created_at FROM im_users WHERE `+column+`=$1 ORDER BY id LIMIT $2`, query, limit)
+	privacyColumn := "allow_search_by_handle"
+	if by == "phone" {
+		privacyColumn = "allow_search_by_phone"
+	}
+	rows, err := p.pool.Query(ctx, `SELECT id,'',name,COALESCE(handle,''),signature,avatar_url,gender,banned,created_at FROM im_users WHERE `+column+`=$1 AND `+privacyColumn+`=true ORDER BY id LIMIT $2`, query, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -710,7 +714,7 @@ func (p *Postgres) SearchUsersByIdentifier(ctx context.Context, query, by string
 	out := make([]*model.User, 0, limit)
 	for rows.Next() {
 		u := &model.User{}
-		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.AvatarURL, &u.Banned, &u.CreatedAt); err != nil {
+		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.Signature, &u.AvatarURL, &u.Gender, &u.Banned, &u.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -719,7 +723,7 @@ func (p *Postgres) SearchUsersByIdentifier(ctx context.Context, query, by string
 }
 
 func (p *Postgres) ListFriends(ctx context.Context, uid string) ([]*model.User, error) {
-	rows, err := p.pool.Query(ctx, `SELECT u.id,'',u.name,u.avatar_url,u.banned,f.remark,f.tags,u.created_at FROM im_friendships f JOIN im_users u ON u.id=f.friend_user_id WHERE f.user_id=$1 ORDER BY lower(COALESCE(NULLIF(f.remark,''),u.name)),u.id LIMIT 500`, uid)
+	rows, err := p.pool.Query(ctx, `SELECT u.id,'',u.name,COALESCE(u.handle,''),u.signature,u.avatar_url,u.gender,u.banned,f.remark,f.tags,u.created_at FROM im_friendships f JOIN im_users u ON u.id=f.friend_user_id WHERE f.user_id=$1 ORDER BY lower(COALESCE(NULLIF(f.remark,''),u.name)),u.id LIMIT 500`, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -727,7 +731,7 @@ func (p *Postgres) ListFriends(ctx context.Context, uid string) ([]*model.User, 
 	var out []*model.User
 	for rows.Next() {
 		u := &model.User{}
-		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.AvatarURL, &u.Banned, &u.Remark, &u.Tags, &u.CreatedAt); err != nil {
+		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.Signature, &u.AvatarURL, &u.Gender, &u.Banned, &u.Remark, &u.Tags, &u.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -736,7 +740,7 @@ func (p *Postgres) ListFriends(ctx context.Context, uid string) ([]*model.User, 
 }
 
 func (p *Postgres) ListBlockedUsers(ctx context.Context, uid string) ([]*model.User, error) {
-	rows, err := p.pool.Query(ctx, `SELECT u.id,u.phone,u.name,u.handle,u.handle_changes,u.signature,u.avatar_url,u.banned,u.created_at
+	rows, err := p.pool.Query(ctx, `SELECT u.id,u.phone,u.name,COALESCE(u.handle,''),u.handle_change_count,u.signature,u.avatar_url,u.gender,u.banned,u.created_at
 		FROM im_blocks b JOIN im_users u ON u.id=b.blocked_user_id
 		WHERE b.user_id=$1 ORDER BY b.created_at DESC,u.id`, uid)
 	if err != nil {
@@ -746,7 +750,7 @@ func (p *Postgres) ListBlockedUsers(ctx context.Context, uid string) ([]*model.U
 	var users []*model.User
 	for rows.Next() {
 		u := &model.User{}
-		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarURL, &u.Banned, &u.CreatedAt); err != nil {
+		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarURL, &u.Gender, &u.Banned, &u.CreatedAt); err != nil {
 			return nil, err
 		}
 		u.Phone = ""
@@ -1011,7 +1015,7 @@ func (p *Postgres) ListConversations(ctx context.Context, uid string, limit int)
 		GREATEST(c.current_seq,COALESCE(wk.last_message_seq,0)),
 		GREATEST(c.last_message_seq,COALESCE(wk.last_message_seq,0)),c.created_at,
 		GREATEST(c.updated_at,COALESCE(wk.last_message_at,c.updated_at)),
-		m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.pinned,m.archived,m.notifications_muted,m.manual_unread,m.hidden_until_seq,m.joined_at,
+		m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.pinned,m.saved,m.archived,m.notifications_muted,m.manual_unread,m.hidden_until_seq,m.joined_at,
 		COALESCE(mention_stats.unread_count,0),c.member_count
 		FROM im_members m
 		JOIN im_conversations c ON c.id=m.conversation_id
@@ -1038,7 +1042,7 @@ func (p *Postgres) ListConversations(ctx context.Context, uid string, limit int)
 		var mentionUnreadCount int64
 		var memberCount int64
 		if err = rows.Scan(&c.ID, &c.Type, &c.Title, &c.AvatarURL, &c.Seq, &c.LastMessageSeq, &c.CreatedAt, &c.UpdatedAt,
-			&m.Role, &m.MutedUntil, &m.LastReadSeq, &m.LastDeliveredSeq, &m.Pinned, &m.Archived, &m.NotificationsMuted, &m.ManualUnread, &m.HiddenUntilSeq, &m.JoinedAt,
+			&m.Role, &m.MutedUntil, &m.LastReadSeq, &m.LastDeliveredSeq, &m.Pinned, &m.Saved, &m.Archived, &m.NotificationsMuted, &m.ManualUnread, &m.HiddenUntilSeq, &m.JoinedAt,
 			&mentionUnreadCount, &memberCount); err != nil {
 			return nil, err
 		}
@@ -1346,9 +1350,12 @@ func (p *Postgres) UpdateUserProfile(ctx context.Context, uid string, update Use
 	err = tx.QueryRow(ctx, `UPDATE im_users SET
 		name=COALESCE($2,name),handle=COALESCE($3,handle),signature=COALESCE($4,signature),
 		handle_change_count=handle_change_count+CASE WHEN $3::text IS NOT NULL AND handle IS DISTINCT FROM $3 THEN 1 ELSE 0 END,
-		avatar_media_id=CASE WHEN $5::text IS NULL THEN avatar_media_id ELSE NULLIF($5,'') END,
-		avatar_url=COALESCE($6,avatar_url),updated_at=now()
-		WHERE id=$1 RETURNING id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,banned,created_at`, uid, update.Name, update.Handle, update.Signature, update.AvatarMediaID, avatarURL).Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.Banned, &u.CreatedAt)
+		gender=COALESCE($5,gender),
+		avatar_media_id=CASE WHEN $6::text IS NULL THEN avatar_media_id ELSE NULLIF($6,'') END,
+		avatar_url=COALESCE($7,avatar_url),
+		allow_search_by_handle=COALESCE($8,allow_search_by_handle),
+		allow_search_by_phone=COALESCE($9,allow_search_by_phone),updated_at=now()
+		WHERE id=$1 RETURNING id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,allow_search_by_handle,allow_search_by_phone,gender,banned,created_at`, uid, update.Name, update.Handle, update.Signature, update.Gender, update.AvatarMediaID, avatarURL, update.AllowSearchByHandle, update.AllowSearchByPhone).Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.AllowSearchByHandle, &u.AllowSearchByPhone, &u.Gender, &u.Banned, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1368,7 +1375,7 @@ func (p *Postgres) UpdateUserProfile(ctx context.Context, uid string, update Use
 func (p *Postgres) UpdateUserPhone(ctx context.Context, uid, phone string) (*model.User, error) {
 	var u model.User
 	err := p.pool.QueryRow(ctx, `UPDATE im_users SET phone=$2,updated_at=now() WHERE id=$1
-		RETURNING id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,banned,created_at`, uid, phone).Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.Banned, &u.CreatedAt)
+		RETURNING id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,allow_search_by_handle,allow_search_by_phone,gender,banned,created_at`, uid, phone).Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.AllowSearchByHandle, &u.AllowSearchByPhone, &u.Gender, &u.Banned, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1766,18 +1773,19 @@ func (p *Postgres) UpdateConversationPreferences(ctx context.Context, uid, cid s
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var pinned, archived, muted, unread bool
+	var pinned, saved, archived, muted, unread bool
 	err = tx.QueryRow(ctx, `UPDATE im_members SET
-		pinned=COALESCE($3,pinned), archived=COALESCE($4,archived),
-		notifications_muted=COALESCE($5,notifications_muted), manual_unread=COALESCE($6,manual_unread)
+		pinned=COALESCE($3,pinned), saved=COALESCE($4,saved), archived=COALESCE($5,archived),
+		notifications_muted=COALESCE($6,notifications_muted), manual_unread=COALESCE($7,manual_unread)
 		WHERE conversation_id=$1 AND user_id=$2 AND (
 			($3::boolean IS NOT NULL AND pinned IS DISTINCT FROM $3) OR
-			($4::boolean IS NOT NULL AND archived IS DISTINCT FROM $4) OR
-			($5::boolean IS NOT NULL AND notifications_muted IS DISTINCT FROM $5) OR
-			($6::boolean IS NOT NULL AND manual_unread IS DISTINCT FROM $6))
-		RETURNING pinned,archived,notifications_muted,manual_unread`, cid, uid, preferences.Pinned, preferences.Archived, preferences.NotificationsMuted, preferences.ManualUnread).Scan(&pinned, &archived, &muted, &unread)
+			($4::boolean IS NOT NULL AND saved IS DISTINCT FROM $4) OR
+			($5::boolean IS NOT NULL AND archived IS DISTINCT FROM $5) OR
+			($6::boolean IS NOT NULL AND notifications_muted IS DISTINCT FROM $6) OR
+			($7::boolean IS NOT NULL AND manual_unread IS DISTINCT FROM $7))
+		RETURNING pinned,saved,archived,notifications_muted,manual_unread`, cid, uid, preferences.Pinned, preferences.Saved, preferences.Archived, preferences.NotificationsMuted, preferences.ManualUnread).Scan(&pinned, &saved, &archived, &muted, &unread)
 	if errors.Is(err, pgx.ErrNoRows) {
-		err = tx.QueryRow(ctx, `SELECT pinned,archived,notifications_muted,manual_unread FROM im_members WHERE conversation_id=$1 AND user_id=$2`, cid, uid).Scan(&pinned, &archived, &muted, &unread)
+		err = tx.QueryRow(ctx, `SELECT pinned,saved,archived,notifications_muted,manual_unread FROM im_members WHERE conversation_id=$1 AND user_id=$2`, cid, uid).Scan(&pinned, &saved, &archived, &muted, &unread)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrForbidden
 		}
@@ -1789,7 +1797,7 @@ func (p *Postgres) UpdateConversationPreferences(ctx context.Context, uid, cid s
 	if err != nil {
 		return err
 	}
-	payload, _ := json.Marshal(map[string]any{"conversationId": cid, "pinned": pinned, "archived": archived, "notificationsMuted": muted, "manualUnread": unread})
+	payload, _ := json.Marshal(map[string]any{"conversationId": cid, "pinned": pinned, "saved": saved, "archived": archived, "notificationsMuted": muted, "manualUnread": unread})
 	if err = appendUserBusinessEvent(ctx, tx, uid, "conversation.preferences.updated", payload, time.Now()); err != nil {
 		return err
 	}
@@ -3369,6 +3377,57 @@ func (p *Postgres) ApplyGroupMemberAction(ctx context.Context, a GroupMemberActi
 	}
 	if a.Action == "leave" || a.Action == "remove" {
 		if err = enqueueWukongChannelReconcile(ctx, tx, a.ConversationID, "member-"+a.Action, a.At); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+func (p *Postgres) AdminApplyGroupMemberAction(ctx context.Context, a AdminGroupMemberAction) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var dissolved *time.Time
+	if err = tx.QueryRow(ctx, `SELECT dissolved_at FROM im_groups WHERE conversation_id=$1`, a.ConversationID).Scan(&dissolved); errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if dissolved != nil {
+		return ErrConflict
+	}
+	var targetRole string
+	if err = tx.QueryRow(ctx, `SELECT role FROM im_members WHERE conversation_id=$1 AND user_id=$2`, a.ConversationID, a.TargetID).Scan(&targetRole); errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if targetRole == "owner" {
+		return ErrForbidden
+	}
+	switch a.Action {
+	case "remove":
+		_, err = tx.Exec(ctx, `DELETE FROM im_members WHERE conversation_id=$1 AND user_id=$2`, a.ConversationID, a.TargetID)
+	case "role":
+		if a.Role != "member" && a.Role != "admin" {
+			return ErrUnsupported
+		}
+		_, err = tx.Exec(ctx, `UPDATE im_members SET role=$3 WHERE conversation_id=$1 AND user_id=$2`, a.ConversationID, a.TargetID, a.Role)
+	case "mute":
+		_, err = tx.Exec(ctx, `UPDATE im_members SET muted_until=$3 WHERE conversation_id=$1 AND user_id=$2`, a.ConversationID, a.TargetID, a.MutedUntil)
+	default:
+		return ErrUnsupported
+	}
+	if err != nil {
+		return err
+	}
+	eventData := map[string]any{"userId": a.TargetID, "role": a.Role, "mutedUntil": a.MutedUntil, "reason": a.Reason, "source": "admin"}
+	if err = emitGroupSystem(ctx, tx, a.ConversationID, a.ActorID, "group.member."+a.Action, eventData, a.At); err != nil {
+		return err
+	}
+	if a.Action == "remove" {
+		if err = enqueueWukongChannelReconcile(ctx, tx, a.ConversationID, "admin-member-removed", a.At); err != nil {
 			return err
 		}
 	}

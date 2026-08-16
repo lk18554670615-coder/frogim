@@ -81,13 +81,18 @@ class _WKSocket {
         error();
       }
 
-      _socket!.listen(onData, onError: (err) {
-        Logs.debug('socket断开了${err.toString()}');
-        notifyTerminated();
-      }, onDone: () {
-        Logs.debug('socket已由远端关闭');
-        notifyTerminated();
-      }, cancelOnError: true);
+      _socket!.listen(
+        onData,
+        onError: (err) {
+          Logs.debug('socket断开了${err.toString()}');
+          notifyTerminated();
+        },
+        onDone: () {
+          Logs.debug('socket已由远端关闭');
+          notifyTerminated();
+        },
+        cancelOnError: true,
+      );
       _isListening = true;
     }
   }
@@ -197,17 +202,19 @@ class WKConnectionManager {
       setConnectionStatus(WKConnectStatus.connecting);
       Socket.connect(host, int.parse(port), timeout: const Duration(seconds: 5))
           .then((socket) {
-        if (!_isCurrentConnection(generation)) {
-          socket.destroy();
-          return;
-        }
-        _socket = _WKSocket.newSocket(socket);
-        _connectSuccess(generation);
-      }).catchError((err) {
-        _connectFail(err, generation);
-      }).onError((err, stackTrace) {
-        _connectFail(err, generation);
-      });
+            if (!_isCurrentConnection(generation)) {
+              socket.destroy();
+              return;
+            }
+            _socket = _WKSocket.newSocket(socket);
+            _connectSuccess(generation);
+          })
+          .catchError((err) {
+            _connectFail(err, generation);
+          })
+          .onError((err, stackTrace) {
+            _connectFail(err, generation);
+          });
     } catch (e) {
       Logs.error(e.toString());
     }
@@ -216,17 +223,20 @@ class WKConnectionManager {
   // socket 连接成功
   _connectSuccess(int generation) {
     // 监听消息
-    _socket?.listen((Uint8List data) {
-      _cutDatas(data);
-      // _decodePacket(data);
-    }, () {
-      if (!_isCurrentConnection(generation)) {
-        Logs.debug("登出了");
-        return;
-      }
-      //  isReconnection = true;
-      _scheduleReconnect(generation);
-    });
+    _socket?.listen(
+      (Uint8List data) {
+        _cutDatas(data);
+        // _decodePacket(data);
+      },
+      () {
+        if (!_isCurrentConnection(generation)) {
+          Logs.debug("登出了");
+          return;
+        }
+        //  isReconnection = true;
+        _scheduleReconnect(generation);
+      },
+    );
     // 发送连接包
     _sendConnectPacket(generation);
   }
@@ -316,11 +326,15 @@ class WKConnectionManager {
             //半包情况
             _cacheData = lastMsgBytes;
           } else {
-            Uint8List msg =
-                lastMsgBytes.sublist(0, remainingLength + 1 + bytes.length);
+            Uint8List msg = lastMsgBytes.sublist(
+              0,
+              remainingLength + 1 + bytes.length,
+            );
             _decodePacket(msg);
-            Uint8List temps =
-                lastMsgBytes.sublist(msg.length, lastMsgBytes.length);
+            Uint8List temps = lastMsgBytes.sublist(
+              msg.length,
+              lastMsgBytes.length,
+            );
             _cacheData = lastMsgBytes = temps;
           }
         } else {
@@ -343,10 +357,14 @@ class WKConnectionManager {
         Logs.debug('连接成功！');
         WKIM.shared.options.protoVersion = connackPacket.serviceProtoVersion;
         CryptoUtils.setServerKeyAndSalt(
-            connackPacket.serverKey, connackPacket.salt);
-        setConnectionStatus(WKConnectStatus.success,
-            reasoncode: connackPacket.reasonCode,
-            info: ConnectionInfo(connackPacket.nodeId));
+          connackPacket.serverKey,
+          connackPacket.salt,
+        );
+        setConnectionStatus(
+          WKConnectStatus.success,
+          reasoncode: connackPacket.reasonCode,
+          info: ConnectionInfo(connackPacket.nodeId),
+        );
         // Future.delayed(Duration(seconds: 1), () {
 
         // });
@@ -362,8 +380,10 @@ class WKConnectionManager {
         _startHeartTimer();
         _startCheckNetworkTimer();
       } else {
-        setConnectionStatus(WKConnectStatus.fail,
-            reasoncode: connackPacket.reasonCode);
+        setConnectionStatus(
+          WKConnectStatus.fail,
+          reasoncode: connackPacket.reasonCode,
+        );
         Logs.debug('连接失败！错误->${connackPacket.reasonCode}');
       }
     } else if (packet.header.packetType == PacketType.recv) {
@@ -372,13 +392,20 @@ class WKConnectionManager {
       _verifyRecvMsg(recvPacket);
       if (!recvPacket.header.noPersist) {
         _sendReceAckPacket(
-            recvPacket.messageID, recvPacket.messageSeq, recvPacket.header);
+          recvPacket.messageID,
+          recvPacket.messageSeq,
+          recvPacket.header,
+        );
       }
     } else if (packet.header.packetType == PacketType.sendack) {
       var sendack = packet as SendAckPacket;
       Logs.debug('发送结果：${sendack.reasonCode}');
-      WKIM.shared.messageManager.updateSendResult(sendack.messageID,
-          sendack.clientSeq, sendack.messageSeq, sendack.reasonCode);
+      WKIM.shared.messageManager.updateSendResult(
+        sendack.messageID,
+        sendack.clientSeq,
+        sendack.messageSeq,
+        sendack.reasonCode,
+      );
       if (_sendingMsgMap.containsKey(sendack.clientSeq)) {
         _sendingMsgMap[sendack.clientSeq]!.isCanResend = false;
       }
@@ -425,12 +452,13 @@ class WKConnectionManager {
       return;
     }
     var connectPacket = ConnectPacket(
-        uid: WKIM.shared.options.uid!,
-        token: WKIM.shared.options.token!,
-        version: WKIM.shared.options.protoVersion,
-        clientKey: base64Encode(CryptoUtils.dhPublicKey!),
-        deviceID: deviceID,
-        clientTimestamp: DateTime.now().millisecondsSinceEpoch);
+      uid: WKIM.shared.options.uid!,
+      token: WKIM.shared.options.token!,
+      version: WKIM.shared.options.protoVersion,
+      clientKey: base64Encode(CryptoUtils.dhPublicKey!),
+      deviceID: deviceID,
+      clientTimestamp: DateTime.now().millisecondsSinceEpoch,
+    );
     connectPacket.deviceFlag = WKIM.shared.deviceFlagApp;
     _sendPacket(connectPacket);
   }
@@ -458,6 +486,18 @@ class WKConnectionManager {
           所以 value.contains(ConnectivityResult.none) 在真机上的判断是可靠的，不会出现混合值误触发的情况。
           如果你是在模拟器上遇到反复触发"网络断开了"的问题，这通常是模拟器本身网络状态不稳定导致的，建议在真机上验证一下。
         */
+        // connectivity_plus reports Android's framework view of the default
+        // network, not whether this already-established TCP socket can reach
+        // WuKongIM. Emulators with a valid policy route can temporarily report
+        // `none` even after the server has accepted CONNECT and returned
+        // CONNACK. Do not tear down a proven live session in that case; the
+        // socket onError/onDone handlers and heartbeat remain the authoritative
+        // liveness signals and will schedule a reconnect if the transport
+        // actually fails.
+        if (value.contains(ConnectivityResult.none) && _socket != null) {
+          Logs.debug('系统网络状态不可用，但消息连接仍存活');
+          return;
+        }
         if (value.contains(ConnectivityResult.none)) {
           isReconnection = true;
           isNetworkUnavailable = true;
@@ -542,7 +582,7 @@ class WKConnectionManager {
       recvMsg.fromUID,
       recvMsg.channelID,
       recvMsg.channelType,
-      recvMsg.payload
+      recvMsg.payload,
     ]);
     var encryptContent = sb.toString();
     var result = CryptoUtils.aesEncrypt(encryptContent);
@@ -580,15 +620,22 @@ class WKConnectionManager {
     }
     msg.status = WKSendMsgResult.sendSuccess;
     msg.topicID = recvMsg.topic;
-    msg.orderSeq = await WKIM.shared.messageManager
-        .getMessageOrderSeq(msg.messageSeq, msg.channelID, msg.channelType);
+    msg.orderSeq = await WKIM.shared.messageManager.getMessageOrderSeq(
+      msg.messageSeq,
+      msg.channelID,
+      msg.channelType,
+    );
     dynamic contentJson = jsonDecode(msg.content);
     msg.contentType = WKDBConst.readInt(contentJson, 'type');
     msg.isDeleted = _isDeletedMsg(contentJson);
-    msg.messageContent = WKIM.shared.messageManager
-        .getMessageModel(msg.contentType, contentJson);
-    WKChannel? fromChannel = await WKIM.shared.channelManager
-        .getChannel(msg.fromUID, WKChannelType.personal);
+    msg.messageContent = WKIM.shared.messageManager.getMessageModel(
+      msg.contentType,
+      contentJson,
+    );
+    WKChannel? fromChannel = await WKIM.shared.channelManager.getChannel(
+      msg.fromUID,
+      WKChannelType.personal,
+    );
     if (fromChannel != null) {
       msg.setFrom(fromChannel);
     }
@@ -614,7 +661,8 @@ class WKConnectionManager {
       }
     } else {
       Logs.debug(
-          '消息不能存库:is_deleted=${msg.isDeleted},no_persist=${msg.header.noPersist},content_type:${msg.contentType}');
+        '消息不能存库:is_deleted=${msg.isDeleted},no_persist=${msg.header.noPersist},content_type:${msg.contentType}',
+      );
     }
     if (msg.contentType != WkMessageContentType.insideMsg) {
       List<WKMsg> list = [];
@@ -684,8 +732,8 @@ class WKConnectionManager {
           WKIM.shared.messageManager.updateMsgStatusFail(key);
           wkSendingMsg.isCanResend = false;
         } else {
-          var nowTime =
-              (DateTime.now().millisecondsSinceEpoch / 1000).truncate();
+          var nowTime = (DateTime.now().millisecondsSinceEpoch / 1000)
+              .truncate();
           if (nowTime - wkSendingMsg.sendTime > 10) {
             wkSendingMsg.sendTime =
                 (DateTime.now().millisecondsSinceEpoch / 1000).truncate();

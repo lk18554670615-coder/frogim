@@ -9,11 +9,33 @@ ALTER TABLE im_users ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DE
 ALTER TABLE im_users ADD COLUMN IF NOT EXISTS password_hash text NOT NULL DEFAULT '';
 ALTER TABLE im_users ADD COLUMN IF NOT EXISTS password_updated_at timestamptz;
 ALTER TABLE im_users ADD COLUMN IF NOT EXISTS handle_change_count integer NOT NULL DEFAULT 0 CHECK(handle_change_count BETWEEN 0 AND 2);
+ALTER TABLE im_users ADD COLUMN IF NOT EXISTS allow_search_by_handle boolean NOT NULL DEFAULT true;
+ALTER TABLE im_users ADD COLUMN IF NOT EXISTS allow_search_by_phone boolean NOT NULL DEFAULT false;
+ALTER TABLE im_users ADD COLUMN IF NOT EXISTS gender text NOT NULL DEFAULT 'unspecified' CHECK(gender IN ('unspecified','male','female'));
 ALTER TABLE im_users ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
 ALTER TABLE im_users ADD COLUMN IF NOT EXISTS banned_until timestamptz;
+UPDATE im_users
+SET handle='gg_'||left(md5(id),20),handle_change_count=0,updated_at=now()
+WHERE handle IS NULL OR btrim(handle)='' OR lower(handle) ~ '^(ll|usr)_[a-z0-9]{12,}$';
 CREATE UNIQUE INDEX IF NOT EXISTS im_users_handle_unique_idx ON im_users(lower(handle)) WHERE handle IS NOT NULL;
 CREATE TABLE IF NOT EXISTS im_refresh_sessions(id text PRIMARY KEY,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,token_hash bytea NOT NULL,expires_at timestamptz NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),revoked_at timestamptz,replaced_by text);
 CREATE INDEX IF NOT EXISTS im_refresh_sessions_user_idx ON im_refresh_sessions(user_id,expires_at DESC);
+CREATE TABLE IF NOT EXISTS im_qr_login_tickets(
+ id text PRIMARY KEY,
+ qr_token_hash bytea UNIQUE NOT NULL,
+ poll_token_hash bytea NOT NULL,
+ user_id text REFERENCES im_users(id) ON DELETE CASCADE,
+ client_platform text NOT NULL CHECK(client_platform IN ('web','macos')),
+ client_name text NOT NULL,
+ created_at timestamptz NOT NULL,
+ expires_at timestamptz NOT NULL,
+ confirmed_at timestamptz,
+ consumed_at timestamptz,
+ CHECK(expires_at>created_at),
+ CHECK(confirmed_at IS NULL OR user_id IS NOT NULL),
+ CHECK(consumed_at IS NULL OR confirmed_at IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS im_qr_login_tickets_expiry_idx ON im_qr_login_tickets(expires_at,id) WHERE consumed_at IS NULL;
 CREATE INDEX IF NOT EXISTS im_users_search_idx ON im_users(lower(name));
 CREATE INDEX IF NOT EXISTS im_users_deleted_idx ON im_users(deleted_at) WHERE deleted_at IS NOT NULL;
 CREATE TABLE IF NOT EXISTS im_friend_requests(id text PRIMARY KEY,from_user_id text NOT NULL REFERENCES im_users(id),to_user_id text NOT NULL REFERENCES im_users(id),message text NOT NULL DEFAULT '',status text NOT NULL,created_at timestamptz NOT NULL,UNIQUE(from_user_id,to_user_id,status));
@@ -38,6 +60,7 @@ ALTER TABLE im_conversations ADD COLUMN IF NOT EXISTS member_count integer NOT N
 CREATE TABLE IF NOT EXISTS im_direct_index(pair_key text PRIMARY KEY,conversation_id text UNIQUE NOT NULL REFERENCES im_conversations(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS im_members(conversation_id text NOT NULL REFERENCES im_conversations(id) ON DELETE CASCADE,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,role text NOT NULL,last_read_seq bigint NOT NULL DEFAULT 0,muted_until timestamptz,pinned boolean NOT NULL DEFAULT false,notifications_muted boolean NOT NULL DEFAULT false,manual_unread boolean NOT NULL DEFAULT false,hidden_until_seq bigint,joined_at timestamptz NOT NULL,PRIMARY KEY(conversation_id,user_id));
 ALTER TABLE im_members ADD COLUMN IF NOT EXISTS pinned boolean NOT NULL DEFAULT false;
+ALTER TABLE im_members ADD COLUMN IF NOT EXISTS saved boolean NOT NULL DEFAULT false;
 ALTER TABLE im_members ADD COLUMN IF NOT EXISTS notifications_muted boolean NOT NULL DEFAULT false;
 ALTER TABLE im_members ADD COLUMN IF NOT EXISTS manual_unread boolean NOT NULL DEFAULT false;
 ALTER TABLE im_members ADD COLUMN IF NOT EXISTS hidden_until_seq bigint;
@@ -560,7 +583,14 @@ CREATE TABLE IF NOT EXISTS im_wukong_system_users(
  reason text NOT NULL,
  updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE im_wukong_system_users ADD COLUMN IF NOT EXISTS robot_enabled boolean NOT NULL DEFAULT false;
+ALTER TABLE im_wukong_system_users ADD COLUMN IF NOT EXISTS robot_username text NOT NULL DEFAULT '';
+ALTER TABLE im_wukong_system_users ADD COLUMN IF NOT EXISTS robot_placeholder text NOT NULL DEFAULT '';
+ALTER TABLE im_wukong_system_users ADD COLUMN IF NOT EXISTS robot_inline_on boolean NOT NULL DEFAULT false;
+ALTER TABLE im_wukong_system_users ADD COLUMN IF NOT EXISTS robot_version bigint NOT NULL DEFAULT 0;
+ALTER TABLE im_wukong_system_users ADD COLUMN IF NOT EXISTS robot_menus jsonb NOT NULL DEFAULT '[]'::jsonb;
 CREATE INDEX IF NOT EXISTS im_wukong_system_users_enabled_idx ON im_wukong_system_users(enabled,user_id);
+CREATE INDEX IF NOT EXISTS im_wukong_robot_profiles_idx ON im_wukong_system_users(robot_enabled,robot_version,user_id) WHERE robot_version>0;
 
 CREATE SEQUENCE IF NOT EXISTS im_wukong_message_extension_sync_version_seq;
 CREATE TABLE IF NOT EXISTS im_wukong_message_extensions(

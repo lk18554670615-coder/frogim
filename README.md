@@ -1,6 +1,6 @@
-# 邻里通讯
+# 青蛙呱呱
 
-邻里通讯是一套可独立部署的即时通讯系统。仓库包含 Flutter 四端客户端、Go 业务 API、WuKongIM、LiveKit、React 运营后台、PostgreSQL、Redis、MinIO/S3、监控、备份与生产部署脚本。新技术资源统一使用 `linli-im`；部分 `nexachat` 标识是现有部署资源名，详见[兼容标识](docs/COMPATIBILITY.md)。
+青蛙呱呱是一套可独立部署的即时通讯系统。仓库包含 Flutter 四端客户端、Go 业务 API、WuKongIM、LiveKit、React 运营后台、PostgreSQL、Redis、MinIO/S3、监控、备份与生产部署脚本。内部技术资源继续使用 `linli-im`；部分 `nexachat` 标识是现有部署资源名，详见[兼容标识](docs/COMPATIBILITY.md)。
 
 ## 目录
 
@@ -33,6 +33,7 @@ infra/scripts/smoke-local.sh
 - MinIO 控制台：`http://127.0.0.1:9001`
 
 本地管理员账号、固定验证码和 TOTP 种子仅用于回环开发环境，见 `.env.example`。禁止把示例配置用于公网或共享环境。
+本地栈默认使用真实空数据，不会创建演示账号；只有隔离开发测试需要时才可同时显式设置 `IM_DEV_MODE=true` 与 `IM_SEED_DEMO=true`。
 
 ## 常用验证
 

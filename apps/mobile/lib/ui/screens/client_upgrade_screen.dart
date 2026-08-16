@@ -72,7 +72,7 @@ class _ForcedUpgradeScreenState extends State<ForcedUpgradeScreen> {
                   width: 78,
                   height: 78,
                   decoration: BoxDecoration(
-                    color: LinliColors.yellow.withValues(alpha: .22),
+                    color: LinliColors.brandGreen.withValues(alpha: .22),
                     borderRadius: BorderRadius.circular(24),
                   ),
                   child: const Icon(

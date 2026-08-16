@@ -1,16 +1,16 @@
-# 邻里通讯运营后台
+# 青蛙呱呱运营后台
 
 The operations console covers service overview, users, groups, reports, sensitive-word rules, health, audit and global settings. It supports the current Go response shapes and a future paginated `{items,total}` response without rendering failures.
 
 ## Security and environments
 
-- Production builds always use the live API and do not render the demo selector.
+- Development, test and production builds all use the live API adapter; the application has no demo selector or runtime demo data mode.
 - Administrators sign in with a named email, password and optional TOTP code. Only the short-lived JWT returned by the server is kept in `sessionStorage`; passwords and TOTP values are never persisted.
 - A 401 expires the current session; nested API errors and request IDs are shown to the operator.
 - UI permissions improve clarity, but the service remains the authorization boundary.
 - Destructive actions require confirmation and show explicit success or failure feedback.
 
-Demo data is available only while running Vite in development or tests. `VITE_ALLOW_DEMO=true` must never be used for a production build.
+Automated tests use isolated fixtures only. They are never bundled into or selectable from the running application.
 
 ## Local development
 
@@ -19,16 +19,16 @@ npm ci
 npm run dev
 ```
 
-The Vite server listens on `http://127.0.0.1:4173` and proxies `/api` to `ADMIN_PROXY_TARGET` (default `http://127.0.0.1:8080`).
+The Vite server listens on `http://127.0.0.1:4173` and proxies `/api` to `ADMIN_PROXY_TARGET` (default `http://127.0.0.1:8080`). Set this server-only variable to the real API origin when the backend is not running locally; for example, `ADMIN_PROXY_TARGET=https://api.example.com npm run dev`. A healthy unauthenticated proxy check returns `401` from `/api/v2/admin/health`; `502` means the proxy target is unavailable or misconfigured.
 
 Supported build variables:
 
 ```dotenv
 VITE_ADMIN_API_URL=/api/v2/admin
-VITE_ALLOW_DEMO=false
+ADMIN_PROXY_TARGET=http://127.0.0.1:8080
 ```
 
-Never set an administrator password, hash, TOTP seed or token in a `VITE_*` variable. Vite values are public build assets.
+`ADMIN_PROXY_TARGET` is consumed only by the development server and is not bundled into the browser application. Never set an administrator password, hash, TOTP seed or token in a `VITE_*` variable. Vite values are public build assets.
 
 ## Live API behavior
 
@@ -47,13 +47,13 @@ npm run build
 npm audit --audit-level=high
 ```
 
-Tests cover demo journeys, live dashboard compatibility, response envelopes, pagination fallback, nested errors, authentication, accessible dialogs and destructive confirmations.
+Tests cover live dashboard compatibility, response envelopes, pagination fallback, user and group detail contracts, nested errors, authentication, accessible dialogs and destructive confirmations.
 
 ## Container
 
 The image builds with Node.js 22 and runs as an unprivileged Nginx user on port 8080. It includes CSP, clickjacking protection, referrer/permissions policies, bounded proxy timeouts and hashed-asset caching.
 
 ```bash
-docker build -t linli-im-admin .
-docker run --rm -p 127.0.0.1:8088:8080 linli-im-admin
+docker build -t qingwaguagua-im-admin .
+docker run --rm -p 127.0.0.1:8088:8080 qingwaguagua-im-admin
 ```
