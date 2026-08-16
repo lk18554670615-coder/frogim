@@ -70,6 +70,64 @@ grep -qx 'nexachat_backup_last_status 0' "$failure_metrics"
 grep -qx 'nexachat_backup_running 0' "$failure_metrics"
 grep -qx 'nexachat_backup_incomplete_generations 1' "$failure_metrics"
 
+# If a later backup step fails after WuKongIM is stopped, the EXIT trap must
+# restart the exact container directly. Compose start can reject the service
+# graph when an optional init dependency has already been removed.
+restart_root="$temporary_root/restart-case"
+restart_backup_root="$restart_root/backups"
+restart_data_root="$restart_root/data"
+mock_bin="$restart_root/bin"
+mock_docker_log="$restart_root/docker.log"
+mkdir -p "$restart_backup_root" "$restart_data_root/wukongim/data" "$mock_bin"
+printf 'test-data\n' > "$restart_data_root/wukongim/data/state"
+restart_env="$restart_root/config.env"
+cat > "$restart_env" <<EOF
+LINLI_DATA_ROOT=$restart_data_root
+BACKUP_DIR=$restart_backup_root
+BACKUP_METRICS_DIR=$restart_backup_root/.metrics
+PRODUCTION_ENDPOINT_MODE=domain
+POSTGRES_USER=nexachat
+POSTGRES_DB=nexachat
+EOF
+cat > "$mock_bin/docker" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "$MOCK_DOCKER_LOG"
+if [[ "${1:-}" == compose ]]; then
+  case " $* " in
+    *" ps --status running --services "*)
+      printf 'wukongim\n'
+      exit 0
+      ;;
+    *" ps -q wukongim "*)
+      printf 'mock-wukong-container\n'
+      exit 0
+      ;;
+    *" exec -T postgres pg_dump "*)
+      exit 42
+      ;;
+  esac
+fi
+if [[ "${1:-}" == stop && "${*: -1}" == mock-wukong-container ]]; then
+  exit 0
+fi
+if [[ "${1:-}" == start && "${2:-}" == mock-wukong-container ]]; then
+  exit 0
+fi
+exit 99
+EOF
+chmod +x "$mock_bin/docker"
+if PATH="$mock_bin:$PATH" MOCK_DOCKER_LOG="$mock_docker_log" bash "$SCRIPT_DIR/backup.sh" "$restart_env" >"$restart_root/stdout" 2>"$restart_root/stderr"; then
+  echo "backup unexpectedly succeeded when pg_dump failed" >&2
+  exit 1
+fi
+grep -Fxq 'stop -t 30 mock-wukong-container' "$mock_docker_log"
+grep -Fxq 'start mock-wukong-container' "$mock_docker_log"
+if grep -Eq 'compose .* start wukongim' "$mock_docker_log"; then
+  echo "backup recovery still depends on Compose start" >&2
+  exit 1
+fi
+
 if bash "$SCRIPT_DIR/fetch-offsite-backup.sh" invalid "$failure_env" >"$failure_root/fetch-invalid.stdout" 2>"$failure_root/fetch-invalid.stderr"; then
   echo "off-site fetch accepted an invalid generation" >&2
   exit 1

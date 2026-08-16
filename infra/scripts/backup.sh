@@ -27,6 +27,7 @@ fi
 mkdir -p -m 700 "$working/minio"
 backup_complete=false
 wukong_stopped=false
+wukong_container_id=""
 backup_metrics_started=false
 compose=(docker compose --env-file "$ENV_FILE")
 if [[ "${WUKONG_DEV_PUBLIC_REPLACEMENT:-false}" == "true" ]]; then
@@ -40,12 +41,29 @@ if [[ "${WUKONG_DEV_PUBLIC_REPLACEMENT:-false}" != "true" ]]; then
   compose+=(-f "$ROOT_DIR/infra/compose.wukong.production.yaml")
 fi
 
+restart_wukong() {
+  if [[ "$wukong_stopped" != true ]]; then
+    return 0
+  fi
+  if [[ -z "$wukong_container_id" ]]; then
+    echo "cannot restart WuKongIM: container id was not captured" >&2
+    return 1
+  fi
+  if ! docker start "$wukong_container_id" >/dev/null; then
+    echo "failed to restart WuKongIM container: $wukong_container_id" >&2
+    return 1
+  fi
+  wukong_stopped=false
+}
+
 cleanup() {
   local exit_status="$?" metrics_status=0
   trap - EXIT
   set +e
   if [[ "$wukong_stopped" == true ]]; then
-    "${compose[@]}" start wukongim >/dev/null 2>&1 || true
+    if ! restart_wukong; then
+      [[ "$exit_status" -ne 0 ]] || exit_status=1
+    fi
   fi
   if [[ "$backup_complete" != true ]]; then
     echo "backup incomplete: $working" >&2
@@ -75,8 +93,16 @@ if [[ ! -d "$wukong_data" ]]; then
   exit 1
 fi
 if "${compose[@]}" ps --status running --services | grep -qx wukongim; then
-  "${compose[@]}" stop -t 30 wukongim
+  wukong_container_id="$("${compose[@]}" ps -q wukongim)"
+  if [[ -z "$wukong_container_id" ]]; then
+    echo "WuKongIM is running but its container id could not be resolved" >&2
+    exit 1
+  fi
+  # Capture the exact container before stopping it. Re-evaluating the Compose
+  # graph during recovery can fail when an optional one-shot dependency is no
+  # longer present, which would otherwise leave messaging offline.
   wukong_stopped=true
+  docker stop -t 30 "$wukong_container_id" >/dev/null
 fi
 # Freeze WuKongIM before taking the PostgreSQL snapshot. Business mutations
 # committed while it is stopped remain pending in the durable outbox, so the
@@ -86,8 +112,7 @@ tar -C "$wukong_data" -czf "$working/wukongim-data.tar.gz" .
 "${compose[@]}" exec -T postgres pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom --no-owner --no-acl > "$working/postgres.dump"
 
 if [[ "$wukong_stopped" == true ]]; then
-  "${compose[@]}" start wukongim
-  wukong_stopped=false
+  restart_wukong
 fi
 
 # Mirror objects after the database snapshot: an object referenced by that
