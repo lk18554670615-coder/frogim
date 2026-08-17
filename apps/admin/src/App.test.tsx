@@ -363,6 +363,22 @@ describe('青蛙呱呱管理后台', () => {
     expect(await screen.findByText('没有匹配的消息元数据')).toBeInTheDocument();
   });
 
+  it('消息治理展示从 WuKongIM 实时加载的正文', async () => {
+    window.history.replaceState({}, '', '/messages');
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/messages')) return response({ items: [{
+        id: '2089149153182388224', clientMsgId: 'client-live-1', conversationId: 'conv_direct_1',
+        senderId: 'u_10291', conversationSeq: 13, type: 'text', body: { text: '服务端实时正文' },
+        createdAt: '2026-08-17T08:35:00Z',
+      }], total: 1 });
+      return liveFixture(input, init);
+    }));
+    render(<App />);
+    expect(await screen.findByText('服务端实时正文')).toBeInTheDocument();
+    expect(screen.queryByText('内容受保护')).not.toBeInTheDocument();
+    expect(screen.getByText(/每次查看都会写入审计日志/)).toBeInTheDocument();
+  });
+
   it('兼容服务端扁平 dashboard 响应', async () => {
     sessionStorage.setItem('qingwaguagua_admin_session', JSON.stringify(session));
     vi.stubGlobal('fetch', vi.fn(async () => ({

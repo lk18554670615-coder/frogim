@@ -947,8 +947,9 @@ func (p *Postgres) ListAdminAudits(ctx context.Context, q, status, cursor string
 }
 
 const adminMessageUnion = `
-	SELECT message_index.message_id::text AS id,message_index.conversation_id,message_index.sender_id,
-		message_index.client_msg_no AS client_msg_id,message_index.message_seq,
+	SELECT message_index.message_id::text AS id,COALESCE(message_index.conversation_id,'') AS conversation_id,COALESCE(message_index.sender_id,'') AS sender_id,
+		COALESCE(message_index.client_msg_no,'') AS client_msg_id,message_index.message_seq,
+		COALESCE(message_index.channel_id,'') AS channel_id,message_index.channel_type,
 		CASE message_index.content_type
 			WHEN 1 THEN 'text' WHEN 2 THEN 'image' WHEN 3 THEN 'image' WHEN 4 THEN 'audio'
 			WHEN 5 THEN 'video' WHEN 6 THEN 'location' WHEN 7 THEN 'contact' WHEN 8 THEN 'file'
@@ -956,7 +957,7 @@ const adminMessageUnion = `
 			WHEN 1004 THEN 'moment' WHEN 1005 THEN 'call' WHEN 1006 THEN 'live'
 			WHEN 1007 THEN 'support' WHEN 1008 THEN 'screenshot' ELSE 'custom'
 		END AS message_type,
-		'{}'::jsonb AS body,NULL::text AS reply_to_id,
+		COALESCE(message_extension.payload->'editedBody','{}'::jsonb) AS body,NULL::text AS reply_to_id,
 		NULLIF(message_extension.payload->>'recalledAt','')::timestamptz AS recalled_at,
 		message_index.expires_at,
 		COALESCE(message_index.expired_at,CASE WHEN message_index.expires_at<=now() THEN message_index.expires_at END) AS expired_at,
@@ -977,7 +978,7 @@ func (p *Postgres) ListAdminMessages(ctx context.Context, q, messageType, cursor
 		AND ($3='' OR message_type=$3)`, q, pattern, messageType).Scan(&total); err != nil {
 		return nil, 0, "", err
 	}
-	rows, err := p.pool.Query(ctx, `WITH all_messages AS (`+adminMessageUnion+`) SELECT id,conversation_id,sender_id,client_msg_id,message_seq,message_type,body,reply_to_id,recalled_at,expires_at,expired_at,edited_at,edit_version,created_at
+	rows, err := p.pool.Query(ctx, `WITH all_messages AS (`+adminMessageUnion+`) SELECT id,conversation_id,sender_id,client_msg_id,message_seq,channel_id,channel_type,message_type,body,reply_to_id,recalled_at,expires_at,expired_at,edited_at,edit_version,created_at
 		FROM all_messages WHERE
 		($1='' OR id ILIKE $2 OR conversation_id ILIKE $2 OR sender_id ILIKE $2 OR client_msg_id ILIKE $2)
 		AND ($3='' OR message_type=$3) ORDER BY created_at DESC,id LIMIT $4 OFFSET $5`, q, pattern, messageType, limit, offset)
@@ -990,7 +991,7 @@ func (p *Postgres) ListAdminMessages(ctx context.Context, q, messageType, cursor
 		m := &model.Message{}
 		var raw []byte
 		var reply *string
-		if err = rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.ClientMsgID, &m.Seq, &m.Type, &raw, &reply, &m.RecalledAt, &m.ExpiresAt, &m.ExpiredAt, &m.EditedAt, &m.EditVersion, &m.CreatedAt); err != nil {
+		if err = rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.ClientMsgID, &m.Seq, &m.WukongChannelID, &m.WukongChannelType, &m.Type, &raw, &reply, &m.RecalledAt, &m.ExpiresAt, &m.ExpiredAt, &m.EditedAt, &m.EditVersion, &m.CreatedAt); err != nil {
 			return nil, 0, "", err
 		}
 		if reply != nil {

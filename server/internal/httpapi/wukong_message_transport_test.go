@@ -13,10 +13,106 @@ import (
 	"time"
 
 	"github.com/linli/im/server/internal/app"
+	"github.com/linli/im/server/internal/model"
 	"github.com/linli/im/server/internal/store"
 	"github.com/linli/im/server/internal/teststore"
 	"github.com/linli/im/server/internal/wukong"
 )
+
+type adminAuditCaptureStore struct {
+	teststore.Memory
+	entry *model.AuditEntry
+}
+
+func (*adminAuditCaptureStore) AdminStats(context.Context) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+func (*adminAuditCaptureStore) ListAdminGroups(context.Context, string, string, string, int) ([]map[string]any, int64, string, error) {
+	return nil, 0, "", nil
+}
+func (*adminAuditCaptureStore) ListAdminFriendships(context.Context, string, string, int) ([]store.AdminFriendship, int64, string, error) {
+	return nil, 0, "", nil
+}
+func (*adminAuditCaptureStore) ListAdminFeedback(context.Context, string, string, string, int) ([]store.AdminFeedback, int64, string, error) {
+	return nil, 0, "", nil
+}
+func (*adminAuditCaptureStore) AdminPushStatus(context.Context) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+func (*adminAuditCaptureStore) AdminTaskStatus(context.Context) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+func (*adminAuditCaptureStore) AdminUserOverview(context.Context, string) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+func (*adminAuditCaptureStore) AdminGroupOverview(context.Context, string) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+func (*adminAuditCaptureStore) ListAdminGroupMembers(context.Context, string, string, string, int) ([]*model.ConversationMember, int64, string, error) {
+	return nil, 0, "", nil
+}
+func (s *adminAuditCaptureStore) RecordAdminAudit(_ context.Context, entry *model.AuditEntry) error {
+	s.entry = entry
+	return nil
+}
+
+func TestAdminMessageBodiesLoadFromWuKongByCurrentPage(t *testing.T) {
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/messages" {
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
+		requestCount.Add(1)
+		var input wukong.MessageSearchRequest
+		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		if input.LoginUID != "usr_a" || input.ChannelID != "usr_b" || input.ChannelType != wukong.ChannelPerson || !reflect.DeepEqual(input.MessageIDs, []int64{101, 102}) {
+			t.Fatalf("search request=%+v", input)
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"messages": []wukong.SyncedMessage{
+			{"message_idstr": "102", "client_msg_no": "client-2", "from_uid": "usr_b", "message_seq": 2, "timestamp": 1700000001, "payload": map[string]any{"type": wukong.ContentTypeText, "content": "original"}},
+			{"message_idstr": "101", "client_msg_no": "client-1", "from_uid": "usr_a", "message_seq": 1, "timestamp": 1700000000, "payload": map[string]any{"type": wukong.ContentTypeText, "content": "live body"}},
+		}})
+	}))
+	defer server.Close()
+	client, err := wukong.NewClient(wukong.Config{APIURL: server.URL, ManagerURL: server.URL, ManagerToken: "manager-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &API{wukongClient: client}
+	items := []*model.Message{
+		{ID: "101", ConversationID: "conv-direct", SenderID: "usr_a", WukongChannelID: "usr_b", WukongChannelType: wukong.ChannelPerson, Type: "text"},
+		{ID: "102", ConversationID: "conv-direct", SenderID: "usr_b", WukongChannelID: "usr_a", WukongChannelType: wukong.ChannelPerson, Type: "text", Body: map[string]any{"text": "edited body"}},
+	}
+	loaded, missing, err := api.loadAdminMessageBodies(t.Context(), items)
+	if err != nil || loaded != 2 || missing != 0 || requestCount.Load() != 1 {
+		t.Fatalf("loaded=%d missing=%d requests=%d err=%v", loaded, missing, requestCount.Load(), err)
+	}
+	if items[0].Body["text"] != "live body" || items[1].Body["text"] != "edited body" {
+		t.Fatalf("items=%+v", items)
+	}
+}
+
+func TestAdminMessageViewAuditExcludesMessageBodies(t *testing.T) {
+	capture := &adminAuditCaptureStore{}
+	application, err := app.New(t.Context(), capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &API{app: application}
+	request := httptest.NewRequest(http.MethodGet, "/v2/admin/messages?q=conv-1&type=text&cursor=20", nil)
+	request = request.WithContext(context.WithValue(request.Context(), userKey, "admin-1"))
+	api.recordAdminMessageView(request, "success", 20, 19, 1, nil)
+	audit := capture.entry
+	if audit == nil || audit.Action != "message.search.viewed" || audit.ActorID != "admin-1" || audit.Metadata["contentLoaded"] != 19 || audit.Metadata["query"] != "conv-1" {
+		t.Fatalf("audit=%+v", audit)
+	}
+	if _, leaked := audit.Metadata["body"]; leaked {
+		t.Fatalf("audit leaked message body: %+v", audit.Metadata)
+	}
+}
 
 func TestWukongMessagePayloadMapsLegacyFieldsWithoutChangingBusinessBody(t *testing.T) {
 	body := map[string]any{"text": "你好", "forwarded": true}

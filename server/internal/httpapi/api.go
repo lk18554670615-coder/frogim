@@ -2965,9 +2965,17 @@ func (x *API) adminMessages(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(query.Get("limit"))
 	items, total, next, err := x.app.AdminMessagesPage(query.Get("q"), query.Get("type"), query.Get("cursor"), limit)
 	if err != nil {
+		x.recordAdminMessageView(r, "failed", 0, 0, 0, err)
 		handleErr(w, err)
 		return
 	}
+	loaded, missing, err := x.loadAdminMessageBodies(r.Context(), items)
+	if err != nil {
+		x.recordAdminMessageView(r, "failed", len(items), loaded, missing, err)
+		handleErr(w, err)
+		return
+	}
+	x.recordAdminMessageView(r, "success", len(items), loaded, missing, nil)
 	write(w, http.StatusOK, map[string]any{"items": items, "total": total, "nextCursor": next})
 }
 func (x *API) adminMediaCleanupStatus(w http.ResponseWriter, r *http.Request) {

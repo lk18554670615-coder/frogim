@@ -114,25 +114,27 @@ type GroupInvite struct {
 }
 
 type Message struct {
-	ID               string                   `json:"id"`
-	ClientMsgID      string                   `json:"clientMsgId"`
-	ConversationID   string                   `json:"conversationId"`
-	SenderID         string                   `json:"senderId"`
-	Seq              int64                    `json:"conversationSeq"`
-	Type             string                   `json:"type"`
-	Body             map[string]any           `json:"body"`
-	ReplyToID        string                   `json:"replyToId,omitempty"`
-	RecalledAt       *time.Time               `json:"recalledAt,omitempty"`
-	ExpiresAt        *time.Time               `json:"expiresAt,omitempty"`
-	ExpiredAt        *time.Time               `json:"expiredAt,omitempty"`
-	EditedAt         *time.Time               `json:"editedAt,omitempty"`
-	EditVersion      int                      `json:"editVersion"`
-	AdminRecall      bool                     `json:"adminRecall,omitempty"`
-	ModeratedBy      string                   `json:"moderatedBy,omitempty"`
-	ModerationReason string                   `json:"moderationReason,omitempty"`
-	ModeratedAt      *time.Time               `json:"moderatedAt,omitempty"`
-	Reactions        []MessageReactionSummary `json:"reactions,omitempty"`
-	CreatedAt        time.Time                `json:"createdAt"`
+	ID                string                   `json:"id"`
+	ClientMsgID       string                   `json:"clientMsgId"`
+	ConversationID    string                   `json:"conversationId"`
+	SenderID          string                   `json:"senderId"`
+	WukongChannelID   string                   `json:"-"`
+	WukongChannelType uint8                    `json:"-"`
+	Seq               int64                    `json:"conversationSeq"`
+	Type              string                   `json:"type"`
+	Body              map[string]any           `json:"body"`
+	ReplyToID         string                   `json:"replyToId,omitempty"`
+	RecalledAt        *time.Time               `json:"recalledAt,omitempty"`
+	ExpiresAt         *time.Time               `json:"expiresAt,omitempty"`
+	ExpiredAt         *time.Time               `json:"expiredAt,omitempty"`
+	EditedAt          *time.Time               `json:"editedAt,omitempty"`
+	EditVersion       int                      `json:"editVersion"`
+	AdminRecall       bool                     `json:"adminRecall,omitempty"`
+	ModeratedBy       string                   `json:"moderatedBy,omitempty"`
+	ModerationReason  string                   `json:"moderationReason,omitempty"`
+	ModeratedAt       *time.Time               `json:"moderatedAt,omitempty"`
+	Reactions         []MessageReactionSummary `json:"reactions,omitempty"`
+	CreatedAt         time.Time                `json:"createdAt"`
 }
 
 type ScheduledMessage struct {

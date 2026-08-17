@@ -603,10 +603,10 @@ function adaptLiveKitMetrics(value: unknown): LiveKitMetrics {
 
 function adaptMessage(value: unknown): MessageRecord {
   const raw = object(value); const body = object(raw.body);
-  const preview = string(body.text, string(body.fileName, string(body.caption, JSON.stringify(body))));
+  const preview = string(body.text, string(body.content, string(body.fileName, string(body.caption, Object.keys(body).length ? JSON.stringify(body) : ''))));
   return {
     id: string(raw.id), clientMsgId: string(raw.clientMsgId), conversationId: string(raw.conversationId), senderId: string(raw.senderId),
-    conversationSeq: number(raw.conversationSeq), type: string(raw.type, 'unknown'), preview: preview || '内容受保护', recalled: Boolean(raw.recalledAt),
+    conversationSeq: number(raw.conversationSeq), type: string(raw.type, 'unknown'), preview: preview || '正文暂不可用', recalled: Boolean(raw.recalledAt),
     recalledAt: string(raw.recalledAt) || undefined, expiresAt: string(raw.expiresAt) || undefined, expiredAt: string(raw.expiredAt) || undefined,
     editedAt: string(raw.editedAt) || undefined, editVersion: number(raw.editVersion), createdAt: formatDate(raw.createdAt),
   };

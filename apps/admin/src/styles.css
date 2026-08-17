@@ -169,6 +169,7 @@ td { height: 50px; padding: 0 12px; border-bottom: 1px solid var(--line); color:
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover { background: oklch(0.985 0.006 160); }
 td strong { color: var(--ink); font-weight: 620; }
+.message-content-preview { display: block; max-width: 420px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .identity, .group-name { display: flex; align-items: center; gap: 10px; }
 .avatar { width: 32px; height: 32px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 50%; color: oklch(0.28 0.07 160); background: var(--primary-soft); font-weight: 700; }
 .avatar > * { grid-area: 1 / 1; }
