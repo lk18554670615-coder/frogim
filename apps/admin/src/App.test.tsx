@@ -175,7 +175,7 @@ describe('青蛙呱呱管理后台', () => {
   it('窄屏侧栏关闭时不可聚焦，打开后支持 Escape 并把焦点还给菜单按钮', async () => {
     vi.stubGlobal('matchMedia', vi.fn(() => ({
       matches: true,
-      media: '(max-width: 880px)',
+      media: '(max-width: 1120px)',
       onchange: null,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
