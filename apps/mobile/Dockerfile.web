@@ -21,6 +21,7 @@ RUN apt-get update \
 WORKDIR /workspace
 
 COPY packages/getuiflut packages/getuiflut
+COPY third_party/device_info_plus-13.2.0-four-platform third_party/device_info_plus-13.2.0-four-platform
 COPY third_party/wukongim/flutter-sdk-1.7.9-patched third_party/wukongim/flutter-sdk-1.7.9-patched
 COPY apps/mobile apps/mobile
 
