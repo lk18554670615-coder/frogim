@@ -176,6 +176,26 @@ describe('live API adapter', () => {
     await expect(getApi('token').getClientVersions()).rejects.toThrow('缺少有效平台');
   });
 
+  it('消费用户关系与设备接口并通过 WuKongIM 发送系统消息', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/users/u_1/friends')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ id: 'u_2', name: '江宁', handle: 'jiangning', remark: '产品同事' }] }) };
+      if (url.endsWith('/users/u_1/blocks')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ id: 'u_3', name: '屏蔽账号' }] }) };
+      if (url.endsWith('/users/u_1/devices')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ id: 'device_1', userId: 'u_1', platform: 'android', provider: 'fcm', notificationsEnabled: true, previewEnabled: false, soundEnabled: true, vibrationEnabled: true, updatedAt: '2026-08-16T08:00:00Z' }] }) };
+      expect(init?.method).toBe('POST');
+      return { ok: true, status: 201, headers: new Headers(), json: async () => ({ targetUid: 'u_1', senderUid: 'u_notice', conversationId: 'conv_1', messageId: 88, clientMsgNo: 'admin-notice-1' }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const api = getApi('token');
+    expect(await api.getUserFriends('u_1')).toEqual([expect.objectContaining({ id: 'u_2', remark: '产品同事' })]);
+    expect(await api.getUserBlockedUsers('u_1')).toEqual([expect.objectContaining({ id: 'u_3' })]);
+    expect(await api.getUserDevices('u_1')).toEqual([expect.objectContaining({ id: 'device_1', platform: 'android', notificationsEnabled: true })]);
+    expect(await api.sendUserSystemMessage('u_1', '版本升级通知', '运营工单 OPS-18')).toEqual(expect.objectContaining({ messageId: '88', senderUid: 'u_notice' }));
+    const write = fetchMock.mock.calls[fetchMock.mock.calls.length - 1];
+    expect(String(write?.[0])).toContain('/users/u_1/system-message');
+    expect(JSON.parse(String(write?.[1]?.body))).toEqual({ content: '版本升级通知', reason: '运营工单 OPS-18', confirmed: true });
+  });
+
   it('新历史接口未上线时从真实审计记录读取发布快照', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).includes('/client-versions/android/history')) return { ok: false, status: 404, headers: new Headers(), json: async () => ({ error: { code: 'NOT_FOUND', message: '接口未上线' } }) };

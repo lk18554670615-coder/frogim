@@ -2080,6 +2080,71 @@ func TestRefreshRotationLogoutAndAdminRBAC(t *testing.T) {
 	_ = res.Body.Close()
 }
 
+func TestAdminUserManagementReturnsRealRelationsDevicesAndRejectsUnavailableSystemMessage(t *testing.T) {
+	a, err := app.New(context.Background(), teststore.Memory{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.SeedDemo(); err != nil {
+		t.Fatal(err)
+	}
+	request, err := a.RequestFriend("usr_alice", "usr_bob", "后台关系接口测试")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.AcceptFriend("usr_bob", request.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.Block("usr_alice", "usr_admin", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.RegisterDevice("usr_alice", store.Device{ID: "device_android_1", Platform: "android", Provider: "fcm", PushToken: "private-token", NotificationsEnabled: true, SoundEnabled: true, VibrationEnabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	adminKey := strings.Repeat("a", 24)
+	cfg := config.Config{JWTSecret: strings.Repeat("s", 32), DevMode: true, AdminSharedKeyEnabled: true, AdminKey: adminKey, AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
+	ts := httptest.NewServer(New(cfg, a).Handler())
+	defer ts.Close()
+
+	checks := []struct {
+		path string
+		id   string
+	}{
+		{path: "/v2/admin/users/usr_alice/friends", id: "usr_bob"},
+		{path: "/v2/admin/users/usr_alice/blocks", id: "usr_admin"},
+		{path: "/v2/admin/users/usr_alice/devices", id: "device_android_1"},
+	}
+	for _, check := range checks {
+		res := adminKeyRequest(t, http.MethodGet, ts.URL+check.path, adminKey, "")
+		if res.StatusCode != http.StatusOK {
+			_ = res.Body.Close()
+			t.Fatalf("%s status=%d", check.path, res.StatusCode)
+		}
+		var payload struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err = json.NewDecoder(res.Body).Decode(&payload); err != nil {
+			_ = res.Body.Close()
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+		if len(payload.Items) != 1 || payload.Items[0]["id"] != check.id {
+			t.Fatalf("%s items=%v", check.path, payload.Items)
+		}
+		if check.id == "device_android_1" {
+			if _, leaked := payload.Items[0]["pushToken"]; leaked {
+				t.Fatal("admin device response leaked push token")
+			}
+		}
+	}
+
+	res := adminKeyRequest(t, http.MethodPost, ts.URL+"/v2/admin/users/usr_alice/system-message", adminKey, `{"content":"版本升级通知","reason":"运营工单 OPS-18","confirmed":true}`)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("system message without WuKongIM status=%d", res.StatusCode)
+	}
+}
+
 func TestAuthenticationDoesNotFallbackAndBanBlocksRefreshAndAPI(t *testing.T) {
 	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()

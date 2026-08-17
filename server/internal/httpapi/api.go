@@ -396,6 +396,10 @@ func (x *API) routes() {
 	x.mux.Handle("GET /v2/admin/dashboard", x.requireAdmin(http.HandlerFunc(x.adminStats)))
 	x.mux.Handle("GET /v2/admin/users", x.requireAdmin(http.HandlerFunc(x.adminUsers)))
 	x.mux.Handle("GET /v2/admin/users/{id}", x.requireAdmin(http.HandlerFunc(x.adminUserOverview)))
+	x.mux.Handle("GET /v2/admin/users/{id}/friends", x.requireAdmin(http.HandlerFunc(x.adminUserFriends)))
+	x.mux.Handle("GET /v2/admin/users/{id}/blocks", x.requireAdmin(http.HandlerFunc(x.adminUserBlocks)))
+	x.mux.Handle("GET /v2/admin/users/{id}/devices", x.requireAdmin(http.HandlerFunc(x.adminUserDevices)))
+	x.mux.Handle("POST /v2/admin/users/{id}/system-message", x.requireAdmin(http.HandlerFunc(x.adminUserSystemMessage)))
 	x.mux.Handle("POST /v2/admin/users/{id}/ban", x.requireAdmin(http.HandlerFunc(x.adminBan)))
 	x.mux.Handle("POST /v2/admin/users/{id}/unban", x.requireAdmin(http.HandlerFunc(x.adminUnban)))
 	x.mux.Handle("GET /v2/admin/reports", x.requireAdmin(http.HandlerFunc(x.adminReports)))
@@ -2653,6 +2657,9 @@ func (x *API) adminUsers(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
+	for _, item := range items {
+		x.signAvatarURL(item)
+	}
 	write(w, 200, map[string]any{"items": items, "total": total, "nextCursor": next})
 }
 func (x *API) adminUserOverview(w http.ResponseWriter, r *http.Request) {
@@ -2661,7 +2668,131 @@ func (x *API) adminUserOverview(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
+	if user, ok := item["user"].(*model.User); ok {
+		x.signAvatarURL(user)
+	}
 	write(w, http.StatusOK, item)
+}
+func (x *API) adminUserFriends(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("id")
+	if _, err := x.app.UserContext(r.Context(), userID); err != nil {
+		handleErr(w, err)
+		return
+	}
+	items, err := x.app.FriendsContext(r.Context(), userID)
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	for _, item := range items {
+		x.signAvatarURL(item)
+	}
+	write(w, http.StatusOK, map[string]any{"items": items})
+}
+func (x *API) adminUserBlocks(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("id")
+	if _, err := x.app.UserContext(r.Context(), userID); err != nil {
+		handleErr(w, err)
+		return
+	}
+	items, err := x.app.BlockedUsers(userID)
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	for _, item := range items {
+		x.signAvatarURL(item)
+	}
+	write(w, http.StatusOK, map[string]any{"items": items})
+}
+func (x *API) adminUserDevices(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("id")
+	if _, err := x.app.UserContext(r.Context(), userID); err != nil {
+		handleErr(w, err)
+		return
+	}
+	items, err := x.app.UserDevices(userID)
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	write(w, http.StatusOK, map[string]any{"items": items})
+}
+func (x *API) adminUserSystemMessage(w http.ResponseWriter, r *http.Request) {
+	var p struct {
+		Content   string `json:"content"`
+		Reason    string `json:"reason"`
+		Confirmed bool   `json:"confirmed"`
+	}
+	if decode(r, &p) != nil || !confirmedReason(p.Confirmed, p.Reason) {
+		writeError(w, http.StatusBadRequest, "CONFIRMATION_REQUIRED", "confirmed and reason are required")
+		return
+	}
+	p.Content = strings.TrimSpace(p.Content)
+	if p.Content == "" || len([]rune(p.Content)) > 2000 {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "system message content must contain 1 to 2000 characters")
+		return
+	}
+	targetID := strings.TrimSpace(r.PathValue("id"))
+	if _, err := x.app.UserContext(r.Context(), targetID); err != nil {
+		handleErr(w, err)
+		return
+	}
+	if !x.cfg.WukongEnabled || x.wukongClient == nil || x.wukongSetupErr != nil {
+		writeError(w, http.StatusServiceUnavailable, "WUKONG_UNAVAILABLE", "WuKongIM is unavailable")
+		return
+	}
+	systemUIDs, err := x.app.InternalWukongSystemUIDs(r.Context())
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	senderID := ""
+	for _, candidate := range systemUIDs {
+		if candidate = strings.TrimSpace(candidate); candidate != "" && candidate != targetID {
+			senderID = candidate
+			break
+		}
+	}
+	if senderID == "" {
+		writeError(w, http.StatusServiceUnavailable, "WUKONG_UNAVAILABLE", "no enabled WuKongIM system user is available")
+		return
+	}
+	conversation, err := x.app.DirectConversation(senderID, targetID)
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	random := make([]byte, 12)
+	if _, err = rand.Read(random); err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL", "failed to create message identifier")
+		return
+	}
+	clientMsgNo := "admin-notice-" + hex.EncodeToString(random)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	result, err := x.wukongClient.SendStoredMessage(ctx, wukong.StoredMessageRequest{
+		ClientMsgNo: clientMsgNo,
+		FromUID:     senderID,
+		ChannelID:   targetID,
+		ChannelType: wukong.ChannelPerson,
+		Payload: map[string]any{
+			"type": wukong.ContentTypeSystemEvent, "schemaVersion": 1,
+			"event": "admin.notice", "content": p.Content, "digest": p.Content,
+		},
+	})
+	if err != nil {
+		slog.Warn("admin system message failed", "event", "admin.user.system_message.failed", "target_uid", targetID, "error", err)
+		writeError(w, http.StatusServiceUnavailable, "WUKONG_UNAVAILABLE", "system message could not be delivered")
+		return
+	}
+	x.app.RecordAdminAudit(uid(r), "user.system_message.sent", "user", targetID, "success", x.clientIP(r), map[string]any{
+		"reason": strings.TrimSpace(p.Reason), "senderUid": senderID, "messageId": result.MessageID, "conversationId": conversation.ID,
+	})
+	write(w, http.StatusCreated, map[string]any{
+		"targetUid": targetID, "senderUid": senderID, "conversationId": conversation.ID,
+		"messageId": result.MessageID, "clientMsgNo": result.ClientMsgNo,
+	})
 }
 func (x *API) adminBan(w http.ResponseWriter, r *http.Request) {
 	var p struct {

@@ -1,14 +1,14 @@
 import { Component, ErrorInfo, FormEvent, ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Activity, AlertTriangle, Bell, BookOpenCheck, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Eye, EyeOff,
+  Activity, AlertTriangle, Bell, BookOpenCheck, Check, CheckCircle2, ChevronLeft, ChevronRight, Eye, EyeOff,
   CircleUserRound, Database, FileClock, Flag, Group, HardDrive, HeartPulse, LayoutDashboard, LockKeyhole,
   LogIn, LogOut, Menu, MessageSquareText, MoreHorizontal, PhoneCall, Plus, RefreshCcw, Save, Search,
   Server, Settings, ShieldAlert, ShieldCheck, Trash2, Users, Wifi, X,
 } from 'lucide-react';
 import { ApiError, getApi, loginAdmin } from './api';
 import type {
-  AdminApi, AdminRole, AdminSession, AdminSettings, AnnouncementInput, AnnouncementRecord, AuditLog, CallRecord, ClientPlatform, ClientVersionPolicy, ClientVersionReleaseRecord, DashboardData, GroupMemberRecord, GroupOverview, GroupRecord,
+  AdminApi, AdminRole, AdminSession, AdminSettings, AdminUserDeviceRecord, AnnouncementInput, AnnouncementRecord, AuditLog, CallRecord, ClientPlatform, ClientVersionPolicy, ClientVersionReleaseRecord, DashboardData, GroupMemberRecord, GroupOverview, GroupRecord,
   FeedbackRecord, FriendshipRecord, HealthService, MediaRecord, MessageRecord, MomentModerationRecord, OnlineRecord, OperationsStatus, PageResult, ReportRecord, ReportResolutionAction, SensitiveWord, StatusTone, StickerPackModerationRecord, UserRecord,
   StickerCategoryInput, StickerCategoryOperationsRecord, StickerItemInput, StickerPackInput,
   LiveKitMetrics, LiveKitParticipant, LiveKitRoom, WukongChannel, WukongConnection, WukongDevice, WukongNode, WukongPlugin, WukongPluginEvent, WukongPluginLogEntry, WukongRobotMenu, WukongRobotProfile, WukongStoredMessage, WukongSystemUser,
@@ -219,6 +219,12 @@ function Badge({ value, label }: { value: string; label?: string }) {
   return <span className={`badge badge-${item.tone}`}><span className="status-dot" />{label ?? item.label}</span>;
 }
 
+function UserAvatar({ user, detail = false }: { user: UserRecord; detail?: boolean }) {
+  return <span className={`avatar ${detail ? 'detail-avatar' : ''}`}>
+    <span className="avatar-fallback">{user.avatar}</span>{user.avatarUrl && <img src={user.avatarUrl} alt="" onError={(event) => { event.currentTarget.hidden = true; }} />}
+  </span>;
+}
+
 function tabListKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
   const tabs = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]:not(:disabled)')];
@@ -368,16 +374,33 @@ function DetailDialog({ title, detail, onClose, children }: { title: string; det
   </div>, document.body);
 }
 
+function UserRelationTable({ items, empty }: { items: UserRecord[]; empty: string }) {
+  if (!items.length) return <EmptyState icon={<Users size={24} />} title={empty} detail="列表来自当前服务端业务关系数据。" />;
+  return <div className="table-wrap detail-table"><table><thead><tr><th>用户</th><th>呱呱号</th><th>账号状态</th><th>注册时间</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td><div className="identity"><UserAvatar user={item} /><div><strong>{item.remark || item.nickname}</strong>{item.remark && <small>账号昵称：{item.nickname}</small>}<small className="mono">{item.id}</small></div></div></td><td className="mono">{item.handle}</td><td><Badge value={item.status} /></td><td>{item.registeredAt}</td></tr>)}</tbody></table></div>;
+}
+
 function UserDetailDialog({ user, onClose }: { user: UserRecord; onClose: () => void }) {
   const { api, mode } = useApi();
+  const [section, setSection] = useState<'profile' | 'friends' | 'blocks' | 'devices'>('profile');
   const state = useResource(() => api.getUserOverview(user.id), [api, mode, user.id]);
+  const friends = useResource(() => api.getUserFriends(user.id), [api, mode, user.id]);
+  const blocks = useResource(() => api.getUserBlockedUsers(user.id), [api, mode, user.id]);
+  const devices = useResource(() => api.getUserDevices(user.id), [api, mode, user.id]);
   const overview: UserOverview | undefined = state.data;
-  return <DetailDialog title="用户详情" detail="资料与统计来自服务端实时查询，不提供编辑入口。" onClose={onClose}>
+  const currentUser = overview?.user ?? user;
+  return <DetailDialog title="用户详情" detail="账号资料、关系、黑名单与设备均来自服务端实时查询。" onClose={onClose}>
     {state.loading && <Skeleton rows={5} />}
     {state.error && <ErrorState message={state.error} retry={state.reload} />}
-    {overview && <><div className="detail-identity"><span className="avatar detail-avatar">{overview.user.avatar}</span><div><h3>{overview.user.nickname}</h3><p className="mono">{overview.user.id}</p></div><Badge value={overview.user.status} /></div>
+    {overview && <><div className="detail-identity"><UserAvatar user={currentUser} detail /><div><h3>{currentUser.nickname}</h3><p className="mono">{currentUser.id}</p></div><div className="detail-user-status"><Badge value={currentUser.status} /><Badge value={currentUser.online ? 'active' : 'neutral'} label={currentUser.online ? `在线 · ${currentUser.onlineConnections || 1} 个连接` : '离线'} /></div></div>
       <div className="detail-metrics"><div><span>设备</span><strong>{overview.deviceCount}</strong></div><div><span>好友</span><strong>{overview.friendCount}</strong></div><div><span>加入群组</span><strong>{overview.groupCount}</strong></div><div><span>呱呱号剩余修改</span><strong>{overview.handleChangesRemaining}</strong></div></div>
-      <dl className="detail-list"><div><dt>呱呱号</dt><dd className="mono">{overview.user.handle}</dd></div><div><dt>手机号</dt><dd>{overview.user.phone}</dd></div><div><dt>性别</dt><dd>{overview.gender === 'male' ? '男' : overview.gender === 'female' ? '女' : '未展示'}</dd></div><div><dt>个性签名</dt><dd>{overview.signature || '未设置'}</dd></div><div><dt>注册时间</dt><dd>{overview.user.registeredAt}</dd></div><div><dt>呱呱号修改记录</dt><dd>已修改 {overview.handleChangesUsed} 次，剩余 {overview.handleChangesRemaining} 次</dd></div>{overview.user.bannedUntil && <div><dt>封禁截止</dt><dd>{dateTimeLabel(overview.user.bannedUntil)}</dd></div>}</dl></>}
+      <div className="tabs detail-tabs" role="tablist" aria-label="用户详情分类">{[
+        ['profile', '账号资料'], ['friends', `好友 ${overview.friendCount}`], ['blocks', `黑名单 ${blocks.data?.length ?? 0}`], ['devices', `登录设备 ${overview.deviceCount}`],
+      ].map(([value, label]) => <button type="button" role="tab" aria-selected={section === value} className={section === value ? 'active' : ''} key={value} onClick={() => setSection(value as typeof section)}>{label}</button>)}</div>
+      {section === 'profile' && <dl className="detail-list user-profile-list"><div><dt>呱呱号</dt><dd className="mono">{currentUser.handle}</dd></div><div><dt>手机号</dt><dd>{currentUser.phone}</dd></div><div><dt>性别</dt><dd>{overview.gender === 'male' ? '男' : overview.gender === 'female' ? '女' : '未展示'}</dd></div><div><dt>在线状态</dt><dd>{currentUser.online ? `当前在线（${currentUser.onlineConnections || 1} 个连接）` : '当前离线'}</dd></div><div><dt>最后离线</dt><dd>{currentUser.lastOfflineAt ? dateTimeLabel(currentUser.lastOfflineAt) : '暂无记录'}</dd></div><div><dt>注册时间</dt><dd>{currentUser.registeredAt}</dd></div><div><dt>呱呱号修改记录</dt><dd>已修改 {overview.handleChangesUsed} 次，剩余 {overview.handleChangesRemaining} 次</dd></div><div><dt>个性签名</dt><dd>{overview.signature || '未设置'}</dd></div>{currentUser.bannedUntil && <div className="detail-list-wide"><dt>封禁截止</dt><dd>{dateTimeLabel(currentUser.bannedUntil)}</dd></div>}</dl>}
+      {section === 'friends' && <section className="detail-section user-detail-section"><div className="detail-section-heading"><div><h3>好友列表</h3><p>展示该账号当前保留的双向好友关系及备注。</p></div></div>{friends.loading && <Skeleton rows={4} />}{friends.error && <ErrorState message={friends.error} retry={friends.reload} />}{friends.data && <UserRelationTable items={friends.data} empty="该用户暂无好友" />}</section>}
+      {section === 'blocks' && <section className="detail-section user-detail-section"><div className="detail-section-heading"><div><h3>黑名单</h3><p>展示由该账号主动屏蔽的用户。</p></div></div>{blocks.loading && <Skeleton rows={4} />}{blocks.error && <ErrorState message={blocks.error} retry={blocks.reload} />}{blocks.data && <UserRelationTable items={blocks.data} empty="该用户黑名单为空" />}</section>}
+      {section === 'devices' && <section className="detail-section user-detail-section"><div className="detail-section-heading"><div><h3>登录与推送设备</h3><p>设备标识已脱敏，不返回推送 Token。</p></div></div>{devices.loading && <Skeleton rows={4} />}{devices.error && <ErrorState message={devices.error} retry={devices.reload} />}{devices.data && !devices.data.length && <EmptyState icon={<CircleUserRound size={24} />} title="该用户暂无登记设备" detail="客户端完成设备注册后会显示在这里。" />}{!!devices.data?.length && <div className="table-wrap detail-table"><table><thead><tr><th>平台 / 设备</th><th>推送服务</th><th>通知</th><th>预览 / 声音 / 振动</th><th>最近更新</th></tr></thead><tbody>{devices.data.map((device: AdminUserDeviceRecord) => <tr key={device.id}><td><strong>{device.platform}</strong><small className="mono">{device.id}</small></td><td>{device.provider}</td><td><Badge value={device.notificationsEnabled ? 'active' : 'neutral'} label={device.notificationsEnabled ? '已开启' : '已关闭'} /></td><td>{device.previewEnabled ? '预览' : '不预览'} / {device.soundEnabled ? '声音' : '静音'} / {device.vibrationEnabled ? '振动' : '不振动'}</td><td>{device.updatedAt}</td></tr>)}</tbody></table></div>}</section>}
+    </>}
   </DetailDialog>;
 }
 
@@ -422,36 +445,44 @@ function Pagination({ data, onPage }: { data?: PageResult<unknown>; onPage: (pag
 const overviewNavItem = { to: '/overview', label: '运行概览', icon: LayoutDashboard };
 const navGroups = [
   {
-    id: 'business', label: '业务管理', items: [
+    id: 'users', label: '用户', items: [
       { to: '/users', label: '用户管理', icon: Users },
-      { to: '/groups', label: '群组管理', icon: Group },
       { to: '/relationships', label: '关系与反馈', icon: Users },
       { to: '/online', label: '在线状态', icon: Wifi },
-      { to: '/calls', label: '通话记录', icon: PhoneCall },
-      { to: '/support-workbench', label: '客服工作台', icon: MessageSquareText },
     ],
   },
   {
-    id: 'content', label: '内容与运营', items: [
+    id: 'groups', label: '群组', items: [
+      { to: '/groups', label: '群组管理', icon: Group },
+      { to: '/business-channels', label: '频道运营', icon: Group },
+    ],
+  },
+  {
+    id: 'messages', label: '消息', items: [
+      { to: '/messages', label: '消息检索', icon: MessageSquareText },
+      { to: '/calls', label: '通话记录', icon: PhoneCall },
+      { to: '/support-workbench', label: '客服工作台', icon: MessageSquareText },
+      { to: '/announcements', label: '运营公告', icon: Bell },
+    ],
+  },
+  {
+    id: 'reports', label: '举报', items: [
       { to: '/reports', label: '举报审核', icon: Flag },
       { to: '/content-moderation', label: '内容审核', icon: ShieldCheck },
-      { to: '/messages', label: '消息检索', icon: MessageSquareText },
-      { to: '/business-channels', label: '频道运营', icon: Group },
-      { to: '/announcements', label: '运营公告', icon: Bell },
       { to: '/sensitive-words', label: '敏感词库', icon: ShieldAlert },
     ],
   },
   {
-    id: 'platform', label: '平台运维', items: [
+    id: 'tools', label: '工具', items: [
       { to: '/media', label: '文件存储', icon: HardDrive },
       { to: '/operations', label: '推送与任务', icon: Activity },
-      { to: '/im-infrastructure', label: 'IM 基础设施', icon: Server },
       { to: '/client-versions', label: '客户端版本', icon: RefreshCcw },
-      { to: '/system-health', label: '系统健康', icon: HeartPulse },
     ],
   },
   {
-    id: 'system', label: '安全与设置', items: [
+    id: 'settings', label: '设置', items: [
+      { to: '/im-infrastructure', label: 'IM 基础设施', icon: Server },
+      { to: '/system-health', label: '系统健康', icon: HeartPulse },
       { to: '/audit', label: '审计日志', icon: FileClock },
       { to: '/settings', label: '系统设置', icon: Settings },
     ],
@@ -526,8 +557,8 @@ function Shell() {
           const expanded = Boolean(expandedNavGroups[group.id]);
           const hasActive = group.id === activeGroupId;
           return <section className="nav-section" key={group.id}>
-            <button type="button" className={`nav-section-toggle ${hasActive ? 'has-active' : ''}`} aria-expanded={expanded} aria-controls={`nav-group-${group.id}`} onClick={() => setExpandedNavGroups((current) => ({ ...current, [group.id]: !expanded }))}><span>{group.label}</span><ChevronDown size={14} /></button>
-            <div id={`nav-group-${group.id}`} className="nav-section-items" hidden={!expanded}>{group.items.map((item) => <AppLink key={item.to} to={item.to} currentPath={path} navigate={requestNavigate} className="nav-item"><item.icon size={18} /><span>{item.label}</span></AppLink>)}</div>
+            <button type="button" className={`nav-section-toggle ${hasActive ? 'has-active' : ''}`} aria-expanded={expanded} aria-controls={`nav-group-${group.id}`} onClick={() => setExpandedNavGroups((current) => ({ ...current, [group.id]: !expanded }))}><span>{group.label}</span><ChevronRight size={15} /></button>
+            <div id={`nav-group-${group.id}`} className="nav-section-items" hidden={!expanded}>{group.items.map((item) => <AppLink key={item.to} to={item.to} currentPath={path} navigate={requestNavigate} className="nav-item nav-leaf-item"><span>{item.label}</span></AppLink>)}</div>
           </section>;
         })}
       </nav>
@@ -633,16 +664,22 @@ function UsersPage() {
   const [query, setQuery] = useState(''), deferredQuery = useDebouncedValue(query); const [status, setStatus] = useState(''); const [page, setPage] = useState(1);
   const [cursors, setCursors] = useState<Record<number, string>>({ 1: '' });
   const [selected, setSelected] = useState<UserRecord>(); const [detailUser, setDetailUser] = useState<UserRecord>(); const [reason, setReason] = useState(''); const [banHours, setBanHours] = useState(24);
+  const [messageUser, setMessageUser] = useState<UserRecord>(); const [messageContent, setMessageContent] = useState(''); const [messageReason, setMessageReason] = useState('');
   useEffect(() => { setPage(1); setCursors({ 1: '' }); }, [deferredQuery, status]);
   const state = useResource(() => api.getUsers(deferredQuery, status, page, 20, cursors[page] ?? ''), [api, mode, deferredQuery, status, page, cursors]);
   const paginate = (nextPage: number) => { if (nextPage > page && state.data?.nextCursor) setCursors((current) => ({ ...current, [nextPage]: state.data?.nextCursor ?? '' })); setPage(nextPage); };
   const openDisposition = (user: UserRecord) => { setReason(''); setBanHours(24); setSelected(user); };
   const closeDisposition = () => { setSelected(undefined); setReason(''); };
   const toggleBan = async () => { if (!selected || !reason.trim()) throw new Error('请输入处置理由'); const wasBanned = selected.status === 'banned'; if (wasBanned) await api.unbanUser(selected.id, reason.trim()); else await api.banUser(selected.id, reason.trim(), banHours); notify(wasBanned ? '已解除用户封禁' : banHours === 0 ? '已永久封禁用户' : `已封禁用户 ${banHours} 小时`); await state.reload(); };
-  return <><PageHeader title="用户管理" description="查询账号、查看风险状态并执行账号治理。" />
-    <Toolbar query={query} setQuery={setQuery} placeholder="搜索昵称、用户 ID 或手机号"><select aria-label="用户状态" className="select-control" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option value="active">正常</option><option value="risk">风险关注</option><option value="banned">已封禁</option></select></Toolbar>
-    <DataPanel loading={state.loading} error={state.error} retry={state.reload} empty={!state.data?.items.length} emptyTitle="没有匹配的用户" emptyDetail="调整搜索词或状态筛选后重试。"><div className="table-wrap"><table><thead><tr><th>用户</th><th>呱呱号</th><th>状态</th><th>注册时间</th><th>设备</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{state.data?.items.map((user) => <tr key={user.id}><td><div className="identity"><span className="avatar">{user.avatar}</span><div><strong>{user.nickname}</strong><small>{user.id} · {user.phone}</small></div></div></td><td><div><strong className="mono">{user.handle}</strong><small>已修改 {user.handleChangeCount}/2 次</small></div></td><td><Badge value={user.status} />{user.bannedUntil && <small>至 {dateTimeLabel(user.bannedUntil)}</small>}</td><td>{user.registeredAt}</td><td>{user.deviceCount || '暂无'}</td><td><div className="row-actions"><button className="row-action" onClick={() => setDetailUser(user)}>查看详情</button><button className="row-action" disabled={!can('users.write')} title={!can('users.write') ? '当前角色没有账号处置权限' : undefined} onClick={() => openDisposition(user)}>{user.status === 'banned' ? '解除封禁' : '账号处置'}</button></div></td></tr>)}</tbody></table></div><Pagination data={state.data} onPage={paginate} /></DataPanel>
+  const openMessage = (user: UserRecord) => { setMessageUser(user); setMessageContent(''); setMessageReason(''); };
+  const closeMessage = () => { setMessageUser(undefined); setMessageContent(''); setMessageReason(''); };
+  const sendSystemMessage = async () => { if (!messageUser || !messageContent.trim() || !messageReason.trim()) throw new Error('请输入消息内容和发送理由'); await api.sendUserSystemMessage(messageUser.id, messageContent.trim(), messageReason.trim()); notify(`系统消息已发送给 ${messageUser.nickname}`); closeMessage(); };
+  const viewMessageRecords = (user: UserRecord) => { window.history.pushState({}, '', `/messages?q=${encodeURIComponent(user.id)}`); window.dispatchEvent(new PopStateEvent('popstate')); };
+  return <><PageHeader title="用户管理" description="查询账号及在线状态，查看好友、黑名单和设备，并执行消息通知与账号治理。" />
+    <Toolbar query={query} setQuery={setQuery} placeholder="搜索昵称、用户 ID、手机号或呱呱号"><select aria-label="用户状态" className="select-control" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option value="active">账号正常</option><option value="banned">已封禁</option><option value="online">当前在线</option><option value="offline">当前离线</option></select></Toolbar>
+    <DataPanel loading={state.loading} error={state.error} retry={state.reload} empty={!state.data?.items.length} emptyTitle="没有匹配的用户" emptyDetail="调整搜索词或状态筛选后重试。"><div className="table-wrap"><table className="users-table"><thead><tr><th>用户</th><th>呱呱号</th><th>账号状态</th><th>在线状态</th><th>注册时间</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{state.data?.items.map((user) => <tr key={user.id}><td><div className="identity"><UserAvatar user={user} /><div><strong>{user.nickname}</strong><small className="mono">{user.id}</small><small>{user.phone}</small></div></div></td><td><div><strong className="mono">{user.handle}</strong><small>已修改 {user.handleChangeCount}/2 次</small></div></td><td><Badge value={user.status} />{user.bannedUntil && <small>至 {dateTimeLabel(user.bannedUntil)}</small>}</td><td><Badge value={user.online ? 'active' : 'neutral'} label={user.online ? `在线 · ${user.onlineConnections || 1}` : '离线'} />{!user.online && <small>{user.lastOfflineAt ? `最后离线 ${dateTimeLabel(user.lastOfflineAt)}` : '暂无离线记录'}</small>}</td><td>{user.registeredAt}</td><td><div className="row-actions user-actions"><button className="row-action" aria-label="查看详情" title="查看详情" onClick={() => setDetailUser(user)}>详情</button><button className="row-action" aria-label="查看发送记录" title="查看该用户发送记录" onClick={() => viewMessageRecords(user)}>记录</button><button className="row-action" aria-label="发系统消息" disabled={!can('users.write')} title={!can('users.write') ? '当前角色没有系统消息权限' : '发送系统消息'} onClick={() => openMessage(user)}>消息</button><button className="row-action" aria-label={user.status === 'banned' ? '解除封禁' : '封禁账号'} disabled={!can('users.write')} title={!can('users.write') ? '当前角色没有账号处置权限' : user.status === 'banned' ? '解除封禁' : '封禁账号'} onClick={() => openDisposition(user)}>{user.status === 'banned' ? '解封' : '封禁'}</button></div></td></tr>)}</tbody></table></div><Pagination data={state.data} onPage={paginate} /></DataPanel>
     {detailUser && <UserDetailDialog user={detailUser} onClose={() => setDetailUser(undefined)} />}
+    <ConfirmDialog open={Boolean(messageUser)} title="发送系统消息" detail={messageUser ? `消息将由已启用的系统账号通过 WuKongIM 发送给 ${messageUser.nickname}（${messageUser.id}）。` : ''} confirmLabel="确认发送" confirmDisabled={!messageContent.trim() || !messageReason.trim()} onClose={closeMessage} onConfirm={sendSystemMessage}><label className="field-label">消息内容<textarea autoFocus value={messageContent} maxLength={2000} onChange={(event) => setMessageContent(event.target.value)} placeholder="填写用户将在聊天列表中收到的通知内容" required /></label><label className="field-label">发送理由<textarea value={messageReason} maxLength={500} onChange={(event) => setMessageReason(event.target.value)} placeholder="填写运营工单或通知依据" required /></label></ConfirmDialog>
     <ConfirmDialog open={Boolean(selected)} title={selected?.status === 'banned' ? '解除用户封禁' : '封禁用户'} detail={selected ? `目标账号：${selected.nickname}（${selected.id}）。操作会写入审计日志。` : ''} confirmLabel={selected?.status === 'banned' ? '解除用户封禁' : '确认封禁'} danger={selected?.status !== 'banned'} confirmDisabled={!reason.trim()} onClose={closeDisposition} onConfirm={toggleBan}>{selected?.status !== 'banned' && <label className="field-label">封禁时长<select value={banHours} onChange={(event) => setBanHours(Number(event.target.value))}><option value={24}>24 小时</option><option value={72}>3 天</option><option value={168}>7 天</option><option value={720}>30 天</option><option value={0}>永久</option></select></label>}<label className="field-label">处置理由<textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="说明证据、影响范围和处置依据" required /></label></ConfirmDialog>
   </>;
 }
@@ -716,7 +753,7 @@ const messageTypeLabels: Record<string, string> = {
 const messageTypeOptions = Object.entries(messageTypeLabels).filter(([value]) => value !== 'custom');
 
 function MessagesPage() {
-  const { api, mode } = useApi(); const [query, setQuery] = useState(''), deferredQuery = useDebouncedValue(query); const [type, setType] = useState(''), [page, setPage] = useState(1); const [cursors, setCursors] = useState<Record<number, string>>({ 1: '' });
+  const { api, mode } = useApi(); const [query, setQuery] = useState(() => new URLSearchParams(window.location.search).get('q') ?? ''), deferredQuery = useDebouncedValue(query); const [type, setType] = useState(''), [page, setPage] = useState(1); const [cursors, setCursors] = useState<Record<number, string>>({ 1: '' });
   useEffect(() => { setPage(1); setCursors({ 1: '' }); }, [deferredQuery, type]);
   const state = useResource(() => api.getMessages(deferredQuery, type, page, 20, cursors[page] ?? ''), [api, mode, deferredQuery, type, page, cursors]);
   const paginate = (nextPage: number) => { if (nextPage > page && state.data?.nextCursor) setCursors((current) => ({ ...current, [nextPage]: state.data?.nextCursor ?? '' })); setPage(nextPage); };

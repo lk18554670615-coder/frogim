@@ -48,4 +48,19 @@ The complete iteration log and fidelity checklist are in `apps/mobile/design-qa.
 - Runtime pass: no application console error was observed during the inspected desktop/mobile navigation and destructive-confirmation flow.
 - Static and build checks: admin tests 16/16, TypeScript lint, production build and dependency audit passed. Backend tests, vet and the PostgreSQL-backed lifecycle/operations suite passed.
 
+## Admin sidebar grouping QA — 2026-08-17
+
+- Page and state: `http://127.0.0.1:4173/users`, signed in against real server data with 用户管理 active.
+- Reference: `artifacts/design-qa/sidebar-menu/reference.png` (501 × 867 px).
+- Full implementation evidence: `artifacts/design-qa/sidebar-menu/implementation.png` at a 1059 × 898 px browser viewport.
+- Focused comparison: `artifacts/design-qa/sidebar-menu/comparison.png` (628 × 867 px) places the reference and implementation sidebar together.
+- Preserved difference: the project keeps its dark-green brand theme and existing four business domains; the reference supplies the grouping hierarchy rather than replacement information architecture or colors.
+- First pass: implemented section headings, disclosure arrows, nested directory lines, child indentation and a thin active indicator. The active group heading was slightly over-emphasized (P2).
+- Final pass: reduced the active group heading emphasis, then re-captured and compared the same signed-in state. No actionable P0/P1/P2 mismatch remained.
+- Interaction pass: 内容与运营 changed from `aria-expanded="false"` to `true` and back to `false`; the active route group still opens automatically.
+- Automated result: 4 admin test files and all 95 tests passed; TypeScript and the Vite production build passed.
+- Naming follow-up: abstract domains were replaced with the reference's object-oriented names — 用户、群组、消息、举报、工具、设置 — while all 19 existing routes remained reachable.
+- Naming evidence: `artifacts/design-qa/sidebar-menu/implementation-naming.png` and `artifacts/design-qa/sidebar-menu/comparison-naming.png` show the signed-in 用户管理 state after regrouping.
+- Naming interaction pass: 用户 remains auto-expanded on `/users`; 工具 changes from collapsed to expanded and back to collapsed. The same 95-test suite and production build passed after updating navigation expectations.
+
 final result: passed

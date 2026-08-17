@@ -289,9 +289,15 @@ func (p *Postgres) AdminUserOverview(ctx context.Context, id string) (map[string
 	var user model.User
 	var devices, friends, groups int64
 	var updatedAt any
-	err := p.pool.QueryRow(ctx, `SELECT u.id,u.phone,u.name,COALESCE(u.handle,''),u.signature,u.avatar_url,u.gender,u.banned,u.handle_change_count,u.created_at,u.updated_at,
+	err := p.pool.QueryRow(ctx, `SELECT u.id,u.phone,u.name,COALESCE(u.handle,''),u.signature,u.avatar_url,u.gender,
+		(u.banned AND (u.banned_until IS NULL OR u.banned_until>now())),u.banned_until,u.handle_change_count,u.created_at,u.updated_at,
+		COALESCE(presence.online,false),COALESCE(presence.total_online_count,0),presence.last_offline_at,
 		(SELECT count(*) FROM im_devices d WHERE d.user_id=u.id),(SELECT count(*) FROM im_friendships f WHERE f.user_id=u.id),(SELECT count(*) FROM im_members m WHERE m.user_id=u.id)
-		FROM im_users u WHERE u.id=$1`, id).Scan(&user.ID, &user.Phone, &user.Name, &user.Handle, &user.Signature, &user.AvatarURL, &user.Gender, &user.Banned, &user.HandleChangeCount, &user.CreatedAt, &updatedAt, &devices, &friends, &groups)
+		FROM im_users u LEFT JOIN im_wukong_presence presence ON presence.user_id=u.id WHERE u.id=$1`, id).Scan(
+		&user.ID, &user.Phone, &user.Name, &user.Handle, &user.Signature, &user.AvatarURL, &user.Gender,
+		&user.Banned, &user.BannedUntil, &user.HandleChangeCount, &user.CreatedAt, &updatedAt,
+		&user.Online, &user.OnlineConnections, &user.LastOfflineAt, &devices, &friends, &groups,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

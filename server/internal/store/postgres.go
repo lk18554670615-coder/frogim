@@ -826,14 +826,20 @@ func (p *Postgres) ListAdminUsers(ctx context.Context, q, status, cursor string,
 	offset, limit := pageOffset(cursor, limit)
 	pattern := "%" + q + "%"
 	var total int64
-	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_users WHERE ($1='' OR name ILIKE $2 OR phone ILIKE $2 OR id ILIKE $2 OR COALESCE(handle,'') ILIKE $2)
-		AND ($3='' OR ($3='active' AND NOT (banned AND (banned_until IS NULL OR banned_until>now()))) OR ($3='banned' AND banned AND (banned_until IS NULL OR banned_until>now())))`, q, pattern, status).Scan(&total); err != nil {
+	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_users u LEFT JOIN im_wukong_presence presence ON presence.user_id=u.id
+		WHERE ($1='' OR u.name ILIKE $2 OR u.phone ILIKE $2 OR u.id ILIKE $2 OR COALESCE(u.handle,'') ILIKE $2)
+		AND ($3='' OR ($3='active' AND NOT (u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))) OR ($3='banned' AND u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))
+			OR ($3='online' AND COALESCE(presence.online,false)) OR ($3='offline' AND NOT COALESCE(presence.online,false)))`, q, pattern, status).Scan(&total); err != nil {
 		return nil, 0, "", err
 	}
-	rows, err := p.pool.Query(ctx, `SELECT id,phone,name,COALESCE(handle,''),handle_change_count,avatar_url,(banned AND (banned_until IS NULL OR banned_until>now())),banned_until,created_at FROM im_users
-		WHERE ($1='' OR name ILIKE $2 OR phone ILIKE $2 OR id ILIKE $2 OR COALESCE(handle,'') ILIKE $2)
-		AND ($3='' OR ($3='active' AND NOT (banned AND (banned_until IS NULL OR banned_until>now()))) OR ($3='banned' AND banned AND (banned_until IS NULL OR banned_until>now())))
-		ORDER BY created_at DESC,id LIMIT $4 OFFSET $5`, q, pattern, status, limit, offset)
+	rows, err := p.pool.Query(ctx, `SELECT u.id,u.phone,u.name,COALESCE(u.handle,''),u.handle_change_count,u.avatar_url,
+		(u.banned AND (u.banned_until IS NULL OR u.banned_until>now())),u.banned_until,u.created_at,
+		COALESCE(presence.online,false),COALESCE(presence.total_online_count,0),presence.last_offline_at
+		FROM im_users u LEFT JOIN im_wukong_presence presence ON presence.user_id=u.id
+		WHERE ($1='' OR u.name ILIKE $2 OR u.phone ILIKE $2 OR u.id ILIKE $2 OR COALESCE(u.handle,'') ILIKE $2)
+		AND ($3='' OR ($3='active' AND NOT (u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))) OR ($3='banned' AND u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))
+			OR ($3='online' AND COALESCE(presence.online,false)) OR ($3='offline' AND NOT COALESCE(presence.online,false)))
+		ORDER BY u.created_at DESC,u.id LIMIT $4 OFFSET $5`, q, pattern, status, limit, offset)
 	if err != nil {
 		return nil, 0, "", err
 	}
@@ -841,7 +847,7 @@ func (p *Postgres) ListAdminUsers(ctx context.Context, q, status, cursor string,
 	var items []*model.User
 	for rows.Next() {
 		u := &model.User{}
-		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.AvatarURL, &u.Banned, &u.BannedUntil, &u.CreatedAt); err != nil {
+		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.AvatarURL, &u.Banned, &u.BannedUntil, &u.CreatedAt, &u.Online, &u.OnlineConnections, &u.LastOfflineAt); err != nil {
 			return nil, 0, "", err
 		}
 		items = append(items, u)

@@ -27,12 +27,16 @@ async function liveFixture(input: RequestInfo | URL, init?: RequestInit) {
     channelMix: [{ label: '单聊', value: 72, color: 'var(--primary)' }, { label: '群聊', value: 28, color: 'var(--info)' }],
     alerts: [], activity: [],
   });
-  if (url.includes('/users/u_10291')) return response({ user: { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia', signature: '在青蛙呱呱保持联系', gender: 'female', handleChangeCount: 1, createdAt: '2026-08-01T08:00:00Z' }, deviceCount: 2, friendCount: 18, groupCount: 4, handleChangesUsed: 1, handleChangesRemaining: 1 });
+  if (url.includes('/users/u_10291/friends')) return response({ items: [{ id: 'u_10288', name: '江宁', handle: 'jiangning', remark: '产品同事', createdAt: '2026-08-02T08:00:00Z' }] });
+  if (url.includes('/users/u_10291/blocks')) return response({ items: [{ id: 'u_blocked', name: '被屏蔽用户', handle: 'blocked-user', createdAt: '2026-08-03T08:00:00Z' }] });
+  if (url.includes('/users/u_10291/devices')) return response({ items: [{ id: 'device_android_1', userId: 'u_10291', platform: 'android', provider: 'fcm', notificationsEnabled: true, previewEnabled: false, soundEnabled: true, vibrationEnabled: true, updatedAt: '2026-08-16T08:00:00Z' }] });
+  if (url.includes('/users/u_10291/system-message') && method === 'POST') return response({ targetUid: 'u_10291', senderUid: 'u_notice', conversationId: 'conv_notice_1', messageId: 1001, clientMsgNo: 'admin-notice-1' }, 201);
+  if (url.includes('/users/u_10291')) return response({ user: { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia', signature: '在青蛙呱呱保持联系', gender: 'female', handleChangeCount: 1, online: true, onlineConnections: 2, createdAt: '2026-08-01T08:00:00Z' }, deviceCount: 2, friendCount: 18, groupCount: 4, handleChangesUsed: 1, handleChangesRemaining: 1 });
   if (url.includes('/users')) {
     const query = new URL(url, 'http://localhost').searchParams.get('q') ?? '';
     const users = [
-      { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia', status: 'active', createdAt: '2026-08-01T08:00:00Z' },
-      { id: 'u_10288', name: '江宁', phone: '13800001002', handle: 'jiangning', status: 'active', createdAt: '2026-08-02T08:00:00Z' },
+      { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia', status: 'active', online: true, onlineConnections: 2, createdAt: '2026-08-01T08:00:00Z' },
+      { id: 'u_10288', name: '江宁', phone: '13800001002', handle: 'jiangning', status: 'active', online: false, lastOfflineAt: '2026-08-16T08:00:00Z', createdAt: '2026-08-02T08:00:00Z' },
     ].filter((item) => !query || `${item.name}${item.id}${item.phone}`.includes(query));
     return response({ items: users, total: users.length });
   }
@@ -154,10 +158,12 @@ describe('青蛙呱呱管理后台', () => {
     render(<App />);
     const navigation = screen.getByRole('navigation', { name: '主导航' });
     expect(within(navigation).getByRole('link', { name: '运行概览' })).toBeInTheDocument();
-    expect(within(navigation).getByRole('button', { name: '平台运维' })).toHaveAttribute('aria-expanded', 'true');
-    expect(within(navigation).getByRole('button', { name: '业务管理' })).toHaveAttribute('aria-expanded', 'false');
-    await userEvent.click(within(navigation).getByRole('button', { name: '业务管理' }));
-    expect(within(navigation).getByRole('button', { name: '业务管理' })).toHaveAttribute('aria-expanded', 'true');
+    expect(within(navigation).getByRole('button', { name: '设置' })).toHaveAttribute('aria-expanded', 'true');
+    expect(within(navigation).getByRole('button', { name: '用户' })).toHaveAttribute('aria-expanded', 'false');
+    expect(within(navigation).queryByRole('button', { name: '平台运维' })).not.toBeInTheDocument();
+    expect(within(navigation).queryByRole('button', { name: '业务管理' })).not.toBeInTheDocument();
+    await userEvent.click(within(navigation).getByRole('button', { name: '用户' }));
+    expect(within(navigation).getByRole('button', { name: '用户' })).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('窄屏侧栏关闭时不可聚焦，打开后支持 Escape 并把焦点还给菜单按钮', async () => {
@@ -190,7 +196,7 @@ describe('青蛙呱呱管理后台', () => {
   it('支持防抖搜索用户', async () => {
     window.history.replaceState({}, '', '/users');
     render(<App />);
-    const input = screen.getByLabelText('搜索昵称、用户 ID 或手机号');
+    const input = screen.getByLabelText('搜索昵称、用户 ID、手机号或呱呱号');
     await screen.findByText('林夏');
     fireEvent.change(input, { target: { value: '江宁' } });
     await waitFor(() => expect(screen.queryByText('林夏')).not.toBeInTheDocument());
@@ -247,6 +253,35 @@ describe('青蛙呱呱管理后台', () => {
     expect(within(dialog).getByText('18')).toBeInTheDocument();
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: '用户详情' })).not.toBeInTheDocument();
+  });
+
+  it('用户详情展示真实好友、黑名单和登记设备', async () => {
+    window.history.replaceState({}, '', '/users');
+    render(<App />);
+    await screen.findByText('林夏');
+    await userEvent.click(screen.getAllByRole('button', { name: '查看详情' })[0]);
+    const dialog = await screen.findByRole('dialog', { name: '用户详情' });
+    expect(within(dialog).getByText('在线 · 2 个连接')).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('tab', { name: '好友 18' }));
+    expect(await within(dialog).findByText('产品同事')).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('tab', { name: '黑名单 1' }));
+    expect(await within(dialog).findByText('被屏蔽用户')).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('tab', { name: '登录设备 2' }));
+    expect(await within(dialog).findByText('device_android_1')).toBeInTheDocument();
+  });
+
+  it('通过真实 WuKongIM 接口发送系统消息并携带审计理由', async () => {
+    window.history.replaceState({}, '', '/users');
+    render(<App />);
+    await screen.findByText('林夏');
+    await userEvent.click(screen.getAllByRole('button', { name: '发系统消息' })[0]);
+    const dialog = screen.getByRole('dialog', { name: '发送系统消息' });
+    await userEvent.type(within(dialog).getByLabelText('消息内容'), '请及时更新客户端');
+    await userEvent.type(within(dialog).getByLabelText('发送理由'), '版本升级通知 OPS-18');
+    await userEvent.click(within(dialog).getByRole('button', { name: '确认发送' }));
+    expect(await screen.findByText('系统消息已发送给 林夏')).toBeInTheDocument();
+    const write = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).includes('/users/u_10291/system-message') && init?.method === 'POST');
+    expect(JSON.parse(String(write?.[1]?.body))).toEqual({ content: '请及时更新客户端', reason: '版本升级通知 OPS-18', confirmed: true });
   });
 
   it('展示群资料和服务端群成员列表', async () => {
@@ -456,7 +491,7 @@ describe('青蛙呱呱管理后台', () => {
     window.history.replaceState({}, '', '/users');
     render(<App />);
     const user = userEvent.setup();
-    const actions = await screen.findAllByRole('button', { name: '账号处置' });
+    const actions = await screen.findAllByRole('button', { name: '封禁账号' });
     await user.click(actions[0]);
     const dialog = screen.getByRole('dialog');
     expect(dialog).toBeInTheDocument();

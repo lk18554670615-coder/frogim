@@ -17,6 +17,9 @@ type User struct {
 	AvatarURL              string     `json:"avatarUrl,omitempty"`
 	Banned                 bool       `json:"banned"`
 	BannedUntil            *time.Time `json:"bannedUntil,omitempty"`
+	Online                 bool       `json:"online"`
+	OnlineConnections      int        `json:"onlineConnections"`
+	LastOfflineAt          *time.Time `json:"lastOfflineAt,omitempty"`
 	Remark                 string     `json:"remark,omitempty"`
 	Tags                   []string   `json:"tags,omitempty"`
 	CreatedAt              time.Time  `json:"createdAt"`

@@ -5,6 +5,8 @@ import type {
   AdminRole,
   AdminSession,
   AdminSettings,
+  AdminSystemMessageResult,
+  AdminUserDeviceRecord,
   AuditLog,
   CallRecord,
   ClientPlatform,
@@ -215,11 +217,23 @@ function localPageResult<T>(items: T[], requestedPage: number, requestedSize: nu
 function adaptUser(value: unknown): UserRecord {
   const raw = object(value);
   const nickname = string(raw.nickname, string(raw.name, '未命名用户'));
-  const status = raw.status === 'risk' ? 'risk' : boolean(raw.banned) || raw.status === 'banned' ? 'banned' : 'active';
+  const status = boolean(raw.banned) || raw.status === 'banned' ? 'banned' : 'active';
+  const lastOfflineAt = string(raw.lastOfflineAt) || undefined;
   return {
-    id: string(raw.id, 'unknown'), nickname, phone: string(raw.phone, '未提供'), handle: string(raw.handle, '未设置'), handleChangeCount: number(raw.handleChangeCount), bannedUntil: string(raw.bannedUntil) || undefined, avatar: string(raw.avatar, initial(nickname)), status,
-    registeredAt: formatDate(raw.registeredAt ?? raw.createdAt), lastSeen: string(raw.lastSeen, '暂无'),
+    id: string(raw.id, 'unknown'), nickname, phone: string(raw.phone, '未提供'), handle: string(raw.handle, '未设置'), remark: string(raw.remark), tags: list(raw.tags).map((tag) => string(tag)).filter(Boolean), handleChangeCount: number(raw.handleChangeCount), bannedUntil: string(raw.bannedUntil) || undefined,
+    avatar: string(raw.avatar, initial(nickname)), avatarUrl: string(raw.avatarUrl), status,
+    online: boolean(raw.online), onlineConnections: number(raw.onlineConnections), lastOfflineAt,
+    registeredAt: formatDate(raw.registeredAt ?? raw.createdAt), lastSeen: string(raw.lastSeen, lastOfflineAt ? formatDate(lastOfflineAt) : '暂无'),
     deviceCount: number(raw.deviceCount), messageCount: number(raw.messageCount),
+  };
+}
+
+function adaptAdminUserDevice(value: unknown): AdminUserDeviceRecord {
+  const raw = object(value);
+  return {
+    id: string(raw.id, 'unknown'), userId: string(raw.userId), platform: string(raw.platform, 'unknown'), provider: string(raw.provider, '未配置'),
+    notificationsEnabled: boolean(raw.notificationsEnabled), previewEnabled: boolean(raw.previewEnabled),
+    soundEnabled: boolean(raw.soundEnabled), vibrationEnabled: boolean(raw.vibrationEnabled), updatedAt: formatDate(raw.updatedAt),
   };
 }
 
@@ -767,6 +781,13 @@ function liveApi(token: string): AdminApi {
     async getDashboard() { return adaptDashboard(await request('/dashboard', token)); },
     async getUsers(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/users?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptUser, page, pageSize); },
     async getUserOverview(id) { return adaptUserOverview(await request(`/users/${encodeURIComponent(id)}`, token)); },
+    async getUserFriends(id) { return unwrapItems(await request(`/users/${encodeURIComponent(id)}/friends`, token)).items.map(adaptUser); },
+    async getUserBlockedUsers(id) { return unwrapItems(await request(`/users/${encodeURIComponent(id)}/blocks`, token)).items.map(adaptUser); },
+    async getUserDevices(id) { return unwrapItems(await request(`/users/${encodeURIComponent(id)}/devices`, token)).items.map(adaptAdminUserDevice); },
+    async sendUserSystemMessage(id, content, reason) {
+      const raw = object(await request(`/users/${encodeURIComponent(id)}/system-message`, token, { method: 'POST', body: JSON.stringify({ content, reason, confirmed: true }) }));
+      return { targetUid: string(raw.targetUid), senderUid: string(raw.senderUid), conversationId: string(raw.conversationId), messageId: String(raw.messageId ?? ''), clientMsgNo: string(raw.clientMsgNo) } satisfies AdminSystemMessageResult;
+    },
     async banUser(id, reason, durationHours) { await request(`/users/${encodeURIComponent(id)}/ban`, token, { method: 'POST', body: JSON.stringify({ reason, durationHours, confirmed: true }) }); },
     async unbanUser(id, reason) { await request(`/users/${encodeURIComponent(id)}/unban`, token, { method: 'POST', body: JSON.stringify({ reason, confirmed: true }) }); },
     async getGroups(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/groups?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptGroup, page, pageSize); },

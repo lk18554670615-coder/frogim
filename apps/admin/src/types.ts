@@ -38,14 +38,40 @@ export interface UserRecord {
   nickname: string;
   phone: string;
   handle: string;
+  remark: string;
+  tags: string[];
   handleChangeCount: number;
   bannedUntil?: string;
   avatar: string;
-  status: 'active' | 'banned' | 'risk';
+  avatarUrl: string;
+  status: 'active' | 'banned';
+  online: boolean;
+  onlineConnections: number;
+  lastOfflineAt?: string;
   registeredAt: string;
   lastSeen: string;
   deviceCount: number;
   messageCount: number;
+}
+
+export interface AdminUserDeviceRecord {
+  id: string;
+  userId: string;
+  platform: string;
+  provider: string;
+  notificationsEnabled: boolean;
+  previewEnabled: boolean;
+  soundEnabled: boolean;
+  vibrationEnabled: boolean;
+  updatedAt: string;
+}
+
+export interface AdminSystemMessageResult {
+  targetUid: string;
+  senderUid: string;
+  conversationId: string;
+  messageId: string;
+  clientMsgNo: string;
 }
 
 export interface UserOverview {
@@ -665,6 +691,10 @@ export interface AdminApi {
   getDashboard(): Promise<DashboardData>;
   getUsers(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<UserRecord>>;
   getUserOverview(id: string): Promise<UserOverview>;
+  getUserFriends(id: string): Promise<UserRecord[]>;
+  getUserBlockedUsers(id: string): Promise<UserRecord[]>;
+  getUserDevices(id: string): Promise<AdminUserDeviceRecord[]>;
+  sendUserSystemMessage(id: string, content: string, reason: string): Promise<AdminSystemMessageResult>;
   banUser(id: string, reason: string, durationHours: number): Promise<void>;
   unbanUser(id: string, reason: string): Promise<void>;
   getGroups(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<GroupRecord>>;

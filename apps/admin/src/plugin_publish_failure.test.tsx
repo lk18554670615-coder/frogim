@@ -191,7 +191,7 @@ describe('签名插件发布失败状态', () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole('tab', { name: '插件' }));
     await user.type(screen.getByLabelText('Ed25519 签名（Base64）'), 'draft-signature');
-    await user.click(screen.getByRole('button', { name: '业务管理' }));
+    await user.click(screen.getByRole('button', { name: '用户' }));
     await user.click(screen.getByRole('link', { name: /用户管理/ }));
 
     expect(screen.getByRole('heading', { name: '放弃未保存的修改？' })).toBeInTheDocument();
