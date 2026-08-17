@@ -3,7 +3,6 @@ package wukong
 import (
 	"context"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -97,11 +96,7 @@ func TestSessionIssuerDoesNotRewriteUnchangedMasterToken(t *testing.T) {
 }
 
 func TestSessionIssuerReadyChecksCredentialStoreAndWukongHealth(t *testing.T) {
-	tcpListener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tcpListener.Close()
+	var err error
 	var healthStatus atomic.Int32
 	healthStatus.Store(http.StatusOK)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -116,7 +111,7 @@ func TestSessionIssuerReadyChecksCredentialStoreAndWukongHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := &credentialMemoryStore{items: map[string]string{}}
-	issuer, err := NewSessionIssuer(client, "01234567890123456789012345678901", "tcp://"+tcpListener.Addr().String(), "wss://im.example/ws", state)
+	issuer, err := NewSessionIssuer(client, "01234567890123456789012345678901", "tcp://203.0.113.10:5100", "wss://im.example/ws", state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,12 +127,5 @@ func TestSessionIssuerReadyChecksCredentialStoreAndWukongHealth(t *testing.T) {
 	healthStatus.Store(http.StatusServiceUnavailable)
 	if err = issuer.Ready(context.Background()); err == nil {
 		t.Fatal("unhealthy WuKong API was reported ready")
-	}
-	healthStatus.Store(http.StatusOK)
-	if err = tcpListener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err = issuer.Ready(context.Background()); err == nil {
-		t.Fatal("closed WuKong TCP endpoint was reported ready")
 	}
 }

@@ -68,6 +68,21 @@ func (s *SessionIssuer) Ready(ctx context.Context) error {
 	if err := s.client.Health(ctx); err != nil {
 		return err
 	}
+	// tcpURL is the public client endpoint. A container may intentionally have
+	// no hairpin route to that address, so probing it here would make a healthy
+	// internal deployment permanently unready. The WuKong API check above gates
+	// session provisioning; deployment smoke separately gates public TCP/WSS.
+	return nil
+}
+
+// PublicTCPReady probes the client-advertised endpoint. Keep it out of the
+// process readiness gate because container networks may intentionally block
+// hairpin access to the public IP; deployment smoke and the admin health view
+// use this probe where public reachability is the actual signal being tested.
+func (s *SessionIssuer) PublicTCPReady(ctx context.Context) error {
+	if s == nil {
+		return errors.New("WuKongIM session issuer is unavailable")
+	}
 	endpoint, err := url.Parse(s.tcpURL)
 	if err != nil || strings.TrimSpace(endpoint.Host) == "" {
 		return errors.New("WuKongIM TCP endpoint is invalid")

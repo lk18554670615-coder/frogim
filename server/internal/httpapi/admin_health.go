@@ -35,7 +35,10 @@ func (x *API) adminHealth(w http.ResponseWriter, r *http.Request) {
 		)
 	} else {
 		items = append(items, probeAdminHealth(r.Context(), "WuKongIM 实时消息", "当前部署", func(ctx context.Context) error {
-			return x.imSessions.Ready(ctx)
+			if err := x.imSessions.Ready(ctx); err != nil {
+				return err
+			}
+			return x.imSessions.PublicTCPReady(ctx)
 		}))
 		items = append(items, probeAdminHealth(r.Context(), "WuKongIM 管理接口", "当前部署", func(ctx context.Context) error {
 			var result map[string]any
