@@ -43,7 +43,16 @@ case "${1:-help}" in
     else
       "${compose[@]}" up -d --build --scale "server=${IM_REPLICAS:-1}"
     fi
-    "${compose[@]}" wait minio-init
+    minio_init_id="$("${compose[@]}" ps -aq minio-init)"
+    if [[ -z "$minio_init_id" ]]; then
+      echo "minio-init 容器不存在，无法确认存储初始化结果" >&2
+      exit 1
+    fi
+    minio_init_status="$(docker wait "$minio_init_id")"
+    if [[ "$minio_init_status" != "0" ]]; then
+      echo "minio-init 执行失败，退出码：$minio_init_status" >&2
+      exit "$minio_init_status"
+    fi
     "${compose[@]}" rm -f minio-init
     ;;
   restart)
