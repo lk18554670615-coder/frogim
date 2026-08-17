@@ -9,7 +9,7 @@ cp .env.remote-test.example .env.remote-test
 make remote-test-validate
 ```
 
-所有可修改地址集中在 `.env.remote-test`，并带中文注释。该文件已加入 `.gitignore`。严禁把管理员密码、TOTP、Token、个推密钥或对象存储密钥写入任何前端环境变量。
+所有可修改地址集中在 `.env.remote-test`，并带中文注释。该文件已加入 `.gitignore`。严禁把管理员密码、Token、个推密钥或对象存储密钥写入任何前端环境变量。
 
 ## Flutter Web 与管理后台
 

@@ -32,8 +32,7 @@ done < "$ENV_FILE"
 
 required=(
   IM_ENV POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD REDIS_PASSWORD
-  IM_DATABASE_URL IM_REDIS_URL IM_JWT_SECRET IM_ADMIN_EMAIL
-  IM_ADMIN_PASSWORD_HASH IM_ADMIN_TOTP_SECRET IM_ADMIN_SHARED_KEY_ENABLED
+  IM_DATABASE_URL IM_REDIS_URL IM_JWT_SECRET
   IM_PUSH_PROVIDER IM_OTP_WEBHOOK_URL IM_OTP_WEBHOOK_TOKEN
   TERMS_URL PRIVACY_URL
   MINIO_ROOT_USER MINIO_ROOT_PASSWORD MINIO_APP_USER MINIO_APP_PASSWORD
@@ -280,29 +279,23 @@ case "${BACKUP_OFFSITE_ENABLED:-}" in
     ;;
 esac
 
-if [[ ! "${IM_ADMIN_EMAIL:-}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; then
+if [[ -n "${IM_ADMIN_EMAIL:-}" && -z "${IM_ADMIN_PASSWORD_HASH:-}" ]] || [[ -z "${IM_ADMIN_EMAIL:-}" && -n "${IM_ADMIN_PASSWORD_HASH:-}" ]]; then
+  echo "IM_ADMIN_EMAIL and IM_ADMIN_PASSWORD_HASH must be provided together for an empty administrator table" >&2
+  failed=1
+fi
+
+if [[ -n "${IM_ADMIN_EMAIL:-}" && ! "${IM_ADMIN_EMAIL:-}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; then
   echo "IM_ADMIN_EMAIL must be a valid administrator email address" >&2
   failed=1
 fi
 
-if [[ ! "${IM_ADMIN_PASSWORD_HASH:-}" =~ ^\$2[aby]\$ ]]; then
+if [[ -n "${IM_ADMIN_PASSWORD_HASH:-}" && ! "${IM_ADMIN_PASSWORD_HASH:-}" =~ ^\$2[aby]\$ ]]; then
   echo "IM_ADMIN_PASSWORD_HASH must be a bcrypt hash, never a plaintext password" >&2
   failed=1
 fi
 
-if ! grep -Eq "^IM_ADMIN_PASSWORD_HASH='\\\$2[aby]\\\$" "$ENV_FILE"; then
+if [[ -n "${IM_ADMIN_PASSWORD_HASH:-}" ]] && ! grep -Eq "^IM_ADMIN_PASSWORD_HASH='\\\$2[aby]\\\$" "$ENV_FILE"; then
   echo "IM_ADMIN_PASSWORD_HASH must be wrapped in single quotes so Docker Compose preserves dollar signs" >&2
-  failed=1
-fi
-
-totp_secret="${IM_ADMIN_TOTP_SECRET:-}"
-if (( ${#totp_secret} < 16 )) || [[ ! "$totp_secret" =~ ^[A-Z2-7]+=*$ ]]; then
-  echo "IM_ADMIN_TOTP_SECRET must be a Base32 secret containing at least 16 characters" >&2
-  failed=1
-fi
-
-if [[ "${IM_ADMIN_SHARED_KEY_ENABLED:-}" != "false" ]]; then
-  echo "IM_ADMIN_SHARED_KEY_ENABLED must be false in production" >&2
   failed=1
 fi
 

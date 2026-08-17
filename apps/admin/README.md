@@ -5,7 +5,7 @@ The operations console covers service overview, users, groups, reports, sensitiv
 ## Security and environments
 
 - Development, test and production builds all use the live API adapter; the application has no demo selector or runtime demo data mode.
-- Administrators sign in with a named email, password and optional TOTP code. Only the short-lived JWT returned by the server is kept in `sessionStorage`; passwords and TOTP values are never persisted.
+- Administrators sign in with a database-backed email and password. Only the short-lived JWT returned by the server is kept in `sessionStorage`; passwords are never persisted. The console refreshes the current role and permissions through `/auth/me` when it starts.
 - A 401 expires the current session; nested API errors and request IDs are shown to the operator.
 - UI permissions improve clarity, but the service remains the authorization boundary.
 - Destructive actions require confirmation and show explicit success or failure feedback.
@@ -28,7 +28,7 @@ VITE_ADMIN_API_URL=/api/v2/admin
 ADMIN_PROXY_TARGET=http://127.0.0.1:8080
 ```
 
-`ADMIN_PROXY_TARGET` is consumed only by the development server and is not bundled into the browser application. Never set an administrator password, hash, TOTP seed or token in a `VITE_*` variable. Vite values are public build assets.
+`ADMIN_PROXY_TARGET` is consumed only by the development server and is not bundled into the browser application. Never set an administrator password, hash or token in a `VITE_*` variable. Vite values are public build assets.
 
 ## Live API behavior
 

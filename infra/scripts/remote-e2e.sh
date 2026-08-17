@@ -97,29 +97,10 @@ admin_password="$(sed -n 's/^ADMIN_PASSWORD=//p' "$CREDENTIAL_FILE")"
 if [[ -z "$admin_password" ]]; then
   admin_password="$(sed -n 's/^管理员密码：//p' "$CREDENTIAL_FILE")"
 fi
-totp=""
-if [[ -n "${IM_ADMIN_TOTP_SECRET:-}" ]]; then
-  totp="$(python3 - "$IM_ADMIN_TOTP_SECRET" <<'PY'
-import base64, hashlib, hmac, struct, sys, time
-secret = sys.argv[1]
-secret += '=' * ((8 - len(secret) % 8) % 8)
-key = base64.b32decode(secret)
-counter = struct.pack('>Q', int(time.time()) // 30)
-digest = hmac.new(key, counter, hashlib.sha1).digest()
-offset = digest[-1] & 15
-code = (struct.unpack('>I', digest[offset:offset+4])[0] & 0x7fffffff) % 1000000
-print(f'{code:06d}')
-PY
-)"
-fi
-if [[ -n "$totp" ]]; then
-  admin_body="{\"email\":\"$IM_ADMIN_EMAIL\",\"password\":\"$admin_password\",\"totp\":\"$totp\"}"
-else
-  admin_body="{\"email\":\"$IM_ADMIN_EMAIL\",\"password\":\"$admin_password\"}"
-fi
+admin_body="{\"email\":\"$IM_ADMIN_EMAIL\",\"password\":\"$admin_password\"}"
 admin="$(json_post "$base/v2/admin/auth/login" "" "$admin_body")"
 admin_token="$(jq -er '.accessToken' <<<"$admin")"
 curl --fail --silent --show-error "$base/api/v2/admin/dashboard" -H "authorization: Bearer $admin_token" | jq -e 'type == "object"' >/dev/null
-echo "PASS admin password, TOTP and dashboard"
+echo "PASS database administrator password and dashboard"
 
 echo "REMOTE_E2E_PASSED"

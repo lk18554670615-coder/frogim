@@ -2527,6 +2527,10 @@ func TestPostgresUserHandlePolicyAndExactIdentifierSearch(t *testing.T) {
 	if err != nil || len(items) != 1 || items[0].ID != uid || items[0].Phone != "" {
 		t.Fatalf("handle search=%+v err=%v", items, err)
 	}
+	allowPhoneSearch := true
+	if _, err = p.UpdateUserProfile(ctx, uid, UserProfileUpdate{AllowSearchByPhone: &allowPhoneSearch}); err != nil {
+		t.Fatalf("enable phone search: %v", err)
+	}
 	items, err = p.SearchUsersByIdentifier(ctx, phone, "phone", 20)
 	if err != nil || len(items) != 1 || items[0].ID != uid || items[0].Phone != "" {
 		t.Fatalf("phone search=%+v err=%v", items, err)

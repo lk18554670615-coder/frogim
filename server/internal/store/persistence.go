@@ -107,6 +107,67 @@ type PasswordAuthStore interface {
 	PasswordCredentials(context.Context, string) (*model.User, string, error)
 	UpdatePassword(context.Context, string, string, time.Time) error
 }
+type AdminAccount struct {
+	ID                string     `json:"id"`
+	Email             string     `json:"email"`
+	DisplayName       string     `json:"displayName"`
+	PasswordHash      string     `json:"-"`
+	RoleID            string     `json:"roleId"`
+	RoleName          string     `json:"roleName"`
+	Status            string     `json:"status"`
+	CreatedBy         string     `json:"createdBy"`
+	Permissions       []string   `json:"permissions"`
+	AuthVersion       int64      `json:"-"`
+	LastLoginAt       *time.Time `json:"lastLoginAt,omitempty"`
+	DisabledAt        *time.Time `json:"disabledAt,omitempty"`
+	PasswordUpdatedAt time.Time  `json:"passwordUpdatedAt"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	UpdatedAt         time.Time  `json:"updatedAt"`
+}
+type AdminRole struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description"`
+	CreatedBy    string    `json:"createdBy"`
+	BuiltIn      bool      `json:"builtIn"`
+	Permissions  []string  `json:"permissions"`
+	AccountCount int64     `json:"accountCount"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+type AdminAccountCreate struct {
+	ID, Email, DisplayName, PasswordHash, RoleID, CreatedBy string
+	At                                                      time.Time
+}
+type AdminAccountUpdate struct {
+	ID, ActorID                string
+	Email, DisplayName, RoleID *string
+	Status                     *string
+	At                         time.Time
+}
+type AdminRoleCreate struct {
+	ID, Name, Description, CreatedBy string
+	Permissions                      []string
+	At                               time.Time
+}
+type AdminRoleUpdate struct {
+	ID, Name, Description, ActorID string
+	Permissions                    []string
+	At                             time.Time
+}
+type AdminIdentityStore interface {
+	AdminAccountByEmail(context.Context, string) (*AdminAccount, error)
+	AdminAccountByID(context.Context, string) (*AdminAccount, error)
+	ListAdminAccounts(context.Context, string, string, string, int) ([]*AdminAccount, int64, string, error)
+	CreateAdminAccount(context.Context, AdminAccountCreate) (*AdminAccount, error)
+	UpdateAdminAccount(context.Context, AdminAccountUpdate) (*AdminAccount, error)
+	UpdateAdminAccountPassword(context.Context, string, string, time.Time) error
+	RecordAdminAccountLogin(context.Context, string, time.Time) error
+	ListAdminRoles(context.Context) ([]*AdminRole, error)
+	CreateAdminRole(context.Context, AdminRoleCreate) (*AdminRole, error)
+	UpdateAdminRole(context.Context, AdminRoleUpdate) (*AdminRole, error)
+	DeleteAdminRole(context.Context, string) error
+}
 type RefreshSessionStore interface {
 	CreateRefreshSession(context.Context, string, string, []byte, time.Time) error
 	RotateRefreshSession(context.Context, string, string, []byte, time.Time, string) error
@@ -359,6 +420,72 @@ func (p *WithRedis) PasswordCredentials(ctx context.Context, phone string) (*mod
 		return s.PasswordCredentials(ctx, phone)
 	}
 	return nil, "", ErrUnsupported
+}
+func (p *WithRedis) AdminAccountByEmail(ctx context.Context, email string) (*AdminAccount, error) {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.AdminAccountByEmail(ctx, email)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) AdminAccountByID(ctx context.Context, id string) (*AdminAccount, error) {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.AdminAccountByID(ctx, id)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) ListAdminAccounts(ctx context.Context, query, status, cursor string, limit int) ([]*AdminAccount, int64, string, error) {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.ListAdminAccounts(ctx, query, status, cursor, limit)
+	}
+	return nil, 0, "", ErrUnsupported
+}
+func (p *WithRedis) CreateAdminAccount(ctx context.Context, input AdminAccountCreate) (*AdminAccount, error) {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.CreateAdminAccount(ctx, input)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) UpdateAdminAccount(ctx context.Context, input AdminAccountUpdate) (*AdminAccount, error) {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.UpdateAdminAccount(ctx, input)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) UpdateAdminAccountPassword(ctx context.Context, id, hash string, at time.Time) error {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.UpdateAdminAccountPassword(ctx, id, hash, at)
+	}
+	return ErrUnsupported
+}
+func (p *WithRedis) RecordAdminAccountLogin(ctx context.Context, id string, at time.Time) error {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.RecordAdminAccountLogin(ctx, id, at)
+	}
+	return ErrUnsupported
+}
+func (p *WithRedis) ListAdminRoles(ctx context.Context) ([]*AdminRole, error) {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.ListAdminRoles(ctx)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) CreateAdminRole(ctx context.Context, input AdminRoleCreate) (*AdminRole, error) {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.CreateAdminRole(ctx, input)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) UpdateAdminRole(ctx context.Context, input AdminRoleUpdate) (*AdminRole, error) {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.UpdateAdminRole(ctx, input)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) DeleteAdminRole(ctx context.Context, id string) error {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.DeleteAdminRole(ctx, id)
+	}
+	return ErrUnsupported
 }
 func (p *WithRedis) UpdatePassword(ctx context.Context, phone, hash string, updated time.Time) error {
 	if s, ok := p.base.(PasswordAuthStore); ok {

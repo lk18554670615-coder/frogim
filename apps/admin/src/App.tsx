@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { ApiError, getApi, loginAdmin } from './api';
 import type {
-  AdminApi, AdminRole, AdminSession, AdminSettings, AdminUserDeviceRecord, AnnouncementInput, AnnouncementRecord, AuditLog, CallRecord, ClientPlatform, ClientVersionPolicy, ClientVersionReleaseRecord, DashboardData, GroupMemberRecord, GroupOverview, GroupRecord,
+  AdminApi, AdministratorRecord, AdministratorRoleRecord, AdminSession, AdminSettings, AdminUserDeviceRecord, AnnouncementInput, AnnouncementRecord, AuditLog, CallRecord, ClientPlatform, ClientVersionPolicy, ClientVersionReleaseRecord, DashboardData, GroupMemberRecord, GroupOverview, GroupRecord,
   FeedbackRecord, FriendshipRecord, HealthService, MediaRecord, MessageRecord, MomentModerationRecord, OnlineRecord, OperationsStatus, PageResult, ReportRecord, ReportResolutionAction, SensitiveWord, StatusTone, StickerPackModerationRecord, UserRecord,
   StickerCategoryInput, StickerCategoryOperationsRecord, StickerItemInput, StickerPackInput,
   LiveKitMetrics, LiveKitParticipant, LiveKitRoom, WukongChannel, WukongConnection, WukongDevice, WukongNode, WukongPlugin, WukongPluginEvent, WukongPluginLogEntry, WukongRobotMenu, WukongRobotProfile, WukongStoredMessage, WukongSystemUser,
@@ -33,15 +33,7 @@ const UnsavedChangesContext = createContext<((message?: string) => void) | null>
 const InfrastructureUnsavedChangesContext = createContext<((message?: string) => void) | null>(null);
 const SESSION_KEY = 'qingwaguagua_admin_session';
 const LEGACY_SESSION_KEY = 'nexachat_admin_session';
-const roleLabels: Record<AdminRole, string> = { platform_admin: '平台管理员', system_operator: '系统运维', moderator: '内容审核员', content_operator: '内容运营', support_agent: '客服坐席', support: '只读支持' };
-const rolePermissions: Record<AdminRole, Permission[]> = {
-  platform_admin: ['users.write', 'groups.write', 'reports.write', 'rules.write', 'announcements.write', 'settings.write', 'versions.write', 'content.write', 'channels.write', 'operations.write', 'support.write'],
-  system_operator: ['settings.write', 'versions.write', 'operations.write'],
-  moderator: ['users.write', 'reports.write', 'rules.write', 'content.write'],
-  content_operator: ['announcements.write', 'content.write', 'channels.write'],
-  support_agent: ['support.write'],
-  support: [],
-};
+const roleLabels: Record<string, string> = { platform_admin: '平台管理员', system_operator: '系统运维', moderator: '内容审核员', content_operator: '内容运营', support_agent: '客服坐席', support: '只读支持' };
 const permissionLabels: Record<string, string> = {
   'users.write': '用户处置',
   'groups.write': '群组处置',
@@ -443,7 +435,9 @@ function Pagination({ data, onPage }: { data?: PageResult<unknown>; onPage: (pag
 }
 
 const overviewNavItem = { to: '/overview', label: '运行概览', icon: LayoutDashboard };
-const navGroups = [
+type NavigationItem = { to: string; label: string; icon: typeof Users; platformAdminOnly?: boolean };
+type NavigationGroup = { id: string; label: string; items: NavigationItem[] };
+const navGroups: NavigationGroup[] = [
   {
     id: 'users', label: '用户', items: [
       { to: '/users', label: '用户管理', icon: Users },
@@ -481,6 +475,7 @@ const navGroups = [
   },
   {
     id: 'settings', label: '设置', items: [
+      { to: '/administrators', label: '管理员与角色', icon: ShieldCheck, platformAdminOnly: true },
       { to: '/im-infrastructure', label: 'IM 基础设施', icon: Server },
       { to: '/system-health', label: '系统健康', icon: HeartPulse },
       { to: '/audit', label: '审计日志', icon: FileClock },
@@ -500,7 +495,8 @@ function Shell() {
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const previousOverflow = useRef('');
   const { path, navigate } = usePath(() => !unsavedMessage || window.confirm(`${unsavedMessage}，确定离开当前页面吗？`));
-  const activeGroupId = navGroups.find((group) => group.items.some((item) => item.to === path))?.id;
+  const visibleNavGroups = useMemo(() => navGroups.map((group) => ({ ...group, items: group.items.filter((item) => !item.platformAdminOnly || session.roleId === 'platform_admin') })), [session.roleId]);
+  const activeGroupId = visibleNavGroups.find((group) => group.items.some((item) => item.to === path))?.id;
   useEffect(() => {
     if (activeGroupId) setExpandedNavGroups((current) => current[activeGroupId] ? current : { ...current, [activeGroupId]: true });
   }, [activeGroupId]);
@@ -545,7 +541,7 @@ function Shell() {
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
     if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   };
-  const pages: Record<string, ReactNode> = { '/overview': <OverviewPage />, '/users': <UsersPage />, '/groups': <GroupsPage />, '/reports': <ReportsPage />, '/messages': <MessagesPage />, '/media': <MediaPage />, '/online': <OnlinePage />, '/relationships': <RelationshipsPage />, '/operations': <OperationsPage />, '/announcements': <AnnouncementsPage />, '/calls': <CallsPage />, '/content-moderation': <ContentModerationPage />, '/business-channels': <BusinessChannelsPage />, '/support-workbench': <SupportWorkbenchPage />, '/im-infrastructure': <ImInfrastructurePage />, '/client-versions': <ClientVersionsPage />, '/sensitive-words': <SensitiveWordsPage />, '/system-health': <HealthPage />, '/audit': <AuditPage />, '/settings': <SettingsPage /> };
+  const pages: Record<string, ReactNode> = { '/overview': <OverviewPage />, '/users': <UsersPage />, '/groups': <GroupsPage />, '/reports': <ReportsPage />, '/messages': <MessagesPage />, '/media': <MediaPage />, '/online': <OnlinePage />, '/relationships': <RelationshipsPage />, '/operations': <OperationsPage />, '/announcements': <AnnouncementsPage />, '/calls': <CallsPage />, '/content-moderation': <ContentModerationPage />, '/business-channels': <BusinessChannelsPage />, '/support-workbench': <SupportWorkbenchPage />, '/im-infrastructure': <ImInfrastructurePage />, '/client-versions': <ClientVersionsPage />, '/sensitive-words': <SensitiveWordsPage />, '/system-health': <HealthPage />, '/audit': <AuditPage />, '/administrators': <AdministratorsPage />, '/change-password': <ChangePasswordPage />, '/settings': <SettingsPage /> };
   useEffect(() => { if (!pages[path]) { window.history.replaceState({}, '', '/overview'); window.dispatchEvent(new PopStateEvent('popstate')); } }, [path]); // eslint-disable-line react-hooks/exhaustive-deps
   return <UnsavedChangesContext.Provider value={setUnsavedMessage}><div className="app-shell">
     {compactNavigation && navOpen && <button aria-label="关闭导航" className="nav-scrim" onClick={() => setNavOpen(false)} />}
@@ -553,7 +549,7 @@ function Shell() {
       <div className="brand"><div className="brand-mark"><img src="/qingwaguagua-mark.png" alt="" /></div><div><strong>青蛙呱呱</strong><span>运营控制台</span></div></div>
       <nav aria-label="主导航">
         <AppLink to={overviewNavItem.to} currentPath={path} navigate={requestNavigate} className="nav-item nav-overview"><overviewNavItem.icon size={18} /><span>{overviewNavItem.label}</span></AppLink>
-        {navGroups.map((group) => {
+        {visibleNavGroups.map((group) => {
           const expanded = Boolean(expandedNavGroups[group.id]);
           const hasActive = group.id === activeGroupId;
           return <section className="nav-section" key={group.id}>
@@ -562,7 +558,7 @@ function Shell() {
           </section>;
         })}
       </nav>
-      <div className="sidebar-foot"><div className="admin-avatar">{[...session.displayName][0]}</div><div><strong>{session.displayName}</strong><span>{roleLabels[session.role]}</span></div><button className="icon-button sidebar-logout" aria-label="退出管理后台" title="退出登录" onClick={requestLogout}><LogOut size={17} /></button></div>
+      <div className="sidebar-foot"><div className="admin-avatar">{[...session.displayName][0]}</div><div><strong>{session.displayName}</strong><span>{session.roleName || roleLabels[session.roleId] || session.roleId}</span></div><button className="icon-button sidebar-logout" aria-label="修改密码" title="修改密码" onClick={() => requestNavigate('/change-password')}><LockKeyhole size={17} /></button><button className="icon-button sidebar-logout" aria-label="退出管理后台" title="退出登录" onClick={requestLogout}><LogOut size={17} /></button></div>
     </aside>
     <div className="workspace">
       <div className="topbar">
@@ -1412,6 +1408,93 @@ function AuditPage() {
   </>;
 }
 
+type AdministratorEditor = { mode: 'create' | 'edit'; account?: AdministratorRecord; email: string; displayName: string; roleId: string; password: string; reason: string };
+type AdministratorStatusAction = { account: AdministratorRecord; status: 'active' | 'disabled'; reason: string };
+type AdministratorPasswordReset = { account: AdministratorRecord; password: string; confirmation: string; reason: string };
+type AdministratorRoleEditor = { role?: AdministratorRoleRecord; name: string; description: string; permissions: string[]; reason: string };
+
+function AdministratorsPage() {
+  const { api, mode, notify, session } = useApi();
+  const [tab, setTab] = useState<'accounts' | 'roles'>('accounts');
+  const [query, setQuery] = useState('');
+  const [status, setStatus] = useState('');
+  const deferredQuery = useDebouncedValue(query);
+  const accounts = useResource(() => api.getAdministrators(deferredQuery, status, 1, 100), [api, mode, deferredQuery, status]);
+  const roles = useResource(() => api.getAdministratorRoles(), [api, mode]);
+  const [editor, setEditor] = useState<AdministratorEditor>();
+  const [statusAction, setStatusAction] = useState<AdministratorStatusAction>();
+  const [passwordReset, setPasswordReset] = useState<AdministratorPasswordReset>();
+  const [roleEditor, setRoleEditor] = useState<AdministratorRoleEditor>();
+  const [roleDelete, setRoleDelete] = useState<{ role: AdministratorRoleRecord; reason: string }>();
+  if (session.roleId !== 'platform_admin') return <><PageHeader title="管理员与角色" description="仅平台管理员可以访问管理员账号和角色配置。" /><EmptyState title="当前账号无权访问" detail="请联系平台管理员调整账号角色。" icon={<ShieldAlert size={24} />} /></>;
+  const reload = async () => { await Promise.all([accounts.reload(), roles.reload()]); };
+  const openCreate = () => setEditor({ mode: 'create', email: '', displayName: '', roleId: roles.data?.find((role) => role.id === 'support')?.id ?? roles.data?.[0]?.id ?? '', password: '', reason: '' });
+  const openEdit = (account: AdministratorRecord) => setEditor({ mode: 'edit', account, email: account.email, displayName: account.displayName, roleId: account.roleId, password: '', reason: '' });
+  const saveAccount = async () => {
+    if (!editor) return;
+    if (editor.mode === 'create') await api.createAdministrator({ email: editor.email.trim(), displayName: editor.displayName.trim(), roleId: editor.roleId, password: editor.password }, editor.reason.trim());
+    else if (editor.account) await api.updateAdministrator(editor.account.id, { email: editor.email.trim(), displayName: editor.displayName.trim(), roleId: editor.roleId }, editor.reason.trim());
+    notify(editor.mode === 'create' ? '管理员已创建' : '管理员资料已更新');
+    await reload();
+  };
+  const changeStatus = async () => {
+    if (!statusAction) return;
+    await api.updateAdministrator(statusAction.account.id, { status: statusAction.status }, statusAction.reason.trim());
+    notify(statusAction.status === 'active' ? '管理员已启用' : '管理员已停用');
+    await reload();
+  };
+  const resetPassword = async () => {
+    if (!passwordReset) return;
+    await api.resetAdministratorPassword(passwordReset.account.id, passwordReset.password, passwordReset.reason.trim());
+    notify('管理员密码已重置，原会话已失效');
+    await accounts.reload();
+  };
+  const saveRole = async () => {
+    if (!roleEditor) return;
+    const input = { name: roleEditor.name.trim(), description: roleEditor.description.trim(), permissions: roleEditor.permissions };
+    if (roleEditor.role) await api.updateAdministratorRole(roleEditor.role.id, input, roleEditor.reason.trim());
+    else await api.createAdministratorRole(input, roleEditor.reason.trim());
+    notify(roleEditor.role ? '自定义角色已更新，权限立即生效' : '自定义角色已创建');
+    await reload();
+  };
+  const deleteRole = async () => {
+    if (!roleDelete) return;
+    await api.deleteAdministratorRole(roleDelete.role.id, roleDelete.reason.trim());
+    notify('自定义角色已删除');
+    await roles.reload();
+  };
+  const editorValid = Boolean(editor?.email.trim() && editor.displayName.trim() && editor.roleId && editor.reason.trim() && (editor.mode === 'edit' || (editor.password.length >= 8 && editor.password.length <= 128)));
+  const roleEditorValid = Boolean(roleEditor && roleEditor.name.trim().length >= 2 && roleEditor.reason.trim());
+  return <><PageHeader title="管理员与角色" description="管理数据库管理员账号、自定义角色及实时权限。系统内置角色保持只读。" actions={<button className="button primary" disabled={tab === 'accounts' ? !roles.data?.length : false} onClick={tab === 'accounts' ? openCreate : () => setRoleEditor({ name: '', description: '', permissions: [], reason: '' })}><Plus size={16} />{tab === 'accounts' ? '新增管理员' : '新建角色'}</button>} />
+    <div className="tabs" role="tablist" aria-label="管理员管理分类" onKeyDown={tabListKeyDown}><button role="tab" aria-selected={tab === 'accounts'} className={tab === 'accounts' ? 'active' : ''} onClick={() => setTab('accounts')}>管理员账号</button><button role="tab" aria-selected={tab === 'roles'} className={tab === 'roles' ? 'active' : ''} onClick={() => setTab('roles')}>角色与权限</button></div>
+    {tab === 'accounts' ? <><Toolbar query={query} setQuery={setQuery} placeholder="搜索邮箱、姓名、账号 ID 或角色"><select className="select-control" aria-label="管理员状态" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option value="active">已启用</option><option value="disabled">已停用</option></select></Toolbar><DataPanel loading={accounts.loading} error={accounts.error} retry={accounts.reload} empty={!accounts.data?.items.length} emptyTitle="没有匹配的管理员" emptyDetail="调整搜索条件，或创建新的管理员账号。"><div className="table-wrap"><table><thead><tr><th>管理员</th><th>角色</th><th>状态</th><th>最近登录</th><th>密码更新</th><th>操作</th></tr></thead><tbody>{accounts.data?.items.map((account) => <tr key={account.id}><td><strong>{account.displayName}</strong><small>{account.email}</small><small className="mono">{account.id}</small></td><td><strong>{account.roleName || roleLabels[account.roleId] || account.roleId}</strong><small>{account.permissions.length ? `${account.permissions.length} 项写权限` : '默认只读'}</small></td><td><Badge value={account.status} /></td><td>{account.lastLoginAt ? dateTimeLabel(account.lastLoginAt) : '尚未登录'}</td><td>{dateTimeLabel(account.passwordUpdatedAt)}</td><td><div className="row-actions wrap"><button className="button secondary compact" onClick={() => openEdit(account)}>编辑</button><button className="button secondary compact" onClick={() => setPasswordReset({ account, password: '', confirmation: '', reason: '' })}>重置密码</button><button className={`button secondary compact ${account.status === 'active' ? 'danger-text' : ''}`} disabled={account.id === session.id && account.status === 'active'} title={account.id === session.id ? '不能停用当前登录账号' : ''} onClick={() => setStatusAction({ account, status: account.status === 'active' ? 'disabled' : 'active', reason: '' })}>{account.status === 'active' ? '停用' : '启用'}</button></div></td></tr>)}</tbody></table></div></DataPanel></> : <DataPanel loading={roles.loading} error={roles.error} retry={roles.reload} empty={!roles.data?.length} emptyTitle="暂无角色" emptyDetail="系统初始化后会自动创建六个内置角色。"><div className="role-management-grid">{roles.data?.map((role) => <section className="settings-section" key={role.id}><div className="panel-heading"><div><h2>{role.name}</h2><p>{role.description || '暂无说明'}</p></div><Badge value={role.builtIn ? 'neutral' : 'active'} label={role.builtIn ? '系统内置' : '自定义'} /></div><p className="permission-note">{role.accountCount} 个管理员使用 · <span className="mono">{role.id}</span></p><div className="permission-chip-list">{role.permissions.length ? role.permissions.map((permission) => <span key={permission}>{permissionLabels[permission] ?? permission}</span>) : <span>默认只读</span>}</div>{!role.builtIn && <div className="row-actions"><button className="button secondary compact" onClick={() => setRoleEditor({ role, name: role.name, description: role.description, permissions: [...role.permissions], reason: '' })}>编辑权限</button><button className="button secondary compact danger-text" disabled={role.accountCount > 0} title={role.accountCount > 0 ? '请先调整使用该角色的管理员' : ''} onClick={() => setRoleDelete({ role, reason: '' })}>删除</button></div>}</section>)}</div></DataPanel>}
+    <ConfirmDialog open={Boolean(editor)} title={editor?.mode === 'create' ? '新增管理员' : '编辑管理员'} detail="邮箱不区分大小写；角色或账号资料变更后，该管理员的旧会话立即失效。" confirmLabel={editor?.mode === 'create' ? '创建管理员' : '保存修改'} confirmDisabled={!editorValid} onClose={() => setEditor(undefined)} onConfirm={saveAccount}>{editor && <><div className="form-grid"><label className="field-label">显示名称<input value={editor.displayName} maxLength={80} onChange={(event) => setEditor({ ...editor, displayName: event.target.value })} required /></label><label className="field-label">邮箱<input type="email" value={editor.email} maxLength={254} onChange={(event) => setEditor({ ...editor, email: event.target.value })} required /></label><label className="field-label">角色<select value={editor.roleId} onChange={(event) => setEditor({ ...editor, roleId: event.target.value })}>{roles.data?.map((role) => <option value={role.id} key={role.id}>{role.name}</option>)}</select></label>{editor.mode === 'create' && <label className="field-label">初始密码<input aria-label="初始密码" type="password" minLength={8} maxLength={128} value={editor.password} autoComplete="new-password" onChange={(event) => setEditor({ ...editor, password: event.target.value })} /><small className="field-hint">8–128 个字符</small></label>}</div><label className="field-label">操作原因<textarea value={editor.reason} maxLength={500} onChange={(event) => setEditor({ ...editor, reason: event.target.value })} placeholder="填写创建依据或变更工单" required /></label></>}</ConfirmDialog>
+    <ConfirmDialog open={Boolean(statusAction)} title={statusAction?.status === 'disabled' ? '停用管理员' : '启用管理员'} detail={statusAction?.status === 'disabled' ? `${statusAction.account.displayName} 将立即无法登录，现有会话同时失效。` : `${statusAction?.account.displayName ?? ''} 将恢复后台登录权限。`} confirmLabel={statusAction?.status === 'disabled' ? '确认停用' : '确认启用'} danger={statusAction?.status === 'disabled'} confirmDisabled={!statusAction?.reason.trim()} onClose={() => setStatusAction(undefined)} onConfirm={changeStatus}>{statusAction && <label className="field-label">操作原因<textarea value={statusAction.reason} maxLength={500} onChange={(event) => setStatusAction({ ...statusAction, reason: event.target.value })} required /></label>}</ConfirmDialog>
+    <ConfirmDialog open={Boolean(passwordReset)} title="重置管理员密码" detail={`${passwordReset?.account.displayName ?? ''} 的新密码会立即长期生效，所有旧会话同时失效。`} confirmLabel="确认重置" danger confirmDisabled={!passwordReset || passwordReset.password.length < 8 || passwordReset.password.length > 128 || passwordReset.password !== passwordReset.confirmation || !passwordReset.reason.trim()} onClose={() => setPasswordReset(undefined)} onConfirm={resetPassword}>{passwordReset && <><label className="field-label">新密码<input type="password" minLength={8} maxLength={128} autoComplete="new-password" value={passwordReset.password} onChange={(event) => setPasswordReset({ ...passwordReset, password: event.target.value })} /></label><label className="field-label">确认新密码<input type="password" minLength={8} maxLength={128} autoComplete="new-password" value={passwordReset.confirmation} onChange={(event) => setPasswordReset({ ...passwordReset, confirmation: event.target.value })} /></label><label className="field-label">操作原因<textarea value={passwordReset.reason} maxLength={500} onChange={(event) => setPasswordReset({ ...passwordReset, reason: event.target.value })} required /></label></>}</ConfirmDialog>
+    <ConfirmDialog open={Boolean(roleEditor)} title={roleEditor?.role ? '编辑自定义角色' : '新建自定义角色'} detail="所有有效管理员默认拥有读取权限；这里只配置各功能域的写权限。" confirmLabel={roleEditor?.role ? '保存角色' : '创建角色'} confirmDisabled={!roleEditorValid} onClose={() => setRoleEditor(undefined)} onConfirm={saveRole}>{roleEditor && <><label className="field-label">角色名称<input value={roleEditor.name} minLength={2} maxLength={80} onChange={(event) => setRoleEditor({ ...roleEditor, name: event.target.value })} /></label><label className="field-label">角色说明<textarea value={roleEditor.description} maxLength={500} onChange={(event) => setRoleEditor({ ...roleEditor, description: event.target.value })} /></label><fieldset className="permission-editor"><legend>功能域写权限</legend>{Object.entries(permissionLabels).map(([permission, label]) => <label key={permission}><input type="checkbox" checked={roleEditor.permissions.includes(permission)} onChange={(event) => setRoleEditor({ ...roleEditor, permissions: event.target.checked ? [...roleEditor.permissions, permission] : roleEditor.permissions.filter((item) => item !== permission) })} />{label}</label>)}</fieldset><label className="field-label">操作原因<textarea value={roleEditor.reason} maxLength={500} onChange={(event) => setRoleEditor({ ...roleEditor, reason: event.target.value })} required /></label></>}</ConfirmDialog>
+    <ConfirmDialog open={Boolean(roleDelete)} title="删除自定义角色" detail={`${roleDelete?.role.name ?? ''} 删除后无法恢复。已分配给管理员的角色不能删除。`} confirmLabel="确认删除" danger confirmDisabled={!roleDelete?.reason.trim()} onClose={() => setRoleDelete(undefined)} onConfirm={deleteRole}>{roleDelete && <label className="field-label">操作原因<textarea value={roleDelete.reason} maxLength={500} onChange={(event) => setRoleDelete({ ...roleDelete, reason: event.target.value })} required /></label>}</ConfirmDialog>
+  </>;
+}
+
+function ChangePasswordPage() {
+  const { api, notify, logout } = useApi();
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const valid = currentPassword.length > 0 && newPassword.length >= 8 && newPassword.length <= 128 && newPassword === confirmation && currentPassword !== newPassword;
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!valid) return;
+    setSaving(true); setError('');
+    try { await api.changeCurrentAdminPassword(currentPassword, newPassword); notify('密码已修改，请使用新密码重新登录'); logout(); }
+    catch (cause) { setError(errorMessage(cause)); }
+    finally { setSaving(false); }
+  };
+  return <><PageHeader title="修改密码" description="验证当前密码后更新管理员密码；成功后所有旧会话立即失效。" /><form className="settings-section password-change-card" onSubmit={(event) => void submit(event)}><div className="settings-title"><LockKeyhole size={20} /><div><h2>管理员密码</h2><p>密码长度为 8–128 个字符，不能与当前密码相同。</p></div></div><label className="field-label">当前密码<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label><label className="field-label">新密码<input type="password" autoComplete="new-password" minLength={8} maxLength={128} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required /></label><label className="field-label">确认新密码<input type="password" autoComplete="new-password" minLength={8} maxLength={128} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required />{confirmation && confirmation !== newPassword && <small className="field-error">两次输入的新密码不一致</small>}</label>{error && <div className="inline-notice danger" role="alert"><AlertTriangle size={15} />{error}</div>}<button className="button primary" type="submit" disabled={!valid || saving}>{saving ? '正在修改…' : '修改密码并重新登录'}</button></form></>;
+}
+
 function SettingsPage() {
   const { api, mode, notify, can } = useApi(); const state = useResource(() => api.getSettings(), [api, mode]); const [form, setForm] = useState<AdminSettings>(); const [baseline, setBaseline] = useState<AdminSettings>(); const [saving, setSaving] = useState(false); const [confirming, setConfirming] = useState(false); const [reason, setReason] = useState(''); useEffect(() => { setForm(state.data); setBaseline(state.data); }, [state.data]);
   const dirty = Boolean(form && baseline && JSON.stringify(form) !== JSON.stringify(baseline));
@@ -1419,7 +1502,7 @@ function SettingsPage() {
   const change = <K extends keyof AdminSettings>(key: K, value: AdminSettings[K]) => setForm((current) => current ? { ...current, [key]: value } : current);
   const submit = (event: FormEvent) => { event.preventDefault(); if (form && dirty && can('settings.write')) setConfirming(true); };
   const save = async () => { if (!form || !reason.trim()) throw new Error('请输入发布理由'); setSaving(true); try { const result = await api.updateSettings(form, reason.trim()); setForm(result); setBaseline(result); setConfirming(false); setReason(''); notify('系统设置已保存'); } finally { setSaving(false); } };
-  const statuses: Array<[string, boolean]> = form ? [['PostgreSQL 数据库', form.configurationStatus.database], ['Redis 实时总线', form.configurationStatus.redis], ['对象存储', form.configurationStatus.objectStorage], ['短信验证码服务', form.configurationStatus.otpProvider], ['离线推送凭据', form.configurationStatus.pushProvider], ['LiveKit 媒体服务', form.configurationStatus.liveKit], ['管理员 TOTP', form.configurationStatus.adminTOTP]] : [];
+  const statuses: Array<[string, boolean]> = form ? [['PostgreSQL 数据库', form.configurationStatus.database], ['Redis 实时总线', form.configurationStatus.redis], ['对象存储', form.configurationStatus.objectStorage], ['短信验证码服务', form.configurationStatus.otpProvider], ['离线推送凭据', form.configurationStatus.pushProvider], ['LiveKit 媒体服务', form.configurationStatus.liveKit]] : [];
   return <><PageHeader title="系统设置" description="统一管理可热更新的业务策略；敏感密钥只展示配置状态，基础设施参数需修改环境变量并重启服务。" />{state.loading ? <Skeleton rows={8} /> : state.error || !form ? <ErrorState message={state.error} retry={state.reload} /> : <form className="settings-layout" onSubmit={(event) => void submit(event)}>
     <div className="settings-main"><section className="settings-section"><div className="settings-title"><CircleUserRound size={20} /><div><h2>注册与登录</h2><p>手机号验证码始终用于注册、换绑和找回密码；关闭注册不会影响已有账号登录。</p></div></div><Toggle label="允许新用户注册" description="关闭后密码注册接口会拒绝新账号。" checked={form.allowRegistration} onChange={(value) => change('allowRegistration', value)} /><div className="form-grid"><label className="field-label">密码最少字符数<input type="number" min="8" max="16" value={form.passwordMinLength} onChange={(event) => change('passwordMinLength', Number(event.target.value))} required /></label></div></section>
       <section className="settings-section"><div className="settings-title"><MessageSquareText size={20} /><div><h2>消息、撤回与文件</h2><p>文本和撤回策略实时生效；上传上限由基础设施参数控制。消息删除策略需走独立合规流程。</p></div></div><div className="form-grid"><label className="field-label">文本最大字数<input type="number" min="100" max="10000" value={form.maxMessageTextLength} onChange={(event) => change('maxMessageTextLength', Number(event.target.value))} required /></label><label className="field-label">本人撤回时限（分钟）<input type="number" min="1" max="1440" value={form.messageRecallMinutes} onChange={(event) => change('messageRecallMinutes', Number(event.target.value))} required /></label></div></section>
@@ -1442,14 +1525,13 @@ function DataPanel({ loading, error, retry, empty, emptyTitle, emptyDetail, empt
   return <div className="data-panel">{loading ? <Skeleton rows={6} /> : error ? <ErrorState message={error} retry={retry} /> : empty ? <EmptyState title={emptyTitle} detail={emptyDetail} icon={emptyIcon ?? contextualEmptyIcon(emptyTitle)} /> : children}</div>;
 }
 
-function LoginPage({ onLogin, sessionNotice = '' }: { onLogin: (email: string, password: string, totp: string) => Promise<void>; sessionNotice?: string }) {
-  const [email, setEmail] = useState(''), [emailDirty, setEmailDirty] = useState(false), [emailTouched, setEmailTouched] = useState(false), [password, setPassword] = useState(''), [totp, setTotp] = useState(''), [error, setError] = useState(''), [submitting, setSubmitting] = useState(false), [showPassword, setShowPassword] = useState(false);
+function LoginPage({ onLogin, sessionNotice = '' }: { onLogin: (email: string, password: string) => Promise<void>; sessionNotice?: string }) {
+  const [email, setEmail] = useState(''), [emailDirty, setEmailDirty] = useState(false), [emailTouched, setEmailTouched] = useState(false), [password, setPassword] = useState(''), [error, setError] = useState(''), [submitting, setSubmitting] = useState(false), [showPassword, setShowPassword] = useState(false);
   const normalizedEmail = email.trim();
   const emailInvalid = normalizedEmail.length > 0 && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail);
   const emailError = emailTouched ? (!normalizedEmail ? '请输入管理员邮箱' : emailInvalid ? '请输入有效的管理员邮箱' : '') : '';
-  const totpIncomplete = totp.length > 0 && totp.length < 6;
-  const submit = async (event: FormEvent) => { event.preventDefault(); setEmailTouched(true); if (!normalizedEmail || emailInvalid || !password) return; if (totpIncomplete) { setError('请输入完整的 6 位动态验证码'); return; } setSubmitting(true); setError(''); try { await onLogin(normalizedEmail, password, totp.trim()); } catch (cause) { setError(errorMessage(cause)); } finally { setSubmitting(false); } };
-  return <main className="login-screen"><section className="login-card" aria-labelledby="login-title"><div className="login-brand"><img src="/qingwaguagua-mark.png" alt="" /><div><strong>青蛙呱呱</strong><span>运营控制台</span></div></div><div className="login-heading"><span>安全管理入口</span><h1 id="login-title">管理员登录</h1><p>使用管理员账号登录。访问令牌只保存在当前标签页会话中。</p></div>{sessionNotice && <div className="inline-notice warning login-session-notice" role="status"><AlertTriangle size={15} />{sessionNotice}</div>}<form onSubmit={(event) => void submit(event)} noValidate><div className="field-label"><label htmlFor="admin-email">管理员邮箱</label><input id="admin-email" type="email" value={email} onBlur={() => { if (emailDirty) setEmailTouched(true); }} onChange={(event) => { setEmail(event.target.value); setEmailDirty(true); if (error) setError(''); }} autoComplete="username" required autoFocus aria-invalid={Boolean(emailError)} aria-describedby="admin-email-help" /><small id="admin-email-help" className={emailError ? 'field-error' : 'field-hint'}>{emailError || '使用管理员分配的邮箱地址'}</small></div><div className="field-label"><label htmlFor="admin-password">密码</label><div className="login-password-input"><input id="admin-password" aria-label="密码" type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => { setPassword(event.target.value); if (error) setError(''); }} autoComplete="current-password" required /><button className="login-password-toggle" type="button" aria-label={showPassword ? '隐藏密码' : '显示密码'} aria-pressed={showPassword} onClick={() => setShowPassword((visible) => !visible)}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></div></div><div className="field-label"><label htmlFor="admin-totp">动态验证码（如已启用）</label><input id="admin-totp" aria-label="动态验证码（如已启用）" value={totp} onChange={(event) => { setTotp(event.target.value.replace(/\D/g, '').slice(0, 6)); if (error) setError(''); }} autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]{6}" placeholder="6 位验证码" aria-invalid={totpIncomplete} aria-describedby="admin-totp-help" /><small id="admin-totp-help" className={totpIncomplete ? 'field-error' : 'field-hint'}>{totpIncomplete ? '还需输入完整的 6 位验证码' : '仅在账号已启用双重验证时填写'}</small></div>{error && <div className="inline-notice danger" role="alert"><AlertTriangle size={15} />{error}</div>}<button className="button primary full login-submit" type="submit" disabled={submitting || !normalizedEmail || emailInvalid || !password || totpIncomplete}><LogIn size={17} />{submitting ? '正在验证…' : '登录控制台'}</button></form><div className="login-security"><ShieldCheck size={17} /><p>权限和数据均由服务端管理员会话决定，本控制台不提供演示数据入口。</p></div></section></main>;
+  const submit = async (event: FormEvent) => { event.preventDefault(); setEmailTouched(true); if (!normalizedEmail || emailInvalid || !password) return; setSubmitting(true); setError(''); try { await onLogin(normalizedEmail, password); } catch (cause) { setError(errorMessage(cause)); } finally { setSubmitting(false); } };
+  return <main className="login-screen"><section className="login-card" aria-labelledby="login-title"><div className="login-brand"><img src="/qingwaguagua-mark.png" alt="" /><div><strong>青蛙呱呱</strong><span>运营控制台</span></div></div><div className="login-heading"><span>管理入口</span><h1 id="login-title">管理员登录</h1><p>使用数据库管理员账号登录。访问令牌只保存在当前标签页会话中。</p></div>{sessionNotice && <div className="inline-notice warning login-session-notice" role="status"><AlertTriangle size={15} />{sessionNotice}</div>}<form onSubmit={(event) => void submit(event)} noValidate><div className="field-label"><label htmlFor="admin-email">管理员邮箱</label><input id="admin-email" type="email" value={email} onBlur={() => { if (emailDirty) setEmailTouched(true); }} onChange={(event) => { setEmail(event.target.value); setEmailDirty(true); if (error) setError(''); }} autoComplete="username" required autoFocus aria-invalid={Boolean(emailError)} aria-describedby="admin-email-help" /><small id="admin-email-help" className={emailError ? 'field-error' : 'field-hint'}>{emailError || '使用管理员分配的邮箱地址'}</small></div><div className="field-label"><label htmlFor="admin-password">密码</label><div className="login-password-input"><input id="admin-password" aria-label="密码" type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => { setPassword(event.target.value); if (error) setError(''); }} autoComplete="current-password" required /><button className="login-password-toggle" type="button" aria-label={showPassword ? '隐藏密码' : '显示密码'} aria-pressed={showPassword} onClick={() => setShowPassword((visible) => !visible)}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></div></div>{error && <div className="inline-notice danger" role="alert"><AlertTriangle size={15} />{error}</div>}<button className="button primary full login-submit" type="submit" disabled={submitting || !normalizedEmail || emailInvalid || !password}><LogIn size={17} />{submitting ? '正在验证…' : '登录控制台'}</button></form><div className="login-security"><ShieldCheck size={17} /><p>角色和权限由服务端数据库实时决定，本控制台不提供演示数据入口。</p></div></section></main>;
 }
 
 function readSession(): { session?: AdminSession; notice?: string } {
@@ -1457,7 +1539,7 @@ function readSession(): { session?: AdminSession; notice?: string } {
   if (!raw) return {};
   try {
     const value = JSON.parse(raw ?? 'null') as AdminSession | null;
-    if (value?.token && value.expiresAt > Date.now()) {
+    if (value?.token && value.expiresAt > Date.now() && value.id && value.roleId && Array.isArray(value.permissions)) {
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(value));
       sessionStorage.removeItem(LEGACY_SESSION_KEY);
       return { session: value };
@@ -1495,8 +1577,22 @@ export function App() {
     const timer = window.setTimeout(expire, Math.min(remaining, 2_147_483_647));
     return () => window.clearTimeout(timer);
   }, [invalidateSession, session]);
-  const login = async (email: string, password: string, totp: string) => { const candidate = await loginAdmin(email, password, totp); sessionStorage.setItem(SESSION_KEY, JSON.stringify(candidate)); sessionStorage.removeItem(LEGACY_SESSION_KEY); setSessionNotice(''); setSession(candidate); };
+  useEffect(() => {
+    if (!session?.token) return;
+    let active = true;
+    void getApi(session.token).getCurrentAdmin().then((identity) => {
+      if (!active || !identity.id || !identity.roleId) return;
+      setSession((current) => {
+        if (!current || current.token !== session.token) return current;
+        const refreshed = { ...current, ...identity };
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify(refreshed));
+        return refreshed;
+      });
+    }).catch((cause) => { if (active && cause instanceof ApiError && cause.status !== 401) notify(errorMessage(cause), 'danger'); });
+    return () => { active = false; };
+  }, [notify, session?.token]);
+  const login = async (email: string, password: string) => { const candidate = await loginAdmin(email, password); sessionStorage.setItem(SESSION_KEY, JSON.stringify(candidate)); sessionStorage.removeItem(LEGACY_SESSION_KEY); setSessionNotice(''); setSession(candidate); };
   const api = useMemo(() => getApi(session?.token), [session?.token]);
-  const value = session ? { api, mode: 'live' as const, session, logout, notify, can: (permission: Permission) => rolePermissions[session.role].includes(permission) } : undefined;
+  const value = session ? { api, mode: 'live' as const, session, logout, notify, can: (permission: Permission) => session.permissions.includes(permission) } : undefined;
   return <AppErrorBoundary>{value ? <ApiContext.Provider value={value}><Shell /></ApiContext.Provider> : <LoginPage onLogin={login} sessionNotice={sessionNotice} />}<div className="toast-region" aria-live="polite" aria-atomic="false">{notices.map((notice) => <div className={`toast ${notice.tone}`} role={notice.tone === 'danger' ? 'alert' : 'status'} aria-atomic="true" key={notice.id}>{notice.tone === 'success' ? <Check size={16} /> : <AlertTriangle size={16} />}{notice.message}</div>)}</div></AppErrorBoundary>;
 }

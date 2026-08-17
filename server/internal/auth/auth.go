@@ -15,18 +15,19 @@ type Manager struct {
 }
 
 type Claims struct {
-	TokenType string `json:"typ"`
-	Role      string `json:"role,omitempty"`
+	TokenType   string `json:"typ"`
+	Role        string `json:"role,omitempty"`
+	AuthVersion int64  `json:"ver,omitempty"`
 	jwt.RegisteredClaims
 }
 
-func (m Manager) IssueAdmin(adminID, role string, ttl time.Duration) (string, error) {
+func (m Manager) IssueAdmin(adminID, role string, ttl time.Duration, authVersion int64) (string, error) {
 	now := time.Now()
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{TokenType: "admin", Role: role, RegisteredClaims: jwt.RegisteredClaims{Subject: adminID, ID: hex.EncodeToString(b[:]), IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now.Add(-5 * time.Second)), ExpiresAt: jwt.NewNumericDate(now.Add(ttl))}}).SignedString(m.Secret)
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{TokenType: "admin", Role: role, AuthVersion: authVersion, RegisteredClaims: jwt.RegisteredClaims{Subject: adminID, ID: hex.EncodeToString(b[:]), IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now.Add(-5 * time.Second)), ExpiresAt: jwt.NewNumericDate(now.Add(ttl))}}).SignedString(m.Secret)
 }
 
 func (m Manager) Issue(userID string) (string, string, error) {

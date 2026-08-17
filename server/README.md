@@ -34,12 +34,9 @@ The service uses normalized PostgreSQL tables, automatically applies its idempot
 export IM_DATABASE_URL='postgres://nexachat:nexachat@localhost:5432/nexachat?sslmode=disable'
 export IM_REDIS_URL='redis://localhost:6379/0'
 export IM_JWT_SECRET='replace-with-a-long-random-secret'
-export IM_ADMIN_KEY='replace-with-a-random-admin-key'
-export IM_ADMIN_SHARED_KEY_ENABLED=false
 export IM_ADMIN_ID='platform-admin'
 export IM_ADMIN_EMAIL='admin@example.com'
 export IM_ADMIN_PASSWORD_HASH='$2b$12$...'
-export IM_ADMIN_TOTP_SECRET='BASE32SECRET'
 export IM_ADMIN_ROLE='platform_admin'
 export IM_DEV_MODE=false
 export IM_OTP_WEBHOOK_URL='https://otp-gateway.example/v1/otp'
@@ -86,7 +83,7 @@ All user routes except login require `Authorization: Bearer <accessToken>`. REST
 | Personal | `GET /v2/messages/favorites`, `POST /v2/feedback` |
 | Admin | `/v2/admin/{dashboard,users,groups,reports,sensitive-words,health,audit-logs,settings}` |
 
-Administrators authenticate at `POST /v2/admin/auth/login` with `email`, `password`, and `totp`, then use the returned short-lived admin JWT. Roles are `platform_admin`, `system_operator`, `moderator`, `content_operator`, `support_agent`, and read-only `support`. The shared emergency key is disabled by default and is accepted only when `IM_ADMIN_SHARED_KEY_ENABLED=true`. `/api/v2/admin/*` is an alias for admin frontends deployed behind an `/api` prefix; WuKongIM/LiveKit secrets are never returned to the browser.
+Administrators authenticate at `POST /v2/admin/auth/login` with `email` and `password`, then use the returned 15-minute admin JWT. Accounts, roles and permissions are loaded from PostgreSQL on every request; disabling an account, changing a password or changing a role invalidates existing tokens immediately. The six built-in roles are `platform_admin`, `system_operator`, `moderator`, `content_operator`, `support_agent`, and read-only `support`; platform administrators can add custom roles. Bootstrap environment variables create the first account only when `im_admin_accounts` is empty. `/api/v2/admin/*` is an alias for admin frontends deployed behind an `/api` prefix; WuKongIM/LiveKit secrets are never returned to the browser.
 
 Example login and IM-session flow:
 
@@ -124,7 +121,7 @@ LiveKit handles media negotiation, active-speaker updates, reconnect, audio/vide
 
 `GET /v2/announcements` returns published announcements for the authenticated user, with pinned items first. `POST /v2/announcements/{id}/read` records an idempotent read receipt. Administrators use `/v2/admin/announcements` to create drafts or scheduled items, update, publish, withdraw, delete, and target all users or an explicit user-ID list. A replica-safe scheduler promotes due announcements every 15 seconds. Optional publication push is written to the normal retrying push outbox and obeys the global `announcementPushEnabled` policy.
 
-`GET/PUT /v2/admin/settings` is the audited runtime-policy endpoint. It validates registration/password, message text/recall/retention, group size, friend requests, announcement push, audio/video availability, sensitive-word enforcement, report SLA, and maintenance fields. The response also contains boolean `configurationStatus` values for database, Redis, object storage, OTP, push, LiveKit, and admin TOTP. Credentials and endpoints are never returned. Read-only infrastructure limits are grouped under `infrastructure` and listed in `restartRequiredKeys`; change those through deployment secrets/environment and roll the service rather than sending them to `PUT`.
+`GET/PUT /v2/admin/settings` is the audited runtime-policy endpoint. It validates registration/password, message text/recall/retention, group size, friend requests, announcement push, audio/video availability, sensitive-word enforcement, report SLA, and maintenance fields. The response also contains boolean `configurationStatus` values for database, Redis, object storage, OTP, push and LiveKit. Credentials and endpoints are never returned. Read-only infrastructure limits are grouped under `infrastructure` and listed in `restartRequiredKeys`; change those through deployment secrets/environment and roll the service rather than sending them to `PUT`.
 
 The Getui provider sends a privacy-safe online `transmission` plus Android UPS and iOS APNs `push_channel` notifications. Routing payloads contain event type, unread/badge information, and bounded identifiers only. User message text, friend verification text, file names, credentials, and push tokens are excluded; the client performs sync after opening the notification.
 
@@ -154,7 +151,7 @@ The tests cover memory/PostgreSQL business invariants, Outbox/reconciliation, gr
 - Production requires HTTPS OTP and push webhooks with high-entropy bearer tokens. OTP gateway endpoints are `POST <base>/request` and `POST <base>/verify`; the push gateway receives a bounded outbox item with up to 20 registered devices.
 - Production requires valid WuKongIM TCP/WSS endpoints and a LiveKit deployment with externally reachable media ports. The example hostnames are placeholders.
 - Terminate business HTTP and WSS at a trusted reverse proxy; expose only the explicitly documented HTTPS/TCP/WSS/UDP ports.
-- Restrict CORS and admin ingress at the edge; rotate `IM_ADMIN_KEY`.
+- Restrict CORS and admin ingress at the edge; disable or rotate individual database administrator accounts when access changes.
 - Run PostgreSQL, WuKongIM and MinIO backups and restore drills. Do not claim high availability while the documented single-node topology is in use.
 - `IM_PUSH_PROVIDER=noop|log` are development-only. The production webhook gateway owns APNs/FCM credentials, provider feedback, and token invalidation; the server owns durable leasing, retry, and dead-letter state.
 

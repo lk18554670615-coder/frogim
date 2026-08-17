@@ -32,7 +32,7 @@ infra/scripts/smoke-local.sh
 - WuKongIM WSS：`ws://127.0.0.1:5200`
 - MinIO 控制台：`http://127.0.0.1:9001`
 
-本地管理员账号、固定验证码和 TOTP 种子仅用于回环开发环境，见 `.env.example`。禁止把示例配置用于公网或共享环境。
+本地首个管理员账号和用户固定验证码仅用于回环开发环境，见 `.env.example`。管理员账号初始化后从 PostgreSQL 验证；禁止把示例配置用于公网或共享环境。
 本地栈默认使用真实空数据，不会创建演示账号；只有隔离开发测试需要时才可同时显式设置 `IM_DEV_MODE=true` 与 `IM_SEED_DEMO=true`。
 
 ## 常用验证

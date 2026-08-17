@@ -15,54 +15,53 @@ import (
 )
 
 type Config struct {
-	Addr, JWTSecret, AdminKey, DatabaseURL, RedisURL, PushProvider     string
-	Environment                                                        string
-	PushWebhookURL, PushWebhookToken                                   string
-	WebPushPublicKey, WebPushPrivateKey, WebPushSubject                string
-	GetuiAppID, GetuiAppKey, GetuiMasterSecret                         string
-	APNSVoIPKeyID, APNSVoIPTeamID, APNSVoIPBundleID, APNSVoIPKeyFile   string
-	APNSVoIPSandbox                                                    bool
-	OTPWebhookURL, OTPWebhookToken                                     string
-	AdminEmail, AdminPasswordHash, AdminTOTPSecret, AdminID, AdminRole string
-	S3Endpoint, S3PublicEndpoint, S3AndroidPublicEndpoint              string
-	S3AccessKey, S3SecretKey, S3Bucket                                 string
-	S3Region                                                           string
-	DevOTPCode                                                         string
-	AllowedOrigins                                                     []string
-	S3Secure, S3PublicSecure                                           bool
-	DevMode                                                            bool
-	SeedDemo                                                           bool
-	TrustProxy                                                         bool
-	AdminSharedKeyEnabled                                              bool
-	DevAllowContainerBind                                              bool
-	DevIPTestOnly                                                      bool
-	DBMaxConns, DBMinConns                                             int
-	WukongInternalRateLimitPerMinute                                   int
-	PushWorkers, PushBatchSize                                         int
-	MediaMaxBytes                                                      int64
-	AccessTTL, RefreshTTL                                              time.Duration
-	CallInviteTTL                                                      time.Duration
-	LiveKitTokenTTL                                                    time.Duration
-	DBMaxConnLifetime, DBMaxConnIdleTime, DBHealthCheckPeriod          time.Duration
-	DBStatementTimeout                                                 time.Duration
-	RuntimeCleanupInterval, OutboxRetention                            time.Duration
-	HTTPLogSuccessSampleRate                                           float64
-	WukongEnabled                                                      bool
-	WukongAPIURL, WukongManagerURL, WukongManagerToken                 string
-	WukongTokenSecret, WukongPolicySecret, WukongGRPCAddr              string
-	WukongTCPURL, WukongWSURL                                          string
-	WukongPluginDir, WukongPluginTrustedKeys, WukongPluginAllowlist    string
-	WukongPluginMaxBytes                                               int64
-	LiveKitEnabled                                                     bool
-	LiveKitURL, LiveKitAPIURL, LiveKitAPIKey, LiveKitAPISecret         string
-	PrometheusURL                                                      string
+	Addr, JWTSecret, DatabaseURL, RedisURL, PushProvider             string
+	Environment                                                      string
+	PushWebhookURL, PushWebhookToken                                 string
+	WebPushPublicKey, WebPushPrivateKey, WebPushSubject              string
+	GetuiAppID, GetuiAppKey, GetuiMasterSecret                       string
+	APNSVoIPKeyID, APNSVoIPTeamID, APNSVoIPBundleID, APNSVoIPKeyFile string
+	APNSVoIPSandbox                                                  bool
+	OTPWebhookURL, OTPWebhookToken                                   string
+	AdminEmail, AdminPasswordHash, AdminID, AdminRole                string
+	S3Endpoint, S3PublicEndpoint, S3AndroidPublicEndpoint            string
+	S3AccessKey, S3SecretKey, S3Bucket                               string
+	S3Region                                                         string
+	DevOTPCode                                                       string
+	AllowedOrigins                                                   []string
+	S3Secure, S3PublicSecure                                         bool
+	DevMode                                                          bool
+	SeedDemo                                                         bool
+	TrustProxy                                                       bool
+	DevAllowContainerBind                                            bool
+	DevIPTestOnly                                                    bool
+	DBMaxConns, DBMinConns                                           int
+	WukongInternalRateLimitPerMinute                                 int
+	PushWorkers, PushBatchSize                                       int
+	MediaMaxBytes                                                    int64
+	AccessTTL, RefreshTTL                                            time.Duration
+	CallInviteTTL                                                    time.Duration
+	LiveKitTokenTTL                                                  time.Duration
+	DBMaxConnLifetime, DBMaxConnIdleTime, DBHealthCheckPeriod        time.Duration
+	DBStatementTimeout                                               time.Duration
+	RuntimeCleanupInterval, OutboxRetention                          time.Duration
+	HTTPLogSuccessSampleRate                                         float64
+	WukongEnabled                                                    bool
+	WukongAPIURL, WukongManagerURL, WukongManagerToken               string
+	WukongTokenSecret, WukongPolicySecret, WukongGRPCAddr            string
+	WukongTCPURL, WukongWSURL                                        string
+	WukongPluginDir, WukongPluginTrustedKeys, WukongPluginAllowlist  string
+	WukongPluginMaxBytes                                             int64
+	LiveKitEnabled                                                   bool
+	LiveKitURL, LiveKitAPIURL, LiveKitAPIKey, LiveKitAPISecret       string
+	PrometheusURL                                                    string
 }
 
 func Load() Config {
 	return Config{
 		Addr: value("IM_ADDR", ":8080"), Environment: environment(), JWTSecret: os.Getenv("IM_JWT_SECRET"),
-		AdminKey: os.Getenv("IM_ADMIN_KEY"), DatabaseURL: os.Getenv("IM_DATABASE_URL"), RedisURL: os.Getenv("IM_REDIS_URL"),
-		AdminEmail: os.Getenv("IM_ADMIN_EMAIL"), AdminPasswordHash: os.Getenv("IM_ADMIN_PASSWORD_HASH"), AdminTOTPSecret: os.Getenv("IM_ADMIN_TOTP_SECRET"), AdminID: value("IM_ADMIN_ID", "platform-admin"), AdminRole: value("IM_ADMIN_ROLE", "platform_admin"), AdminSharedKeyEnabled: boolValue("IM_ADMIN_SHARED_KEY_ENABLED", false),
+		DatabaseURL: os.Getenv("IM_DATABASE_URL"), RedisURL: os.Getenv("IM_REDIS_URL"),
+		AdminEmail: os.Getenv("IM_ADMIN_EMAIL"), AdminPasswordHash: os.Getenv("IM_ADMIN_PASSWORD_HASH"), AdminID: value("IM_ADMIN_ID", "platform-admin"), AdminRole: value("IM_ADMIN_ROLE", "platform_admin"),
 		PushProvider:   value("IM_PUSH_PROVIDER", "noop"),
 		PushWebhookURL: os.Getenv("IM_PUSH_WEBHOOK_URL"), PushWebhookToken: os.Getenv("IM_PUSH_WEBHOOK_TOKEN"),
 		WebPushPublicKey: os.Getenv("IM_WEB_PUSH_PUBLIC_KEY"), WebPushPrivateKey: os.Getenv("IM_WEB_PUSH_PRIVATE_KEY"), WebPushSubject: os.Getenv("IM_WEB_PUSH_SUBJECT"),
@@ -91,12 +90,6 @@ func (c Config) Validate() error {
 	if len(c.JWTSecret) < 32 {
 		return errors.New("IM_JWT_SECRET must contain at least 32 bytes")
 	}
-	if c.AdminSharedKeyEnabled && len(c.AdminKey) < 24 {
-		return errors.New("IM_ADMIN_KEY must contain at least 24 bytes")
-	}
-	if c.AdminSharedKeyEnabled && !c.DevMode {
-		return errors.New("IM_ADMIN_SHARED_KEY_ENABLED is permitted only in development mode")
-	}
 	if c.SeedDemo && !c.DevMode {
 		return errors.New("IM_SEED_DEMO is permitted only in development mode")
 	}
@@ -115,9 +108,6 @@ func (c Config) Validate() error {
 	if !c.DevMode {
 		if c.DevAllowContainerBind || c.DevIPTestOnly {
 			return errors.New("development container and IP-test flags are forbidden in production")
-		}
-		if c.AdminEmail == "" || !strings.HasPrefix(c.AdminPasswordHash, "$2") || c.AdminTOTPSecret == "" {
-			return errors.New("production requires admin email, bcrypt hash, and TOTP secret")
 		}
 		if !strings.HasPrefix(c.OTPWebhookURL, "https://") || len(c.OTPWebhookToken) < 24 {
 			return errors.New("production requires an HTTPS OTP webhook and high-entropy token")

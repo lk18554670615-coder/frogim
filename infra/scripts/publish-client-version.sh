@@ -40,27 +40,10 @@ if [[ -z "$admin_password" ]]; then
 fi
 [[ -n "$admin_password" ]] || { echo "administrator password is missing" >&2; exit 1; }
 
-totp=""
-if [[ -n "${IM_ADMIN_TOTP_SECRET:-}" ]]; then
-  totp="$(python3 - "$IM_ADMIN_TOTP_SECRET" <<'PY'
-import base64, hashlib, hmac, struct, sys, time
-secret = sys.argv[1]
-secret += '=' * ((8 - len(secret) % 8) % 8)
-key = base64.b32decode(secret)
-counter = struct.pack('>Q', int(time.time()) // 30)
-digest = hmac.new(key, counter, hashlib.sha1).digest()
-offset = digest[-1] & 15
-code = (struct.unpack('>I', digest[offset:offset+4])[0] & 0x7fffffff) % 1000000
-print(f'{code:06d}')
-PY
-)"
-fi
-
 login_body="$(jq -nc \
   --arg email "$IM_ADMIN_EMAIL" \
   --arg password "$admin_password" \
-  --arg totp "$totp" \
-  'if $totp == "" then {email:$email,password:$password} else {email:$email,password:$password,totp:$totp} end')"
+  '{email:$email,password:$password}')"
 admin="$(curl --fail --silent --show-error "$base/v2/admin/auth/login" \
   -H 'content-type: application/json' -d "$login_body")"
 admin_token="$(jq -er '.accessToken' <<<"$admin")"

@@ -110,7 +110,7 @@ describe('live API adapter', () => {
     await expect(loginAdmin('ops@example.com', 'wrong-password')).rejects.toEqual(expect.objectContaining({
       status: 401,
       code: 'INVALID_CREDENTIALS',
-      message: '邮箱、密码或动态验证码不正确',
+      message: '邮箱或密码不正确',
       requestId: 'req-login',
     }));
     expect(unauthorized).not.toHaveBeenCalled();
@@ -130,16 +130,16 @@ describe('live API adapter', () => {
     }));
   });
 
-  it('适配管理员登录会话并传递 TOTP', async () => {
+  it('适配数据库管理员登录会话和动态权限', async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => ({
       ok: true, status: 200, headers: new Headers(),
-      json: async () => ({ data: { accessToken: 'jwt', displayName: '运营管理员', role: 'admin', expiresIn: 600 } }),
+      json: async () => ({ data: { accessToken: 'jwt', id: 'admin_1', email: 'ops@example.com', displayName: '运营管理员', roleId: 'custom_ops', roleName: '运营值班', permissions: ['users.write'], expiresIn: 600 } }),
     }));
     vi.stubGlobal('fetch', fetchMock);
-    const result = await loginAdmin('ops@example.com', 'password', '123456');
-    expect(result).toEqual(expect.objectContaining({ token: 'jwt', displayName: '运营管理员', role: 'platform_admin' }));
+    const result = await loginAdmin('ops@example.com', 'password');
+    expect(result).toEqual(expect.objectContaining({ token: 'jwt', id: 'admin_1', displayName: '运营管理员', roleId: 'custom_ops', roleName: '运营值班', permissions: ['users.write'] }));
     const init = fetchMock.mock.calls[0][1] as RequestInit;
-    expect(JSON.parse(String(init.body))).toEqual({ email: 'ops@example.com', password: 'password', totp: '123456' });
+    expect(JSON.parse(String(init.body))).toEqual({ email: 'ops@example.com', password: 'password' });
   });
 
   it('传递真实举报处置动作并消费处理结果', async () => {

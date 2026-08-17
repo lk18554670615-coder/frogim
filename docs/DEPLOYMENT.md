@@ -22,7 +22,7 @@ cp .env.production.example .env.production
 chmod 600 .env.production
 ```
 
-替换所有 `REPLACE_WITH_*`。数据库/Redis 密码进入 URL 前需要编码；JWT 至少 32 字节；管理员只保存 bcrypt 哈希和独立 Base32 TOTP。生产必须关闭共享管理员密钥、开发模式和容器公网开发豁免。
+替换所有 `REPLACE_WITH_*`。数据库/Redis 密码进入 URL 前需要编码；JWT 至少 32 字节；首个管理员密码只保存 bcrypt 哈希。管理员表为空时由环境变量初始化一次，后续账号、密码和角色全部在数据库及管理后台维护。生产必须关闭开发模式和容器公网开发豁免。
 
 生产不在目标服务器现场构建 WuKongIM。先运行 `infra/scripts/verify-wukong-server-patch.sh` 验证固定源码、补丁、Linux 测试和 amd64 编译，再在受控构建环境将 `infra/wukongim/server-patch/Dockerfile` 的完整镜像推送到镜像仓库；把仓库返回的不可变摘要写入 `WUKONG_IMAGE=repository@sha256:<digest>`。校验器会拒绝标签、占位摘要和未固定镜像。
 
@@ -65,7 +65,7 @@ make production-deploy PROD_ENV=.env.production
 
 部署后必须完成：
 
-1. 管理员通过独立安全渠道获取 TOTP，并使用命名账号登录。
+1. 使用初始化管理员登录，并立即验证“管理员与角色”、本人改密和审计记录。
 2. 验证 `/health`、HTTPS、WuKong TCP/WSS 握手与 ACK、媒体上传、真实短信和真实离线推送。
 3. 用真机验证 iOS 杀进程、Android 厂商通道和通知点击跳转。
 4. 验证 LiveKit 下跨网络的单聊/群聊音视频和屏幕共享。

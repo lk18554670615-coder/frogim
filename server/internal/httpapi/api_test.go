@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/linli/im/server/internal/app"
+	"github.com/linli/im/server/internal/auth"
 	"github.com/linli/im/server/internal/config"
 	livekitcontrol "github.com/linli/im/server/internal/livekit"
 	"github.com/linli/im/server/internal/media"
@@ -279,7 +280,7 @@ func (signedMediaService) DownloadURL(_ context.Context, id string) (string, err
 func TestLegacyWebSocketRoutesAreRemoved(t *testing.T) {
 	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
-	cfg := config.Config{JWTSecret: "test-secret", AdminKey: "admin", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
+	cfg := config.Config{JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
 	token := loginToken(t, ts.URL, "13800000001")
@@ -349,8 +350,8 @@ func TestClientVersionPublicAndAdminContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adminKey := strings.Repeat("k", 24)
-	cfg := config.Config{JWTSecret: strings.Repeat("s", 32), DevMode: true, AdminSharedKeyEnabled: true, AdminKey: adminKey, AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
+	cfg := config.Config{JWTSecret: strings.Repeat("s", 32), DevMode: true, AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
+	adminKey := adminTestToken(t, cfg.JWTSecret)
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
 
@@ -371,7 +372,7 @@ func TestClientVersionPublicAndAdminContracts(t *testing.T) {
 	}
 
 	request, _ := http.NewRequest(http.MethodPut, ts.URL+"/v2/admin/client-versions/web", strings.NewReader(`{"minimumVersion":"1.0.0","latestVersion":"1.1.0","rolloutPercentage":25,"reason":"分批发布"}`))
-	request.Header.Set("X-Admin-Key", adminKey)
+	request.Header.Set("Authorization", "Bearer "+adminKey)
 	request.Header.Set("Content-Type", "application/json")
 	response, err = http.DefaultClient.Do(request)
 	if err != nil {
@@ -383,7 +384,7 @@ func TestClientVersionPublicAndAdminContracts(t *testing.T) {
 	}
 
 	request, _ = http.NewRequest(http.MethodPut, ts.URL+"/v2/admin/client-versions/web", strings.NewReader(`{"minimumVersion":"1.0.0","latestVersion":"1.1.0","rolloutPercentage":25,"releaseNotes":"Web 更新","downloadUrl":"https://app.example.com/","reason":"分批发布","confirmed":true}`))
-	request.Header.Set("X-Admin-Key", adminKey)
+	request.Header.Set("Authorization", "Bearer "+adminKey)
 	request.Header.Set("Content-Type", "application/json")
 	response, err = http.DefaultClient.Do(request)
 	if err != nil {
@@ -398,7 +399,7 @@ func TestClientVersionPublicAndAdminContracts(t *testing.T) {
 		t.Fatalf("stored policy=%+v", repository.policies["web"])
 	}
 	request, _ = http.NewRequest(http.MethodGet, ts.URL+"/v2/admin/client-versions/web/history?limit=10", nil)
-	request.Header.Set("X-Admin-Key", adminKey)
+	request.Header.Set("Authorization", "Bearer "+adminKey)
 	response, err = http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -462,14 +463,13 @@ func TestWukongAdminProxyUsesPinnedRoutesAndRequiresAuditedWrites(t *testing.T) 
 	}))
 	defer upstream.Close()
 	a, _ := app.New(context.Background(), teststore.Memory{})
-	adminKey := strings.Repeat("a", 24)
 	cfg := config.Config{
 		JWTSecret: strings.Repeat("j", 32), AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour,
-		AdminSharedKeyEnabled: true, AdminKey: adminKey,
 		WukongEnabled: true, WukongAPIURL: upstream.URL, WukongManagerURL: upstream.URL,
 		WukongManagerToken: "manager-secret", WukongTokenSecret: strings.Repeat("t", 32),
 		WukongTCPURL: "tcp://127.0.0.1:5100", WukongWSURL: "ws://127.0.0.1:5200",
 	}
+	adminKey := adminTestToken(t, cfg.JWTSecret)
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
 
@@ -758,16 +758,15 @@ func TestSignedPluginLifecycleInstallsAttestsMovesAndUninstalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	directory := t.TempDir()
-	adminKey := strings.Repeat("a", 24)
 	cfg := config.Config{
 		JWTSecret: strings.Repeat("j", 32), AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour,
-		AdminSharedKeyEnabled: true, AdminKey: adminKey,
 		WukongEnabled: true, WukongAPIURL: upstream.URL, WukongManagerURL: upstream.URL,
 		WukongManagerToken: "manager-secret", WukongTokenSecret: strings.Repeat("t", 32),
 		WukongTCPURL: "tcp://127.0.0.1:5100", WukongWSURL: "ws://127.0.0.1:5200",
 		WukongPluginDir: directory, WukongPluginTrustedKeys: "release-key:" + base64.StdEncoding.EncodeToString(publicKey),
 		WukongPluginAllowlist: pluginNo, WukongPluginMaxBytes: 1 << 20,
 	}
+	adminKey := adminTestToken(t, cfg.JWTSecret)
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
 	bundle := []byte("signed executable payload")
@@ -842,7 +841,7 @@ func pluginUploadRequest(t *testing.T, method, target, adminKey string, manifest
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set("X-Admin-Key", adminKey)
+	request.Header.Set("Authorization", "Bearer "+adminKey)
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -853,8 +852,8 @@ func pluginUploadRequest(t *testing.T, method, target, adminKey string, manifest
 
 func TestLiveKitAdminRoomsParticipantsAndConfirmedRemoval(t *testing.T) {
 	a, _ := app.New(context.Background(), teststore.Memory{})
-	adminKey := strings.Repeat("a", 24)
-	cfg := config.Config{JWTSecret: strings.Repeat("j", 32), AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour, AdminSharedKeyEnabled: true, AdminKey: adminKey, LiveKitEnabled: true}
+	cfg := config.Config{JWTSecret: strings.Repeat("j", 32), AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour, LiveKitEnabled: true}
+	adminKey := adminTestToken(t, cfg.JWTSecret)
 	api := New(cfg, a)
 	fake := &fakeLiveKitControl{
 		rooms:   []livekitcontrol.RoomSummary{{SID: "RM_1", Name: "call_1", ParticipantCount: 1, MaxParticipants: 9}},
@@ -1769,24 +1768,14 @@ func TestPasswordRegistrationLoginAndReset(t *testing.T) {
 func TestAnnouncementLifecycleTargetingAndReadReceipt(t *testing.T) {
 	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
-	hash, _ := bcrypt.GenerateFromPassword([]byte("announcement-admin-password"), 12)
-	cfg := config.Config{JWTSecret: strings.Repeat("a", 32), DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour, AdminID: "admin", AdminEmail: "admin@example.com", AdminPasswordHash: string(hash), AdminRole: "platform_admin"}
+	cfg := config.Config{JWTSecret: strings.Repeat("a", 32), DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
 	userToken := loginToken(t, ts.URL, "13800000001")
-	adminBody := `{"email":"admin@example.com","password":"announcement-admin-password"}`
-	res, _ := http.Post(ts.URL+"/v2/admin/auth/login", "application/json", strings.NewReader(adminBody))
-	var adminSession struct {
-		AccessToken string `json:"accessToken"`
-	}
-	_ = json.NewDecoder(res.Body).Decode(&adminSession)
-	_ = res.Body.Close()
-	if adminSession.AccessToken == "" {
-		t.Fatal("missing admin token")
-	}
+	adminToken := adminTestToken(t, cfg.JWTSecret)
 
 	create := `{"title":"Targeted update","content":"Only Alice should see this","status":"draft","pinned":true,"targetType":"users","targetUserIds":["usr_alice"],"pushOnPublish":false,"reason":"create targeted operations notice","confirmed":true}`
-	res = authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/admin/announcements", adminSession.AccessToken, create)
+	res := authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/admin/announcements", adminToken, create)
 	var item model.Announcement
 	_ = json.NewDecoder(res.Body).Decode(&item)
 	_ = res.Body.Close()
@@ -1802,7 +1791,7 @@ func TestAnnouncementLifecycleTargetingAndReadReceipt(t *testing.T) {
 	if len(list.Items) != 0 {
 		t.Fatalf("draft leaked: %+v", list.Items)
 	}
-	res = authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/admin/announcements/"+item.ID+"/publish", adminSession.AccessToken, `{"enqueuePush":true,"reason":"publish approved notice","confirmed":true}`)
+	res = authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/admin/announcements/"+item.ID+"/publish", adminToken, `{"enqueuePush":true,"reason":"publish approved notice","confirmed":true}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("publish status=%d", res.StatusCode)
 	}
@@ -1826,7 +1815,7 @@ func TestAnnouncementLifecycleTargetingAndReadReceipt(t *testing.T) {
 	if len(list.Items) != 1 || list.Items[0].ReadAt == nil {
 		t.Fatalf("read receipt missing: %+v", list.Items)
 	}
-	res = authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/admin/announcements/"+item.ID+"/withdraw", adminSession.AccessToken, `{"reason":"notice is no longer active","confirmed":true}`)
+	res = authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/admin/announcements/"+item.ID+"/withdraw", adminToken, `{"reason":"notice is no longer active","confirmed":true}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("withdraw status=%d", res.StatusCode)
 	}
@@ -1843,20 +1832,11 @@ func TestAnnouncementLifecycleTargetingAndReadReceipt(t *testing.T) {
 func TestAdminRuntimeSettingsValidateAuditAndNeverExposeSecrets(t *testing.T) {
 	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
-	hash, _ := bcrypt.GenerateFromPassword([]byte("settings-admin-password"), 12)
-	cfg := config.Config{JWTSecret: strings.Repeat("s", 32), DevMode: true, DevOTPCode: "654321", MediaMaxBytes: 25 << 20, AccessTTL: 15 * time.Minute, RefreshTTL: 24 * time.Hour, CallInviteTTL: 45 * time.Second, AdminID: "admin", AdminEmail: "admin@example.com", AdminPasswordHash: string(hash), AdminRole: "platform_admin", DatabaseURL: "postgres://secret-database", RedisURL: "redis://secret-redis", S3Endpoint: "storage", S3AccessKey: "secret-access", S3SecretKey: "secret-storage", GetuiAppID: "app", GetuiAppKey: "key", GetuiMasterSecret: "secret-getui-master", PushProvider: "getui", LiveKitEnabled: true, LiveKitURL: "wss://livekit.example.test", LiveKitAPIURL: "https://livekit-api.example.test", LiveKitAPIKey: "livekit-key", LiveKitAPISecret: "secret-livekit-credential-at-least-32-bytes", LiveKitTokenTTL: 5 * time.Minute, AdminTOTPSecret: ""}
+	cfg := config.Config{JWTSecret: strings.Repeat("s", 32), DevMode: true, DevOTPCode: "654321", MediaMaxBytes: 25 << 20, AccessTTL: 15 * time.Minute, RefreshTTL: 24 * time.Hour, CallInviteTTL: 45 * time.Second, DatabaseURL: "postgres://secret-database", RedisURL: "redis://secret-redis", S3Endpoint: "storage", S3AccessKey: "secret-access", S3SecretKey: "secret-storage", GetuiAppID: "app", GetuiAppKey: "key", GetuiMasterSecret: "secret-getui-master", PushProvider: "getui", LiveKitEnabled: true, LiveKitURL: "wss://livekit.example.test", LiveKitAPIURL: "https://livekit-api.example.test", LiveKitAPIKey: "livekit-key", LiveKitAPISecret: "secret-livekit-credential-at-least-32-bytes", LiveKitTokenTTL: 5 * time.Minute}
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
-	login, _ := http.Post(ts.URL+"/v2/admin/auth/login", "application/json", strings.NewReader(`{"email":"admin@example.com","password":"settings-admin-password"}`))
-	var session struct {
-		AccessToken string `json:"accessToken"`
-	}
-	_ = json.NewDecoder(login.Body).Decode(&session)
-	_ = login.Body.Close()
-	if session.AccessToken == "" {
-		t.Fatalf("admin login status=%d", login.StatusCode)
-	}
-	res := authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/admin/settings", session.AccessToken, "")
+	adminToken := adminTestToken(t, cfg.JWTSecret)
+	res := authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/admin/settings", adminToken, "")
 	raw, _ := io.ReadAll(res.Body)
 	_ = res.Body.Close()
 	for _, secret := range []string{"secret-database", "secret-redis", "secret-access", "secret-storage", "secret-getui-master", "secret-livekit-credential-at-least-32-bytes"} {
@@ -1873,7 +1853,7 @@ func TestAdminRuntimeSettingsValidateAuditAndNeverExposeSecrets(t *testing.T) {
 	if status["pushProvider"] != true || status["liveKit"] != true || infra["mediaMaxSizeMB"] != float64(25) || infra["callInviteTimeoutSeconds"] != float64(45) {
 		t.Fatalf("status=%v infrastructure=%v", status, infra)
 	}
-	res = authenticatedRequest(t, http.MethodPut, ts.URL+"/v2/admin/settings", session.AccessToken, `{"passwordMinLength":12,"maxMessageTextLength":8000,"messageRecallMinutes":5,"maxGroupMembers":1000,"friendRequestExpiryDays":10,"allowFriendRequests":false,"allowSearchByHandle":true,"allowSearchByPhone":true,"announcementPushEnabled":false,"callsEnabled":true,"videoCallsEnabled":false,"sensitiveWordEnabled":true,"reportSlaHours":12,"reason":"publish runtime policy update","confirmed":true}`)
+	res = authenticatedRequest(t, http.MethodPut, ts.URL+"/v2/admin/settings", adminToken, `{"passwordMinLength":12,"maxMessageTextLength":8000,"messageRecallMinutes":5,"maxGroupMembers":1000,"friendRequestExpiryDays":10,"allowFriendRequests":false,"allowSearchByHandle":true,"allowSearchByPhone":true,"announcementPushEnabled":false,"callsEnabled":true,"videoCallsEnabled":false,"sensitiveWordEnabled":true,"reportSlaHours":12,"reason":"publish runtime policy update","confirmed":true}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("update settings status=%d", res.StatusCode)
 	}
@@ -1882,7 +1862,7 @@ func TestAdminRuntimeSettingsValidateAuditAndNeverExposeSecrets(t *testing.T) {
 	if updated["passwordMinLength"] != float64(12) || updated["allowFriendRequests"] != false || updated["allowSearchByHandle"] != true || updated["allowSearchByPhone"] != true || updated["videoCallsEnabled"] != false {
 		t.Fatalf("updated settings=%v", updated)
 	}
-	res = authenticatedRequest(t, http.MethodPut, ts.URL+"/v2/admin/settings", session.AccessToken, `{"messageRecallMinutes":0,"reason":"validate invalid policy rejection","confirmed":true}`)
+	res = authenticatedRequest(t, http.MethodPut, ts.URL+"/v2/admin/settings", adminToken, `{"messageRecallMinutes":0,"reason":"validate invalid policy rejection","confirmed":true}`)
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid setting status=%d", res.StatusCode)
 	}
@@ -1896,27 +1876,18 @@ func TestAdminGroupMemberModerationRequiresReasonAndProtectsOwner(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash, _ := bcrypt.GenerateFromPassword([]byte("group-admin-password"), 12)
-	cfg := config.Config{JWTSecret: strings.Repeat("g", 32), AdminID: "group-admin", AdminEmail: "group-admin@example.com", AdminPasswordHash: string(hash), AdminRole: "platform_admin"}
+	cfg := config.Config{JWTSecret: strings.Repeat("g", 32)}
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
-	login, _ := http.Post(ts.URL+"/v2/admin/auth/login", "application/json", strings.NewReader(`{"email":"group-admin@example.com","password":"group-admin-password"}`))
-	var session struct {
-		AccessToken string `json:"accessToken"`
-	}
-	_ = json.NewDecoder(login.Body).Decode(&session)
-	_ = login.Body.Close()
-	if session.AccessToken == "" {
-		t.Fatalf("admin login status=%d", login.StatusCode)
-	}
+	adminToken := adminTestToken(t, cfg.JWTSecret)
 
 	path := ts.URL + "/v2/admin/groups/" + group.ID + "/members/usr_bob"
-	res := authenticatedRequest(t, http.MethodPatch, path, session.AccessToken, `{"action":"role","role":"admin"}`)
+	res := authenticatedRequest(t, http.MethodPatch, path, adminToken, `{"action":"role","role":"admin"}`)
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("missing confirmation status=%d", res.StatusCode)
 	}
 	_ = res.Body.Close()
-	res = authenticatedRequest(t, http.MethodPatch, path, session.AccessToken, `{"action":"role","role":"admin","reason":"运营工单 GROUP-2","confirmed":true}`)
+	res = authenticatedRequest(t, http.MethodPatch, path, adminToken, `{"action":"role","role":"admin","reason":"运营工单 GROUP-2","confirmed":true}`)
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("role status=%d", res.StatusCode)
 	}
@@ -1933,12 +1904,12 @@ func TestAdminGroupMemberModerationRequiresReasonAndProtectsOwner(t *testing.T) 
 		t.Fatalf("members after role=%+v", members)
 	}
 	ownerPath := ts.URL + "/v2/admin/groups/" + group.ID + "/members/usr_alice"
-	res = authenticatedRequest(t, http.MethodDelete, ownerPath, session.AccessToken, `{"reason":"不得移除群主","confirmed":true}`)
+	res = authenticatedRequest(t, http.MethodDelete, ownerPath, adminToken, `{"reason":"不得移除群主","confirmed":true}`)
 	if res.StatusCode != http.StatusForbidden {
 		t.Fatalf("owner removal status=%d", res.StatusCode)
 	}
 	_ = res.Body.Close()
-	res = authenticatedRequest(t, http.MethodDelete, path, session.AccessToken, `{"reason":"确认移出违规成员","confirmed":true}`)
+	res = authenticatedRequest(t, http.MethodDelete, path, adminToken, `{"reason":"确认移出违规成员","confirmed":true}`)
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("remove status=%d", res.StatusCode)
 	}
@@ -1994,13 +1965,50 @@ func authenticatedRequest(t *testing.T, method, url, token, body string) *http.R
 	return res
 }
 
-func adminKeyRequest(t *testing.T, method, url, key, body string) *http.Response {
+func adminTestToken(t *testing.T, secret string) string {
+	t.Helper()
+	token, err := (auth.Manager{Secret: []byte(secret)}).IssueAdmin("test-admin", "platform_admin", time.Hour, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+func postgresAdminTestToken(t *testing.T, repository *store.Postgres, secret string) string {
+	t.Helper()
+	ctx := context.Background()
+	hash, err := bcrypt.GenerateFromPassword([]byte("PostgresAdminTest123!"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := repository.CreateAdminAccount(ctx, store.AdminAccountCreate{
+		ID: "test-admin", Email: "test-admin@example.invalid", DisplayName: "Postgres Test Admin",
+		PasswordHash: string(hash), RoleID: "platform_admin", CreatedBy: "test", At: time.Now().UTC(),
+	})
+	if errors.Is(err, store.ErrConflict) {
+		account, err = repository.AdminAccountByID(ctx, "test-admin")
+		if err == nil {
+			role, status := "platform_admin", "active"
+			account, err = repository.UpdateAdminAccount(ctx, store.AdminAccountUpdate{ID: account.ID, ActorID: account.ID, RoleID: &role, Status: &status, At: time.Now().UTC()})
+		}
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := (auth.Manager{Secret: []byte(secret)}).IssueAdmin(account.ID, account.RoleID, time.Hour, account.AuthVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+func adminKeyRequest(t *testing.T, method, url, token, body string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(method, url, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("X-Admin-Key", key)
+	req.Header.Set("Authorization", "Bearer "+token)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -2014,8 +2022,7 @@ func adminKeyRequest(t *testing.T, method, url, key, body string) *http.Response
 func TestRefreshRotationLogoutAndAdminRBAC(t *testing.T) {
 	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
-	hash, _ := bcrypt.GenerateFromPassword([]byte("correct horse battery staple"), bcrypt.MinCost)
-	cfg := config.Config{JWTSecret: strings.Repeat("s", 32), DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour, AdminID: "root-admin", AdminEmail: "admin@example.com", AdminPasswordHash: string(hash), AdminRole: "platform_admin"}
+	cfg := config.Config{JWTSecret: strings.Repeat("s", 32), DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
 	body, _ := json.Marshal(map[string]string{"phone": "13800000001", "code": "654321"})
@@ -2059,7 +2066,7 @@ func TestRefreshRotationLogoutAndAdminRBAC(t *testing.T) {
 	if admin.AccessToken == "" {
 		t.Fatal("admin login failed")
 	}
-	support, _ := New(cfg, a).auth.IssueAdmin("support-1", "support", time.Hour)
+	support, _ := New(cfg, a).auth.IssueAdmin("support-1", "support", time.Hour, 1)
 	banReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/v2/admin/users/usr_bob/ban", strings.NewReader(`{"reason":"x"}`))
 	banReq.Header.Set("authorization", "Bearer "+support)
 	banReq.Header.Set("content-type", "application/json")
@@ -2101,8 +2108,8 @@ func TestAdminUserManagementReturnsRealRelationsDevicesAndRejectsUnavailableSyst
 	if _, err = a.RegisterDevice("usr_alice", store.Device{ID: "device_android_1", Platform: "android", Provider: "fcm", PushToken: "private-token", NotificationsEnabled: true, SoundEnabled: true, VibrationEnabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	adminKey := strings.Repeat("a", 24)
-	cfg := config.Config{JWTSecret: strings.Repeat("s", 32), DevMode: true, AdminSharedKeyEnabled: true, AdminKey: adminKey, AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
+	cfg := config.Config{JWTSecret: strings.Repeat("s", 32), DevMode: true, AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
+	adminKey := adminTestToken(t, cfg.JWTSecret)
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
 
@@ -2148,7 +2155,7 @@ func TestAdminUserManagementReturnsRealRelationsDevicesAndRejectsUnavailableSyst
 func TestAuthenticationDoesNotFallbackAndBanBlocksRefreshAndAPI(t *testing.T) {
 	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
-	cfg := config.Config{JWTSecret: strings.Repeat("s", 32), AdminKey: strings.Repeat("a", 24), DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
+	cfg := config.Config{JWTSecret: strings.Repeat("s", 32), DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
 
@@ -2336,12 +2343,11 @@ func TestRobotMenusAreAdminConfiguredAndLimitedToConversationMembers(t *testing.
 		t.Fatal(err)
 	}
 	repository.conversationID = conversation.ID
-	adminKey := strings.Repeat("r", 24)
 	cfg := config.Config{
 		JWTSecret: "robot-test-secret", DevMode: true, DevOTPCode: "654321",
 		AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour,
-		AdminSharedKeyEnabled: true, AdminKey: adminKey,
 	}
+	adminKey := adminTestToken(t, cfg.JWTSecret)
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
 
@@ -2504,8 +2510,7 @@ func loginToken(t *testing.T, base, phone string) string {
 func TestProfileHandleSearchCapabilitiesAndGroupMemberContract(t *testing.T) {
 	a, _ := app.New(context.Background(), teststore.Memory{})
 	_ = a.SeedDemo()
-	adminKey := strings.Repeat("m", 24)
-	cfg := config.Config{JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour, AdminSharedKeyEnabled: true, AdminKey: adminKey}
+	cfg := config.Config{JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
 	alice := loginToken(t, ts.URL, "13800000001")
@@ -3122,10 +3127,10 @@ func TestAdminBusinessChannelsAndSupportRequireConfirmedAuditedWrites(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	adminKey := strings.Repeat("m", 32)
-	cfg := config.Config{JWTSecret: strings.Repeat("j", 32), AdminKey: adminKey, AdminSharedKeyEnabled: true,
+	cfg := config.Config{JWTSecret: strings.Repeat("j", 32),
 		DevMode: true, DevOTPCode: "654321",
 		AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
+	adminKey := postgresAdminTestToken(t, p, cfg.JWTSecret)
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
 
@@ -3246,10 +3251,10 @@ func TestAdminBusinessChannelsAndSupportRequireConfirmedAuditedWrites(t *testing
 	requestReasonAudits := 0
 	rejectedControlAudit := false
 	for _, item := range auditItems {
-		if item.ActorID == "bootstrap" && expectedActions[item.Action] {
+		if item.ActorID == "test-admin" && expectedActions[item.Action] {
 			audits++
 		}
-		if item.ActorID == "bootstrap" && item.Action == "admin.request" {
+		if item.ActorID == "test-admin" && item.Action == "admin.request" {
 			reason, _ := item.Metadata["reason"].(string)
 			if item.Result == "success" && strings.TrimSpace(reason) != "" {
 				requestReasonAudits++
@@ -3292,8 +3297,8 @@ func TestMomentsRESTWorkflowPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adminKey := strings.Repeat("s", 24)
-	cfg := config.Config{JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour, AdminSharedKeyEnabled: true, AdminKey: adminKey}
+	cfg := config.Config{JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
+	adminKey := postgresAdminTestToken(t, p, cfg.JWTSecret)
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
 	authorToken := loginToken(t, ts.URL, authorPhone)
@@ -3429,8 +3434,8 @@ func TestStickerStoreRESTWorkflowPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	adminKey := strings.Repeat("s", 24)
-	cfg := config.Config{JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour, AdminSharedKeyEnabled: true, AdminKey: adminKey}
+	cfg := config.Config{JWTSecret: "test-secret", DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
+	adminKey := postgresAdminTestToken(t, p, cfg.JWTSecret)
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
 	categoryID, packID, stickerID := "sticker_rest_category_"+suffix, "sticker_rest_pack_"+suffix, "sticker_rest_item_"+suffix

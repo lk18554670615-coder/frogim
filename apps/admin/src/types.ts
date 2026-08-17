@@ -1,12 +1,44 @@
-export type AdminRole = 'platform_admin' | 'system_operator' | 'moderator' | 'content_operator' | 'support_agent' | 'support';
+export type AdminRole = string;
 export type ClientPlatform = 'android' | 'ios' | 'web' | 'macos';
 export type StatusTone = 'success' | 'warning' | 'danger' | 'info' | 'neutral';
 
 export interface AdminSession {
   token: string;
+  id: string;
+  email: string;
   displayName: string;
-  role: AdminRole;
+  roleId: string;
+  roleName: string;
+  permissions: string[];
   expiresAt: number;
+}
+
+export interface AdministratorRecord {
+  id: string;
+  email: string;
+  displayName: string;
+  roleId: string;
+  roleName: string;
+  status: 'active' | 'disabled';
+  permissions: string[];
+  lastLoginAt?: string;
+  passwordUpdatedAt: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  disabledAt?: string;
+}
+
+export interface AdministratorRoleRecord {
+  id: string;
+  name: string;
+  description: string;
+  builtIn: boolean;
+  createdBy: string;
+  permissions: string[];
+  accountCount: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface PageResult<T> {
@@ -283,7 +315,7 @@ export interface AdminSettings {
   reportSlaHours: number;
   maintenanceMode: boolean;
   announcement: string;
-  configurationStatus: Record<'database' | 'redis' | 'objectStorage' | 'otpProvider' | 'pushProvider' | 'liveKit' | 'adminTOTP', boolean>;
+  configurationStatus: Record<'database' | 'redis' | 'objectStorage' | 'otpProvider' | 'pushProvider' | 'liveKit', boolean>;
   infrastructure: {
     pushProvider: string;
     mediaMaxSizeMB: number;
@@ -688,6 +720,16 @@ export interface SupportSessionRecord {
 }
 
 export interface AdminApi {
+  getCurrentAdmin(): Promise<Omit<AdminSession, 'token' | 'expiresAt'>>;
+  changeCurrentAdminPassword(currentPassword: string, newPassword: string): Promise<void>;
+  getAdministrators(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<AdministratorRecord>>;
+  createAdministrator(input: { email: string; displayName: string; roleId: string; password: string }, reason: string): Promise<AdministratorRecord>;
+  updateAdministrator(id: string, input: Partial<Pick<AdministratorRecord, 'email' | 'displayName' | 'roleId' | 'status'>>, reason: string): Promise<AdministratorRecord>;
+  resetAdministratorPassword(id: string, password: string, reason: string): Promise<void>;
+  getAdministratorRoles(): Promise<AdministratorRoleRecord[]>;
+  createAdministratorRole(input: Pick<AdministratorRoleRecord, 'name' | 'description' | 'permissions'>, reason: string): Promise<AdministratorRoleRecord>;
+  updateAdministratorRole(id: string, input: Pick<AdministratorRoleRecord, 'name' | 'description' | 'permissions'>, reason: string): Promise<AdministratorRoleRecord>;
+  deleteAdministratorRole(id: string, reason: string): Promise<void>;
   getDashboard(): Promise<DashboardData>;
   getUsers(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<UserRecord>>;
   getUserOverview(id: string): Promise<UserOverview>;

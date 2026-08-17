@@ -23,7 +23,7 @@ func configureWebPush(t *testing.T, c *Config) {
 func validConfig() Config {
 	c := Config{
 		Addr: "127.0.0.1:8080", DatabaseURL: "postgres://db",
-		JWTSecret: strings.Repeat("j", 32), AdminKey: strings.Repeat("a", 24),
+		JWTSecret: strings.Repeat("j", 32),
 		AccessTTL: 15 * time.Minute, RefreshTTL: 24 * time.Hour, MediaMaxBytes: 100 << 20,
 		DevMode: true, DevOTPCode: "654321",
 	}
@@ -67,8 +67,6 @@ func TestValidateFailsClosed(t *testing.T) {
 		edit func(*Config)
 	}{
 		{"missing jwt", func(c *Config) { c.JWTSecret = "" }},
-		{"bootstrap missing admin key", func(c *Config) { c.AdminSharedKeyEnabled = true; c.AdminKey = "" }},
-		{"shared admin key outside development", func(c *Config) { c.AdminSharedKeyEnabled = true; c.DevMode = false }},
 		{"demo seed outside development", func(c *Config) { c.SeedDemo = true; c.DevMode = false }},
 		{"full without database", func(c *Config) { c.DatabaseURL = "" }},
 		{"dev without otp", func(c *Config) { c.DevOTPCode = "" }},
@@ -145,7 +143,6 @@ func TestProductionAllowsCompleteGetuiConfiguration(t *testing.T) {
 	c.DatabaseURL = "postgres://db"
 	c.AdminEmail = "ops@example.com"
 	c.AdminPasswordHash = "$2a$12$example"
-	c.AdminTOTPSecret = "JBSWY3DPEHPK3PXP"
 	c.OTPWebhookURL = "https://otp.example.com"
 	c.OTPWebhookToken = strings.Repeat("o", 24)
 	c.PushProvider = "getui"
@@ -173,7 +170,6 @@ func TestFullModeRequiresWukongAndProductionRequiresLiveKit(t *testing.T) {
 	c.DatabaseURL = "postgres://db"
 	c.AdminEmail = "admin@example.com"
 	c.AdminPasswordHash = "$2a$12$example"
-	c.AdminTOTPSecret = "JBSWY3DPEHPK3PXP"
 	c.OTPWebhookURL = "https://otp.example.com"
 	c.OTPWebhookToken = strings.Repeat("o", 24)
 	c.PushProvider = "webhook"
@@ -200,7 +196,6 @@ func TestProductionLiveKitValidatesTokenTTL(t *testing.T) {
 	c.DatabaseURL = "postgres://db"
 	c.AdminEmail = "admin@example.com"
 	c.AdminPasswordHash = "$2a$12$example"
-	c.AdminTOTPSecret = "JBSWY3DPEHPK3PXP"
 	c.OTPWebhookURL = "https://otp.example.com"
 	c.OTPWebhookToken = strings.Repeat("o", 24)
 	c.PushProvider = "webhook"
@@ -223,7 +218,6 @@ func TestProductionCombinedPushRequiresCompleteAPNSVoIPConfiguration(t *testing.
 	c.DatabaseURL = "postgres://db"
 	c.AdminEmail = "ops@example.com"
 	c.AdminPasswordHash = "$2a$12$example"
-	c.AdminTOTPSecret = "JBSWY3DPEHPK3PXP"
 	c.OTPWebhookURL = "https://otp.example.com"
 	c.OTPWebhookToken = strings.Repeat("o", 24)
 	c.PushProvider = "getui_apns_voip"

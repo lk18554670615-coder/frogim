@@ -34,7 +34,7 @@
 - Run `infra/scripts/validate-production-env.sh`; production must reject placeholder secrets, development verification codes and noop/log push providers.
 - Keep only the TLS gateway public. PostgreSQL, Redis, MinIO, Prometheus, Grafana, `/metrics` and `/ready` stay private.
 - Enable `IM_TRUST_PROXY` only when the API is reachable exclusively through the managed gateway; this lets per-IP limits use Caddy's sanitized forwarded address without trusting client-supplied headers on direct binds.
-- Use named administrator accounts, a bcrypt password hash, TOTP, short-lived JWTs and server-side RBAC. Never place passwords, hashes or TOTP seeds in `VITE_*` variables; the console stores only the active JWT in `sessionStorage`.
+- Use named database administrator accounts, bcrypt password hashes, short-lived JWTs, authentication versions and server-side RBAC. Never place passwords, hashes or tokens in `VITE_*` variables; the console stores only the active JWT in `sessionStorage`.
 
 ## Trust boundaries
 

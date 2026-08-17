@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 
-const session = { token: 'test-admin-jwt', displayName: '测试管理员', role: 'platform_admin', expiresAt: Date.now() + 60_000 };
+const session = { token: 'test-admin-jwt', id: 'admin_1', email: 'admin@example.com', displayName: '测试管理员', roleId: 'platform_admin', roleName: '平台管理员', permissions: ['users.write', 'groups.write', 'reports.write', 'rules.write', 'announcements.write', 'settings.write', 'versions.write', 'content.write', 'channels.write', 'operations.write', 'support.write'], expiresAt: Date.now() + 60_000 };
 
 let fixtureStickerCategories: Array<Record<string, unknown>> = [];
 let fixtureStickerPacks: Array<Record<string, unknown>> = [];
@@ -54,7 +54,7 @@ async function liveFixture(input: RequestInfo | URL, init?: RequestInit) {
     allowFriendRequests: true, allowSearchByHandle: true, allowSearchByPhone: false, friendRequestExpiryDays: 7,
     announcementPushEnabled: true, callsEnabled: true, videoCallsEnabled: true, sensitiveWordEnabled: true,
     reportSlaHours: 8, maintenanceMode: false, announcement: '', restartRequiredKeys: [],
-    configurationStatus: { database: true, redis: true, objectStorage: true, otpProvider: true, pushProvider: true, liveKit: true, adminTOTP: true },
+    configurationStatus: { database: true, redis: true, objectStorage: true, otpProvider: true, pushProvider: true, liveKit: true },
     infrastructure: { pushProvider: 'fcm', mediaMaxSizeMB: 100, callInviteTimeoutSeconds: 30, accessTokenMinutes: 15, refreshTokenHours: 720 },
   });
   if (url.includes('/sticker-categories')) {
@@ -361,9 +361,8 @@ describe('青蛙呱呱管理后台', () => {
     const user = userEvent.setup();
     await user.type(screen.getByLabelText('管理员邮箱'), 'ops@example.com');
     await user.type(screen.getByLabelText('密码'), 'wrong-password');
-    await user.type(screen.getByLabelText('动态验证码（如已启用）'), '123456');
     await user.click(screen.getByRole('button', { name: '登录控制台' }));
-    expect(await screen.findByText(/邮箱、密码或动态验证码不正确/)).toBeInTheDocument();
+    expect(await screen.findByText(/邮箱或密码不正确/)).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '管理员登录' })).toBeInTheDocument();
     await user.type(screen.getByLabelText('密码'), 'a');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
@@ -381,7 +380,7 @@ describe('青蛙呱呱管理后台', () => {
     expect(screen.queryByText('Failed to fetch')).not.toBeInTheDocument();
   });
 
-  it('管理员可以确认密码输入且不完整动态验证码会就地说明', async () => {
+  it('管理员可以确认密码输入且登录页不再包含动态验证码', async () => {
     sessionStorage.clear();
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -394,11 +393,8 @@ describe('青蛙呱呱管理后台', () => {
     expect(password).toHaveAttribute('type', 'text');
     expect(screen.getByRole('button', { name: '隐藏密码' })).toHaveAttribute('aria-pressed', 'true');
     await user.type(screen.getByLabelText('管理员邮箱'), 'ops@example.com');
-    const totp = screen.getByLabelText('动态验证码（如已启用）');
-    await user.type(totp, '123');
-    expect(totp).toHaveAttribute('aria-invalid', 'true');
-    expect(screen.getByText('还需输入完整的 6 位验证码')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '登录控制台' })).toBeDisabled();
+    expect(screen.queryByLabelText(/动态验证码/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '登录控制台' })).toBeEnabled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -443,7 +439,7 @@ describe('青蛙呱呱管理后台', () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
         ok: true, status: 200, headers: new Headers(),
-        json: async () => ({ accessToken: 'admin.jwt', displayName: '安全审核员', role: 'moderator', expiresIn: 900 }),
+        json: async () => ({ accessToken: 'admin.jwt', id: 'admin_moderator', email: 'moderator@example.com', displayName: '安全审核员', roleId: 'moderator', roleName: '内容审核员', permissions: ['users.write', 'reports.write', 'rules.write', 'content.write'], expiresIn: 900 }),
       })
       .mockResolvedValue({
         ok: true, status: 200, headers: new Headers(),
@@ -456,8 +452,91 @@ describe('青蛙呱呱管理后台', () => {
     await user.type(screen.getByLabelText('密码'), 'correct-password');
     await user.click(screen.getByRole('button', { name: '登录控制台' }));
     expect(await screen.findByText('安全审核员')).toBeInTheDocument();
-    expect(JSON.parse(sessionStorage.getItem('qingwaguagua_admin_session') ?? '{}')).toEqual(expect.objectContaining({ token: 'admin.jwt', role: 'moderator' }));
+    expect(JSON.parse(sessionStorage.getItem('qingwaguagua_admin_session') ?? '{}')).toEqual(expect.objectContaining({ token: 'admin.jwt', roleId: 'moderator', roleName: '内容审核员', permissions: ['users.write', 'reports.write', 'rules.write', 'content.write'] }));
     expect(fetchMock).toHaveBeenNthCalledWith(1, expect.stringContaining('/auth/login'), expect.objectContaining({ method: 'POST' }));
+  });
+
+  it('启动时通过 auth me 刷新自定义角色和实时权限', async () => {
+    window.history.replaceState({}, '', '/users');
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/auth/me')) return response({ id: 'admin_1', email: 'admin@example.com', displayName: '值班同事', roleId: 'readonly_custom', roleName: '值班只读', permissions: [] });
+      if (url.includes('/users')) return response({ items: [{ id: 'u_1', name: '真实用户', phone: '13800000000', handle: 'real_user', status: 'active', createdAt: '2026-08-01T08:00:00Z' }], total: 1 });
+      return response({ items: [] });
+    }));
+    render(<App />);
+    expect(await screen.findByText('值班只读')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '封禁账号' })).toBeDisabled();
+    expect(JSON.parse(sessionStorage.getItem('qingwaguagua_admin_session') ?? '{}')).toEqual(expect.objectContaining({ roleId: 'readonly_custom', roleName: '值班只读', permissions: [] }));
+  });
+
+  it('平台管理员可以从管理员与角色页面创建数据库账号', async () => {
+    window.history.replaceState({}, '', '/administrators');
+    let createdBody: Record<string, unknown> | undefined;
+    const roles = [{ id: 'platform_admin', name: '平台管理员', description: '全部权限', builtIn: true, permissions: session.permissions, accountCount: 1, createdBy: 'system', createdAt: '2026-08-01T08:00:00Z', updatedAt: '2026-08-01T08:00:00Z' }, { id: 'support', name: '只读支持', description: '只读查看', builtIn: true, permissions: [], accountCount: 0, createdBy: 'system', createdAt: '2026-08-01T08:00:00Z', updatedAt: '2026-08-01T08:00:00Z' }];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/auth/me')) return response(session);
+      if (url.endsWith('/roles')) return response({ items: roles });
+      if (url.includes('/administrators?')) return response({ items: [{ id: 'admin_1', email: 'admin@example.com', displayName: '测试管理员', roleId: 'platform_admin', roleName: '平台管理员', status: 'active', permissions: session.permissions, passwordUpdatedAt: '2026-08-01T08:00:00Z', createdBy: 'bootstrap', createdAt: '2026-08-01T08:00:00Z', updatedAt: '2026-08-01T08:00:00Z' }], total: 1 });
+      if (url.endsWith('/administrators') && init?.method === 'POST') { createdBody = JSON.parse(String(init.body)); return response({ id: 'admin_2', ...createdBody, roleName: '只读支持', status: 'active', permissions: [], passwordUpdatedAt: '2026-08-17T08:00:00Z', createdBy: 'admin_1', createdAt: '2026-08-17T08:00:00Z', updatedAt: '2026-08-17T08:00:00Z' }, 201); }
+      return response({ items: [] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<App />);
+    const user = userEvent.setup();
+    await screen.findByText('admin@example.com');
+    await user.click(screen.getByRole('button', { name: '新增管理员' }));
+    await user.type(screen.getByLabelText('显示名称'), '只读值班');
+    await user.type(screen.getByLabelText('邮箱'), 'readonly@example.com');
+    await user.selectOptions(screen.getByLabelText('角色'), 'support');
+    await user.type(screen.getByLabelText('初始密码'), 'Password123!');
+    await user.type(screen.getByLabelText('操作原因'), '工单 ADMIN-1');
+    await user.click(screen.getByRole('button', { name: '创建管理员' }));
+    await waitFor(() => expect(createdBody).toEqual({ email: 'readonly@example.com', displayName: '只读值班', roleId: 'support', password: 'Password123!', reason: '工单 ADMIN-1', confirmed: true }));
+  });
+
+  it('平台管理员可以创建带实时功能域权限的自定义角色', async () => {
+    window.history.replaceState({}, '', '/administrators');
+    let roleBody: Record<string, unknown> | undefined;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/auth/me')) return response(session);
+      if (url.endsWith('/roles') && init?.method === 'POST') { roleBody = JSON.parse(String(init.body)); return response({ id: 'role_custom', ...roleBody, builtIn: false, accountCount: 0, createdBy: 'admin_1', createdAt: '2026-08-17T08:00:00Z', updatedAt: '2026-08-17T08:00:00Z' }, 201); }
+      if (url.endsWith('/roles')) return response({ items: [{ id: 'platform_admin', name: '平台管理员', description: '全部权限', builtIn: true, permissions: session.permissions, accountCount: 1, createdBy: 'system', createdAt: '2026-08-01T08:00:00Z', updatedAt: '2026-08-01T08:00:00Z' }] });
+      if (url.includes('/administrators?')) return response({ items: [], total: 0 });
+      return response({ items: [] });
+    }));
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('tab', { name: '角色与权限' }));
+    await user.click(screen.getByRole('button', { name: '新建角色' }));
+    await user.type(screen.getByLabelText('角色名称'), '用户值班');
+    await user.type(screen.getByLabelText('角色说明'), '处理普通用户工单');
+    await user.click(screen.getByRole('checkbox', { name: '用户处置' }));
+    await user.type(screen.getByLabelText('操作原因'), '工单 ROLE-1');
+    await user.click(screen.getByRole('button', { name: '创建角色' }));
+    await waitFor(() => expect(roleBody).toEqual({ name: '用户值班', description: '处理普通用户工单', permissions: ['users.write'], reason: '工单 ROLE-1', confirmed: true }));
+  });
+
+  it('管理员修改本人密码后立即退出并清除旧会话', async () => {
+    window.history.replaceState({}, '', '/change-password');
+    let passwordBody: Record<string, unknown> | undefined;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/auth/me')) return response(session);
+      if (url.includes('/auth/change-password') && init?.method === 'POST') { passwordBody = JSON.parse(String(init.body)); return response(undefined, 204); }
+      return response({ items: [] });
+    }));
+    render(<App />);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('当前密码'), 'OldPassword123!');
+    await user.type(screen.getByLabelText('新密码'), 'NewPassword456!');
+    await user.type(screen.getByLabelText('确认新密码'), 'NewPassword456!');
+    await user.click(screen.getByRole('button', { name: '修改密码并重新登录' }));
+    expect(await screen.findByRole('heading', { name: '管理员登录' })).toBeInTheDocument();
+    expect(passwordBody).toEqual({ currentPassword: 'OldPassword123!', newPassword: 'NewPassword456!' });
+    expect(sessionStorage.getItem('qingwaguagua_admin_session')).toBeNull();
   });
 
   it('页面保持打开时也会在管理员会话到期后自动退出', async () => {
@@ -910,7 +989,7 @@ describe('青蛙呱呱管理后台', () => {
   });
 
   it('系统运维角色可以发布客户端版本策略', async () => {
-    sessionStorage.setItem('qingwaguagua_admin_session', JSON.stringify({ ...session, role: 'system_operator' }));
+    sessionStorage.setItem('qingwaguagua_admin_session', JSON.stringify({ ...session, roleId: 'system_operator', roleName: '系统运维', permissions: ['settings.write', 'versions.write', 'operations.write'] }));
     const policy = { platform: 'android', minimumVersion: '1.0.0', latestVersion: '1.1.0', forceUpdate: false, rolloutPercentage: 100, releaseNotes: '', downloadUrl: 'https://download.example.com/app.apk', updatedBy: 'ops', updatedAt: '2026-08-11T00:00:00Z' };
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => ({ ok: true, status: 200, headers: new Headers(), json: async () => init?.method === 'PUT' ? policy : { items: [policy] } }));
     vi.stubGlobal('fetch', fetchMock);
@@ -1142,7 +1221,7 @@ describe('青蛙呱呱管理后台', () => {
     expect(screen.getByText('WuKong Webhook 队列')).toBeInTheDocument();
     expect(screen.getByText(/已对账：12/)).toBeInTheDocument();
     expect(screen.getAllByText(/最老积压（秒）：0/)).toHaveLength(2);
-    expect(screen.getByText('暂无管理员记录')).toBeInTheDocument();
+    expect(screen.getByText('admin_1')).toBeInTheDocument();
     expect(screen.getByText('暂无角色权限定义')).toBeInTheDocument();
   });
 

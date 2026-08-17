@@ -656,17 +656,7 @@ status="$(request POST /v2/feedback "$token_b" '{"category":"product","content":
 expect_status 201 "$status"
 
 step="管理端登录、数据列表、处置、公告与审计"
-admin_totp="$(python3 - "${IM_ADMIN_TOTP_SECRET:-JBSWY3DPEHPK3PXP}" <<'PY'
-import base64, hashlib, hmac, struct, sys, time
-secret = sys.argv[1] + '=' * ((8 - len(sys.argv[1]) % 8) % 8)
-key = base64.b32decode(secret)
-counter = struct.pack('>Q', int(time.time()) // 30)
-digest = hmac.new(key, counter, hashlib.sha1).digest()
-offset = digest[-1] & 15
-print(f'{(struct.unpack(">I", digest[offset:offset+4])[0] & 0x7fffffff) % 1000000:06d}')
-PY
-)"
-status="$(request POST /v2/admin/auth/login '' "$(jq -nc --arg email "${IM_ADMIN_EMAIL:-admin@nexachat.local}" --arg password "${IM_ADMIN_PASSWORD:-local-development-admin-password}" --arg totp "$admin_totp" '{email:$email,password:$password,totp:$totp}')")"
+status="$(request POST /v2/admin/auth/login '' "$(jq -nc --arg email "${IM_ADMIN_EMAIL:-admin@nexachat.local}" --arg password "${IM_ADMIN_PASSWORD:-local-development-admin-password}" '{email:$email,password:$password}')")"
 expect_status 200 "$status"
 admin_token="$(json_value '.accessToken')"
 for admin_path in \

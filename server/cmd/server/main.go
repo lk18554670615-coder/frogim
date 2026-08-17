@@ -37,6 +37,18 @@ func main() {
 		slog.Error("postgres unavailable", "error", err)
 		os.Exit(1)
 	}
+	seededAdmin, err := pg.BootstrapAdmin(ctx, store.AdminAccountCreate{
+		ID: cfg.AdminID, Email: cfg.AdminEmail, DisplayName: cfg.AdminID,
+		PasswordHash: cfg.AdminPasswordHash, RoleID: cfg.AdminRole, At: time.Now().UTC(),
+	})
+	if err != nil {
+		slog.Error("administrator bootstrap failed", "error", err)
+		pg.Close()
+		os.Exit(1)
+	}
+	if seededAdmin {
+		slog.Info("initial database administrator created", "event", "admin.bootstrap.created", "admin_id", cfg.AdminID)
+	}
 	var persistence store.Persistence = pg
 	if cfg.RedisURL != "" {
 		wrapped, err := store.NewWithRedis(persistence, cfg.RedisURL)

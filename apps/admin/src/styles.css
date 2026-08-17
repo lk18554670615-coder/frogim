@@ -76,6 +76,7 @@ p { text-wrap: pretty; }
 .sidebar-foot strong, .sidebar-foot span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sidebar-foot strong { font-size: 12.5px; color: white; }
 .sidebar-foot span { margin-top: 3px; font-size: 11px; color: oklch(0.68 0.02 160); }
+.sidebar-foot .sidebar-logout { flex: 0 0 auto; }
 
 .workspace { width: calc(100% - 212px); min-height: 100vh; margin-left: 212px; }
 .topbar { position: sticky; top: 0; z-index: var(--z-sticky); height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 0 22px; border-bottom: 1px solid var(--line); background: oklch(1 0 0 / .94); backdrop-filter: blur(10px); }
@@ -276,6 +277,17 @@ td strong { color: var(--ink); font-weight: 620; }
 .version-history-copy > span { display: block; }
 .version-history-copy p { margin: 0; color: var(--ink); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .settings-section.danger-zone { border-color: oklch(0.87 0.06 25); }
+.role-management-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(330px, 100%), 1fr)); gap: 14px; }
+.role-management-grid .settings-section { display: flex; flex-direction: column; gap: 14px; }
+.role-management-grid .panel-heading { margin-bottom: 0; }
+.permission-chip-list { display: flex; flex-wrap: wrap; gap: 7px; }
+.permission-chip-list span { padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-raised); color: var(--muted-strong); font-size: 11px; }
+.permission-editor { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin-top: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; }
+.permission-editor legend { padding: 0 6px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.permission-editor label { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.password-change-card { width: min(620px, 100%); }
+.password-change-card > .field-label { margin-top: 16px; }
+.password-change-card > .button { margin-top: 20px; }
 .settings-title { display: flex; gap: 12px; padding-bottom: 17px; border-bottom: 1px solid var(--line); }
 .settings-title > svg { color: var(--primary); }
 .settings-title h2, .settings-save h2 { margin-bottom: 5px; font-size: 15px; }

@@ -11,10 +11,17 @@ import (
 
 	"github.com/linli/im/server/internal/app"
 	"github.com/linli/im/server/internal/config"
+	"github.com/linli/im/server/internal/store"
 	"github.com/linli/im/server/internal/teststore"
 )
 
 func TestAdminRolePermissionsAreServerEnforced(t *testing.T) {
+	rolePermissions := map[string][]string{
+		"system_operator":  {"operations.write", "settings.write", "versions.write"},
+		"moderator":        {"users.write", "reports.write", "rules.write", "content.write"},
+		"content_operator": {"content.write", "announcements.write", "channels.write"},
+		"support_agent":    {"support.write"},
+	}
 	cases := []struct {
 		role, method, path string
 		allowed            bool
@@ -37,9 +44,14 @@ func TestAdminRolePermissionsAreServerEnforced(t *testing.T) {
 		{"moderator", "PUT", "/v2/admin/settings", false},
 		{"support", "GET", "/v2/admin/users", true},
 		{"support", "POST", "/v2/admin/users/u/ban", false},
+		{"platform_admin", "GET", "/v2/admin/administrators", true},
+		{"support", "GET", "/v2/admin/administrators", false},
+		{"platform_admin", "POST", "/v2/admin/roles", true},
+		{"system_operator", "GET", "/v2/admin/roles", false},
 	}
 	for _, test := range cases {
-		if got := roleAllowed(test.role, adminPermission(test.method, test.path)); got != test.allowed {
+		account := &store.AdminAccount{RoleID: test.role, Status: "active", Permissions: rolePermissions[test.role]}
+		if got := adminAccountAllowed(account, adminPermission(test.method, test.path)); got != test.allowed {
 			t.Errorf("role=%s method=%s path=%s allowed=%v want=%v", test.role, test.method, test.path, got, test.allowed)
 		}
 	}
@@ -50,14 +62,12 @@ func TestEveryRegisteredAdminJSONWriteRequiresConfirmationAndReason(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	adminKey := strings.Repeat("k", 32)
 	cfg := config.Config{
-		JWTSecret:             strings.Repeat("j", 32),
-		AdminKey:              adminKey,
-		AdminSharedKeyEnabled: true,
-		AccessTTL:             time.Hour,
-		RefreshTTL:            24 * time.Hour,
+		JWTSecret:  strings.Repeat("j", 32),
+		AccessTTL:  time.Hour,
+		RefreshTTL: 24 * time.Hour,
 	}
+	adminKey := adminTestToken(t, cfg.JWTSecret)
 	server := httptest.NewServer(New(cfg, a).Handler())
 	defer server.Close()
 
@@ -105,6 +115,12 @@ func TestEveryRegisteredAdminJSONWriteRequiresConfirmationAndReason(t *testing.T
 		{http.MethodPost, "/v2/admin/support/sessions/s/claim"},
 		{http.MethodPost, "/v2/admin/support/sessions/s/transfer"},
 		{http.MethodPost, "/v2/admin/support/sessions/s/end"},
+		{http.MethodPost, "/v2/admin/administrators"},
+		{http.MethodPatch, "/v2/admin/administrators/a"},
+		{http.MethodPost, "/v2/admin/administrators/a/reset-password"},
+		{http.MethodPost, "/v2/admin/roles"},
+		{http.MethodPatch, "/v2/admin/roles/r"},
+		{http.MethodDelete, "/v2/admin/roles/r"},
 	}
 
 	for _, route := range routes {

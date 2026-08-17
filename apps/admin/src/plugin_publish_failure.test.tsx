@@ -6,7 +6,7 @@ import { App } from './App';
 const session = {
   token: 'test-admin-jwt',
   displayName: '测试管理员',
-  role: 'platform_admin',
+  id: 'admin_1', email: 'admin@example.com', roleId: 'platform_admin', roleName: '平台管理员', permissions: ['operations.write'],
   expiresAt: Date.now() + 60_000,
 };
 

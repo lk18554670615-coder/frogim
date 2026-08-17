@@ -60,7 +60,6 @@ jwt_secret="$(random_alnum 64)"
 admin_password="$(random_alnum 22)"
 minio_password="$(random_alnum 36)"
 dev_otp="$(shuf -i 100000-999999 -n 1)"
-totp_secret="$(python3 -c 'import base64,os; print(base64.b32encode(os.urandom(20)).decode().rstrip("="))')"
 admin_email="admin@nexachat.local"
 
 admin_hash="$(printf '%s\n' "$admin_password" | docker run --rm -i httpd:2.4-alpine htpasswd -niBC 12 admin | cut -d: -f2 | tr -d '\r\n')"
@@ -117,7 +116,6 @@ IM_DEV_OTP_CODE=$dev_otp
 # ===== 管理后台 =====
 IM_ADMIN_EMAIL=$admin_email
 IM_ADMIN_PASSWORD_HASH='$admin_hash'
-IM_ADMIN_TOTP_SECRET=$totp_secret
 
 # ===== 私有对象存储与上传 =====
 MINIO_ROOT_USER=nexachat-storage
@@ -146,7 +144,6 @@ cat > "$CREDENTIAL_FILE" <<EOF
 管理后台：https://$SERVER_IP
 管理员邮箱：$admin_email
 管理员密码：$admin_password
-TOTP 密钥：$totp_secret
 App 测试登录验证码：$dev_otp
 集中配置：$CONFIG_FILE
 EOF

@@ -365,6 +365,54 @@ CREATE TABLE IF NOT EXISTS im_audits(id text PRIMARY KEY,actor_id text NOT NULL,
 ALTER TABLE im_audits ADD COLUMN IF NOT EXISTS result text NOT NULL DEFAULT 'success';
 ALTER TABLE im_audits ADD COLUMN IF NOT EXISTS ip text NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS im_audits_action_target_created_idx ON im_audits(action,target_type,target_id,created_at DESC,id DESC);
+CREATE TABLE IF NOT EXISTS im_admin_roles(
+ id text PRIMARY KEY,
+ name text NOT NULL,
+ description text NOT NULL DEFAULT '',
+ built_in boolean NOT NULL DEFAULT false,
+ created_by text NOT NULL DEFAULT 'bootstrap',
+ created_at timestamptz NOT NULL DEFAULT now(),
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS im_admin_roles_name_unique_idx ON im_admin_roles(lower(name));
+CREATE TABLE IF NOT EXISTS im_admin_role_permissions(
+ role_id text NOT NULL REFERENCES im_admin_roles(id) ON DELETE CASCADE,
+ permission text NOT NULL CHECK(permission IN ('users.write','groups.write','reports.write','rules.write','announcements.write','settings.write','versions.write','content.write','channels.write','operations.write','support.write')),
+ PRIMARY KEY(role_id,permission)
+);
+CREATE TABLE IF NOT EXISTS im_admin_accounts(
+ id text PRIMARY KEY,
+ email text NOT NULL,
+ display_name text NOT NULL,
+ password_hash text NOT NULL,
+ role_id text NOT NULL REFERENCES im_admin_roles(id),
+ status text NOT NULL DEFAULT 'active' CHECK(status IN ('active','disabled')),
+ auth_version bigint NOT NULL DEFAULT 1 CHECK(auth_version>0),
+ last_login_at timestamptz,
+ password_updated_at timestamptz NOT NULL DEFAULT now(),
+ created_by text NOT NULL DEFAULT 'bootstrap',
+ created_at timestamptz NOT NULL DEFAULT now(),
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ disabled_at timestamptz
+);
+CREATE UNIQUE INDEX IF NOT EXISTS im_admin_accounts_email_unique_idx ON im_admin_accounts(lower(email));
+CREATE INDEX IF NOT EXISTS im_admin_accounts_status_created_idx ON im_admin_accounts(status,created_at DESC,id DESC);
+INSERT INTO im_admin_roles(id,name,description,built_in,created_by) VALUES
+ ('platform_admin','平台管理员','拥有全部后台权限','true','system'),
+ ('system_operator','系统运维','管理基础设施、系统设置和客户端版本','true','system'),
+ ('moderator','内容审核员','管理用户、举报、内容规则和内容审核','true','system'),
+ ('content_operator','内容运营','管理内容、公告和频道运营','true','system'),
+ ('support_agent','客服坐席','管理客服工作台','true','system'),
+ ('support','只读支持','只读访问后台数据','true','system')
+ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,description=EXCLUDED.description,built_in=true,updated_at=now();
+DELETE FROM im_admin_role_permissions WHERE role_id IN ('platform_admin','system_operator','moderator','content_operator','support_agent','support');
+INSERT INTO im_admin_role_permissions(role_id,permission) VALUES
+ ('platform_admin','users.write'),('platform_admin','groups.write'),('platform_admin','reports.write'),('platform_admin','rules.write'),('platform_admin','announcements.write'),('platform_admin','settings.write'),('platform_admin','versions.write'),('platform_admin','content.write'),('platform_admin','channels.write'),('platform_admin','operations.write'),('platform_admin','support.write'),
+ ('system_operator','settings.write'),('system_operator','versions.write'),('system_operator','operations.write'),
+ ('moderator','users.write'),('moderator','reports.write'),('moderator','rules.write'),('moderator','content.write'),
+ ('content_operator','announcements.write'),('content_operator','content.write'),('content_operator','channels.write'),
+ ('support_agent','support.write')
+ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS im_sensitive_words(id text PRIMARY KEY,value text NOT NULL);
 CREATE TABLE IF NOT EXISTS im_settings(key text PRIMARY KEY,value jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS im_devices(id text PRIMARY KEY,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,platform text NOT NULL,provider text NOT NULL,push_token text NOT NULL,notifications_enabled boolean NOT NULL DEFAULT true,preview_enabled boolean NOT NULL DEFAULT true,sound_enabled boolean NOT NULL DEFAULT true,vibration_enabled boolean NOT NULL DEFAULT true,updated_at timestamptz NOT NULL DEFAULT now(),UNIQUE(provider,push_token));

@@ -349,6 +349,8 @@ func (x *API) routes() {
 	x.mux.HandleFunc("GET /v2/config/web-push", x.webPushConfig)
 	x.mux.HandleFunc("GET /v2/config/auth", x.authPolicy)
 	x.mux.HandleFunc("POST /v2/admin/auth/login", x.adminLogin)
+	x.mux.Handle("GET /v2/admin/auth/me", x.requireAdminSession(http.HandlerFunc(x.adminMe)))
+	x.mux.Handle("POST /v2/admin/auth/change-password", x.requireAdminSession(http.HandlerFunc(x.changeAdminPassword)))
 	x.mux.Handle("GET /v2/users/me", x.requireAuth(http.HandlerFunc(x.me)))
 	x.mux.Handle("PATCH /v2/users/me", x.requireAuth(http.HandlerFunc(x.updateMe)))
 	x.mux.Handle("POST /v2/users/me/deletion/code", x.requireAuth(http.HandlerFunc(x.requestAccountDeletionCode)))
@@ -414,6 +416,14 @@ func (x *API) routes() {
 	x.mux.Handle("GET /v2/admin/client-diagnostics", x.requireAdmin(http.HandlerFunc(x.adminClientDiagnostics)))
 	x.mux.Handle("GET /v2/admin/push", x.requireAdmin(http.HandlerFunc(x.adminPushStatus)))
 	x.mux.Handle("GET /v2/admin/access", x.requireAdmin(http.HandlerFunc(x.adminAccess)))
+	x.mux.Handle("GET /v2/admin/administrators", x.requireAdmin(http.HandlerFunc(x.adminAdministrators)))
+	x.mux.Handle("POST /v2/admin/administrators", x.requireAdmin(http.HandlerFunc(x.createAdministrator)))
+	x.mux.Handle("PATCH /v2/admin/administrators/{id}", x.requireAdmin(http.HandlerFunc(x.updateAdministrator)))
+	x.mux.Handle("POST /v2/admin/administrators/{id}/reset-password", x.requireAdmin(http.HandlerFunc(x.resetAdministratorPassword)))
+	x.mux.Handle("GET /v2/admin/roles", x.requireAdmin(http.HandlerFunc(x.adminRoles)))
+	x.mux.Handle("POST /v2/admin/roles", x.requireAdmin(http.HandlerFunc(x.createAdminRole)))
+	x.mux.Handle("PATCH /v2/admin/roles/{id}", x.requireAdmin(http.HandlerFunc(x.updateAdminRole)))
+	x.mux.Handle("DELETE /v2/admin/roles/{id}", x.requireAdmin(http.HandlerFunc(x.deleteAdminRole)))
 	x.mux.Handle("GET /v2/admin/media", x.requireAdmin(http.HandlerFunc(x.adminMedia)))
 	x.mux.Handle("GET /v2/admin/online", x.requireAdmin(http.HandlerFunc(x.adminOnline)))
 	x.mux.Handle("GET /v2/admin/announcements", x.requireAdmin(http.HandlerFunc(x.adminAnnouncements)))
@@ -642,7 +652,7 @@ func (x *API) middleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 		}
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Admin-Key,X-Client-Platform,X-Request-ID")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Client-Platform,X-Request-ID")
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
 		if r.Method == http.MethodOptions {
 			if origin != "" && !x.originAllowed(origin) {
@@ -764,23 +774,22 @@ func (x *API) requireUserToken(next http.Handler) http.Handler {
 }
 func (x *API) requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key := r.Header.Get("X-Admin-Key")
-		if key == "" {
-			key = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		}
-		adminID, role := "", ""
-		if x.cfg.AdminSharedKeyEnabled && x.cfg.AdminKey != "" && subtle.ConstantTimeCompare([]byte(key), []byte(x.cfg.AdminKey)) == 1 {
-			adminID, role = "bootstrap", "platform_admin"
-		} else {
-			claims, err := x.auth.ParseClaims(key, "admin")
-			if err != nil {
-				x.app.RecordAdminAudit("unknown", "admin.authorization.failed", "admin_request", r.URL.Path, "failed", x.clientIP(r), map[string]any{"method": r.Method, "reason": "invalid credential"})
-				writeError(w, 401, "UNAUTHENTICATED", "invalid admin credential")
+		account, err := x.authenticatedAdmin(r)
+		if err != nil {
+			reason := "authentication store unavailable"
+			if errors.Is(err, errInvalidAdminCredential) {
+				reason = "invalid credential"
+			}
+			x.app.RecordAdminAudit("unknown", "admin.authorization.failed", "admin_request", r.URL.Path, "failed", x.clientIP(r), map[string]any{"method": r.Method, "reason": reason})
+			if !errors.Is(err, errInvalidAdminCredential) {
+				handleErr(w, err)
 				return
 			}
-			adminID, role = claims.Subject, claims.Role
+			writeError(w, http.StatusUnauthorized, "UNAUTHENTICATED", "invalid admin credential")
+			return
 		}
-		if !roleAllowed(role, adminPermission(r.Method, r.URL.Path)) {
+		adminID, role := account.ID, account.RoleID
+		if !adminAccountAllowed(account, adminPermission(r.Method, r.URL.Path)) {
 			x.app.RecordAdminAudit(adminID, "admin.authorization.denied", "admin_request", r.URL.Path, "failed", x.clientIP(r), map[string]any{"method": r.Method, "role": role})
 			writeError(w, 403, "FORBIDDEN", "administrator role is not permitted")
 			return
@@ -815,6 +824,46 @@ func (x *API) requireAdmin(next http.Handler) http.Handler {
 			metadata["reason"] = reason
 		}
 		x.app.RecordAdminAudit(adminID, "admin.request", "admin_request", r.URL.Path, result, x.clientIP(r), metadata)
+	})
+}
+
+var errInvalidAdminCredential = errors.New("invalid administrator credential")
+
+func (x *API) authenticatedAdmin(r *http.Request) (*store.AdminAccount, error) {
+	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if raw == "" {
+		return nil, errInvalidAdminCredential
+	}
+	claims, err := x.auth.ParseClaims(raw, "admin")
+	if err != nil || claims.AuthVersion <= 0 {
+		return nil, errInvalidAdminCredential
+	}
+	account, err := x.app.AdminAccount(r.Context(), claims.Subject)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, errInvalidAdminCredential
+		}
+		return nil, err
+	}
+	if account.Status != "active" || account.AuthVersion != claims.AuthVersion {
+		return nil, errInvalidAdminCredential
+	}
+	return account, nil
+}
+
+func (x *API) requireAdminSession(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		account, err := x.authenticatedAdmin(r)
+		if err != nil {
+			if !errors.Is(err, errInvalidAdminCredential) {
+				handleErr(w, err)
+				return
+			}
+			writeError(w, http.StatusUnauthorized, "UNAUTHENTICATED", "invalid admin credential")
+			return
+		}
+		ctx := context.WithValue(context.WithValue(r.Context(), userKey, account.ID), roleKey, account.RoleID)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -1345,24 +1394,36 @@ func (x *API) adminLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 429, "RATE_LIMITED", "too many administrator login attempts")
 		return
 	}
-	var p struct{ Email, Password, TOTP string }
+	var p struct{ Email, Password string }
 	if decode(r, &p) != nil {
 		x.app.RecordAdminAudit("unknown", "admin.login", "admin_session", "login", "failed", x.clientIP(r), map[string]any{"reason": "invalid request"})
 		writeError(w, 400, "INVALID_ARGUMENT", "invalid request")
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(strings.ToLower(strings.TrimSpace(p.Email))), []byte(strings.ToLower(x.cfg.AdminEmail))) != 1 || !verifyAdminPassword(x.cfg.AdminPasswordHash, p.Password) || (x.cfg.AdminTOTPSecret != "" && !verifyTOTP(x.cfg.AdminTOTPSecret, p.TOTP, time.Now())) {
-		x.app.RecordAdminAudit("unknown", "admin.login", "admin_session", "login", "failed", x.clientIP(r), map[string]any{"reason": "invalid credentials"})
-		writeError(w, 401, "UNAUTHENTICATED", "invalid administrator credentials")
+	account, err := x.app.AuthenticateAdmin(r.Context(), p.Email, p.Password)
+	if err != nil {
+		if app.IsAdminCredentialError(err) {
+			x.app.RecordAdminAudit("unknown", "admin.login", "admin_session", "login", "failed", x.clientIP(r), map[string]any{"reason": "invalid credentials"})
+			writeError(w, 401, "UNAUTHENTICATED", "invalid administrator credentials")
+		} else {
+			x.app.RecordAdminAudit("unknown", "admin.login", "admin_session", "login", "failed", x.clientIP(r), map[string]any{"reason": "authentication store unavailable"})
+			handleErr(w, err)
+		}
 		return
 	}
-	token, err := x.auth.IssueAdmin(x.cfg.AdminID, x.cfg.AdminRole, 15*time.Minute)
-	if err != nil {
+	if err = x.app.RecordAdminLogin(r.Context(), account.ID, time.Now().UTC()); err != nil {
+		x.app.RecordAdminAudit(account.ID, "admin.login", "admin_session", "login", "failed", x.clientIP(r), map[string]any{"reason": "last login update failed"})
 		handleErr(w, err)
 		return
 	}
-	x.app.RecordAdminAudit(x.cfg.AdminID, "admin.login", "admin_session", "login", "success", x.clientIP(r), map[string]any{"role": x.cfg.AdminRole})
-	write(w, 200, map[string]any{"accessToken": token, "expiresIn": 900, "displayName": x.cfg.AdminID, "role": x.cfg.AdminRole})
+	token, err := x.auth.IssueAdmin(account.ID, account.RoleID, 15*time.Minute, account.AuthVersion)
+	if err != nil {
+		x.app.RecordAdminAudit(account.ID, "admin.login", "admin_session", "login", "failed", x.clientIP(r), map[string]any{"reason": "token issuance failed"})
+		handleErr(w, err)
+		return
+	}
+	x.app.RecordAdminAudit(account.ID, "admin.login", "admin_session", "login", "success", x.clientIP(r), map[string]any{"role": account.RoleID})
+	write(w, 200, map[string]any{"accessToken": token, "expiresIn": 900, "id": account.ID, "email": account.Email, "displayName": account.DisplayName, "roleId": account.RoleID, "roleName": account.RoleName, "permissions": account.Permissions})
 }
 func (x *API) refresh(w http.ResponseWriter, r *http.Request) {
 	var p struct{ RefreshToken string }
@@ -2922,19 +2983,17 @@ func (x *API) adminPushStatus(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, status)
 }
 func (x *API) adminAccess(w http.ResponseWriter, r *http.Request) {
-	write(w, http.StatusOK, map[string]any{
-		"current":        map[string]any{"id": uid(r), "role": r.Context().Value(roleKey)},
-		"administrators": []map[string]any{{"id": x.cfg.AdminID, "role": x.cfg.AdminRole, "source": "environment", "mutable": false}},
-		"roles": []map[string]any{
-			{"id": "platform_admin", "permissions": []string{"all"}},
-			{"id": "system_operator", "permissions": []string{"read", "operations.write", "settings.write", "versions.write"}},
-			{"id": "moderator", "permissions": []string{"read", "users.write", "reports.write", "rules.write", "content.write"}},
-			{"id": "content_operator", "permissions": []string{"read", "content.write", "announcements.write", "channels.write"}},
-			{"id": "support_agent", "permissions": []string{"read", "support.write"}},
-			{"id": "support", "permissions": []string{"read"}},
-		},
-		"note": "管理员账号由生产环境密钥管理配置，本接口只读且不回显凭据。",
-	})
+	account, err := x.app.AdminAccount(r.Context(), uid(r))
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	roles, err := x.app.AdminRoles(r.Context())
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	write(w, http.StatusOK, map[string]any{"current": account, "roles": roles, "note": "管理员账号、角色和权限由 PostgreSQL 实时验证。"})
 }
 func (x *API) adminMedia(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
@@ -3213,7 +3272,6 @@ func (x *API) settingsPayload() map[string]any {
 		"apnsVoIP":      apnsVoIPConfigured,
 		"webPush":       x.cfg.WebPushEnabled(),
 		"liveKit":       x.cfg.LiveKitEnabled && x.livekit != nil && x.livekitSetupErr == nil,
-		"adminTOTP":     x.cfg.AdminTOTPSecret != "",
 	}
 	values["infrastructure"] = map[string]any{
 		"pushProvider": x.cfg.PushProvider, "mediaMaxSizeMB": x.cfg.MediaMaxBytes / (1 << 20),

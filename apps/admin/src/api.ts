@@ -1,8 +1,9 @@
 import type {
   AdminApi,
+  AdministratorRecord,
+  AdministratorRoleRecord,
   AnnouncementInput,
   AnnouncementRecord,
-  AdminRole,
   AdminSession,
   AdminSettings,
   AdminSystemMessageResult,
@@ -84,9 +85,7 @@ const list = (value: unknown) => Array.isArray(value) ? value : [];
 const chineseTextPattern = /[\u3400-\u9fff]/;
 const apiErrorMessages: Record<string, string> = {
   UNAUTHENTICATED: '登录状态已失效，请重新登录',
-  INVALID_CREDENTIALS: '邮箱、密码或动态验证码无效',
-  TOTP_REQUIRED: '请输入动态验证码后重试',
-  INVALID_TOTP: '动态验证码无效或已过期',
+  INVALID_CREDENTIALS: '邮箱或密码不正确',
   FORBIDDEN: '当前账号没有执行此操作的权限',
   NOT_FOUND: '目标记录不存在或已被删除',
   CONFLICT: '数据状态已发生变化，请刷新后重试',
@@ -659,7 +658,7 @@ function adaptSettings(payload: unknown): AdminSettings {
     announcementPushEnabled: boolean(raw.announcementPushEnabled, true), callsEnabled: boolean(raw.callsEnabled, true),
     videoCallsEnabled: boolean(raw.videoCallsEnabled, true), sensitiveWordEnabled: boolean(raw.sensitiveWordEnabled, true), reportSlaHours: number(raw.reportSlaHours, 8),
     maintenanceMode: boolean(raw.maintenanceMode), announcement: string(raw.announcement),
-    configurationStatus: { database: boolean(status.database), redis: boolean(status.redis), objectStorage: boolean(status.objectStorage), otpProvider: boolean(status.otpProvider), pushProvider: boolean(status.pushProvider), liveKit: boolean(status.liveKit), adminTOTP: boolean(status.adminTOTP) },
+    configurationStatus: { database: boolean(status.database), redis: boolean(status.redis), objectStorage: boolean(status.objectStorage), otpProvider: boolean(status.otpProvider), pushProvider: boolean(status.pushProvider), liveKit: boolean(status.liveKit) },
     infrastructure: { pushProvider: string(infrastructure.pushProvider, 'noop'), mediaMaxSizeMB: number(infrastructure.mediaMaxSizeMB, 100), callInviteTimeoutSeconds: number(infrastructure.callInviteTimeoutSeconds, 30), accessTokenMinutes: number(infrastructure.accessTokenMinutes, 15), refreshTokenHours: number(infrastructure.refreshTokenHours, 720) },
     restartRequiredKeys: list(raw.restartRequiredKeys).filter((key): key is string => typeof key === 'string'),
   };
@@ -776,8 +775,64 @@ function adaptGroupMember(value: unknown): GroupMemberRecord {
   };
 }
 
+function adaptAdministrator(value: unknown): AdministratorRecord {
+  const raw = object(value);
+  return {
+    id: string(raw.id), email: string(raw.email), displayName: string(raw.displayName),
+    roleId: string(raw.roleId), roleName: string(raw.roleName), status: raw.status === 'disabled' ? 'disabled' : 'active',
+    permissions: list(raw.permissions).map((item) => string(item)).filter(Boolean),
+    lastLoginAt: string(raw.lastLoginAt) || undefined, passwordUpdatedAt: string(raw.passwordUpdatedAt),
+    createdBy: string(raw.createdBy), createdAt: string(raw.createdAt), updatedAt: string(raw.updatedAt), disabledAt: string(raw.disabledAt) || undefined,
+  };
+}
+
+function adaptAdministratorRole(value: unknown): AdministratorRoleRecord {
+  const raw = object(value);
+  return {
+    id: string(raw.id), name: string(raw.name), description: string(raw.description), builtIn: boolean(raw.builtIn),
+    createdBy: string(raw.createdBy), permissions: list(raw.permissions).map((item) => string(item)).filter(Boolean),
+    accountCount: number(raw.accountCount), createdAt: string(raw.createdAt), updatedAt: string(raw.updatedAt),
+  };
+}
+
+function adaptAdminIdentity(value: unknown): Omit<AdminSession, 'token' | 'expiresAt'> {
+  const raw = object(object(value).data ?? value);
+  return {
+    id: string(raw.id), email: string(raw.email), displayName: string(raw.displayName),
+    roleId: string(raw.roleId), roleName: string(raw.roleName, string(raw.roleId)),
+    permissions: list(raw.permissions).map((item) => string(item)).filter(Boolean),
+  };
+}
+
+function adaptOperationsAccess(value: unknown): OperationsStatus['access'] {
+  const raw = object(value);
+  const current = object(raw.current);
+  const currentRole = string(current.roleId, string(current.role));
+  const administrators = list(raw.administrators).map((value) => {
+    const item = object(value);
+    return { id: string(item.id), role: string(item.roleId, string(item.role)), source: string(item.source, string(item.createdBy, 'database')), mutable: item.mutable === undefined ? true : boolean(item.mutable) };
+  }).filter((item) => item.id);
+  if (!administrators.length && string(current.id)) administrators.push({ id: string(current.id), role: currentRole, source: string(current.createdBy, 'database'), mutable: false });
+  return {
+    current: { id: string(current.id), role: currentRole },
+    administrators,
+    roles: list(raw.roles).map((value) => { const item = object(value); return { id: string(item.id), permissions: list(item.permissions).map((permission) => string(permission)).filter(Boolean) }; }).filter((item) => item.id),
+    note: string(raw.note, '管理员账号、角色和权限由 PostgreSQL 实时验证。'),
+  };
+}
+
 function liveApi(token: string): AdminApi {
   return {
+    async getCurrentAdmin() { return adaptAdminIdentity(await request('/auth/me', token)); },
+    async changeCurrentAdminPassword(currentPassword, newPassword) { await request('/auth/change-password', token, { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }); },
+    async getAdministrators(q = '', status = '', page = 1, pageSize = 50, cursor = '') { const payload = await request(`/administrators?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptAdministrator, page, pageSize); },
+    async createAdministrator(input, reason) { return adaptAdministrator(await request('/administrators', token, { method: 'POST', body: JSON.stringify({ ...input, reason, confirmed: true }) })); },
+    async updateAdministrator(id, input, reason) { return adaptAdministrator(await request(`/administrators/${encodeURIComponent(id)}`, token, { method: 'PATCH', body: JSON.stringify({ ...input, reason, confirmed: true }) })); },
+    async resetAdministratorPassword(id, password, reason) { await request(`/administrators/${encodeURIComponent(id)}/reset-password`, token, { method: 'POST', body: JSON.stringify({ password, reason, confirmed: true }) }); },
+    async getAdministratorRoles() { return unwrapItems(await request('/roles', token)).items.map(adaptAdministratorRole); },
+    async createAdministratorRole(input, reason) { return adaptAdministratorRole(await request('/roles', token, { method: 'POST', body: JSON.stringify({ ...input, reason, confirmed: true }) })); },
+    async updateAdministratorRole(id, input, reason) { return adaptAdministratorRole(await request(`/roles/${encodeURIComponent(id)}`, token, { method: 'PATCH', body: JSON.stringify({ ...input, reason, confirmed: true }) })); },
+    async deleteAdministratorRole(id, reason) { await request(`/roles/${encodeURIComponent(id)}`, token, { method: 'DELETE', body: JSON.stringify({ reason, confirmed: true }) }); },
     async getDashboard() { return adaptDashboard(await request('/dashboard', token)); },
     async getUsers(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/users?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptUser, page, pageSize); },
     async getUserOverview(id) { return adaptUserOverview(await request(`/users/${encodeURIComponent(id)}`, token)); },
@@ -808,7 +863,7 @@ function liveApi(token: string): AdminApi {
     async getOnline() { return unwrapItems(await request('/online', token)).items.map(adaptOnline); },
     async getFriendships(q='',page=1,pageSize=20,cursor=''){const payload=await request(`/friendships?q=${encodeURIComponent(q)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`,token);return serverPage(payload,adaptFriendship,page,pageSize);},
     async getFeedback(q='',category='',page=1,pageSize=20,cursor=''){const payload=await request(`/feedback?q=${encodeURIComponent(q)}&category=${encodeURIComponent(category)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`,token);return serverPage(payload,adaptFeedback,page,pageSize);},
-    async getOperationsStatus(){const [push,backups,diagnostics,tasks,access]=await Promise.all([request('/push',token),request('/backups',token),request('/client-diagnostics?limit=20',token),request('/tasks',token),request('/access',token)]);return {push:object(push) as OperationsStatus['push'],backups:adaptBackupStatus(backups),diagnostics:adaptClientDiagnostics(diagnostics),tasks:object(object(tasks).tasks),access:object(access) as unknown as OperationsStatus['access']};},
+    async getOperationsStatus(){const [push,backups,diagnostics,tasks,access]=await Promise.all([request('/push',token),request('/backups',token),request('/client-diagnostics?limit=20',token),request('/tasks',token),request('/access',token)]);return {push:object(push) as OperationsStatus['push'],backups:adaptBackupStatus(backups),diagnostics:adaptClientDiagnostics(diagnostics),tasks:object(object(tasks).tasks),access:adaptOperationsAccess(access)};},
     async getAnnouncements(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/announcements?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptAnnouncement, page, pageSize); },
     async createAnnouncement(input, reason) { return adaptAnnouncement(await request('/announcements', token, { method: 'POST', body: JSON.stringify({ ...input, reason, confirmed: true }) })); },
     async updateAnnouncement(id, input, reason) { return adaptAnnouncement(await request(`/announcements/${encodeURIComponent(id)}`, token, { method: 'PUT', body: JSON.stringify({ ...input, reason, confirmed: true }) })); },
@@ -891,27 +946,16 @@ export function getApi(token = ''): AdminApi {
   return liveApi(token);
 }
 
-function adaptRole(value: unknown): AdminRole {
-  if (value === 'platform_admin' || value === 'super_admin' || value === 'admin') return 'platform_admin';
-  if (value === 'system_operator') return 'system_operator';
-  if (value === 'moderator') return 'moderator';
-  if (value === 'content_operator') return 'content_operator';
-  if (value === 'support_agent') return 'support_agent';
-  return 'support';
-}
-
-export async function loginAdmin(email: string, password: string, totp = ''): Promise<AdminSession> {
+export async function loginAdmin(email: string, password: string): Promise<AdminSession> {
   let response: unknown;
   try {
     response = await request('/auth/login', '', {
       method: 'POST',
-      body: JSON.stringify({ email, password, ...(totp ? { totp } : {}) }),
+      body: JSON.stringify({ email, password }),
     }, false);
   } catch (cause) {
-    // 登录请求本身没有现有管理员会话。部分旧服务端仍把凭据错误
-    // 返回为 UNAUTHENTICATED；这里不能把它误报成“会话已失效”。
-    if (cause instanceof ApiError && cause.status === 401 && cause.code !== 'TOTP_REQUIRED' && cause.code !== 'INVALID_TOTP') {
-      throw new ApiError('邮箱、密码或动态验证码不正确', 401, 'INVALID_CREDENTIALS', cause.requestId);
+    if (cause instanceof ApiError && cause.status === 401) {
+      throw new ApiError('邮箱或密码不正确', 401, 'INVALID_CREDENTIALS', cause.requestId);
     }
     throw cause;
   }
@@ -919,10 +963,7 @@ export async function loginAdmin(email: string, password: string, totp = ''): Pr
   const raw = object(payload.data ?? payload);
   const token = string(raw.accessToken, string(raw.token));
   if (!token) throw new ApiError('登录响应缺少访问令牌', 502, 'INVALID_AUTH_RESPONSE');
-  return {
-    token,
-    displayName: string(raw.displayName, string(raw.name, email)),
-    role: adaptRole(raw.role),
-    expiresAt: Date.now() + Math.max(60, number(raw.expiresIn, 900)) * 1000,
-  };
+  const identity = adaptAdminIdentity(raw);
+  if (!identity.id || !identity.roleId) throw new ApiError('登录响应缺少管理员身份', 502, 'INVALID_AUTH_RESPONSE');
+  return { token, ...identity, expiresAt: Date.now() + Math.max(60, number(raw.expiresIn, 900)) * 1000 };
 }
