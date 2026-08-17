@@ -948,6 +948,9 @@ func (p *Postgres) ListAdminAudits(ctx context.Context, q, status, cursor string
 
 const adminMessageUnion = `
 	SELECT message_index.message_id::text AS id,COALESCE(message_index.conversation_id,'') AS conversation_id,COALESCE(message_index.sender_id,'') AS sender_id,
+		COALESCE(sender_user.id,'') AS sender_user_id,COALESCE(sender_user.phone,'') AS sender_phone,
+		COALESCE(sender_user.name,'') AS sender_name,COALESCE(sender_user.handle,'') AS sender_handle,
+		COALESCE(sender_user.avatar_url,'') AS sender_avatar_url,
 		COALESCE(message_index.client_msg_no,'') AS client_msg_id,message_index.message_seq,
 		COALESCE(message_index.channel_id,'') AS channel_id,message_index.channel_type,
 		CASE message_index.content_type
@@ -967,6 +970,7 @@ const adminMessageUnion = `
 	FROM im_wukong_message_index message_index
 	LEFT JOIN im_wukong_message_extensions message_extension ON message_extension.message_id=message_index.message_id
 		AND message_extension.channel_id=message_index.channel_id AND message_extension.channel_type=message_index.channel_type
+	LEFT JOIN im_users sender_user ON sender_user.id=message_index.sender_id
 `
 
 func (p *Postgres) ListAdminMessages(ctx context.Context, q, messageType, cursor string, limit int) ([]*model.Message, int64, string, error) {
@@ -978,7 +982,7 @@ func (p *Postgres) ListAdminMessages(ctx context.Context, q, messageType, cursor
 		AND ($3='' OR message_type=$3)`, q, pattern, messageType).Scan(&total); err != nil {
 		return nil, 0, "", err
 	}
-	rows, err := p.pool.Query(ctx, `WITH all_messages AS (`+adminMessageUnion+`) SELECT id,conversation_id,sender_id,client_msg_id,message_seq,channel_id,channel_type,message_type,body,reply_to_id,recalled_at,expires_at,expired_at,edited_at,edit_version,created_at
+	rows, err := p.pool.Query(ctx, `WITH all_messages AS (`+adminMessageUnion+`) SELECT id,conversation_id,sender_id,sender_user_id,sender_phone,sender_name,sender_handle,sender_avatar_url,client_msg_id,message_seq,channel_id,channel_type,message_type,body,reply_to_id,recalled_at,expires_at,expired_at,edited_at,edit_version,created_at
 		FROM all_messages WHERE
 		($1='' OR id ILIKE $2 OR conversation_id ILIKE $2 OR sender_id ILIKE $2 OR client_msg_id ILIKE $2)
 		AND ($3='' OR message_type=$3) ORDER BY created_at DESC,id LIMIT $4 OFFSET $5`, q, pattern, messageType, limit, offset)
@@ -991,8 +995,12 @@ func (p *Postgres) ListAdminMessages(ctx context.Context, q, messageType, cursor
 		m := &model.Message{}
 		var raw []byte
 		var reply *string
-		if err = rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.ClientMsgID, &m.Seq, &m.WukongChannelID, &m.WukongChannelType, &m.Type, &raw, &reply, &m.RecalledAt, &m.ExpiresAt, &m.ExpiredAt, &m.EditedAt, &m.EditVersion, &m.CreatedAt); err != nil {
+		var senderUserID, senderPhone, senderName, senderHandle, senderAvatarURL string
+		if err = rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &senderUserID, &senderPhone, &senderName, &senderHandle, &senderAvatarURL, &m.ClientMsgID, &m.Seq, &m.WukongChannelID, &m.WukongChannelType, &m.Type, &raw, &reply, &m.RecalledAt, &m.ExpiresAt, &m.ExpiredAt, &m.EditedAt, &m.EditVersion, &m.CreatedAt); err != nil {
 			return nil, 0, "", err
+		}
+		if senderUserID != "" {
+			m.Sender = &model.MessageSender{ID: senderUserID, Phone: senderPhone, Name: senderName, Handle: senderHandle, AvatarURL: senderAvatarURL}
 		}
 		if reply != nil {
 			m.ReplyToID = *reply

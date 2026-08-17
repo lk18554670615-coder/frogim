@@ -368,13 +368,18 @@ describe('青蛙呱呱管理后台', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).includes('/messages')) return response({ items: [{
         id: '2089149153182388224', clientMsgId: 'client-live-1', conversationId: 'conv_direct_1',
-        senderId: 'u_10291', conversationSeq: 13, type: 'text', body: { text: '服务端实时正文' },
+        senderId: 'u_10291', sender: { id: 'u_10291', name: '林夏', phone: '13800001001' }, conversationSeq: 13, type: 'text', body: { text: '服务端实时正文' },
         createdAt: '2026-08-17T08:35:00Z',
       }], total: 1 });
       return liveFixture(input, init);
     }));
     render(<App />);
     expect(await screen.findByText('服务端实时正文')).toBeInTheDocument();
+    expect(screen.getByText('林夏')).toBeInTheDocument();
+    expect(screen.getByText('u_10291')).toBeInTheDocument();
+    expect(screen.getByText('13800001001')).toBeInTheDocument();
+    expect(screen.queryByText('2089149153182388224')).not.toBeInTheDocument();
+    expect(screen.queryByText('client-live-1')).not.toBeInTheDocument();
     expect(screen.queryByText('内容受保护')).not.toBeInTheDocument();
     expect(screen.getByText(/每次查看都会写入审计日志/)).toBeInTheDocument();
   });

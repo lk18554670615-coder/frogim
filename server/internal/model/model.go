@@ -113,11 +113,20 @@ type GroupInvite struct {
 	ResolvedAt     *time.Time `json:"resolvedAt,omitempty"`
 }
 
+type MessageSender struct {
+	ID        string `json:"id"`
+	Phone     string `json:"phone,omitempty"`
+	Name      string `json:"name"`
+	Handle    string `json:"handle,omitempty"`
+	AvatarURL string `json:"avatarUrl,omitempty"`
+}
+
 type Message struct {
 	ID                string                   `json:"id"`
 	ClientMsgID       string                   `json:"clientMsgId"`
 	ConversationID    string                   `json:"conversationId"`
 	SenderID          string                   `json:"senderId"`
+	Sender            *MessageSender           `json:"sender,omitempty"`
 	WukongChannelID   string                   `json:"-"`
 	WukongChannelType uint8                    `json:"-"`
 	Seq               int64                    `json:"conversationSeq"`

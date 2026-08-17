@@ -957,7 +957,7 @@ func TestPostgresConversationLifecycleScheduledAndExpiry(t *testing.T) {
 		t.Fatalf("admin message search must not inspect private body: total=%d items=%#v err=%v", total, adminMessages, err)
 	}
 	adminMessages, total, _, err = p.ListAdminMessages(ctx, message.ID, "", "", 10)
-	if err != nil || total != 1 || len(adminMessages) != 1 || len(adminMessages[0].Body) != 0 {
+	if err != nil || total != 1 || len(adminMessages) != 1 || len(adminMessages[0].Body) != 0 || adminMessages[0].Sender == nil || adminMessages[0].Sender.ID != u1 {
 		t.Fatalf("admin metadata result leaked body: total=%d items=%#v err=%v", total, adminMessages, err)
 	}
 	pastBan := now.Add(-time.Minute)

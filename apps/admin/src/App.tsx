@@ -217,6 +217,10 @@ function UserAvatar({ user, detail = false }: { user: UserRecord; detail?: boole
   </span>;
 }
 
+function UserIdentity({ user, fallbackId }: { user?: UserRecord; fallbackId: string }) {
+  return <div className="identity">{user ? <UserAvatar user={user} /> : <span className="avatar"><span className="avatar-fallback">?</span></span>}<div><strong>{user?.nickname || '未知用户'}</strong><small className="mono">{user?.id || fallbackId}</small><small>{user?.phone || '手机号未记录'}</small></div></div>;
+}
+
 function tabListKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
   const tabs = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]:not(:disabled)')];
@@ -823,7 +827,7 @@ function MessagesPage() {
   const state = useResource(() => api.getMessages(deferredQuery, type, page, 20, cursors[page] ?? ''), [api, mode, deferredQuery, type, page, cursors]);
   const paginate = (nextPage: number) => { if (nextPage > page && state.data?.nextCursor) setCursors((current) => ({ ...current, [nextPage]: state.data?.nextCursor ?? '' })); setPage(nextPage); };
   return <><PageHeader title="消息治理索引" description="按消息元数据检索，并从 WuKongIM 实时加载当前结果页正文；每次查看都会写入审计日志。" /><Toolbar query={query} setQuery={setQuery} placeholder="搜索消息 ID、会话 ID、发送人或客户端消息 ID"><select className="select-control" aria-label="消息类型" value={type} onChange={(event) => setType(event.target.value)}><option value="">全部类型</option>{messageTypeOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Toolbar>
-    <DataPanel loading={state.loading} error={state.error} retry={state.reload} empty={!state.data?.items.length} emptyTitle="没有匹配的消息元数据" emptyDetail="调整消息 ID、会话、发送人或类型后重试。"><div className="table-wrap"><table><thead><tr><th>时间</th><th>类型</th><th>消息正文 / 标识</th><th>发送人</th><th>会话 / 序号</th><th>生命周期</th></tr></thead><tbody>{state.data?.items.map((message: MessageRecord) => { const lifecycle = messageLifecycle(message); return <tr key={message.id}><td>{message.createdAt}</td><td>{messageTypeLabels[message.type] ?? messageTypeLabels.custom}</td><td><div><strong className="message-content-preview">{message.preview}</strong><small className="mono">{message.id}</small><small className="mono">{message.clientMsgId || '无客户端标识'}</small></div></td><td className="mono">{message.senderId}</td><td><div><strong className="mono">{message.conversationId}</strong><small>序号 {message.conversationSeq}</small></div></td><td><Badge value={lifecycle.value} label={lifecycle.label} /><small>{lifecycle.detail}</small></td></tr>; })}</tbody></table></div><Pagination data={state.data} onPage={paginate} /></DataPanel>
+    <DataPanel loading={state.loading} error={state.error} retry={state.reload} empty={!state.data?.items.length} emptyTitle="没有匹配的消息元数据" emptyDetail="调整消息 ID、会话、发送人或类型后重试。"><div className="table-wrap"><table><thead><tr><th>时间</th><th>类型</th><th>消息正文</th><th>发送人</th><th>会话 / 序号</th><th>生命周期</th></tr></thead><tbody>{state.data?.items.map((message: MessageRecord) => { const lifecycle = messageLifecycle(message); return <tr key={message.id}><td>{message.createdAt}</td><td>{messageTypeLabels[message.type] ?? messageTypeLabels.custom}</td><td><strong className="message-content-preview">{message.preview}</strong></td><td><UserIdentity user={message.sender} fallbackId={message.senderId} /></td><td><div><strong className="mono">{message.conversationId}</strong><small>序号 {message.conversationSeq}</small></div></td><td><Badge value={lifecycle.value} label={lifecycle.label} /><small>{lifecycle.detail}</small></td></tr>; })}</tbody></table></div><Pagination data={state.data} onPage={paginate} /></DataPanel>
   </>;
 }
 

@@ -266,6 +266,7 @@ export interface MessageRecord {
   clientMsgId: string;
   conversationId: string;
   senderId: string;
+  sender?: UserRecord;
   conversationSeq: number;
   type: string;
   preview: string;
