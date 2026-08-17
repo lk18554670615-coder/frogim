@@ -443,6 +443,15 @@ func (x *API) routes() {
 	x.mux.Handle("GET /v2/admin/groups/{id}/members", x.requireAdmin(http.HandlerFunc(x.adminGroupMembers)))
 	x.mux.Handle("PATCH /v2/admin/groups/{id}/members/{userId}", x.requireAdmin(http.HandlerFunc(x.adminGroupMemberAction)))
 	x.mux.Handle("DELETE /v2/admin/groups/{id}/members/{userId}", x.requireAdmin(http.HandlerFunc(x.adminGroupMemberAction)))
+	x.mux.Handle("POST /v2/admin/groups/{id}/messages", x.requireAdmin(http.HandlerFunc(x.adminSendGroupMessage)))
+	x.mux.Handle("GET /v2/admin/groups/{id}/messages", x.requireAdmin(http.HandlerFunc(x.adminGroupMessages)))
+	x.mux.Handle("POST /v2/admin/groups/{id}/messages/{messageId}/recall", x.requireAdmin(http.HandlerFunc(x.adminRecallGroupMessage)))
+	x.mux.Handle("GET /v2/admin/groups/{id}/blacklist", x.requireAdmin(http.HandlerFunc(x.adminGroupBlacklist)))
+	x.mux.Handle("PUT /v2/admin/groups/{id}/blacklist/{userId}", x.requireAdmin(http.HandlerFunc(x.adminAddGroupBlacklist)))
+	x.mux.Handle("DELETE /v2/admin/groups/{id}/blacklist/{userId}", x.requireAdmin(http.HandlerFunc(x.adminRemoveGroupBlacklist)))
+	x.mux.Handle("POST /v2/admin/groups/{id}/mute-all", x.requireAdmin(http.HandlerFunc(x.adminGroupMuteAll)))
+	x.mux.Handle("POST /v2/admin/groups/{id}/ban", x.requireAdmin(http.HandlerFunc(x.adminBanGroup)))
+	x.mux.Handle("POST /v2/admin/groups/{id}/unban", x.requireAdmin(http.HandlerFunc(x.adminUnbanGroup)))
 	x.mux.Handle("POST /v2/admin/groups/{id}/disband", x.requireAdmin(http.HandlerFunc(x.disbandGroup)))
 	x.mux.Handle("GET /v2/admin/sensitive-words", x.requireAdmin(http.HandlerFunc(x.sensitiveWords)))
 	x.mux.Handle("POST /v2/admin/sensitive-words", x.requireAdmin(http.HandlerFunc(x.addSensitiveWord)))
@@ -3193,10 +3202,20 @@ func (x *API) adminCalls(w http.ResponseWriter, r *http.Request) {
 func (x *API) adminGroups(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	items, total, next, err := x.app.AdminGroupsPage(q.Get("q"), q.Get("status"), q.Get("cursor"), limit)
+	items, total, next, err := x.app.AdminGroupsScopedPage(q.Get("q"), q.Get("scope"), q.Get("status"), q.Get("cursor"), limit)
 	if err != nil {
 		handleErr(w, err)
 		return
+	}
+	for _, item := range items {
+		if owner, ok := item["owner"].(*model.User); ok {
+			x.signAvatarURL(owner)
+		}
+		if avatar, ok := item["avatarUrl"].(string); ok {
+			if mediaID := avatarMediaIDFromPath(avatar); mediaID != "" {
+				item["avatarUrl"] = x.signedAvatarValue(mediaID)
+			}
+		}
 	}
 	write(w, 200, map[string]any{"items": items, "total": total, "nextCursor": next})
 }
@@ -3205,6 +3224,14 @@ func (x *API) adminGroupOverview(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		handleErr(w, err)
 		return
+	}
+	if owner, ok := item["owner"].(*model.User); ok {
+		x.signAvatarURL(owner)
+	}
+	if avatar, ok := item["avatarUrl"].(string); ok {
+		if mediaID := avatarMediaIDFromPath(avatar); mediaID != "" {
+			item["avatarUrl"] = x.signedAvatarValue(mediaID)
+		}
 	}
 	write(w, http.StatusOK, item)
 }
@@ -3215,6 +3242,11 @@ func (x *API) adminGroupMembers(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		handleErr(w, err)
 		return
+	}
+	for _, item := range items {
+		if mediaID := avatarMediaIDFromPath(item.AvatarURL); mediaID != "" {
+			item.AvatarURL = x.signedAvatarValue(mediaID)
+		}
 	}
 	write(w, http.StatusOK, map[string]any{"items": items, "total": total, "nextCursor": next})
 }

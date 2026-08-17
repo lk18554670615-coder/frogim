@@ -308,18 +308,22 @@ func (p *Postgres) AdminUserOverview(ctx context.Context, id string) (map[string
 }
 
 func (p *Postgres) AdminGroupOverview(ctx context.Context, id string) (map[string]any, error) {
-	var title, owner, announcement, joinPolicy string
+	var title, avatar, ownerID, ownerPhone, ownerName, ownerHandle, ownerAvatar, announcement, joinPolicy, bannedBy, banReason string
 	var memberCount, announcementVersion, messageCount int64
-	var allowMemberAddFriend bool
-	err := p.pool.QueryRow(ctx, `SELECT c.title,g.owner_id,g.announcement,g.announcement_version,g.join_policy,g.allow_member_add_friend,GREATEST(c.last_message_seq,COALESCE((SELECT max(message_seq) FROM im_wukong_message_index WHERE conversation_id=c.id),0)),(SELECT count(*) FROM im_members m WHERE m.conversation_id=c.id)
-		FROM im_conversations c JOIN im_groups g ON g.conversation_id=c.id WHERE c.id=$1`, id).Scan(&title, &owner, &announcement, &announcementVersion, &joinPolicy, &allowMemberAddFriend, &messageCount, &memberCount)
+	var allowMemberAddFriend, banned bool
+	var allMutedUntil, bannedAt, dissolvedAt *time.Time
+	err := p.pool.QueryRow(ctx, `SELECT c.title,c.avatar_url,g.owner_id,owner.phone,owner.name,COALESCE(owner.handle,''),owner.avatar_url,g.announcement,g.announcement_version,g.join_policy,g.allow_member_add_friend,
+		GREATEST(c.last_message_seq,COALESCE((SELECT max(message_seq) FROM im_wukong_message_index WHERE conversation_id=c.id),0)),(SELECT count(*) FROM im_members m WHERE m.conversation_id=c.id),
+		CASE WHEN g.all_muted_until>now() THEN g.all_muted_until END,g.banned,g.banned_at,g.banned_by,g.ban_reason,g.dissolved_at
+		FROM im_conversations c JOIN im_groups g ON g.conversation_id=c.id JOIN im_users owner ON owner.id=g.owner_id WHERE c.id=$1`, id).Scan(&title, &avatar, &ownerID, &ownerPhone, &ownerName, &ownerHandle, &ownerAvatar, &announcement, &announcementVersion, &joinPolicy, &allowMemberAddFriend, &messageCount, &memberCount, &allMutedUntil, &banned, &bannedAt, &bannedBy, &banReason, &dissolvedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": id, "title": title, "ownerId": owner, "announcement": announcement, "announcementVersion": announcementVersion, "joinPolicy": joinPolicy, "allowMemberAddFriend": allowMemberAddFriend, "messageCount": messageCount, "memberCount": memberCount}, nil
+	owner := &model.User{ID: ownerID, Phone: ownerPhone, Name: ownerName, Handle: ownerHandle, AvatarURL: ownerAvatar}
+	return map[string]any{"id": id, "title": title, "avatarUrl": avatar, "ownerId": ownerID, "owner": owner, "announcement": announcement, "announcementVersion": announcementVersion, "joinPolicy": joinPolicy, "allowMemberAddFriend": allowMemberAddFriend, "messageCount": messageCount, "memberCount": memberCount, "allMutedUntil": allMutedUntil, "banned": banned, "bannedAt": bannedAt, "bannedBy": bannedBy, "banReason": banReason, "dissolvedAt": dissolvedAt}, nil
 }
 
 func (p *Postgres) ListAdminGroupMembers(ctx context.Context, id, q, cursor string, limit int) ([]*model.ConversationMember, int64, string, error) {
@@ -330,7 +334,7 @@ func (p *Postgres) ListAdminGroupMembers(ctx context.Context, id, q, cursor stri
 	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_members m JOIN im_users u ON u.id=m.user_id WHERE `+where, id, q, pattern).Scan(&total); err != nil {
 		return nil, 0, "", err
 	}
-	rows, err := p.pool.Query(ctx, `SELECT m.conversation_id,m.user_id,u.name,COALESCE(u.handle,''),u.avatar_url,m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.group_nickname,m.joined_at FROM im_members m JOIN im_users u ON u.id=m.user_id WHERE `+where+` ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,m.joined_at,m.user_id LIMIT $4 OFFSET $5`, id, q, pattern, limit, offset)
+	rows, err := p.pool.Query(ctx, `SELECT m.conversation_id,m.user_id,u.phone,u.name,COALESCE(u.handle,''),u.avatar_url,m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.group_nickname,m.joined_at FROM im_members m JOIN im_users u ON u.id=m.user_id WHERE `+where+` ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,m.joined_at,m.user_id LIMIT $4 OFFSET $5`, id, q, pattern, limit, offset)
 	if err != nil {
 		return nil, 0, "", err
 	}
@@ -338,7 +342,7 @@ func (p *Postgres) ListAdminGroupMembers(ctx context.Context, id, q, cursor stri
 	items := make([]*model.ConversationMember, 0, limit)
 	for rows.Next() {
 		item := new(model.ConversationMember)
-		if err = rows.Scan(&item.ConversationID, &item.UserID, &item.Name, &item.Handle, &item.AvatarURL, &item.Role, &item.MutedUntil, &item.LastReadSeq, &item.LastDeliveredSeq, &item.GroupNickname, &item.JoinedAt); err != nil {
+		if err = rows.Scan(&item.ConversationID, &item.UserID, &item.Phone, &item.Name, &item.Handle, &item.AvatarURL, &item.Role, &item.MutedUntil, &item.LastReadSeq, &item.LastDeliveredSeq, &item.GroupNickname, &item.JoinedAt); err != nil {
 			return nil, 0, "", err
 		}
 		item.ID = item.UserID

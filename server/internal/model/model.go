@@ -66,6 +66,7 @@ type ConversationMember struct {
 	ConversationID     string     `json:"conversationId"`
 	ID                 string     `json:"id,omitempty"`
 	UserID             string     `json:"userId"`
+	Phone              string     `json:"phone,omitempty"`
 	Name               string     `json:"name"`
 	Handle             string     `json:"handle"`
 	AvatarURL          string     `json:"avatarUrl,omitempty"`
@@ -94,6 +95,10 @@ type GroupProfile struct {
 	JoinPolicy           string     `json:"joinPolicy"`
 	AllowMemberAddFriend bool       `json:"allowMemberAddFriend"`
 	AllMutedUntil        *time.Time `json:"allMutedUntil,omitempty"`
+	Banned               bool       `json:"banned"`
+	BannedAt             *time.Time `json:"bannedAt,omitempty"`
+	BannedBy             string     `json:"bannedBy,omitempty"`
+	BanReason            string     `json:"banReason,omitempty"`
 	QRToken              string     `json:"qrToken,omitempty"`
 	QRExpiresAt          *time.Time `json:"qrExpiresAt,omitempty"`
 	DissolvedAt          *time.Time `json:"dissolvedAt,omitempty"`

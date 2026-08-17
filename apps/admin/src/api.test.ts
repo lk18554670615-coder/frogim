@@ -60,6 +60,46 @@ describe('live API adapter', () => {
     expect(writes.every((write) => write.url.includes('/groups/g_1/members/u_1'))).toBe(true);
   });
 
+  it('群封禁列表、历史、黑名单和治理请求使用真实服务端接口', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/groups/g_1/messages?')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({
+        items: [{ id: '901', conversationSeq: 9, senderId: 'u_1', sender: { id: 'u_1', name: '林夏', phone: '13800001001' }, type: 'text', body: { content: '真实群消息' }, createdAt: '2026-08-17T08:00:00Z' }],
+        nextBeforeSeq: 8,
+      }) };
+      if (url.endsWith('/groups/g_1/blacklist') && !init?.method) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ user: { id: 'u_2', name: '江宁' }, operatorId: 'admin_1', operatorName: '平台管理员', remark: '广告账号', createdAt: '2026-08-17T08:00:00Z' }] }) };
+      if (url.includes('/groups?')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ id: 'g_1', title: '产品交流群', ownerId: 'u_1', owner: { id: 'u_1', name: '林夏' }, memberCount: 2, messageCount: 9, status: 'banned', banned: true, createdAt: '2026-08-01T08:00:00Z' }], total: 1 }) };
+      return { ok: true, status: 200, headers: new Headers(), json: async () => ({}) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const api = getApi('token');
+
+    const groups = await api.getGroups('产品', '', 1, 20, '', 'banned');
+    expect(groups.items[0]).toEqual(expect.objectContaining({ id: 'g_1', banned: true, owner: expect.objectContaining({ id: 'u_1' }) }));
+    expect(String(fetchMock.mock.calls[0][0])).toContain('scope=banned');
+    expect((await api.getGroupMessages('g_1', 10, 20)).items[0]).toEqual(expect.objectContaining({ body: { content: '真实群消息' }, sender: expect.objectContaining({ phone: '13800001001' }) }));
+    expect((await api.getGroupBlacklist('g_1'))[0]).toEqual(expect.objectContaining({ remark: '广告账号', operatorName: '平台管理员' }));
+
+    await api.sendGroupMessage('g_1', 'u_1', '群公告提醒', '运营工单 GROUP-11');
+    await api.recallGroupMessage('g_1', '901', '清理违规消息');
+    await api.addGroupBlacklist('g_1', 'u_2', '广告账号', '多次发布广告');
+    await api.removeGroupBlacklist('g_1', 'u_2', '申诉通过');
+    await api.setGroupMuteAll('g_1', true, '紧急治理');
+    await api.setGroupBan('g_1', true, '严重违规');
+    await api.setGroupBan('g_1', false, '复核通过');
+
+    const writes = fetchMock.mock.calls.filter(([, init]) => Boolean(init?.method)).map(([input, init]) => ({ url: String(input), method: init?.method, body: JSON.parse(String(init?.body)) }));
+    expect(writes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ url: expect.stringContaining('/groups/g_1/messages'), method: 'POST', body: { senderUid: 'u_1', content: '群公告提醒', reason: '运营工单 GROUP-11', confirmed: true } }),
+      expect.objectContaining({ url: expect.stringContaining('/groups/g_1/messages/901/recall'), method: 'POST', body: { reason: '清理违规消息', confirmed: true } }),
+      expect.objectContaining({ url: expect.stringContaining('/groups/g_1/blacklist/u_2'), method: 'PUT', body: { remark: '广告账号', reason: '多次发布广告', confirmed: true } }),
+      expect.objectContaining({ url: expect.stringContaining('/groups/g_1/blacklist/u_2'), method: 'DELETE', body: { reason: '申诉通过', confirmed: true } }),
+      expect.objectContaining({ url: expect.stringContaining('/groups/g_1/mute-all'), method: 'POST', body: { muted: true, reason: '紧急治理', confirmed: true } }),
+      expect.objectContaining({ url: expect.stringContaining('/groups/g_1/ban'), method: 'POST', body: { reason: '严重违规', confirmed: true } }),
+      expect.objectContaining({ url: expect.stringContaining('/groups/g_1/unban'), method: 'POST', body: { reason: '复核通过', confirmed: true } }),
+    ]));
+  });
+
   it('保留服务端错误码、信息和追踪号', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: false, status: 409, headers: new Headers({ 'x-request-id': 'req-conflict' }),

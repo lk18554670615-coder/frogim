@@ -25,7 +25,7 @@ var normalizedSchema string
 
 type Postgres struct{ pool *pgxpool.Pool }
 
-const schemaVersion = 54
+const schemaVersion = 55
 
 type PostgresOptions struct {
 	MaxConns          int32
@@ -2958,11 +2958,11 @@ func (p *Postgres) ExpireFriendRequests(ctx context.Context, at time.Time, limit
 	return items, nil
 }
 
-const groupProfileColumns = `g.conversation_id,g.owner_id,c.title,c.avatar_url,g.announcement,g.announcement_version,r.read_at,g.join_policy,g.allow_member_add_friend,g.all_muted_until,COALESCE(g.qr_token,''),g.qr_expires_at,g.dissolved_at,g.updated_at`
+const groupProfileColumns = `g.conversation_id,g.owner_id,c.title,c.avatar_url,g.announcement,g.announcement_version,r.read_at,g.join_policy,g.allow_member_add_friend,g.all_muted_until,g.banned,g.banned_at,g.banned_by,g.ban_reason,COALESCE(g.qr_token,''),g.qr_expires_at,g.dissolved_at,g.updated_at`
 
 func scanGroupProfile(row callRow) (*model.GroupProfile, error) {
 	g := &model.GroupProfile{}
-	err := row.Scan(&g.ConversationID, &g.OwnerID, &g.Name, &g.AvatarURL, &g.Announcement, &g.AnnouncementVersion, &g.AnnouncementReadAt, &g.JoinPolicy, &g.AllowMemberAddFriend, &g.AllMutedUntil, &g.QRToken, &g.QRExpiresAt, &g.DissolvedAt, &g.UpdatedAt)
+	err := row.Scan(&g.ConversationID, &g.OwnerID, &g.Name, &g.AvatarURL, &g.Announcement, &g.AnnouncementVersion, &g.AnnouncementReadAt, &g.JoinPolicy, &g.AllowMemberAddFriend, &g.AllMutedUntil, &g.Banned, &g.BannedAt, &g.BannedBy, &g.BanReason, &g.QRToken, &g.QRExpiresAt, &g.DissolvedAt, &g.UpdatedAt)
 	return g, err
 }
 func groupInviteColumns(prefix string) string {
@@ -3162,8 +3162,18 @@ func (p *Postgres) UpdateGroupProfile(ctx context.Context, actor, cid string, u 
 		}
 		token = value
 	}
-	if _, err = tx.Exec(ctx, `UPDATE im_groups SET join_policy=COALESCE($2,join_policy),allow_member_add_friend=COALESCE($3,allow_member_add_friend),all_muted_until=CASE WHEN $4::boolean THEN $5 ELSE all_muted_until END,qr_token=COALESCE($6,qr_token),qr_expires_at=CASE WHEN $6::text IS NULL THEN qr_expires_at ELSE $7 END,updated_at=$8 WHERE conversation_id=$1`, cid, u.JoinPolicy, u.AllowMemberAddFriend, u.AllMutedUntil != nil, u.AllMutedUntil, token, at.Add(24*time.Hour), at); err != nil {
+	setAllMuted := u.AllMutedUntil != nil
+	var allMutedUntil *time.Time
+	if setAllMuted && u.AllMutedUntil.After(at) {
+		allMutedUntil = u.AllMutedUntil
+	}
+	if _, err = tx.Exec(ctx, `UPDATE im_groups SET join_policy=COALESCE($2,join_policy),allow_member_add_friend=COALESCE($3,allow_member_add_friend),all_muted_until=CASE WHEN $4::boolean THEN $5 ELSE all_muted_until END,qr_token=COALESCE($6,qr_token),qr_expires_at=CASE WHEN $6::text IS NULL THEN qr_expires_at ELSE $7 END,updated_at=$8 WHERE conversation_id=$1`, cid, u.JoinPolicy, u.AllowMemberAddFriend, setAllMuted, allMutedUntil, token, at.Add(24*time.Hour), at); err != nil {
 		return nil, err
+	}
+	if u.AllMutedUntil != nil {
+		if err = enqueueWukongChannelReconcile(ctx, tx, cid, "group-mute-updated", at); err != nil {
+			return nil, err
+		}
 	}
 	if err = emitGroupSystem(ctx, tx, cid, actor, "group.profile.updated", map[string]any{}, at); err != nil {
 		return nil, err
@@ -3223,6 +3233,13 @@ func (p *Postgres) CreateGroupInvite(ctx context.Context, i *model.GroupInvite) 
 	if role != "owner" && role != "admin" {
 		return nil, false, ErrForbidden
 	}
+	var blacklisted bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_group_blacklist WHERE conversation_id=$1 AND user_id=$2)`, i.ConversationID, i.InviteeID).Scan(&blacklisted); err != nil {
+		return nil, false, err
+	}
+	if blacklisted {
+		return nil, false, ErrForbidden
+	}
 	var member bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_members WHERE conversation_id=$1 AND user_id=$2)`, i.ConversationID, i.InviteeID).Scan(&member); err != nil {
 		return nil, false, err
@@ -3277,6 +3294,13 @@ func (p *Postgres) TransitionGroupInvite(ctx context.Context, id, uid, action st
 		return nil, false, ErrConflict
 	}
 	if target == "accepted" {
+		var blacklisted bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_group_blacklist WHERE conversation_id=$1 AND user_id=$2)`, i.ConversationID, i.InviteeID).Scan(&blacklisted); err != nil {
+			return nil, false, err
+		}
+		if blacklisted {
+			return nil, false, ErrForbidden
+		}
 		if _, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,joined_at)VALUES($1,$2,'member',$3)ON CONFLICT DO NOTHING`, i.ConversationID, i.InviteeID, at); err != nil {
 			return nil, false, err
 		}
@@ -3311,6 +3335,13 @@ func (p *Postgres) JoinGroupByQR(ctx context.Context, uid, token string, at time
 	if dissolved != nil || policy != "qr" {
 		return ErrForbidden
 	}
+	var blacklisted bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_group_blacklist WHERE conversation_id=$1 AND user_id=$2)`, cid, uid).Scan(&blacklisted); err != nil {
+		return err
+	}
+	if blacklisted {
+		return ErrForbidden
+	}
 	if _, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,joined_at)VALUES($1,$2,'member',$3)ON CONFLICT DO NOTHING`, cid, uid, at); err != nil {
 		return err
 	}
@@ -3336,6 +3367,13 @@ func (p *Postgres) AddGroupMembers(ctx context.Context, actor, cid string, ids [
 		return ErrConflict
 	}
 	if role != "owner" && role != "admin" {
+		return ErrForbidden
+	}
+	var blockedCount int
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM im_group_blacklist WHERE conversation_id=$1 AND user_id=ANY($2::text[])`, cid, ids).Scan(&blockedCount); err != nil {
+		return err
+	}
+	if blockedCount > 0 {
 		return ErrForbidden
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,joined_at)SELECT $1,id,'member',$3 FROM im_users WHERE id=ANY($2::text[])ON CONFLICT DO NOTHING`, cid, ids, at); err != nil {
@@ -3416,7 +3454,7 @@ func (p *Postgres) ApplyGroupMemberAction(ctx context.Context, a GroupMemberActi
 	if err = emitGroupSystem(ctx, tx, a.ConversationID, a.ActorID, "group.member."+a.Action, map[string]any{"userId": a.TargetID, "role": a.Role}, a.At); err != nil {
 		return err
 	}
-	if a.Action == "leave" || a.Action == "remove" {
+	if a.Action == "leave" || a.Action == "remove" || a.Action == "role" || a.Action == "transfer" {
 		if err = enqueueWukongChannelReconcile(ctx, tx, a.ConversationID, "member-"+a.Action, a.At); err != nil {
 			return err
 		}
@@ -3467,8 +3505,8 @@ func (p *Postgres) AdminApplyGroupMemberAction(ctx context.Context, a AdminGroup
 	if err = emitGroupSystem(ctx, tx, a.ConversationID, a.ActorID, "group.member."+a.Action, eventData, a.At); err != nil {
 		return err
 	}
-	if a.Action == "remove" {
-		if err = enqueueWukongChannelReconcile(ctx, tx, a.ConversationID, "admin-member-removed", a.At); err != nil {
+	if a.Action == "remove" || a.Action == "role" {
+		if err = enqueueWukongChannelReconcile(ctx, tx, a.ConversationID, "admin-member-"+a.Action, a.At); err != nil {
 			return err
 		}
 	}
@@ -3495,7 +3533,7 @@ func (p *Postgres) DisbandGroupRecord(ctx context.Context, actor, cid, reason st
 	if err = emitGroupSystem(ctx, tx, cid, actor, "group.disbanded", map[string]any{"reason": reason}, at); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE im_groups SET dissolved_at=$2,updated_at=$2 WHERE conversation_id=$1`, cid, at); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE im_groups SET dissolved_at=$2,banned=false,banned_at=NULL,banned_by='',ban_reason='',updated_at=$2 WHERE conversation_id=$1`, cid, at); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `DELETE FROM im_members WHERE conversation_id=$1`, cid); err != nil {

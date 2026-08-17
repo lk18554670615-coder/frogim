@@ -10,6 +10,9 @@ import type {
   AdminClientDeviceRecord,
   AdminDirectMessagePage,
   AdminDirectMessageRecord,
+  AdminGroupBlacklistRecord,
+  AdminGroupMessagePage,
+  AdminGroupMessageRecord,
   AdminUserBlockRecord,
   AdminUserDeviceRecord,
   AdminUserDevices,
@@ -302,11 +305,14 @@ function adaptAdminDirectMessagePage(value: unknown): AdminDirectMessagePage {
 
 function adaptGroup(value: unknown): GroupRecord {
   const raw = object(value);
-  const status = raw.status === 'muted' || raw.status === 'dissolved' ? raw.status : 'active';
+  const status = raw.status === 'muted' || raw.status === 'banned' || raw.status === 'dissolved' ? raw.status : 'active';
+  const ownerRaw = object(raw.owner);
+  const owner = adaptUser(Object.keys(ownerRaw).length ? ownerRaw : { id: raw.ownerId, name: raw.owner });
   return {
-    id: string(raw.id, 'unknown'), name: string(raw.name, string(raw.title, '未命名群组')), owner: string(raw.owner, '暂无'),
+    id: string(raw.id, 'unknown'), name: string(raw.name, string(raw.title, '未命名群组')), avatarUrl: string(raw.avatarUrl), ownerId: string(raw.ownerId, owner.id), owner,
     memberCount: number(raw.memberCount), messageCount: number(raw.messageCount, number(raw.lastMessageSeq)), status,
-    createdAt: formatDate(raw.createdAt), reportCount: number(raw.reportCount),
+    createdAt: formatDate(raw.createdAt), reportCount: number(raw.reportCount), allMutedUntil: string(raw.allMutedUntil) || undefined,
+    banned: boolean(raw.banned), bannedAt: string(raw.bannedAt) || undefined, bannedBy: string(raw.bannedBy), banReason: string(raw.banReason),
   };
 }
 
@@ -809,16 +815,22 @@ function adaptUserOverview(value: unknown): UserOverview {
 
 function adaptGroupOverview(value: unknown): GroupOverview {
   const raw = object(value);
+  const owner = adaptUser(raw.owner ?? { id: raw.ownerId });
   return {
     id: string(raw.id, 'unknown'),
     title: string(raw.title, '未命名群组'),
+    avatarUrl: string(raw.avatarUrl),
     ownerId: string(raw.ownerId, '暂无'),
+    owner,
     announcement: string(raw.announcement),
     announcementVersion: number(raw.announcementVersion),
     joinPolicy: string(raw.joinPolicy, 'approval'),
     allowMemberAddFriend: boolean(raw.allowMemberAddFriend),
     messageCount: number(raw.messageCount),
     memberCount: number(raw.memberCount),
+    allMutedUntil: string(raw.allMutedUntil) || undefined,
+    banned: boolean(raw.banned), bannedAt: string(raw.bannedAt) || undefined,
+    bannedBy: string(raw.bannedBy), banReason: string(raw.banReason), dissolvedAt: string(raw.dissolvedAt) || undefined,
   };
 }
 
@@ -827,6 +839,7 @@ function adaptGroupMember(value: unknown): GroupMemberRecord {
   return {
     conversationId: string(raw.conversationId),
     userId: string(raw.userId, string(raw.id, 'unknown')),
+    phone: string(raw.phone),
     name: string(raw.name, '未命名用户'),
     handle: string(raw.handle, '未设置'),
     avatarUrl: string(raw.avatarUrl),
@@ -837,6 +850,29 @@ function adaptGroupMember(value: unknown): GroupMemberRecord {
     groupNickname: string(raw.groupNickname),
     joinedAt: formatDate(raw.joinedAt),
   };
+}
+
+function adaptAdminGroupMessage(value: unknown): AdminGroupMessageRecord {
+  const raw = object(value);
+  return {
+    id: string(raw.id), conversationId: string(raw.conversationId), conversationSeq: number(raw.conversationSeq),
+    senderId: string(raw.senderId), sender: raw.sender ? adaptUser(raw.sender) : undefined,
+    type: string(raw.type, 'unknown'), body: object(raw.body), createdAt: formatDate(raw.createdAt),
+    recalledAt: string(raw.recalledAt) ? formatDate(raw.recalledAt) : undefined,
+    expiresAt: string(raw.expiresAt) ? formatDate(raw.expiresAt) : undefined,
+    expiredAt: string(raw.expiredAt) ? formatDate(raw.expiredAt) : undefined,
+    editedAt: string(raw.editedAt) ? formatDate(raw.editedAt) : undefined,
+    adminRecall: boolean(raw.adminRecall), moderatedBy: string(raw.moderatedBy), moderationReason: string(raw.moderationReason),
+  };
+}
+
+function adaptAdminGroupMessagePage(value: unknown): AdminGroupMessagePage {
+  const raw = object(value); const next = number(raw.nextBeforeSeq);
+  return { items: list(raw.items).map(adaptAdminGroupMessage), nextBeforeSeq: next > 0 ? next : undefined };
+}
+function adaptAdminGroupBlacklist(value: unknown): AdminGroupBlacklistRecord {
+  const raw = object(value);
+  return { user: adaptUser(raw.user), operatorId: string(raw.operatorId), operatorName: string(raw.operatorName, string(raw.operatorId)), remark: string(raw.remark), createdAt: formatDate(raw.createdAt) };
 }
 
 function adaptAdministrator(value: unknown): AdministratorRecord {
@@ -912,11 +948,19 @@ function liveApi(token: string): AdminApi {
     },
     async banUser(id, reason, durationHours) { await request(`/users/${encodeURIComponent(id)}/ban`, token, { method: 'POST', body: JSON.stringify({ reason, durationHours, confirmed: true }) }); },
     async unbanUser(id, reason) { await request(`/users/${encodeURIComponent(id)}/unban`, token, { method: 'POST', body: JSON.stringify({ reason, confirmed: true }) }); },
-    async getGroups(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/groups?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptGroup, page, pageSize); },
+    async getGroups(q = '', status = '', page = 1, pageSize = 20, cursor = '', scope = 'normal') { const payload = await request(`/groups?q=${encodeURIComponent(q)}&scope=${encodeURIComponent(scope)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptGroup, page, pageSize); },
     async getGroupOverview(id) { return adaptGroupOverview(await request(`/groups/${encodeURIComponent(id)}`, token)); },
     async getGroupMembers(id, q = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/groups/${encodeURIComponent(id)}/members?q=${encodeURIComponent(q)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptGroupMember, page, pageSize); },
     async updateGroupMember(id, userId, update, reason) { await request(`/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, token, { method: 'PATCH', body: JSON.stringify({ ...update, reason, confirmed: true }) }); },
     async removeGroupMember(id, userId, reason) { await request(`/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, token, { method: 'DELETE', body: JSON.stringify({ reason, confirmed: true }) }); },
+    async sendGroupMessage(id, senderUid, content, reason) { await request(`/groups/${encodeURIComponent(id)}/messages`, token, { method: 'POST', body: JSON.stringify({ senderUid, content, reason, confirmed: true }) }); },
+    async getGroupMessages(id, beforeSeq = 0, limit = 50) { return adaptAdminGroupMessagePage(await request(`/groups/${encodeURIComponent(id)}/messages?beforeSeq=${beforeSeq}&limit=${limit}`, token)); },
+    async recallGroupMessage(id, messageId, reason) { await request(`/groups/${encodeURIComponent(id)}/messages/${encodeURIComponent(messageId)}/recall`, token, { method: 'POST', body: JSON.stringify({ reason, confirmed: true }) }); },
+    async getGroupBlacklist(id) { return unwrapItems(await request(`/groups/${encodeURIComponent(id)}/blacklist`, token)).items.map(adaptAdminGroupBlacklist); },
+    async addGroupBlacklist(id, userId, remark, reason) { await request(`/groups/${encodeURIComponent(id)}/blacklist/${encodeURIComponent(userId)}`, token, { method: 'PUT', body: JSON.stringify({ remark, reason, confirmed: true }) }); },
+    async removeGroupBlacklist(id, userId, reason) { await request(`/groups/${encodeURIComponent(id)}/blacklist/${encodeURIComponent(userId)}`, token, { method: 'DELETE', body: JSON.stringify({ reason, confirmed: true }) }); },
+    async setGroupMuteAll(id, muted, reason) { await request(`/groups/${encodeURIComponent(id)}/mute-all`, token, { method: 'POST', body: JSON.stringify({ muted, reason, confirmed: true }) }); },
+    async setGroupBan(id, banned, reason) { await request(`/groups/${encodeURIComponent(id)}/${banned ? 'ban' : 'unban'}`, token, { method: 'POST', body: JSON.stringify({ reason, confirmed: true }) }); },
     async disbandGroup(id, reason) { await request(`/groups/${encodeURIComponent(id)}/disband`, token, { method: 'POST', body: JSON.stringify({ reason, confirmed: true }) }); },
     async getReports(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/reports?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptReport, page, pageSize); },
     async resolveReport(id, action, note) { const raw = object(await request(`/reports/${encodeURIComponent(id)}/resolve`, token, { method: 'POST', body: JSON.stringify({ action, reason: note, confirmed: true }) })); const status = raw.status === 'rejected' ? 'rejected' : 'resolved'; const responseAction = string(raw.action, action); return { status, action: reportResolutionActions.includes(responseAction as ReportResolutionAction) ? responseAction as ReportResolutionAction : action } satisfies ReportResolutionResult; },

@@ -1030,15 +1030,15 @@ func (p *Postgres) AuthorizeWukongMessage(ctx context.Context, input WukongMessa
 	}
 	var kind, role string
 	var mutedUntil, allMutedUntil, dissolvedAt *time.Time
-	var banned bool
+	var userBanned, groupBanned bool
 	err := p.pool.QueryRow(ctx, `
-		SELECT c.kind,m.role,m.muted_until,u.banned,g.all_muted_until,g.dissolved_at
+		SELECT c.kind,m.role,m.muted_until,u.banned,g.all_muted_until,g.dissolved_at,COALESCE(g.banned,false)
 		FROM im_conversations c
 		JOIN im_members m ON m.conversation_id=c.id AND m.user_id=$2
 		JOIN im_users u ON u.id=m.user_id
 		LEFT JOIN im_groups g ON g.conversation_id=c.id
 		WHERE c.id=$1
-	`, input.ConversationID, input.UserID).Scan(&kind, &role, &mutedUntil, &banned, &allMutedUntil, &dissolvedAt)
+	`, input.ConversationID, input.UserID).Scan(&kind, &role, &mutedUntil, &userBanned, &allMutedUntil, &dissolvedAt, &groupBanned)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WukongMessageRoute{}, ErrForbidden
 	}
@@ -1046,7 +1046,7 @@ func (p *Postgres) AuthorizeWukongMessage(ctx context.Context, input WukongMessa
 		return WukongMessageRoute{}, err
 	}
 	now := time.Now()
-	if banned || dissolvedAt != nil || (mutedUntil != nil && mutedUntil.After(now)) ||
+	if userBanned || groupBanned || dissolvedAt != nil || (mutedUntil != nil && mutedUntil.After(now)) ||
 		(allMutedUntil != nil && allMutedUntil.After(now) && role != "owner" && role != "admin") {
 		return WukongMessageRoute{}, ErrForbidden
 	}
@@ -2454,12 +2454,14 @@ func (p *Postgres) LoadWukongChannelSnapshot(ctx context.Context, channelID stri
 	}
 	var snapshot wukong.ChannelSnapshot
 	var dissolvedAt *time.Time
+	var banned bool
+	var allMutedUntil *time.Time
 	var memberCount int
 	err := p.pool.QueryRow(ctx, `
-		SELECT c.id,c.member_count,g.dissolved_at
+		SELECT c.id,c.member_count,g.dissolved_at,g.banned,g.all_muted_until
 		FROM im_conversations c JOIN im_groups g ON g.conversation_id=c.id
 		WHERE c.id=$1
-	`, channelID).Scan(&snapshot.ChannelID, &memberCount, &dissolvedAt)
+	`, channelID).Scan(&snapshot.ChannelID, &memberCount, &dissolvedAt, &banned, &allMutedUntil)
 	if err != nil {
 		return snapshot, err
 	}
@@ -2470,6 +2472,9 @@ func (p *Postgres) LoadWukongChannelSnapshot(ctx context.Context, channelID stri
 	}
 	if dissolvedAt != nil {
 		snapshot.Disband = 1
+	}
+	if banned {
+		snapshot.Ban = 1
 	}
 	rows, err := p.pool.Query(ctx, `SELECT user_id FROM im_members WHERE conversation_id=$1 ORDER BY joined_at,user_id`, channelID)
 	if err != nil {
@@ -2483,7 +2488,43 @@ func (p *Postgres) LoadWukongChannelSnapshot(ctx context.Context, channelID stri
 		}
 		snapshot.Subscribers = append(snapshot.Subscribers, uid)
 	}
-	return snapshot, rows.Err()
+	if err = rows.Err(); err != nil {
+		return snapshot, err
+	}
+	if allMutedUntil != nil && allMutedUntil.After(time.Now()) {
+		allowRows, allowErr := p.pool.Query(ctx, `SELECT user_id FROM im_members WHERE conversation_id=$1 AND role IN ('owner','admin') ORDER BY user_id`, channelID)
+		if allowErr != nil {
+			return snapshot, allowErr
+		}
+		for allowRows.Next() {
+			var uid string
+			if allowErr = allowRows.Scan(&uid); allowErr != nil {
+				allowRows.Close()
+				return snapshot, allowErr
+			}
+			snapshot.Allowlist = append(snapshot.Allowlist, uid)
+		}
+		allowErr = allowRows.Err()
+		allowRows.Close()
+		if allowErr != nil {
+			return snapshot, allowErr
+		}
+	}
+	denyRows, denyErr := p.pool.Query(ctx, `SELECT user_id FROM im_group_blacklist WHERE conversation_id=$1 ORDER BY user_id`, channelID)
+	if denyErr != nil {
+		return snapshot, denyErr
+	}
+	for denyRows.Next() {
+		var uid string
+		if denyErr = denyRows.Scan(&uid); denyErr != nil {
+			denyRows.Close()
+			return snapshot, denyErr
+		}
+		snapshot.Denylist = append(snapshot.Denylist, uid)
+	}
+	denyErr = denyRows.Err()
+	denyRows.Close()
+	return snapshot, denyErr
 }
 
 func (p *WithRedis) LoadWukongChannelSnapshot(ctx context.Context, channelID string, channelType uint8) (wukong.ChannelSnapshot, error) {
@@ -2529,9 +2570,10 @@ func (p *Postgres) ListWukongChannels(ctx context.Context, after string, limit i
 			item.subscribers,item.allowlist,item.denylist
 		FROM (
 			SELECT '02:'||c.id AS cursor,c.id AS channel_id,2::smallint AS channel_type,c.member_count,
-				false AS ban,(g.dissolved_at IS NOT NULL) AS disband,false AS send_ban,false AS allow_stranger,
+				g.banned AS ban,(g.dissolved_at IS NOT NULL) AS disband,false AS send_ban,false AS allow_stranger,
 				ARRAY(SELECT m.user_id FROM im_members m WHERE m.conversation_id=c.id ORDER BY m.joined_at,m.user_id) AS subscribers,
-				ARRAY[]::text[] AS allowlist,ARRAY[]::text[] AS denylist
+				CASE WHEN g.all_muted_until>now() THEN ARRAY(SELECT m.user_id FROM im_members m WHERE m.conversation_id=c.id AND m.role IN ('owner','admin') ORDER BY m.user_id) ELSE ARRAY[]::text[] END AS allowlist,
+				ARRAY(SELECT blocked.user_id FROM im_group_blacklist blocked WHERE blocked.conversation_id=c.id ORDER BY blocked.user_id) AS denylist
 			FROM im_conversations c JOIN im_groups g ON g.conversation_id=c.id
 			UNION ALL
 			SELECT lpad(channel.channel_type::text,2,'0')||':'||channel.conversation_id,

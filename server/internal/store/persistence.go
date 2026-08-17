@@ -133,6 +133,23 @@ type AdminGroupMemberAction struct {
 type AdminGroupModerationStore interface {
 	AdminApplyGroupMemberAction(context.Context, AdminGroupMemberAction) error
 }
+type AdminGroupBlacklistEntry struct {
+	User         *model.User `json:"user"`
+	OperatorID   string      `json:"operatorId"`
+	OperatorName string      `json:"operatorName"`
+	Remark       string      `json:"remark"`
+	CreatedAt    time.Time   `json:"createdAt"`
+}
+type AdminGroupManagementStore interface {
+	ListAdminGroupsScoped(context.Context, string, string, string, string, int) ([]map[string]any, int64, string, error)
+	ListAdminGroupBlacklist(context.Context, string) ([]AdminGroupBlacklistEntry, error)
+	AdminAddGroupBlacklist(context.Context, string, string, string, string, time.Time) error
+	AdminRemoveGroupBlacklist(context.Context, string, string, string, string, time.Time) error
+	AdminSetGroupMuteAll(context.Context, string, string, bool, string, time.Time) error
+	AdminSetGroupBan(context.Context, string, string, bool, string, time.Time) error
+	AdminRecallGroupWukongMessage(context.Context, string, string, string, string, time.Time) (bool, int64, []string, error)
+	LoadAdminGroupMessageExtensions(context.Context, string, []string) (map[string]map[string]any, error)
+}
 type AuthStore interface {
 	LoginOrCreateUser(context.Context, string, string, string, time.Time) (*model.User, error)
 }

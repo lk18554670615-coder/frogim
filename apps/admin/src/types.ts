@@ -187,29 +187,45 @@ export interface UserOverview {
 export interface GroupRecord {
   id: string;
   name: string;
-  owner: string;
+  avatarUrl: string;
+  ownerId: string;
+  owner: UserRecord;
   memberCount: number;
   messageCount: number;
-  status: 'active' | 'muted' | 'dissolved';
+  status: 'active' | 'muted' | 'banned' | 'dissolved';
   createdAt: string;
   reportCount: number;
+  allMutedUntil?: string;
+  banned: boolean;
+  bannedAt?: string;
+  bannedBy: string;
+  banReason: string;
 }
 
 export interface GroupOverview {
   id: string;
   title: string;
+  avatarUrl: string;
   ownerId: string;
+  owner: UserRecord;
   announcement: string;
   announcementVersion: number;
   joinPolicy: string;
   allowMemberAddFriend: boolean;
   messageCount: number;
   memberCount: number;
+  allMutedUntil?: string;
+  banned: boolean;
+  bannedAt?: string;
+  bannedBy: string;
+  banReason: string;
+  dissolvedAt?: string;
 }
 
 export interface GroupMemberRecord {
   conversationId: string;
   userId: string;
+  phone: string;
   name: string;
   handle: string;
   avatarUrl: string;
@@ -220,6 +236,10 @@ export interface GroupMemberRecord {
   groupNickname: string;
   joinedAt: string;
 }
+
+export type AdminGroupMessageRecord = Omit<AdminDirectMessageRecord, 'clientMsgId' | 'replyToId' | 'editVersion' | 'encrypted' | 'deleted' | 'moderatedAt'>;
+export interface AdminGroupMessagePage { items: AdminGroupMessageRecord[]; nextBeforeSeq?: number }
+export interface AdminGroupBlacklistRecord { user: UserRecord; operatorId: string; operatorName: string; remark: string; createdAt: string }
 
 export interface ReportRecord {
   id: string;
@@ -810,11 +830,19 @@ export interface AdminApi {
   sendUserSystemMessage(id: string, senderUid: string, content: string, reason: string): Promise<AdminSystemMessageResult>;
   banUser(id: string, reason: string, durationHours: number): Promise<void>;
   unbanUser(id: string, reason: string): Promise<void>;
-  getGroups(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<GroupRecord>>;
+  getGroups(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string, scope?: 'normal' | 'banned' | 'all'): Promise<PageResult<GroupRecord>>;
   getGroupOverview(id: string): Promise<GroupOverview>;
   getGroupMembers(id: string, query?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<GroupMemberRecord>>;
   updateGroupMember(id: string, userId: string, update: { action: 'role' | 'mute'; role?: 'member' | 'admin'; mutedUntil?: string }, reason: string): Promise<void>;
   removeGroupMember(id: string, userId: string, reason: string): Promise<void>;
+  sendGroupMessage(id: string, senderUid: string, content: string, reason: string): Promise<void>;
+  getGroupMessages(id: string, beforeSeq?: number, limit?: number): Promise<AdminGroupMessagePage>;
+  recallGroupMessage(id: string, messageId: string, reason: string): Promise<void>;
+  getGroupBlacklist(id: string): Promise<AdminGroupBlacklistRecord[]>;
+  addGroupBlacklist(id: string, userId: string, remark: string, reason: string): Promise<void>;
+  removeGroupBlacklist(id: string, userId: string, reason: string): Promise<void>;
+  setGroupMuteAll(id: string, muted: boolean, reason: string): Promise<void>;
+  setGroupBan(id: string, banned: boolean, reason: string): Promise<void>;
   disbandGroup(id: string, reason: string): Promise<void>;
   getReports(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<ReportRecord>>;
   resolveReport(id: string, action: ReportResolutionAction, note: string): Promise<ReportResolutionResult>;

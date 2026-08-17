@@ -44,11 +44,14 @@ async function liveFixture(input: RequestInfo | URL, init?: RequestInit) {
     return response({ items: users, total: users.length });
   }
   if (url.includes('/groups/g_1/members')) return response({ items: [
-    { conversationId: 'g_1', userId: 'u_10291', name: '林夏', handle: 'linxia', role: 'owner', lastReadSeq: 1280, lastDeliveredSeq: 1280, joinedAt: '2026-08-01T08:00:00Z' },
-    { conversationId: 'g_1', userId: 'u_10288', name: '江宁', handle: 'jiangning', role: 'member', lastReadSeq: 1240, lastDeliveredSeq: 1250, joinedAt: '2026-08-02T08:00:00Z' },
+    { conversationId: 'g_1', userId: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia', role: 'owner', lastReadSeq: 1280, lastDeliveredSeq: 1280, joinedAt: '2026-08-01T08:00:00Z' },
+    { conversationId: 'g_1', userId: 'u_10288', name: '江宁', phone: '13800001002', handle: 'jiangning', role: 'member', lastReadSeq: 1240, lastDeliveredSeq: 1250, joinedAt: '2026-08-02T08:00:00Z' },
   ], total: 2 });
-  if (url.includes('/groups/g_1')) return response({ id: 'g_1', title: '产品交流群', ownerId: 'u_10291', announcement: '文明交流，保护隐私', announcementVersion: 2, joinPolicy: 'approval', allowMemberAddFriend: true, messageCount: 1280, memberCount: 1 });
-  if (url.includes('/groups')) return response({ items: [{ id: 'g_1', title: '产品交流群', owner: '林夏', memberCount: 1, messageCount: 1280, status: 'active', createdAt: '2026-08-01T08:00:00Z', reportCount: 0 }], total: 1 });
+  if (url.includes('/groups/g_1/messages/') && url.endsWith('/recall') && method === 'POST') return response({ recalled: true });
+  if (url.includes('/groups/g_1/messages') && method === 'GET') return response({ items: [{ id: '901', conversationSeq: 9, senderId: 'u_10288', sender: { id: 'u_10288', name: '江宁', phone: '13800001002', handle: 'jiangning' }, type: 'text', body: { content: '群内真实消息正文' }, createdAt: '2026-08-17T08:00:00Z', recalled: false, expired: false }], nextBeforeSeq: 0 });
+  if (url.includes('/groups/g_1/blacklist') && method === 'GET') return response({ items: [{ user: { id: 'u_blocked', name: '广告账号', phone: '13900009999' }, operatorId: 'admin_1', operatorName: '测试管理员', remark: '多次发布广告', createdAt: '2026-08-17T08:00:00Z' }] });
+  if (url.includes('/groups/g_1')) return response({ id: 'g_1', title: '产品交流群', ownerId: 'u_10291', owner: { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia' }, announcement: '文明交流，保护隐私', announcementVersion: 2, joinPolicy: 'approval', allowMemberAddFriend: true, messageCount: 1280, memberCount: 1 });
+  if (url.includes('/groups')) return response({ items: [{ id: 'g_1', title: '产品交流群', ownerId: 'u_10291', owner: { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia' }, memberCount: 1, messageCount: 1280, status: 'active', createdAt: '2026-08-01T08:00:00Z', reportCount: 0 }], total: 1 });
   if (url.includes('/sensitive-words')) return response({ items: [{ id: 'sw_1', word: '代开发票', category: '黑产', matchType: 'exact', action: 'block', createdAt: '2026-08-01T08:00:00Z' }], total: 1 });
   if (url.includes('/reports')) return response({ items: [], total: 0 });
   if (url.includes('/health')) return response({ items: [{ name: 'WuKongIM 长连接', status: 'healthy', latency: 18, uptime: '99.998%', version: 'v2.2.5', detail: '服务端探针响应正常' }] });
@@ -329,7 +332,8 @@ describe('青蛙呱呱管理后台', () => {
     const dialog = await screen.findByRole('dialog', { name: '群组详情' });
     expect(within(dialog).getByText('文明交流，保护隐私')).toBeInTheDocument();
     expect(within(dialog).getByText('群主')).toBeInTheDocument();
-    expect(within(dialog).getByText('呱呱号：linxia')).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('tab', { name: '群成员 1' }));
+    expect(within(dialog).getByText('u_10291')).toBeInTheDocument();
   });
 
   it('群成员治理提供角色、禁言和移出操作且提交审计理由', async () => {
@@ -338,6 +342,7 @@ describe('青蛙呱呱管理后台', () => {
     await screen.findByText('产品交流群');
     await userEvent.click(screen.getByRole('button', { name: '查看详情' }));
     const detail = await screen.findByRole('dialog', { name: '群组详情' });
+    await userEvent.click(within(detail).getByRole('tab', { name: '群成员 1' }));
     expect(within(detail).getByRole('button', { name: '设为管理员' })).toBeInTheDocument();
     expect(within(detail).getByRole('button', { name: '禁言 1 小时' })).toBeInTheDocument();
     expect(within(detail).getByRole('button', { name: '移出群聊' })).toBeInTheDocument();
@@ -350,6 +355,25 @@ describe('青蛙呱呱管理后台', () => {
     expect(await screen.findByText('江宁：确认禁言已完成')).toBeInTheDocument();
     const write = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).includes('/groups/g_1/members/u_10288') && init?.method === 'PATCH');
     expect(JSON.parse(String(write?.[1]?.body))).toEqual(expect.objectContaining({ action: 'mute', reason: '群内违规发言，工单 GROUP-4', confirmed: true }));
+  });
+
+  it('群详情按需加载 WuKongIM 正文，并展示发送人组件和黑名单', async () => {
+    window.history.replaceState({}, '', '/groups');
+    render(<App />);
+    await screen.findByText('产品交流群');
+    await userEvent.click(screen.getByRole('button', { name: '查看详情' }));
+    const detail = await screen.findByRole('dialog', { name: '群组详情' });
+
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes('/groups/g_1/messages'))).toBe(false);
+    await userEvent.click(within(detail).getByRole('tab', { name: /^聊天记录/ }));
+    expect(await within(detail).findByText('群内真实消息正文')).toBeInTheDocument();
+    expect(within(detail).getByText('13800001002')).toBeInTheDocument();
+    expect(within(detail).getByRole('button', { name: '删除（全端撤回）' })).toBeInTheDocument();
+
+    await userEvent.click(within(detail).getByRole('tab', { name: /^黑名单/ }));
+    expect(await within(detail).findByText('广告账号')).toBeInTheDocument();
+    expect(within(detail).getByText('多次发布广告')).toBeInTheDocument();
+    expect(within(detail).getByRole('button', { name: '解除黑名单' })).toBeInTheDocument();
   });
 
   it('消息治理可以筛选全部内置和自定义消息类型', async () => {
