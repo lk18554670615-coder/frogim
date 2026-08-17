@@ -432,6 +432,7 @@ func (x *API) routes() {
 	x.mux.Handle("GET /v2/admin/settings", x.requireAdmin(http.HandlerFunc(x.settings)))
 	x.mux.Handle("PUT /v2/admin/settings", x.requireAdmin(http.HandlerFunc(x.updateSettings)))
 	x.mux.Handle("GET /v2/admin/client-versions", x.requireAdmin(http.HandlerFunc(x.adminClientVersions)))
+	x.mux.Handle("GET /v2/admin/client-versions/{platform}/history", x.requireAdmin(http.HandlerFunc(x.adminClientVersionHistory)))
 	x.mux.Handle("PUT /v2/admin/client-versions/{platform}", x.requireAdmin(http.HandlerFunc(x.updateAdminClientVersion)))
 	x.mux.Handle("GET /v2/admin/moments", x.requireAdmin(http.HandlerFunc(x.adminMoments)))
 	x.mux.Handle("POST /v2/admin/moments/{id}/moderate", x.requireAdmin(http.HandlerFunc(x.moderateAdminMoment)))

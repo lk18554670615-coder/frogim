@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,16 @@ func (x *API) adminClientVersions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, http.StatusOK, map[string]any{"data": map[string]any{"items": items}})
+}
+
+func (x *API) adminClientVersionHistory(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, total, next, err := x.app.ListClientVersionHistory(r.Context(), r.PathValue("platform"), r.URL.Query().Get("cursor"), limit)
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	write(w, http.StatusOK, map[string]any{"items": items, "total": total, "nextCursor": next})
 }
 
 func (x *API) updateAdminClientVersion(w http.ResponseWriter, r *http.Request) {

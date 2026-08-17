@@ -302,6 +302,7 @@ func TestLegacyWebSocketRoutesAreRemoved(t *testing.T) {
 type clientVersionAPIStore struct {
 	teststore.Memory
 	policies map[string]store.ClientVersionPolicy
+	history  []store.ClientVersionReleaseRecord
 }
 
 func (s *clientVersionAPIStore) ListClientVersionPolicies(context.Context) ([]store.ClientVersionPolicy, error) {
@@ -320,10 +321,21 @@ func (s *clientVersionAPIStore) GetClientVersionPolicy(_ context.Context, platfo
 	return &policy, nil
 }
 
-func (s *clientVersionAPIStore) UpsertClientVersionPolicy(_ context.Context, policy store.ClientVersionPolicy, actor, _ string, at time.Time) (*store.ClientVersionPolicy, error) {
+func (s *clientVersionAPIStore) UpsertClientVersionPolicy(_ context.Context, policy store.ClientVersionPolicy, actor, reason string, at time.Time) (*store.ClientVersionPolicy, error) {
 	policy.UpdatedBy, policy.UpdatedAt = actor, at
 	s.policies[policy.Platform] = policy
+	s.history = append(s.history, store.ClientVersionReleaseRecord{ID: "release-" + policy.Platform, Platform: policy.Platform, MinimumVersion: policy.MinimumVersion, LatestVersion: policy.LatestVersion, ForceUpdate: policy.ForceUpdate, RolloutPercentage: policy.RolloutPercentage, ReleaseNotes: policy.ReleaseNotes, DownloadURL: policy.DownloadURL, Reason: reason, UpdatedBy: actor, UpdatedAt: at})
 	return &policy, nil
+}
+
+func (s *clientVersionAPIStore) ListClientVersionHistory(_ context.Context, platform, _ string, _ int) ([]store.ClientVersionReleaseRecord, int64, string, error) {
+	items := make([]store.ClientVersionReleaseRecord, 0, len(s.history))
+	for index := len(s.history) - 1; index >= 0; index-- {
+		if s.history[index].Platform == platform {
+			items = append(items, s.history[index])
+		}
+	}
+	return items, int64(len(items)), "", nil
 }
 
 func TestClientVersionPublicAndAdminContracts(t *testing.T) {
@@ -377,13 +389,30 @@ func TestClientVersionPublicAndAdminContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("confirmed write status=%d body=%s", response.StatusCode, body)
 	}
+	_ = response.Body.Close()
 	if repository.policies["web"].LatestVersion != "1.1.0" || repository.policies["web"].RolloutPercentage != 25 {
 		t.Fatalf("stored policy=%+v", repository.policies["web"])
+	}
+	request, _ = http.NewRequest(http.MethodGet, ts.URL+"/v2/admin/client-versions/web/history?limit=10", nil)
+	request.Header.Set("X-Admin-Key", adminKey)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var historyPayload struct {
+		Items []store.ClientVersionReleaseRecord `json:"items"`
+		Total int64                              `json:"total"`
+	}
+	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&historyPayload) != nil || historyPayload.Total != 1 || len(historyPayload.Items) != 1 {
+		t.Fatalf("history status=%d payload=%+v", response.StatusCode, historyPayload)
+	}
+	if item := historyPayload.Items[0]; item.Reason != "分批发布" || item.ReleaseNotes != "Web 更新" || item.UpdatedBy == "" {
+		t.Fatalf("history item=%+v", item)
 	}
 }
 

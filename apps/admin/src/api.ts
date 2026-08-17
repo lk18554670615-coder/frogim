@@ -7,7 +7,9 @@ import type {
   AdminSettings,
   AuditLog,
   CallRecord,
+  ClientPlatform,
   ClientVersionPolicy,
+  ClientVersionReleaseRecord,
   DashboardData,
   GroupMemberRecord,
   GroupOverview,
@@ -203,6 +205,13 @@ function serverPage<T>(payload: unknown, adapter: (value: unknown) => T, request
   return { items, page, pageSize, total, nextCursor: source.nextCursor, hasNext: Boolean(source.nextCursor) || (source.total !== undefined && page * pageSize < total) };
 }
 
+function localPageResult<T>(items: T[], requestedPage: number, requestedSize: number): PageResult<T> {
+  const page = Math.max(1, requestedPage);
+  const pageSize = Math.min(100, Math.max(1, requestedSize));
+  const start = (page - 1) * pageSize;
+  return { items: items.slice(start, start + pageSize), page, pageSize, total: items.length, hasNext: start + pageSize < items.length };
+}
+
 function adaptUser(value: unknown): UserRecord {
   const raw = object(value);
   const nickname = string(raw.nickname, string(raw.name, '未命名用户'));
@@ -282,6 +291,23 @@ function adaptClientVersion(value: unknown): ClientVersionPolicy {
     downloadUrl: string(raw.downloadUrl),
     updatedBy: string(raw.updatedBy),
     updatedAt: string(raw.updatedAt),
+  };
+}
+
+function adaptClientVersionRelease(value: unknown): ClientVersionReleaseRecord {
+  const raw = object(value);
+  const metadata = object(raw.metadata);
+  const snapshot = Object.keys(metadata).length ? {
+    ...metadata,
+    id: raw.id,
+    platform: raw.targetId,
+    updatedBy: raw.actorId,
+    updatedAt: raw.createdAt,
+  } : raw;
+  return {
+    ...adaptClientVersion(snapshot),
+    id: string(raw.id, crypto.randomUUID()),
+    reason: string(snapshot.reason, '未填写发布原因'),
   };
 }
 
@@ -772,6 +798,20 @@ function liveApi(token: string): AdminApi {
     async getSettings() { return adaptSettings(await request('/settings', token)); },
     async updateSettings(input, reason) { const { configurationStatus: _configurationStatus, infrastructure: _infrastructure, restartRequiredKeys: _restartRequiredKeys, ...runtime } = input; const payload = await request('/settings', token, { method: 'PUT', body: JSON.stringify({ ...runtime, registrationEnabled: input.allowRegistration, reason, confirmed: true }) }); return adaptSettings(payload); },
     async getClientVersions() { const source = unwrapItems(await request('/client-versions', token)); return source.items.map(adaptClientVersion); },
+    async getClientVersionHistory(platform: ClientPlatform, page = 1, pageSize = 20, cursor = '') {
+      try {
+        const payload = await request(`/client-versions/${encodeURIComponent(platform)}/history?cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token);
+        return serverPage(payload, adaptClientVersionRelease, page, pageSize);
+      } catch (cause) {
+        if (!(cause instanceof ApiError) || cause.status !== 404) throw cause;
+        const source = unwrapItems(await request('/audit-logs?q=client_version_policy.updated&status=success&limit=100', token));
+        const records = source.items
+          .map((value) => object(value))
+          .filter((value) => value.action === 'client_version_policy.updated' && value.targetId === platform)
+          .map(adaptClientVersionRelease);
+        return localPageResult(records, page, pageSize);
+      }
+    },
     async updateClientVersion(input, reason) { return adaptClientVersion(await request(`/client-versions/${encodeURIComponent(input.platform)}`, token, { method: 'PUT', body: JSON.stringify({ minimumVersion: input.minimumVersion, latestVersion: input.latestVersion, forceUpdate: input.forceUpdate, rolloutPercentage: input.rolloutPercentage, releaseNotes: input.releaseNotes, downloadUrl: input.downloadUrl, reason, confirmed: true }) })); },
     async getModerationMoments(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/moments?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptModerationMoment, page, pageSize); },
     async moderateMoment(id, status, reason) { await request(`/moments/${encodeURIComponent(id)}/moderate`, token, { method: 'POST', body: JSON.stringify({ status, reason, confirmed: true }) }); },

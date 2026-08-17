@@ -280,6 +280,11 @@ export interface ClientVersionPolicy {
   updatedAt: string;
 }
 
+export interface ClientVersionReleaseRecord extends ClientVersionPolicy {
+  id: string;
+  reason: string;
+}
+
 export interface MomentModerationRecord {
   id: string;
   authorId: string;
@@ -691,6 +696,7 @@ export interface AdminApi {
   getSettings(): Promise<AdminSettings>;
   updateSettings(settings: AdminSettings, reason: string): Promise<AdminSettings>;
   getClientVersions(): Promise<ClientVersionPolicy[]>;
+  getClientVersionHistory(platform: ClientPlatform, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<ClientVersionReleaseRecord>>;
   updateClientVersion(policy: ClientVersionPolicy, reason: string): Promise<ClientVersionPolicy>;
   getModerationMoments(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<MomentModerationRecord>>;
   moderateMoment(id: string, status: MomentModerationRecord['status'], reason: string): Promise<void>;

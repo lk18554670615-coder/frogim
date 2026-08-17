@@ -1,14 +1,14 @@
 import { Component, ErrorInfo, FormEvent, ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Activity, AlertTriangle, Bell, BookOpenCheck, Check, CheckCircle2, ChevronLeft, ChevronRight, Eye, EyeOff,
+  Activity, AlertTriangle, Bell, BookOpenCheck, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Eye, EyeOff,
   CircleUserRound, Database, FileClock, Flag, Group, HardDrive, HeartPulse, LayoutDashboard, LockKeyhole,
   LogIn, LogOut, Menu, MessageSquareText, MoreHorizontal, PhoneCall, Plus, RefreshCcw, Save, Search,
   Server, Settings, ShieldAlert, ShieldCheck, Trash2, Users, Wifi, X,
 } from 'lucide-react';
 import { ApiError, getApi, loginAdmin } from './api';
 import type {
-  AdminApi, AdminRole, AdminSession, AdminSettings, AnnouncementInput, AnnouncementRecord, AuditLog, CallRecord, ClientPlatform, ClientVersionPolicy, DashboardData, GroupMemberRecord, GroupOverview, GroupRecord,
+  AdminApi, AdminRole, AdminSession, AdminSettings, AnnouncementInput, AnnouncementRecord, AuditLog, CallRecord, ClientPlatform, ClientVersionPolicy, ClientVersionReleaseRecord, DashboardData, GroupMemberRecord, GroupOverview, GroupRecord,
   FeedbackRecord, FriendshipRecord, HealthService, MediaRecord, MessageRecord, MomentModerationRecord, OnlineRecord, OperationsStatus, PageResult, ReportRecord, ReportResolutionAction, SensitiveWord, StatusTone, StickerPackModerationRecord, UserRecord,
   StickerCategoryInput, StickerCategoryOperationsRecord, StickerItemInput, StickerPackInput,
   LiveKitMetrics, LiveKitParticipant, LiveKitRoom, WukongChannel, WukongConnection, WukongDevice, WukongNode, WukongPlugin, WukongPluginEvent, WukongPluginLogEntry, WukongRobotMenu, WukongRobotProfile, WukongStoredMessage, WukongSystemUser,
@@ -419,25 +419,49 @@ function Pagination({ data, onPage }: { data?: PageResult<unknown>; onPage: (pag
   return <nav className="pagination" aria-label="分页"><span>第 {data.page} / {pages} 页，共 {data.total} 条</span><div><button className="icon-button" aria-label="上一页" disabled={data.page <= 1} onClick={() => onPage(data.page - 1)}><ChevronLeft size={17} /></button><button className="icon-button" aria-label="下一页" disabled={!data.hasNext} onClick={() => onPage(data.page + 1)}><ChevronRight size={17} /></button></div></nav>;
 }
 
-const navItems = [
-  { to: '/overview', label: '运行概览', icon: LayoutDashboard }, { to: '/users', label: '用户管理', icon: Users },
-  { to: '/groups', label: '群组管理', icon: Group }, { to: '/reports', label: '举报审核', icon: Flag },
-  { to: '/messages', label: '消息检索', icon: MessageSquareText }, { to: '/media', label: '文件存储', icon: HardDrive },
-  { to: '/online', label: '在线状态', icon: Wifi },
-  { to: '/relationships', label: '关系与反馈', icon: Users }, { to: '/operations', label: '推送与任务', icon: Activity },
-  { to: '/announcements', label: '运营公告', icon: Bell }, { to: '/calls', label: '通话记录', icon: PhoneCall },
-  { to: '/content-moderation', label: '内容审核', icon: ShieldCheck },
-  { to: '/business-channels', label: '频道运营', icon: Group },
-  { to: '/support-workbench', label: '客服工作台', icon: MessageSquareText },
-  { to: '/im-infrastructure', label: 'IM 基础设施', icon: Server },
-  { to: '/client-versions', label: '客户端版本', icon: RefreshCcw },
-  { to: '/sensitive-words', label: '敏感词库', icon: ShieldAlert }, { to: '/system-health', label: '系统健康', icon: HeartPulse },
-  { to: '/audit', label: '审计日志', icon: FileClock }, { to: '/settings', label: '系统设置', icon: Settings },
+const overviewNavItem = { to: '/overview', label: '运行概览', icon: LayoutDashboard };
+const navGroups = [
+  {
+    id: 'business', label: '业务管理', items: [
+      { to: '/users', label: '用户管理', icon: Users },
+      { to: '/groups', label: '群组管理', icon: Group },
+      { to: '/relationships', label: '关系与反馈', icon: Users },
+      { to: '/online', label: '在线状态', icon: Wifi },
+      { to: '/calls', label: '通话记录', icon: PhoneCall },
+      { to: '/support-workbench', label: '客服工作台', icon: MessageSquareText },
+    ],
+  },
+  {
+    id: 'content', label: '内容与运营', items: [
+      { to: '/reports', label: '举报审核', icon: Flag },
+      { to: '/content-moderation', label: '内容审核', icon: ShieldCheck },
+      { to: '/messages', label: '消息检索', icon: MessageSquareText },
+      { to: '/business-channels', label: '频道运营', icon: Group },
+      { to: '/announcements', label: '运营公告', icon: Bell },
+      { to: '/sensitive-words', label: '敏感词库', icon: ShieldAlert },
+    ],
+  },
+  {
+    id: 'platform', label: '平台运维', items: [
+      { to: '/media', label: '文件存储', icon: HardDrive },
+      { to: '/operations', label: '推送与任务', icon: Activity },
+      { to: '/im-infrastructure', label: 'IM 基础设施', icon: Server },
+      { to: '/client-versions', label: '客户端版本', icon: RefreshCcw },
+      { to: '/system-health', label: '系统健康', icon: HeartPulse },
+    ],
+  },
+  {
+    id: 'system', label: '安全与设置', items: [
+      { to: '/audit', label: '审计日志', icon: FileClock },
+      { to: '/settings', label: '系统设置', icon: Settings },
+    ],
+  },
 ];
 
 function Shell() {
   const { session, logout } = useApi();
   const [navOpen, setNavOpen] = useState(false);
+  const [expandedNavGroups, setExpandedNavGroups] = useState<Record<string, boolean>>(() => Object.fromEntries(navGroups.map((group) => [group.id, false])));
   const [unsavedMessage, setUnsavedMessage] = useState<string>();
   const [pendingExit, setPendingExit] = useState<PendingExit>();
   const compactNavigation = useCompactNavigation();
@@ -445,6 +469,10 @@ function Shell() {
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const previousOverflow = useRef('');
   const { path, navigate } = usePath(() => !unsavedMessage || window.confirm(`${unsavedMessage}，确定离开当前页面吗？`));
+  const activeGroupId = navGroups.find((group) => group.items.some((item) => item.to === path))?.id;
+  useEffect(() => {
+    if (activeGroupId) setExpandedNavGroups((current) => current[activeGroupId] ? current : { ...current, [activeGroupId]: true });
+  }, [activeGroupId]);
   const requestNavigate = (to: string) => {
     if (to === path) return;
     if (unsavedMessage) { setPendingExit({ kind: 'navigate', to }); return; }
@@ -492,7 +520,17 @@ function Shell() {
     {compactNavigation && navOpen && <button aria-label="关闭导航" className="nav-scrim" onClick={() => setNavOpen(false)} />}
     <aside ref={sidebarRef} id="admin-navigation" className={`sidebar ${navOpen ? 'open' : ''}`} aria-label="运营控制台导航" onKeyDown={navigationKeyDown}>
       <div className="brand"><div className="brand-mark"><img src="/qingwaguagua-mark.png" alt="" /></div><div><strong>青蛙呱呱</strong><span>运营控制台</span></div></div>
-      <nav aria-label="主导航">{navItems.map((item) => <AppLink key={item.to} to={item.to} currentPath={path} navigate={requestNavigate} className="nav-item"><item.icon size={18} /><span>{item.label}</span></AppLink>)}</nav>
+      <nav aria-label="主导航">
+        <AppLink to={overviewNavItem.to} currentPath={path} navigate={requestNavigate} className="nav-item nav-overview"><overviewNavItem.icon size={18} /><span>{overviewNavItem.label}</span></AppLink>
+        {navGroups.map((group) => {
+          const expanded = Boolean(expandedNavGroups[group.id]);
+          const hasActive = group.id === activeGroupId;
+          return <section className="nav-section" key={group.id}>
+            <button type="button" className={`nav-section-toggle ${hasActive ? 'has-active' : ''}`} aria-expanded={expanded} aria-controls={`nav-group-${group.id}`} onClick={() => setExpandedNavGroups((current) => ({ ...current, [group.id]: !expanded }))}><span>{group.label}</span><ChevronDown size={14} /></button>
+            <div id={`nav-group-${group.id}`} className="nav-section-items" hidden={!expanded}>{group.items.map((item) => <AppLink key={item.to} to={item.to} currentPath={path} navigate={requestNavigate} className="nav-item"><item.icon size={18} /><span>{item.label}</span></AppLink>)}</div>
+          </section>;
+        })}
+      </nav>
       <div className="sidebar-foot"><div className="admin-avatar">{[...session.displayName][0]}</div><div><strong>{session.displayName}</strong><span>{roleLabels[session.role]}</span></div><button className="icon-button sidebar-logout" aria-label="退出管理后台" title="退出登录" onClick={requestLogout}><LogOut size={17} /></button></div>
     </aside>
     <div className="workspace">
@@ -1252,7 +1290,16 @@ function ClientVersionsPage() {
   const [pendingPlatform, setPendingPlatform] = useState<ClientPlatform>();
   const [confirming, setConfirming] = useState(false);
   const [reason, setReason] = useState('');
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyCursors, setHistoryCursors] = useState<Record<number, string>>({ 1: '' });
   const [validationError, setValidationError] = useState('');
+  const history = useResource(
+    () => historyOpen
+      ? api.getClientVersionHistory(selected, historyPage, 10, historyCursors[historyPage] ?? '')
+      : Promise.resolve({ items: [], page: 1, pageSize: 10, total: 0, hasNext: false } satisfies PageResult<ClientVersionReleaseRecord>),
+    [api, mode, historyOpen, selected, historyPage, historyCursors],
+  );
   const configuredPolicy = state.data?.find((item) => item.platform === selected);
   const hasServerPolicy = Boolean(configuredPolicy);
   useEffect(() => {
@@ -1261,10 +1308,12 @@ function ClientVersionsPage() {
     setBaseline(next);
     setDraftTouched(false);
   }, [configuredPolicy, selected]);
+  useEffect(() => { setHistoryPage(1); setHistoryCursors({ 1: '' }); }, [selected]);
   const dirty = draftTouched && JSON.stringify(draft) !== JSON.stringify(baseline);
   useUnsavedChanges(dirty, `${clientPlatformLabels[selected]}版本策略有未发布的修改`);
   const selectPlatform = (platform: ClientPlatform) => { if (platform === selected) return; if (dirty) { setPendingPlatform(platform); return; } setSelected(platform); };
   const change = <K extends keyof ClientVersionPolicy>(key: K, value: ClientVersionPolicy[K]) => { setValidationError(''); setDraftTouched(true); setDraft((current) => ({ ...current, [key]: value })); };
+  const paginateHistory = (nextPage: number) => { if (nextPage > historyPage && history.data?.nextCursor) setHistoryCursors((current) => ({ ...current, [nextPage]: history.data?.nextCursor ?? '' })); setHistoryPage(nextPage); };
   const openConfirmation = () => {
     const issue = clientVersionPolicyError(draft);
     if (issue) { setValidationError(issue); return; }
@@ -1274,11 +1323,23 @@ function ClientVersionsPage() {
     const issue = clientVersionPolicyError(draft);
     if (issue) throw new Error(issue);
     const updated = await api.updateClientVersion(draft, reason.trim());
-    setDraft(updated); setBaseline(updated); setDraftTouched(false); setReason(''); await state.reload(); notify(`${clientPlatformLabels[selected]} 版本策略已发布`);
+    setDraft(updated); setBaseline(updated); setDraftTouched(false); setReason(''); await state.reload(); if (historyOpen) await history.reload(); notify(`${clientPlatformLabels[selected]} 版本策略已发布`);
   };
-  return <><PageHeader title="客户端版本" description="分别控制四端最低版本、可选或强制更新、稳定灰度比例及下载入口。最低版本限制始终覆盖灰度。" actions={<button className="button secondary" onClick={() => void state.reload()}><RefreshCcw size={15} />刷新策略</button>} />
+  return <><PageHeader title="客户端版本" description="分别控制四端最低版本、可选或强制更新、稳定灰度比例及下载入口。最低版本限制始终覆盖灰度。" actions={<><button className={`button secondary ${historyOpen ? 'active' : ''}`} aria-expanded={historyOpen} onClick={() => setHistoryOpen((value) => !value)}><FileClock size={15} />发布历史</button><button className="button secondary" onClick={() => { void state.reload(); if (historyOpen) void history.reload(); }}><RefreshCcw size={15} />刷新策略</button></>} />
     {state.loading ? <Skeleton rows={6} /> : state.error ? <ErrorState message={state.error} retry={state.reload} /> : <>
       <div className="tabs" role="tablist" aria-label="客户端平台" onKeyDown={tabListKeyDown}>{clientPlatforms.map((platform) => <button type="button" role="tab" tabIndex={selected === platform ? 0 : -1} aria-selected={selected === platform} className={selected === platform ? 'active' : ''} key={platform} onClick={() => selectPlatform(platform)}>{clientPlatformLabels[platform]}</button>)}</div>
+      {historyOpen && <section className="version-history" aria-label={`${clientPlatformLabels[selected]} 发布历史`}>
+        <div className="version-history-title"><div><FileClock size={20} /><div><h2>{clientPlatformLabels[selected]} 发布历史</h2><p>按发布时间倒序展示，历史记录不会被后续策略覆盖。</p></div></div><button className="icon-button" aria-label="关闭发布历史" onClick={() => setHistoryOpen(false)}><X size={18} /></button></div>
+        {history.loading ? <Skeleton rows={3} /> : history.error ? <ErrorState message={history.error} retry={history.reload} /> : !history.data?.items.length ? <EmptyState title="还没有发布记录" detail={`首次发布 ${clientPlatformLabels[selected]} 版本策略后，记录会显示在这里。`} /> : <>
+          <div className="version-history-list">{history.data.items.map((item) => <article className="version-history-item" key={item.id}>
+            <div className="version-history-head"><div><strong>v{item.latestVersion}</strong><span>{dateTimeLabel(item.updatedAt)} · {item.updatedBy || '系统'}</span></div><span className={`release-kind ${item.forceUpdate ? 'force' : ''}`}>{item.forceUpdate ? '强制更新' : '可选更新'}</span></div>
+            <dl className="version-history-meta"><div><dt>最低支持</dt><dd>v{item.minimumVersion}</dd></div><div><dt>灰度比例</dt><dd>{item.rolloutPercentage}%</dd></div><div><dt>下载地址</dt><dd>{item.downloadUrl ? <a href={item.downloadUrl} target="_blank" rel="noreferrer">打开链接</a> : '未配置'}</dd></div></dl>
+            <div className="version-history-copy"><span>发布原因</span><p>{item.reason || '早期记录未保存发布原因'}</p></div>
+            <div className="version-history-copy"><span>更新说明</span><p>{item.releaseNotes || '早期记录未保存更新说明'}</p></div>
+          </article>)}</div>
+          <Pagination data={history.data} onPage={paginateHistory} />
+        </>}
+      </section>}
       <div className="settings-layout"><div className="settings-main"><section className="settings-section">
         <div className="settings-title"><RefreshCcw size={20} /><div><h2>{clientPlatformLabels[selected]} 发布策略</h2><p>版本号使用 1、1.2、1.2.3 或 1.2.3.4 格式；下载地址必须是 HTTPS。</p></div></div>
         {!hasServerPolicy && <div className="inline-notice warning" role="status"><AlertTriangle size={15} />服务端尚未配置 {clientPlatformLabels[selected]} 版本策略；以下内容仅是本地新建草稿，不是线上数据。</div>}

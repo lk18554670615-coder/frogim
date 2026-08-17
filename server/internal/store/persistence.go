@@ -1233,10 +1233,30 @@ type ClientVersionPolicy struct {
 	UpdatedAt         time.Time `json:"updatedAt"`
 }
 
+// ClientVersionReleaseRecord is an immutable policy snapshot reconstructed
+// from the audit entry written in the same transaction as a release.
+type ClientVersionReleaseRecord struct {
+	ID                string    `json:"id"`
+	Platform          string    `json:"platform"`
+	MinimumVersion    string    `json:"minimumVersion"`
+	LatestVersion     string    `json:"latestVersion"`
+	ForceUpdate       bool      `json:"forceUpdate"`
+	RolloutPercentage int       `json:"rolloutPercentage"`
+	ReleaseNotes      string    `json:"releaseNotes"`
+	DownloadURL       string    `json:"downloadUrl"`
+	Reason            string    `json:"reason"`
+	UpdatedBy         string    `json:"updatedBy"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+}
+
 type ClientVersionPolicyStore interface {
 	ListClientVersionPolicies(context.Context) ([]ClientVersionPolicy, error)
 	GetClientVersionPolicy(context.Context, string) (*ClientVersionPolicy, error)
 	UpsertClientVersionPolicy(context.Context, ClientVersionPolicy, string, string, time.Time) (*ClientVersionPolicy, error)
+}
+
+type ClientVersionHistoryStore interface {
+	ListClientVersionHistory(context.Context, string, string, int) ([]ClientVersionReleaseRecord, int64, string, error)
 }
 
 var allowRateScript = redis.NewScript(`
@@ -1303,6 +1323,13 @@ func (p *WithRedis) UpsertClientVersionPolicy(ctx context.Context, policy Client
 		return s.UpsertClientVersionPolicy(ctx, policy, actor, reason, at)
 	}
 	return nil, ErrUnsupported
+}
+
+func (p *WithRedis) ListClientVersionHistory(ctx context.Context, platform, cursor string, limit int) ([]ClientVersionReleaseRecord, int64, string, error) {
+	if s, ok := p.base.(ClientVersionHistoryStore); ok {
+		return s.ListClientVersionHistory(ctx, platform, cursor, limit)
+	}
+	return nil, 0, "", ErrUnsupported
 }
 
 type MutationStore interface {

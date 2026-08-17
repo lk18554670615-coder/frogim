@@ -364,6 +364,7 @@ CREATE INDEX IF NOT EXISTS im_reports_queue_idx ON im_reports(status,created_at)
 CREATE TABLE IF NOT EXISTS im_audits(id text PRIMARY KEY,actor_id text NOT NULL,action text NOT NULL,target_type text NOT NULL,target_id text NOT NULL,metadata jsonb NOT NULL,created_at timestamptz NOT NULL);
 ALTER TABLE im_audits ADD COLUMN IF NOT EXISTS result text NOT NULL DEFAULT 'success';
 ALTER TABLE im_audits ADD COLUMN IF NOT EXISTS ip text NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS im_audits_action_target_created_idx ON im_audits(action,target_type,target_id,created_at DESC,id DESC);
 CREATE TABLE IF NOT EXISTS im_sensitive_words(id text PRIMARY KEY,value text NOT NULL);
 CREATE TABLE IF NOT EXISTS im_settings(key text PRIMARY KEY,value jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS im_devices(id text PRIMARY KEY,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,platform text NOT NULL,provider text NOT NULL,push_token text NOT NULL,notifications_enabled boolean NOT NULL DEFAULT true,preview_enabled boolean NOT NULL DEFAULT true,sound_enabled boolean NOT NULL DEFAULT true,vibration_enabled boolean NOT NULL DEFAULT true,updated_at timestamptz NOT NULL DEFAULT now(),UNIQUE(provider,push_token));

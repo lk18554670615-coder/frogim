@@ -113,6 +113,22 @@ func (a *App) ListClientVersionPolicies(ctx context.Context) ([]store.ClientVers
 	return items, nil
 }
 
+func (a *App) ListClientVersionHistory(ctx context.Context, platform, cursor string, limit int) ([]store.ClientVersionReleaseRecord, int64, string, error) {
+	platform = normalizeClientPlatform(platform)
+	if !supportedClientPlatforms[platform] {
+		return nil, 0, "", ErrInvalid
+	}
+	history, ok := a.persistence.(store.ClientVersionHistoryStore)
+	if !ok {
+		return []store.ClientVersionReleaseRecord{}, 0, "", nil
+	}
+	items, total, next, err := history.ListClientVersionHistory(ctx, platform, cursor, limit)
+	if err != nil {
+		return nil, 0, "", mapStoreError(err)
+	}
+	return items, total, next, nil
+}
+
 func (a *App) UpdateClientVersionPolicy(ctx context.Context, policy store.ClientVersionPolicy, actor, reason string, at time.Time) (*store.ClientVersionPolicy, error) {
 	policy.Platform = normalizeClientPlatform(policy.Platform)
 	policy.MinimumVersion = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(policy.MinimumVersion), "v"))

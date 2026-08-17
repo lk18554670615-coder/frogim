@@ -149,6 +149,17 @@ describe('青蛙呱呱管理后台', () => {
     expect(localStorage.getItem('nexachat_data_mode')).toBeNull();
   });
 
+  it('按业务域组织侧栏并自动展开当前页面分组', async () => {
+    window.history.replaceState({}, '', '/system-health');
+    render(<App />);
+    const navigation = screen.getByRole('navigation', { name: '主导航' });
+    expect(within(navigation).getByRole('link', { name: '运行概览' })).toBeInTheDocument();
+    expect(within(navigation).getByRole('button', { name: '平台运维' })).toHaveAttribute('aria-expanded', 'true');
+    expect(within(navigation).getByRole('button', { name: '业务管理' })).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.click(within(navigation).getByRole('button', { name: '业务管理' }));
+    expect(within(navigation).getByRole('button', { name: '业务管理' })).toHaveAttribute('aria-expanded', 'true');
+  });
+
   it('窄屏侧栏关闭时不可聚焦，打开后支持 Escape 并把焦点还给菜单按钮', async () => {
     vi.stubGlobal('matchMedia', vi.fn(() => ({
       matches: true,
@@ -941,6 +952,26 @@ describe('青蛙呱呱管理后台', () => {
     await user.click(screen.getByRole('button', { name: '放弃更改并切换' }));
     expect(screen.getByRole('tab', { name: 'iOS' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByLabelText('更新说明')).toHaveValue('');
+  });
+
+  it('按平台展示客户端发布历史的完整策略快照', async () => {
+    const policy = { platform: 'android', minimumVersion: '1.0.0', latestVersion: '1.2.0', forceUpdate: false, rolloutPercentage: 100, releaseNotes: '修复消息同步', downloadUrl: 'https://download.example.com/app.apk', updatedBy: 'ops-admin', updatedAt: '2026-08-17T01:57:00Z' };
+    const release = { ...policy, id: 'release-1', reason: '发布单 REL-1025' };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/client-versions/android/history')) return response({ items: [release], total: 1 });
+      if (url.includes('/client-versions')) return response({ items: [policy] });
+      return liveFixture(input);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.replaceState({}, '', '/client-versions');
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: '发布历史' }));
+    expect(await screen.findByText('v1.2.0')).toBeInTheDocument();
+    expect(screen.getByText('发布单 REL-1025')).toBeInTheDocument();
+    expect(screen.getAllByText('修复消息同步')).toHaveLength(2);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/client-versions/android/history'))).toBe(true);
   });
 
   it('群通话记录展示完整参与状态和友好失败原因', async () => {

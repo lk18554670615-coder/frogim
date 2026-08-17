@@ -3168,8 +3168,10 @@ func TestClientVersionPoliciesAreDurableAndAudited(t *testing.T) {
 	}
 	defer p.Close()
 	_, _ = p.pool.Exec(ctx, `DELETE FROM im_client_version_policies WHERE platform='web'`)
+	_, _ = p.pool.Exec(ctx, `DELETE FROM im_audits WHERE action='client_version_policy.updated' AND target_id='web' AND actor_id='admin-version-test'`)
 	t.Cleanup(func() {
 		_, _ = p.pool.Exec(ctx, `DELETE FROM im_client_version_policies WHERE platform='web'`)
+		_, _ = p.pool.Exec(ctx, `DELETE FROM im_audits WHERE action='client_version_policy.updated' AND target_id='web' AND actor_id='admin-version-test'`)
 	})
 	at := time.Now().UTC()
 	policy, err := p.UpsertClientVersionPolicy(ctx, ClientVersionPolicy{
@@ -3201,6 +3203,13 @@ func TestClientVersionPoliciesAreDurableAndAudited(t *testing.T) {
 	var auditCount int
 	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_audits WHERE action='client_version_policy.updated' AND target_id='web' AND metadata->>'reason'='分批发布'`).Scan(&auditCount); err != nil || auditCount < 1 {
 		t.Fatalf("audit count=%d err=%v", auditCount, err)
+	}
+	history, total, next, err := p.ListClientVersionHistory(ctx, "web", "", 10)
+	if err != nil || total != 1 || next != "" || len(history) != 1 {
+		t.Fatalf("history=%+v total=%d next=%q err=%v", history, total, next, err)
+	}
+	if item := history[0]; item.LatestVersion != "1.4.0" || item.ReleaseNotes != "可靠性更新" || item.Reason != "分批发布" || item.UpdatedBy != "admin-version-test" {
+		t.Fatalf("unexpected history item: %+v", item)
 	}
 }
 

@@ -54,6 +54,40 @@ func (p *Postgres) GetClientVersionPolicy(ctx context.Context, platform string) 
 	return policy, err
 }
 
+func (p *Postgres) ListClientVersionHistory(ctx context.Context, platform, cursor string, limit int) ([]ClientVersionReleaseRecord, int64, string, error) {
+	offset, limit := pageOffset(cursor, limit)
+	var total int64
+	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_audits WHERE action='client_version_policy.updated' AND target_type='client_version_policy' AND target_id=$1`, platform).Scan(&total); err != nil {
+		return nil, 0, "", err
+	}
+	rows, err := p.pool.Query(ctx, `
+		SELECT id,target_id,
+		 COALESCE(metadata->>'minimumVersion',''),COALESCE(metadata->>'latestVersion',''),
+		 COALESCE((metadata->>'forceUpdate')::boolean,false),COALESCE(NULLIF(metadata->>'rolloutPercentage','')::int,100),
+		 COALESCE(metadata->>'releaseNotes',''),COALESCE(metadata->>'downloadUrl',''),COALESCE(metadata->>'reason',''),
+		 actor_id,created_at
+		FROM im_audits
+		WHERE action='client_version_policy.updated' AND target_type='client_version_policy' AND target_id=$1
+		ORDER BY created_at DESC,id DESC LIMIT $2 OFFSET $3
+	`, platform, limit, offset)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	defer rows.Close()
+	items := make([]ClientVersionReleaseRecord, 0, limit)
+	for rows.Next() {
+		item := ClientVersionReleaseRecord{}
+		if err = rows.Scan(&item.ID, &item.Platform, &item.MinimumVersion, &item.LatestVersion, &item.ForceUpdate, &item.RolloutPercentage, &item.ReleaseNotes, &item.DownloadURL, &item.Reason, &item.UpdatedBy, &item.UpdatedAt); err != nil {
+			return nil, 0, "", err
+		}
+		items = append(items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, 0, "", err
+	}
+	return items, total, nextPageCursor(offset, len(items), total), nil
+}
+
 func (p *Postgres) UpsertClientVersionPolicy(ctx context.Context, policy ClientVersionPolicy, actor, reason string, at time.Time) (*ClientVersionPolicy, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -88,6 +122,7 @@ func (p *Postgres) UpsertClientVersionPolicy(ctx context.Context, policy ClientV
 		"latestVersion":     policy.LatestVersion,
 		"forceUpdate":       policy.ForceUpdate,
 		"rolloutPercentage": policy.RolloutPercentage,
+		"releaseNotes":      policy.ReleaseNotes,
 		"downloadUrl":       policy.DownloadURL,
 	})
 	if _, err = tx.Exec(ctx, `

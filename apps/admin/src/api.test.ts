@@ -176,6 +176,17 @@ describe('live API adapter', () => {
     await expect(getApi('token').getClientVersions()).rejects.toThrow('缺少有效平台');
   });
 
+  it('新历史接口未上线时从真实审计记录读取发布快照', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/client-versions/android/history')) return { ok: false, status: 404, headers: new Headers(), json: async () => ({ error: { code: 'NOT_FOUND', message: '接口未上线' } }) };
+      return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ id: 'audit-release-1', actorId: 'ops', action: 'client_version_policy.updated', targetType: 'client_version_policy', targetId: 'android', metadata: { minimumVersion: '1.0.0', latestVersion: '1.2.0', forceUpdate: false, rolloutPercentage: 50, releaseNotes: '发布说明', downloadUrl: 'https://download.example.com/app.apk', reason: '灰度发布' }, createdAt: '2026-08-17T00:00:00Z' }] }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const page = await getApi('token').getClientVersionHistory('android');
+    expect(page.items).toEqual([expect.objectContaining({ id: 'audit-release-1', platform: 'android', latestVersion: '1.2.0', rolloutPercentage: 50, reason: '灰度发布', updatedBy: 'ops' })]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('审核朋友圈时携带目标状态、原因和显式确认', async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => ({ ok: true, status: 200, headers: new Headers(), json: async () => ({ id: 'moment_1', status: 'hidden' }) }));
     vi.stubGlobal('fetch', fetchMock);
