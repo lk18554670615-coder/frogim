@@ -3238,6 +3238,14 @@ func applyModelMessageExtension(message *model.Message, extension map[string]any
 	if body, ok := extension["editedBody"].(map[string]any); ok {
 		message.Body = body
 	}
+	message.AdminRecall, _ = extension["adminRecall"].(bool)
+	message.ModeratedBy, _ = extension["moderatedBy"].(string)
+	message.ModerationReason, _ = extension["moderationReason"].(string)
+	if value, ok := extension["moderatedAt"].(string); ok {
+		if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+			message.ModeratedAt = &parsed
+		}
+	}
 	message.Reactions = nil
 	if reactions, ok := extension["reactions"].([]map[string]any); ok {
 		for _, reaction := range reactions {

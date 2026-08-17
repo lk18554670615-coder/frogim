@@ -27,11 +27,14 @@ async function liveFixture(input: RequestInfo | URL, init?: RequestInit) {
     channelMix: [{ label: '单聊', value: 72, color: 'var(--primary)' }, { label: '群聊', value: 28, color: 'var(--info)' }],
     alerts: [], activity: [],
   });
-  if (url.includes('/users/u_10291/friends')) return response({ items: [{ id: 'u_10288', name: '江宁', handle: 'jiangning', remark: '产品同事', createdAt: '2026-08-02T08:00:00Z' }] });
-  if (url.includes('/users/u_10291/blocks')) return response({ items: [{ id: 'u_blocked', name: '被屏蔽用户', handle: 'blocked-user', createdAt: '2026-08-03T08:00:00Z' }] });
-  if (url.includes('/users/u_10291/devices')) return response({ items: [{ id: 'device_android_1', userId: 'u_10291', platform: 'android', provider: 'fcm', notificationsEnabled: true, previewEnabled: false, soundEnabled: true, vibrationEnabled: true, updatedAt: '2026-08-16T08:00:00Z' }] });
+  if (url.includes('/users/u_10291/friends/u_10288/messages/') && url.endsWith('/recall') && method === 'POST') return response({ recalled: true, conversationId: 'conv_direct_1', conversationSeq: 8 });
+  if (url.includes('/users/u_10291/friends/u_10288/messages')) return response({ conversationId: 'conv_direct_1', participants: { u_10291: { id: 'u_10291', name: '林夏' }, u_10288: { id: 'u_10288', name: '江宁' } }, items: [{ id: '88', clientMsgId: 'client-88', conversationId: 'conv_direct_1', conversationSeq: 8, senderId: 'u_10288', sender: { id: 'u_10288', name: '江宁' }, type: 'text', body: { content: '需要管理员检查的消息' }, createdAt: '2026-08-17T08:00:00Z', encrypted: false, deleted: false, adminRecall: false }], nextBeforeSeq: 0 });
+  if (url.endsWith('/users/u_10291/friends')) return response({ items: [{ user: { id: 'u_10288', name: '江宁', handle: 'jiangning', phone: '13800001002' }, remark: '产品同事', tags: ['产品'], relationshipCreatedAt: '2026-08-02T08:00:00Z', relationshipUpdatedAt: '2026-08-12T08:00:00Z' }] });
+  if (url.includes('/users/u_10291/blocks')) return response({ items: [{ user: { id: 'u_blocked', name: '被屏蔽用户', handle: 'blocked-user' }, remark: '旧备注', blockedAt: '2026-08-03T08:00:00Z' }] });
+  if (url.includes('/users/u_10291/devices')) return response({ items: [{ userId: 'u_10291', installationId: 'install_android_1', platform: 'android', deviceName: 'Pixel 9', deviceModel: 'tokay', osVersion: 'Android 16', appVersion: '1.0.0', firstSeenAt: '2026-08-15T08:00:00Z', lastSeenAt: '2026-08-16T08:00:00Z' }], pushRegistrations: [{ id: 'device_android_1', userId: 'u_10291', platform: 'android', provider: 'fcm', notificationsEnabled: true, previewEnabled: false, soundEnabled: true, vibrationEnabled: true, updatedAt: '2026-08-16T08:00:00Z' }] });
   if (url.includes('/users/u_10291/system-message') && method === 'POST') return response({ targetUid: 'u_10291', senderUid: 'u_notice', conversationId: 'conv_notice_1', messageId: 1001, clientMsgNo: 'admin-notice-1' }, 201);
   if (url.includes('/users/u_10291')) return response({ user: { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia', signature: '在青蛙呱呱保持联系', gender: 'female', handleChangeCount: 1, online: true, onlineConnections: 2, createdAt: '2026-08-01T08:00:00Z' }, deviceCount: 2, friendCount: 18, groupCount: 4, handleChangesUsed: 1, handleChangesRemaining: 1 });
+  if (url.endsWith('/users') && method === 'POST') return response({ item: { id: 'u_created', name: '新建账号', phone: '13900139000', handle: 'gg_created', gender: 'female', status: 'active', createdAt: '2026-08-17T08:00:00Z' } }, 201);
   if (url.includes('/users')) {
     const query = new URL(url, 'http://localhost').searchParams.get('q') ?? '';
     const users = [
@@ -213,7 +216,7 @@ describe('青蛙呱呱管理后台', () => {
       });
       return liveFixture(input, init);
     }));
-    window.history.replaceState({}, '', '/relationships');
+    window.history.replaceState({}, '', '/feedback');
 
     render(<App />);
 
@@ -266,8 +269,42 @@ describe('青蛙呱呱管理后台', () => {
     expect(await within(dialog).findByText('产品同事')).toBeInTheDocument();
     await userEvent.click(within(dialog).getByRole('tab', { name: '黑名单 1' }));
     expect(await within(dialog).findByText('被屏蔽用户')).toBeInTheDocument();
-    await userEvent.click(within(dialog).getByRole('tab', { name: '登录设备 2' }));
-    expect(await within(dialog).findByText('device_android_1')).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('tab', { name: '设备 2' }));
+    expect(await within(dialog).findByText('install_android_1')).toBeInTheDocument();
+    expect(within(dialog).getByText('device_android_1')).toBeInTheDocument();
+  });
+
+  it('新增用户固定中国区号并提交完整资料与审计理由', async () => {
+    window.history.replaceState({}, '', '/users/new'); render(<App />);
+    expect(await screen.findByRole('heading', { name: '新增用户' })).toBeInTheDocument();
+    expect(screen.getByText('+86')).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText('中国大陆手机号'), '13900139000');
+    await userEvent.type(screen.getByLabelText('昵称'), '新建账号');
+    await userEvent.selectOptions(screen.getByLabelText('性别'), 'female');
+    await userEvent.type(screen.getByLabelText('初始密码'), 'StrongPass123!');
+    await userEvent.type(screen.getByLabelText('操作理由'), '运营工单 USER-9');
+    await userEvent.click(screen.getByRole('button', { name: '创建用户' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/users'));
+    const write = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith('/users') && init?.method === 'POST');
+    expect(JSON.parse(String(write?.[1]?.body))).toEqual({ phone: '13900139000', name: '新建账号', password: 'StrongPass123!', gender: 'female', reason: '运营工单 USER-9', confirmed: true });
+  });
+
+  it('好友聊天记录展示真实正文并要求理由后管理员撤回', async () => {
+    window.history.replaceState({}, '', '/users'); render(<App />); await screen.findByText('林夏');
+    await userEvent.click(screen.getAllByRole('button', { name: '查看详情' })[0]);
+    const detail = await screen.findByRole('dialog', { name: '用户详情' });
+    await userEvent.click(within(detail).getByRole('tab', { name: '好友 18' }));
+    await userEvent.click(await within(detail).findByRole('button', { name: '聊天记录' }));
+    const history = await screen.findByRole('dialog', { name: '林夏 与 江宁 的聊天记录' });
+    expect(await within(history).findByText('需要管理员检查的消息')).toBeInTheDocument();
+    await userEvent.click(within(history).getByRole('button', { name: '撤回' }));
+    const recall = await screen.findByRole('dialog', { name: '管理员撤回消息' });
+    expect(within(recall).getByRole('button', { name: '确认全端撤回' })).toBeDisabled();
+    await userEvent.type(within(recall).getByLabelText('撤回理由'), '违规内容复核确认');
+    await userEvent.click(within(recall).getByRole('button', { name: '确认全端撤回' }));
+    expect(await screen.findByText('消息已全端撤回并写入审计')).toBeInTheDocument();
+    const write = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith('/messages/88/recall') && init?.method === 'POST');
+    expect(JSON.parse(String(write?.[1]?.body))).toEqual({ reason: '违规内容复核确认', confirmed: true });
   });
 
   it('通过真实 WuKongIM 接口发送系统消息并携带审计理由', async () => {
@@ -281,7 +318,7 @@ describe('青蛙呱呱管理后台', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: '确认发送' }));
     expect(await screen.findByText('系统消息已发送给 林夏')).toBeInTheDocument();
     const write = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).includes('/users/u_10291/system-message') && init?.method === 'POST');
-    expect(JSON.parse(String(write?.[1]?.body))).toEqual({ content: '请及时更新客户端', reason: '版本升级通知 OPS-18', confirmed: true });
+    expect(JSON.parse(String(write?.[1]?.body))).toEqual({ senderUid: 'u_notice', content: '请及时更新客户端', reason: '版本升级通知 OPS-18', confirmed: true });
   });
 
   it('展示群资料和服务端群成员列表', async () => {

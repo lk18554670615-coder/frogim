@@ -54,6 +54,40 @@ type AdminQueryStore interface {
 	ListAdminMessages(context.Context, string, string, string, int) ([]*model.Message, int64, string, error)
 	ListAdminMedia(context.Context, string, string, string, int) ([]*model.Media, int64, string, error)
 }
+type AdminUserRelation struct {
+	User                  *model.User `json:"user"`
+	Remark                string      `json:"remark"`
+	Tags                  []string    `json:"tags"`
+	RelationshipCreatedAt time.Time   `json:"relationshipCreatedAt"`
+	RelationshipUpdatedAt time.Time   `json:"relationshipUpdatedAt"`
+}
+type AdminUserBlock struct {
+	User      *model.User `json:"user"`
+	Remark    string      `json:"remark"`
+	BlockedAt time.Time   `json:"blockedAt"`
+}
+type ClientDevice struct {
+	UserID         string    `json:"userId,omitempty"`
+	InstallationID string    `json:"installationId"`
+	Platform       string    `json:"platform"`
+	DeviceName     string    `json:"deviceName"`
+	DeviceModel    string    `json:"deviceModel"`
+	OSVersion      string    `json:"osVersion"`
+	AppVersion     string    `json:"appVersion"`
+	FirstSeenAt    time.Time `json:"firstSeenAt"`
+	LastSeenAt     time.Time `json:"lastSeenAt"`
+}
+type AdminUserManagementStore interface {
+	CreateAdminPasswordUser(context.Context, string, string, string, string, string, string, string, time.Time) (*model.User, error)
+	ListAdminUserFriends(context.Context, string) ([]AdminUserRelation, error)
+	ListAdminUserBlocks(context.Context, string) ([]AdminUserBlock, error)
+	FindDirectConversation(context.Context, string, string) (*model.Conversation, error)
+	AdminRecallWukongMessage(context.Context, string, string, string, string, string, time.Time) (bool, string, int64, []string, error)
+}
+type ClientDeviceStore interface {
+	UpsertClientDevice(context.Context, string, ClientDevice) (*ClientDevice, error)
+	ListClientDevices(context.Context, string) ([]ClientDevice, error)
+}
 type AdminFriendship struct {
 	UserID, FriendUserID, UserName, FriendName string
 	CreatedAt, UpdatedAt                       time.Time

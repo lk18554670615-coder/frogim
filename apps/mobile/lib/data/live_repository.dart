@@ -685,6 +685,23 @@ class LiveImRepository
   }).then((_) {});
 
   @override
+  Future<void> registerClientDevice({
+    required String installationId,
+    required String platform,
+    required String deviceName,
+    required String deviceModel,
+    required String osVersion,
+    required String appVersion,
+  }) => _sendRequest('PUT', '/v2/users/me/client-device', {
+    'installationId': installationId,
+    'platform': platform,
+    'deviceName': deviceName,
+    'deviceModel': deviceModel,
+    'osVersion': osVersion,
+    'appVersion': appVersion,
+  }).then((_) {});
+
+  @override
   Future<void> removeUserDevice(String deviceId) => _sendRequest(
     'DELETE',
     '/v2/users/me/devices/${Uri.encodeComponent(deviceId)}',
@@ -3978,6 +3995,22 @@ class ResilientImRepository
     previewEnabled: previewEnabled,
     soundEnabled: soundEnabled,
     vibrationEnabled: vibrationEnabled,
+  );
+  @override
+  Future<void> registerClientDevice({
+    required String installationId,
+    required String platform,
+    required String deviceName,
+    required String deviceModel,
+    required String osVersion,
+    required String appVersion,
+  }) => _active.registerClientDevice(
+    installationId: installationId,
+    platform: platform,
+    deviceName: deviceName,
+    deviceModel: deviceModel,
+    osVersion: osVersion,
+    appVersion: appVersion,
   );
   @override
   Future<void> removeUserDevice(String deviceId) =>

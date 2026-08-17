@@ -58,6 +58,14 @@ abstract interface class ImRepository {
     required bool soundEnabled,
     required bool vibrationEnabled,
   });
+  Future<void> registerClientDevice({
+    required String installationId,
+    required String platform,
+    required String deviceName,
+    required String deviceModel,
+    required String osVersion,
+    required String appVersion,
+  });
   Future<void> removeUserDevice(String deviceId);
   Future<void> quitImDeviceSession(int deviceFlag);
   Future<List<ChatMessage>> favorites();

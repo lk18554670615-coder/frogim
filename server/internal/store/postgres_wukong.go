@@ -156,6 +156,66 @@ func (p *Postgres) recallWukongAuthorized(ctx context.Context, uid, mid string, 
 	return true, meta.ConversationID, meta.MessageSeq, ids, nil
 }
 
+func (p *Postgres) AdminRecallWukongMessage(ctx context.Context, userID, friendID, messageID, actor, reason string, at time.Time) (bool, string, int64, []string, error) {
+	indexed, err := p.waitForWukongMessageIndex(ctx, messageID)
+	if err != nil {
+		return false, "", 0, nil, err
+	}
+	if !indexed {
+		return false, "", 0, nil, ErrNotFound
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return false, "", 0, nil, err
+	}
+	defer tx.Rollback(ctx)
+	var expectedConversationID string
+	if err = tx.QueryRow(ctx, `SELECT conversation_id FROM im_direct_index WHERE pair_key=$1`, friendPairKey(userID, friendID)).Scan(&expectedConversationID); errors.Is(err, pgx.ErrNoRows) {
+		return false, "", 0, nil, ErrNotFound
+	} else if err != nil {
+		return false, "", 0, nil, err
+	}
+	meta, found, err := loadWukongMutationMeta(ctx, tx, userID, messageID)
+	if err != nil {
+		return false, "", 0, nil, err
+	}
+	if !found || meta.ConversationID != expectedConversationID {
+		return false, "", 0, nil, ErrNotFound
+	}
+	if meta.Extension["recalledAt"] != nil {
+		return true, meta.ConversationID, meta.MessageSeq, nil, tx.Commit(ctx)
+	}
+	var expiresAt, expiredAt *time.Time
+	if err = tx.QueryRow(ctx, `SELECT expires_at,expired_at FROM im_wukong_message_index WHERE message_id::text=$1`, messageID).Scan(&expiresAt, &expiredAt); err != nil {
+		return false, "", 0, nil, err
+	}
+	if expiredAt != nil || (expiresAt != nil && !expiresAt.After(at)) {
+		return false, "", 0, nil, ErrConflict
+	}
+	stamp := at.UTC().Format(time.RFC3339Nano)
+	meta.Extension["recalledAt"] = stamp
+	meta.Extension["revoker"] = "system"
+	meta.Extension["adminRecall"] = true
+	meta.Extension["moderatedBy"] = actor
+	meta.Extension["moderationReason"] = reason
+	meta.Extension["moderatedAt"] = stamp
+	// updated_by is constrained to an IM user for existing DataSource sync.
+	// The administrator remains the authoritative moderator in moderatedBy and
+	// the immutable admin audit record written by the HTTP layer.
+	if err = saveWukongMessageExtension(ctx, tx, meta, userID, meta.Extension, at); err != nil {
+		return false, "", 0, nil, err
+	}
+	payload, _ := json.Marshal(map[string]any{"messageId": messageID, "conversationId": meta.ConversationID, "conversationSeq": meta.MessageSeq, "adminRecall": true})
+	recipients, err := appendMemberBusinessEvent(ctx, tx, meta.ConversationID, "message.recalled", payload, at)
+	if err != nil {
+		return false, "", 0, nil, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return false, "", 0, nil, err
+	}
+	return false, meta.ConversationID, meta.MessageSeq, recipients, nil
+}
+
 func (p *Postgres) reactWukongMessage(ctx context.Context, uid, mid, emoji string, add bool, at time.Time) (bool, model.MessageReactionSummary, bool, error) {
 	indexed, err := p.waitForWukongMessageIndex(ctx, mid)
 	if err != nil {

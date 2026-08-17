@@ -2113,13 +2113,38 @@ func TestAdminUserManagementReturnsRealRelationsDevicesAndRejectsUnavailableSyst
 	ts := httptest.NewServer(New(cfg, a).Handler())
 	defer ts.Close()
 
-	checks := []struct {
-		path string
-		id   string
-	}{
+	res := adminKeyRequest(t, http.MethodPost, ts.URL+"/v2/admin/users", adminKey, `{"phone":"13800009999","name":"后台新增用户","password":"StrongPass123!","gender":"female","reason":"运营工单 USER-1","confirmed":true}`)
+	if res.StatusCode != http.StatusCreated {
+		_ = res.Body.Close()
+		t.Fatalf("create admin user status=%d", res.StatusCode)
+	}
+	var created struct {
+		Item model.User `json:"item"`
+	}
+	if err = json.NewDecoder(res.Body).Decode(&created); err != nil {
+		_ = res.Body.Close()
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if created.Item.Phone != "13800009999" || created.Item.Gender != "female" || created.Item.Handle == "" {
+		t.Fatalf("created admin user=%+v", created.Item)
+	}
+	res = adminKeyRequest(t, http.MethodPost, ts.URL+"/v2/admin/users", adminKey, `{"phone":"13800009999","name":"重复手机号","password":"StrongPass123!","gender":"female","reason":"重复校验","confirmed":true}`)
+	if res.StatusCode != http.StatusConflict {
+		_ = res.Body.Close()
+		t.Fatalf("duplicate admin user status=%d", res.StatusCode)
+	}
+	_ = res.Body.Close()
+	res = adminKeyRequest(t, http.MethodPost, ts.URL+"/v2/admin/users", adminKey, `{"phone":"12800009999","name":"错误手机号","password":"StrongPass123!","gender":"female","reason":"校验","confirmed":true}`)
+	if res.StatusCode != http.StatusBadRequest {
+		_ = res.Body.Close()
+		t.Fatalf("invalid mainland phone status=%d", res.StatusCode)
+	}
+	_ = res.Body.Close()
+
+	checks := []struct{ path, id string }{
 		{path: "/v2/admin/users/usr_alice/friends", id: "usr_bob"},
 		{path: "/v2/admin/users/usr_alice/blocks", id: "usr_admin"},
-		{path: "/v2/admin/users/usr_alice/devices", id: "device_android_1"},
 	}
 	for _, check := range checks {
 		res := adminKeyRequest(t, http.MethodGet, ts.URL+check.path, adminKey, "")
@@ -2135,17 +2160,36 @@ func TestAdminUserManagementReturnsRealRelationsDevicesAndRejectsUnavailableSyst
 			t.Fatal(err)
 		}
 		_ = res.Body.Close()
-		if len(payload.Items) != 1 || payload.Items[0]["id"] != check.id {
+		if len(payload.Items) != 1 {
 			t.Fatalf("%s items=%v", check.path, payload.Items)
 		}
-		if check.id == "device_android_1" {
-			if _, leaked := payload.Items[0]["pushToken"]; leaked {
-				t.Fatal("admin device response leaked push token")
-			}
+		user, _ := payload.Items[0]["user"].(map[string]any)
+		if user["id"] != check.id {
+			t.Fatalf("%s nested user=%v", check.path, payload.Items[0]["user"])
 		}
 	}
+	res = adminKeyRequest(t, http.MethodGet, ts.URL+"/v2/admin/users/usr_alice/devices", adminKey, "")
+	if res.StatusCode != http.StatusOK {
+		_ = res.Body.Close()
+		t.Fatalf("devices status=%d", res.StatusCode)
+	}
+	var devices struct {
+		Items             []map[string]any `json:"items"`
+		PushRegistrations []map[string]any `json:"pushRegistrations"`
+	}
+	if err = json.NewDecoder(res.Body).Decode(&devices); err != nil {
+		_ = res.Body.Close()
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if len(devices.Items) != 0 || len(devices.PushRegistrations) != 1 || devices.PushRegistrations[0]["id"] != "device_android_1" {
+		t.Fatalf("admin device response=%+v", devices)
+	}
+	if _, leaked := devices.PushRegistrations[0]["pushToken"]; leaked {
+		t.Fatal("admin device response leaked push token")
+	}
 
-	res := adminKeyRequest(t, http.MethodPost, ts.URL+"/v2/admin/users/usr_alice/system-message", adminKey, `{"content":"版本升级通知","reason":"运营工单 OPS-18","confirmed":true}`)
+	res = adminKeyRequest(t, http.MethodPost, ts.URL+"/v2/admin/users/usr_alice/system-message", adminKey, `{"senderUid":"usr_admin","content":"版本升级通知","reason":"运营工单 OPS-18","confirmed":true}`)
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("system message without WuKongIM status=%d", res.StatusCode)

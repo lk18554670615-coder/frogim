@@ -7,7 +7,13 @@ import type {
   AdminSession,
   AdminSettings,
   AdminSystemMessageResult,
+  AdminClientDeviceRecord,
+  AdminDirectMessagePage,
+  AdminDirectMessageRecord,
+  AdminUserBlockRecord,
   AdminUserDeviceRecord,
+  AdminUserDevices,
+  AdminUserRelationRecord,
   AuditLog,
   CallRecord,
   ClientPlatform,
@@ -218,12 +224,22 @@ function adaptUser(value: unknown): UserRecord {
   const nickname = string(raw.nickname, string(raw.name, '未命名用户'));
   const status = boolean(raw.banned) || raw.status === 'banned' ? 'banned' : 'active';
   const lastOfflineAt = string(raw.lastOfflineAt) || undefined;
+  const gender = raw.gender === 'male' || raw.gender === 'female' ? raw.gender : 'unspecified';
+  const latestDeviceRaw = object(raw.latestDevice);
+  const latestPlatform = string(latestDeviceRaw.platform);
+  const latestDevice = ['android', 'ios', 'web', 'macos'].includes(latestPlatform) ? {
+    installationId: string(latestDeviceRaw.installationId),
+    platform: latestPlatform as ClientPlatform,
+    deviceName: string(latestDeviceRaw.deviceName), deviceModel: string(latestDeviceRaw.deviceModel),
+    osVersion: string(latestDeviceRaw.osVersion), appVersion: string(latestDeviceRaw.appVersion),
+    lastSeenAt: formatDate(latestDeviceRaw.lastSeenAt),
+  } : undefined;
   return {
-    id: string(raw.id, 'unknown'), nickname, phone: string(raw.phone, '未提供'), handle: string(raw.handle, '未设置'), remark: string(raw.remark), tags: list(raw.tags).map((tag) => string(tag)).filter(Boolean), handleChangeCount: number(raw.handleChangeCount), bannedUntil: string(raw.bannedUntil) || undefined,
+    id: string(raw.id, 'unknown'), nickname, phone: string(raw.phone, '未提供'), handle: string(raw.handle, '未设置'), remark: string(raw.remark), tags: list(raw.tags).map((tag) => string(tag)).filter(Boolean), gender, handleChangeCount: number(raw.handleChangeCount), bannedUntil: string(raw.bannedUntil) || undefined,
     avatar: string(raw.avatar, initial(nickname)), avatarUrl: string(raw.avatarUrl), status,
     online: boolean(raw.online), onlineConnections: number(raw.onlineConnections), lastOfflineAt,
     registeredAt: formatDate(raw.registeredAt ?? raw.createdAt), lastSeen: string(raw.lastSeen, lastOfflineAt ? formatDate(lastOfflineAt) : '暂无'),
-    deviceCount: number(raw.deviceCount), messageCount: number(raw.messageCount),
+    deviceCount: number(raw.deviceCount), messageCount: number(raw.messageCount), latestDevice,
   };
 }
 
@@ -234,6 +250,54 @@ function adaptAdminUserDevice(value: unknown): AdminUserDeviceRecord {
     notificationsEnabled: boolean(raw.notificationsEnabled), previewEnabled: boolean(raw.previewEnabled),
     soundEnabled: boolean(raw.soundEnabled), vibrationEnabled: boolean(raw.vibrationEnabled), updatedAt: formatDate(raw.updatedAt),
   };
+}
+
+function adaptAdminClientDevice(value: unknown): AdminClientDeviceRecord {
+  const raw = object(value);
+  const platform = string(raw.platform);
+  return {
+    userId: string(raw.userId), installationId: string(raw.installationId),
+    platform: (['android', 'ios', 'web', 'macos'].includes(platform) ? platform : 'web') as AdminClientDeviceRecord['platform'],
+    deviceName: string(raw.deviceName, '未提供'), deviceModel: string(raw.deviceModel, '未提供'),
+    osVersion: string(raw.osVersion, '未提供'), appVersion: string(raw.appVersion, '未提供'),
+    firstSeenAt: formatDate(raw.firstSeenAt), lastSeenAt: formatDate(raw.lastSeenAt),
+  };
+}
+
+function adaptAdminUserRelation(value: unknown): AdminUserRelationRecord {
+  const raw = object(value);
+  return {
+    user: adaptUser(raw.user), remark: string(raw.remark), tags: list(raw.tags).map((item) => string(item)).filter(Boolean),
+    relationshipCreatedAt: formatDate(raw.relationshipCreatedAt), relationshipUpdatedAt: formatDate(raw.relationshipUpdatedAt),
+  };
+}
+
+function adaptAdminUserBlock(value: unknown): AdminUserBlockRecord {
+  const raw = object(value);
+  return { user: adaptUser(raw.user), remark: string(raw.remark), blockedAt: formatDate(raw.blockedAt) };
+}
+
+function adaptAdminDirectMessage(value: unknown): AdminDirectMessageRecord {
+  const raw = object(value);
+  return {
+    id: string(raw.id), clientMsgId: string(raw.clientMsgId), conversationId: string(raw.conversationId),
+    conversationSeq: number(raw.conversationSeq), senderId: string(raw.senderId), sender: raw.sender ? adaptUser(raw.sender) : undefined,
+    type: string(raw.type, 'unknown'), body: object(raw.body), replyToId: string(raw.replyToId), createdAt: formatDate(raw.createdAt),
+    recalledAt: string(raw.recalledAt) ? formatDate(raw.recalledAt) : undefined,
+    expiresAt: string(raw.expiresAt) ? formatDate(raw.expiresAt) : undefined,
+    expiredAt: string(raw.expiredAt) ? formatDate(raw.expiredAt) : undefined,
+    editedAt: string(raw.editedAt) ? formatDate(raw.editedAt) : undefined,
+    editVersion: number(raw.editVersion), encrypted: false, deleted: boolean(raw.deleted), adminRecall: boolean(raw.adminRecall),
+    moderatedBy: string(raw.moderatedBy), moderationReason: string(raw.moderationReason),
+    moderatedAt: string(raw.moderatedAt) ? formatDate(raw.moderatedAt) : undefined,
+  };
+}
+
+function adaptAdminDirectMessagePage(value: unknown): AdminDirectMessagePage {
+  const raw = object(value); const participants: Record<string, UserRecord> = {};
+  for (const [id, participant] of Object.entries(object(raw.participants))) participants[id] = adaptUser(participant);
+  const next = number(raw.nextBeforeSeq);
+  return { conversationId: string(raw.conversationId), participants, items: list(raw.items).map(adaptAdminDirectMessage), nextBeforeSeq: next > 0 ? next : undefined };
 }
 
 function adaptGroup(value: unknown): GroupRecord {
@@ -835,12 +899,15 @@ function liveApi(token: string): AdminApi {
     async deleteAdministratorRole(id, reason) { await request(`/roles/${encodeURIComponent(id)}`, token, { method: 'DELETE', body: JSON.stringify({ reason, confirmed: true }) }); },
     async getDashboard() { return adaptDashboard(await request('/dashboard', token)); },
     async getUsers(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/users?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptUser, page, pageSize); },
+    async createUser(input, reason) { return adaptUser(unwrapItem(await request('/users', token, { method: 'POST', body: JSON.stringify({ ...input, reason, confirmed: true }) }))); },
     async getUserOverview(id) { return adaptUserOverview(await request(`/users/${encodeURIComponent(id)}`, token)); },
-    async getUserFriends(id) { return unwrapItems(await request(`/users/${encodeURIComponent(id)}/friends`, token)).items.map(adaptUser); },
-    async getUserBlockedUsers(id) { return unwrapItems(await request(`/users/${encodeURIComponent(id)}/blocks`, token)).items.map(adaptUser); },
-    async getUserDevices(id) { return unwrapItems(await request(`/users/${encodeURIComponent(id)}/devices`, token)).items.map(adaptAdminUserDevice); },
-    async sendUserSystemMessage(id, content, reason) {
-      const raw = object(await request(`/users/${encodeURIComponent(id)}/system-message`, token, { method: 'POST', body: JSON.stringify({ content, reason, confirmed: true }) }));
+    async getUserFriends(id) { return unwrapItems(await request(`/users/${encodeURIComponent(id)}/friends`, token)).items.map(adaptAdminUserRelation); },
+    async getUserBlockedUsers(id) { return unwrapItems(await request(`/users/${encodeURIComponent(id)}/blocks`, token)).items.map(adaptAdminUserBlock); },
+    async getUserDevices(id) { const raw = object(await request(`/users/${encodeURIComponent(id)}/devices`, token)); return { items: list(raw.items).map(adaptAdminClientDevice), pushRegistrations: list(raw.pushRegistrations).map(adaptAdminUserDevice) } satisfies AdminUserDevices; },
+    async getUserFriendMessages(userId, friendId, beforeSeq = 0, limit = 50) { return adaptAdminDirectMessagePage(await request(`/users/${encodeURIComponent(userId)}/friends/${encodeURIComponent(friendId)}/messages?beforeSeq=${beforeSeq}&limit=${limit}`, token)); },
+    async recallUserFriendMessage(userId, friendId, messageId, reason) { await request(`/users/${encodeURIComponent(userId)}/friends/${encodeURIComponent(friendId)}/messages/${encodeURIComponent(messageId)}/recall`, token, { method: 'POST', body: JSON.stringify({ reason, confirmed: true }) }); },
+    async sendUserSystemMessage(id, senderUid, content, reason) {
+      const raw = object(await request(`/users/${encodeURIComponent(id)}/system-message`, token, { method: 'POST', body: JSON.stringify({ senderUid, content, reason, confirmed: true }) }));
       return { targetUid: string(raw.targetUid), senderUid: string(raw.senderUid), conversationId: string(raw.conversationId), messageId: String(raw.messageId ?? ''), clientMsgNo: string(raw.clientMsgNo) } satisfies AdminSystemMessageResult;
     },
     async banUser(id, reason, durationHours) { await request(`/users/${encodeURIComponent(id)}/ban`, token, { method: 'POST', body: JSON.stringify({ reason, durationHours, confirmed: true }) }); },

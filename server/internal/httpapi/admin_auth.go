@@ -24,6 +24,9 @@ func adminPermission(method, path string) string {
 	if strings.Contains(path, "/administrators") || strings.Contains(path, "/roles") {
 		return "platform.write"
 	}
+	if strings.Contains(path, "/users/") && strings.Contains(path, "/friends/") && strings.HasSuffix(path, "/recall") {
+		return "read"
+	}
 	if method == "GET" {
 		return "read"
 	}
@@ -40,7 +43,7 @@ func adminPermission(method, path string) string {
 		return "channels.write"
 	case strings.Contains(path, "/settings"):
 		return "settings.write"
-	case strings.Contains(path, "/users/"):
+	case strings.Contains(path, "/users"):
 		return "users.write"
 	case strings.Contains(path, "/reports/"):
 		return "reports.write"

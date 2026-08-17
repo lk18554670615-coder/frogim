@@ -179,21 +179,37 @@ describe('live API adapter', () => {
   it('消费用户关系与设备接口并通过 WuKongIM 发送系统消息', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith('/users/u_1/friends')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ id: 'u_2', name: '江宁', handle: 'jiangning', remark: '产品同事' }] }) };
-      if (url.endsWith('/users/u_1/blocks')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ id: 'u_3', name: '屏蔽账号' }] }) };
-      if (url.endsWith('/users/u_1/devices')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ id: 'device_1', userId: 'u_1', platform: 'android', provider: 'fcm', notificationsEnabled: true, previewEnabled: false, soundEnabled: true, vibrationEnabled: true, updatedAt: '2026-08-16T08:00:00Z' }] }) };
+      if (url.endsWith('/users/u_1/friends')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ user: { id: 'u_2', name: '江宁', handle: 'jiangning' }, remark: '产品同事', tags: ['产品'], relationshipCreatedAt: '2026-08-01T08:00:00Z', relationshipUpdatedAt: '2026-08-02T08:00:00Z' }] }) };
+      if (url.endsWith('/users/u_1/blocks')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ user: { id: 'u_3', name: '屏蔽账号' }, remark: '旧备注', blockedAt: '2026-08-03T08:00:00Z' }] }) };
+      if (url.endsWith('/users/u_1/devices')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ userId: 'u_1', installationId: 'install_1', platform: 'android', deviceName: 'Pixel 9', deviceModel: 'tokay', osVersion: 'Android 16', appVersion: '1.0.0', firstSeenAt: '2026-08-15T08:00:00Z', lastSeenAt: '2026-08-16T08:00:00Z' }], pushRegistrations: [{ id: 'device_1', userId: 'u_1', platform: 'android', provider: 'fcm', notificationsEnabled: true, previewEnabled: false, soundEnabled: true, vibrationEnabled: true, updatedAt: '2026-08-16T08:00:00Z' }] }) };
       expect(init?.method).toBe('POST');
       return { ok: true, status: 201, headers: new Headers(), json: async () => ({ targetUid: 'u_1', senderUid: 'u_notice', conversationId: 'conv_1', messageId: 88, clientMsgNo: 'admin-notice-1' }) };
     });
     vi.stubGlobal('fetch', fetchMock);
     const api = getApi('token');
-    expect(await api.getUserFriends('u_1')).toEqual([expect.objectContaining({ id: 'u_2', remark: '产品同事' })]);
-    expect(await api.getUserBlockedUsers('u_1')).toEqual([expect.objectContaining({ id: 'u_3' })]);
-    expect(await api.getUserDevices('u_1')).toEqual([expect.objectContaining({ id: 'device_1', platform: 'android', notificationsEnabled: true })]);
-    expect(await api.sendUserSystemMessage('u_1', '版本升级通知', '运营工单 OPS-18')).toEqual(expect.objectContaining({ messageId: '88', senderUid: 'u_notice' }));
+    expect(await api.getUserFriends('u_1')).toEqual([expect.objectContaining({ user: expect.objectContaining({ id: 'u_2' }), remark: '产品同事', tags: ['产品'] })]);
+    expect(await api.getUserBlockedUsers('u_1')).toEqual([expect.objectContaining({ user: expect.objectContaining({ id: 'u_3' }), remark: '旧备注' })]);
+    expect(await api.getUserDevices('u_1')).toEqual({ items: [expect.objectContaining({ installationId: 'install_1', platform: 'android', deviceName: 'Pixel 9' })], pushRegistrations: [expect.objectContaining({ id: 'device_1', notificationsEnabled: true })] });
+    expect(await api.sendUserSystemMessage('u_1', 'u_notice', '版本升级通知', '运营工单 OPS-18')).toEqual(expect.objectContaining({ messageId: '88', senderUid: 'u_notice' }));
     const write = fetchMock.mock.calls[fetchMock.mock.calls.length - 1];
     expect(String(write?.[0])).toContain('/users/u_1/system-message');
-    expect(JSON.parse(String(write?.[1]?.body))).toEqual({ content: '版本升级通知', reason: '运营工单 OPS-18', confirmed: true });
+    expect(JSON.parse(String(write?.[1]?.body))).toEqual({ senderUid: 'u_notice', content: '版本升级通知', reason: '运营工单 OPS-18', confirmed: true });
+  });
+
+  it('新增用户和管理员聊天撤回均携带确认与理由', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/users') && init?.method === 'POST') return { ok: true, status: 201, headers: new Headers(), json: async () => ({ item: { id: 'u_new', name: '新用户', phone: '13800138000', handle: 'gg_new', gender: 'female' } }) };
+      if (url.includes('/messages?')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ conversationId: 'conv_1', participants: { u_1: { id: 'u_1', name: '甲' }, u_2: { id: 'u_2', name: '乙' } }, items: [{ id: 'm_1', conversationId: 'conv_1', conversationSeq: 9, senderId: 'u_1', type: 'text', body: { content: '正文' }, createdAt: '2026-08-17T08:00:00Z', encrypted: false }], nextBeforeSeq: 8 }) };
+      return { ok: true, status: 200, headers: new Headers(), json: async () => ({ recalled: true }) };
+    });
+    vi.stubGlobal('fetch', fetchMock); const api = getApi('token');
+    expect(await api.createUser({ phone: '13800138000', name: '新用户', password: 'StrongPass123!', gender: 'female' }, '工单 USER-1')).toEqual(expect.objectContaining({ id: 'u_new', gender: 'female' }));
+    expect(await api.getUserFriendMessages('u_1', 'u_2', 10, 20)).toEqual(expect.objectContaining({ conversationId: 'conv_1', nextBeforeSeq: 8, items: [expect.objectContaining({ id: 'm_1', encrypted: false })] }));
+    await api.recallUserFriendMessage('u_1', 'u_2', 'm_1', '违规内容');
+    const bodies = fetchMock.mock.calls.filter(([, init]) => init?.body).map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>);
+    expect(bodies).toContainEqual({ phone: '13800138000', name: '新用户', password: 'StrongPass123!', gender: 'female', reason: '工单 USER-1', confirmed: true });
+    expect(bodies).toContainEqual({ reason: '违规内容', confirmed: true });
   });
 
   it('新历史接口未上线时从真实审计记录读取发布快照', async () => {

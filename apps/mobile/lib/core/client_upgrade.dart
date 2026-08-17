@@ -1,12 +1,11 @@
 import 'dart:convert';
-import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_config.dart';
+import 'client_device.dart';
 
 class ClientUpgradeDecision {
   const ClientUpgradeDecision({
@@ -72,7 +71,6 @@ class ClientUpgradeService {
   }) : _client = client ?? http.Client(),
        _apiBaseUrl = apiBaseUrl ?? AppConfig.apiBaseUrl;
 
-  static const _installIdKey = 'linli_im.install_id.v1';
   final http.Client _client;
   final String _apiBaseUrl;
   final String? platform;
@@ -85,7 +83,8 @@ class ClientUpgradeService {
     final clientPlatform = platform ?? _runtimePlatform();
     final clientVersion =
         version ?? (await PackageInfo.fromPlatform()).version.trim();
-    final stableInstallId = installId ?? await _stableInstallId();
+    final stableInstallId =
+        installId ?? await ClientInstallationIdentity.getOrCreate();
     final uri = Uri.parse(base)
         .resolve('/v2/config/version')
         .replace(
@@ -127,16 +126,5 @@ class ClientUpgradeService {
       TargetPlatform.linux ||
       TargetPlatform.fuchsia => 'macos',
     };
-  }
-
-  static Future<String> _stableInstallId() async {
-    final preferences = await SharedPreferences.getInstance();
-    final existing = preferences.getString(_installIdKey);
-    if (existing != null && existing.length >= 8) return existing;
-    final random = Random.secure();
-    final bytes = List<int>.generate(24, (_) => random.nextInt(256));
-    final created = base64UrlEncode(bytes).replaceAll('=', '');
-    await preferences.setString(_installIdKey, created);
-    return created;
   }
 }

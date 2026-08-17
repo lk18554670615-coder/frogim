@@ -55,6 +55,7 @@ ALTER TABLE im_friendships ADD COLUMN IF NOT EXISTS remark text NOT NULL DEFAULT
 ALTER TABLE im_friendships ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}';
 ALTER TABLE im_friendships ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
 CREATE TABLE IF NOT EXISTS im_blocks(user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,blocked_user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(user_id,blocked_user_id));
+ALTER TABLE im_blocks ADD COLUMN IF NOT EXISTS remark text NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS im_conversations(id text PRIMARY KEY,kind text NOT NULL,title text NOT NULL DEFAULT '',avatar_url text NOT NULL DEFAULT '',current_seq bigint NOT NULL DEFAULT 0,last_message_seq bigint NOT NULL DEFAULT 0,created_at timestamptz NOT NULL,updated_at timestamptz NOT NULL);
 ALTER TABLE im_conversations ADD COLUMN IF NOT EXISTS member_count integer NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS im_direct_index(pair_key text PRIMARY KEY,conversation_id text UNIQUE NOT NULL REFERENCES im_conversations(id) ON DELETE CASCADE);
@@ -424,6 +425,19 @@ ALTER TABLE im_devices ADD COLUMN IF NOT EXISTS vibration_enabled boolean NOT NU
 ALTER TABLE im_devices DROP CONSTRAINT IF EXISTS im_devices_provider_push_token_key;
 CREATE UNIQUE INDEX IF NOT EXISTS im_devices_active_provider_push_token_idx ON im_devices(provider,push_token) WHERE notifications_enabled AND push_token<>'';
 CREATE INDEX IF NOT EXISTS im_devices_user_idx ON im_devices(user_id);
+CREATE TABLE IF NOT EXISTS im_client_devices(
+ user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,
+ installation_id text NOT NULL,
+ platform text NOT NULL CHECK(platform IN ('android','ios','web','macos')),
+ device_name text NOT NULL DEFAULT '',
+ device_model text NOT NULL DEFAULT '',
+ os_version text NOT NULL DEFAULT '',
+ app_version text NOT NULL DEFAULT '',
+ first_seen_at timestamptz NOT NULL DEFAULT now(),
+ last_seen_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY(user_id,installation_id)
+);
+CREATE INDEX IF NOT EXISTS im_client_devices_user_recent_idx ON im_client_devices(user_id,last_seen_at DESC,installation_id);
 CREATE TABLE IF NOT EXISTS im_push_outbox(id bigserial PRIMARY KEY,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,event_type text NOT NULL,payload jsonb NOT NULL,status text NOT NULL DEFAULT 'pending',attempts int NOT NULL DEFAULT 0,available_at timestamptz NOT NULL DEFAULT now(),created_at timestamptz NOT NULL DEFAULT now(),sent_at timestamptz);
 ALTER TABLE im_push_outbox ADD COLUMN IF NOT EXISTS locked_at timestamptz;
 ALTER TABLE im_push_outbox ADD COLUMN IF NOT EXISTS last_error text NOT NULL DEFAULT '';

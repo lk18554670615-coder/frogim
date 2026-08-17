@@ -183,13 +183,14 @@ td strong { color: var(--ink); font-weight: 620; }
 .users-table th:last-child, .users-table td:last-child { position: sticky; right: 0; z-index: 2; background: white; box-shadow: -8px 0 12px -12px oklch(0.18 0.03 160 / .45); }
 .users-table th:last-child { z-index: 3; background: var(--surface-raised); }
 .users-table tbody tr:hover td:last-child { background: oklch(0.985 0.006 160); }
-.users-table { min-width: 920px; table-layout: fixed; }
+.users-table { min-width: 1160px; table-layout: fixed; }
 .users-table th:nth-child(1) { width: 210px; }
 .users-table th:nth-child(2) { width: 150px; }
 .users-table th:nth-child(3) { width: 80px; }
 .users-table th:nth-child(4) { width: 174px; }
-.users-table th:nth-child(5) { width: 130px; }
-.users-table th:nth-child(6) { width: 176px; }
+.users-table th:nth-child(5) { width: 210px; }
+.users-table th:nth-child(6) { width: 130px; }
+.users-table th:nth-child(7) { width: 176px; }
 .users-table .identity > div, .users-table td:nth-child(2) > div { min-width: 0; overflow: hidden; }
 .users-table .identity strong, .users-table .identity small, .users-table td:nth-child(2) strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .user-actions { min-width: 174px; justify-content: flex-end; gap: 2px; flex-wrap: nowrap; }
@@ -396,6 +397,21 @@ td strong { color: var(--ink); font-weight: 620; }
 .detail-search { width: min(310px, 100%); flex: 0 0 auto; }
 .detail-table { border: 1px solid var(--line); border-radius: 10px 10px 0 0; }
 .detail-table + .pagination { border: 1px solid var(--line); border-top: 0; border-radius: 0 0 10px 10px; }
+.device-subsection { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.conversation-history { display: grid; gap: 12px; }
+.conversation-message { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 11px; padding: 13px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-raised); }
+.conversation-message-main { min-width: 0; }
+.conversation-message-main header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 7px; }
+.conversation-message-main header span, .conversation-message-main small { color: var(--muted); font-size: 11px; }
+.conversation-message-main small { display: block; margin-top: 6px; }
+.conversation-message-body { padding: 10px 12px; border-radius: 9px; background: white; white-space: pre-wrap; overflow-wrap: anywhere; }
+.conversation-message-body.muted { color: var(--muted); font-style: italic; }
+.conversation-attachment { display: inline-flex; margin-top: 7px; font-size: 12px; color: var(--accent); }
+.conversation-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; color: var(--muted); font-size: 12px; }
+.create-user-card { display: grid; gap: 18px; max-width: 920px; }
+.phone-input { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: stretch; }
+.phone-input > span { display: flex; align-items: center; padding: 0 12px; border: 1px solid var(--line-strong); border-right: 0; border-radius: 9px 0 0 9px; background: var(--surface-raised); color: var(--muted); }
+.phone-input input { border-radius: 0 9px 9px 0; }
 
 .inline-notice { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; margin-top: 13px; border-radius: 8px; font-size: 12px; line-height: 1.5; }
 .inline-notice.danger { color: oklch(0.39 0.16 25); background: var(--danger-soft); }
@@ -564,6 +580,9 @@ td strong { color: var(--ink); font-weight: 620; }
   .detail-list > div, .detail-list > div:nth-child(odd), .detail-list > div:nth-last-child(-n+2) { border-right: 0; border-bottom: 1px solid var(--line); }
   .detail-list > div:last-child { border-bottom: 0; }
   .detail-section-heading { align-items: stretch; flex-direction: column; gap: 10px; }
+  .conversation-message { grid-template-columns: auto minmax(0, 1fr); }
+  .conversation-message > button { grid-column: 2; justify-self: start; }
+  .conversation-message-main header { align-items: flex-start; flex-direction: column; gap: 3px; }
   .detail-search { width: 100%; }
   .state-box { flex-direction: column; text-align: center; }
   .state-error .button { margin: 8px 0 0; }

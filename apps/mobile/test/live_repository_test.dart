@@ -25,6 +25,45 @@ void main() {
     expect(await repository.callEvents.isEmpty, isTrue);
   });
 
+  test(
+    'client device registration uses the authenticated idempotent endpoint',
+    () async {
+      FlutterSecureStorage.setMockInitialValues({});
+      http.Request? captured;
+      final repository = LiveImRepository(
+        client: MockClient((request) async {
+          if (request.url.path == '/v2/auth/login') return _loginResponse();
+          if (request.url.path == '/v2/users/me/client-device') {
+            captured = request;
+            return _jsonResponse({'item': {}});
+          }
+          return http.Response('{}', 404);
+        }),
+        apiBaseUrl: 'https://api.example.com',
+      );
+      await repository.login('13800138000', '123456');
+      await repository.registerClientDevice(
+        installationId: 'install-stable-1',
+        platform: 'android',
+        deviceName: 'Pixel 9',
+        deviceModel: 'tokay',
+        osVersion: 'Android 16',
+        appVersion: '1.0.0',
+      );
+      expect(captured?.method, 'PUT');
+      expect(captured?.headers['authorization'], 'Bearer access-token');
+      expect(jsonDecode(captured!.body), {
+        'installationId': 'install-stable-1',
+        'platform': 'android',
+        'deviceName': 'Pixel 9',
+        'deviceModel': 'tokay',
+        'osVersion': 'Android 16',
+        'appVersion': '1.0.0',
+      });
+      await repository.close();
+    },
+  );
+
   test('聊天缓存在进程重启后仍可先于网络读取', () async {
     FlutterSecureStorage.setMockInitialValues({});
     var networkRequests = 0;

@@ -14,6 +14,7 @@ import '../im/structured_event_text.dart';
 import 'auth_validation.dart';
 import 'client_message_id.dart';
 import 'client_diagnostics.dart';
+import 'client_device.dart';
 import 'image_dimensions.dart';
 import 'models.dart';
 
@@ -256,6 +257,7 @@ class AppController extends ChangeNotifier {
     error = null;
     _subscribe();
     notifyListeners();
+    unawaited(_reportClientDevice());
     unawaited(_connectSafely());
     final bootstrap = _bootstrapAuthenticatedSession(
       refreshProfile: refreshProfile,
@@ -268,6 +270,26 @@ class AppController extends ChangeNotifier {
         }
       }),
     );
+  }
+
+  Future<void> _reportClientDevice() async {
+    try {
+      final report = await ClientDeviceReporter.collect();
+      await repository.registerClientDevice(
+        installationId: report.installationId,
+        platform: report.platform,
+        deviceName: report.deviceName,
+        deviceModel: report.deviceModel,
+        osVersion: report.osVersion,
+        appVersion: report.appVersion,
+      );
+    } catch (exception) {
+      if (kDebugMode || kProfileMode) {
+        debugPrint(
+          '[client-device] report skipped: type=${exception.runtimeType}',
+        );
+      }
+    }
   }
 
   Future<void> _bootstrapAuthenticatedSession({

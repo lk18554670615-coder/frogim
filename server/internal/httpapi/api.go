@@ -359,6 +359,7 @@ func (x *API) routes() {
 	x.mux.Handle("PATCH /v2/users/me/phone", x.requireAuth(http.HandlerFunc(x.updatePhone)))
 	x.mux.Handle("GET /v2/users/me/devices", x.requireAuth(http.HandlerFunc(x.userDevices)))
 	x.mux.Handle("POST /v2/users/me/devices", x.requireAuth(http.HandlerFunc(x.registerDevice)))
+	x.mux.Handle("PUT /v2/users/me/client-device", x.requireAuth(http.HandlerFunc(x.upsertClientDevice)))
 	x.mux.Handle("DELETE /v2/users/me/devices/{id}", x.requireAuth(http.HandlerFunc(x.unregisterDevice)))
 	x.mux.Handle("GET /v2/users/me/im-devices", x.requireAuth(http.HandlerFunc(x.userIMDevices)))
 	x.mux.Handle("DELETE /v2/users/me/im-devices/{deviceFlag}", x.requireAuth(http.HandlerFunc(x.quitUserIMDevice)))
@@ -397,10 +398,13 @@ func (x *API) routes() {
 	x.mux.Handle("GET /v2/admin/stats", x.requireAdmin(http.HandlerFunc(x.adminStats)))
 	x.mux.Handle("GET /v2/admin/dashboard", x.requireAdmin(http.HandlerFunc(x.adminStats)))
 	x.mux.Handle("GET /v2/admin/users", x.requireAdmin(http.HandlerFunc(x.adminUsers)))
+	x.mux.Handle("POST /v2/admin/users", x.requireAdmin(http.HandlerFunc(x.createAdminUser)))
 	x.mux.Handle("GET /v2/admin/users/{id}", x.requireAdmin(http.HandlerFunc(x.adminUserOverview)))
 	x.mux.Handle("GET /v2/admin/users/{id}/friends", x.requireAdmin(http.HandlerFunc(x.adminUserFriends)))
 	x.mux.Handle("GET /v2/admin/users/{id}/blocks", x.requireAdmin(http.HandlerFunc(x.adminUserBlocks)))
 	x.mux.Handle("GET /v2/admin/users/{id}/devices", x.requireAdmin(http.HandlerFunc(x.adminUserDevices)))
+	x.mux.Handle("GET /v2/admin/users/{id}/friends/{friendId}/messages", x.requireAdmin(http.HandlerFunc(x.adminUserFriendMessages)))
+	x.mux.Handle("POST /v2/admin/users/{id}/friends/{friendId}/messages/{messageId}/recall", x.requireAdmin(http.HandlerFunc(x.adminRecallUserMessage)))
 	x.mux.Handle("POST /v2/admin/users/{id}/system-message", x.requireAdmin(http.HandlerFunc(x.adminUserSystemMessage)))
 	x.mux.Handle("POST /v2/admin/users/{id}/ban", x.requireAdmin(http.HandlerFunc(x.adminBan)))
 	x.mux.Handle("POST /v2/admin/users/{id}/unban", x.requireAdmin(http.HandlerFunc(x.adminUnban)))
@@ -1820,6 +1824,30 @@ func (x *API) registerDevice(w http.ResponseWriter, r *http.Request) {
 	write(w, 201, registered)
 }
 
+func (x *API) upsertClientDevice(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		InstallationID string `json:"installationId"`
+		Platform       string `json:"platform"`
+		DeviceName     string `json:"deviceName"`
+		DeviceModel    string `json:"deviceModel"`
+		OSVersion      string `json:"osVersion"`
+		AppVersion     string `json:"appVersion"`
+	}
+	if decode(r, &payload) != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid client device")
+		return
+	}
+	item, err := x.app.UpsertClientDevice(r.Context(), uid(r), store.ClientDevice{
+		InstallationID: payload.InstallationID, Platform: payload.Platform, DeviceName: payload.DeviceName,
+		DeviceModel: payload.DeviceModel, OSVersion: payload.OSVersion, AppVersion: payload.AppVersion,
+	})
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	write(w, http.StatusOK, map[string]any{"item": item})
+}
+
 func (x *API) webPushConfig(w http.ResponseWriter, _ *http.Request) {
 	write(w, http.StatusOK, map[string]any{
 		"enabled":   x.cfg.WebPushEnabled(),
@@ -2740,13 +2768,13 @@ func (x *API) adminUserFriends(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
-	items, err := x.app.FriendsContext(r.Context(), userID)
+	items, err := x.app.AdminUserFriends(r.Context(), userID)
 	if err != nil {
 		handleErr(w, err)
 		return
 	}
 	for _, item := range items {
-		x.signAvatarURL(item)
+		x.signAvatarURL(item.User)
 	}
 	write(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -2756,13 +2784,13 @@ func (x *API) adminUserBlocks(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
-	items, err := x.app.BlockedUsers(userID)
+	items, err := x.app.AdminUserBlocks(r.Context(), userID)
 	if err != nil {
 		handleErr(w, err)
 		return
 	}
 	for _, item := range items {
-		x.signAvatarURL(item)
+		x.signAvatarURL(item.User)
 	}
 	write(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -2772,15 +2800,24 @@ func (x *API) adminUserDevices(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
-	items, err := x.app.UserDevices(userID)
+	pushRegistrations, err := x.app.UserDevices(userID)
 	if err != nil {
 		handleErr(w, err)
 		return
 	}
-	write(w, http.StatusOK, map[string]any{"items": items})
+	items, err := x.app.ClientDevices(r.Context(), userID)
+	if err != nil && err != app.ErrUnavailable {
+		handleErr(w, err)
+		return
+	}
+	if items == nil {
+		items = []store.ClientDevice{}
+	}
+	write(w, http.StatusOK, map[string]any{"items": items, "pushRegistrations": pushRegistrations})
 }
 func (x *API) adminUserSystemMessage(w http.ResponseWriter, r *http.Request) {
 	var p struct {
+		SenderUID string `json:"senderUid"`
 		Content   string `json:"content"`
 		Reason    string `json:"reason"`
 		Confirmed bool   `json:"confirmed"`
@@ -2803,20 +2840,21 @@ func (x *API) adminUserSystemMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "WUKONG_UNAVAILABLE", "WuKongIM is unavailable")
 		return
 	}
-	systemUIDs, err := x.app.InternalWukongSystemUIDs(r.Context())
+	systemUsers, err := x.app.WukongSystemUsers(r.Context())
 	if err != nil {
 		handleErr(w, err)
 		return
 	}
-	senderID := ""
-	for _, candidate := range systemUIDs {
-		if candidate = strings.TrimSpace(candidate); candidate != "" && candidate != targetID {
-			senderID = candidate
+	senderID := strings.TrimSpace(p.SenderUID)
+	validSender := false
+	for _, candidate := range systemUsers {
+		if candidate.UserID == senderID && candidate.Enabled && candidate.SyncStatus == "synced" {
+			validSender = true
 			break
 		}
 	}
-	if senderID == "" {
-		writeError(w, http.StatusServiceUnavailable, "WUKONG_UNAVAILABLE", "no enabled WuKongIM system user is available")
+	if senderID == "" || senderID == targetID || !validSender {
+		writeError(w, http.StatusBadRequest, "INVALID_SYSTEM_SENDER", "senderUid must be a synced enabled WuKongIM system user distinct from the target")
 		return
 	}
 	conversation, err := x.app.DirectConversation(senderID, targetID)

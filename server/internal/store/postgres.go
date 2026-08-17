@@ -25,7 +25,7 @@ var normalizedSchema string
 
 type Postgres struct{ pool *pgxpool.Pool }
 
-const schemaVersion = 53
+const schemaVersion = 54
 
 type PostgresOptions struct {
 	MaxConns          int32
@@ -832,10 +832,13 @@ func (p *Postgres) ListAdminUsers(ctx context.Context, q, status, cursor string,
 			OR ($3='online' AND COALESCE(presence.online,false)) OR ($3='offline' AND NOT COALESCE(presence.online,false)))`, q, pattern, status).Scan(&total); err != nil {
 		return nil, 0, "", err
 	}
-	rows, err := p.pool.Query(ctx, `SELECT u.id,u.phone,u.name,COALESCE(u.handle,''),u.handle_change_count,u.avatar_url,
+	rows, err := p.pool.Query(ctx, `SELECT u.id,u.phone,u.name,COALESCE(u.handle,''),u.handle_change_count,u.avatar_url,u.gender,
 		(u.banned AND (u.banned_until IS NULL OR u.banned_until>now())),u.banned_until,u.created_at,
-		COALESCE(presence.online,false),COALESCE(presence.total_online_count,0),presence.last_offline_at
+		COALESCE(presence.online,false),COALESCE(presence.total_online_count,0),presence.last_offline_at,
+		latest.installation_id,latest.platform,latest.device_name,latest.device_model,latest.os_version,latest.app_version,latest.last_seen_at
 		FROM im_users u LEFT JOIN im_wukong_presence presence ON presence.user_id=u.id
+		LEFT JOIN LATERAL (SELECT installation_id,platform,device_name,device_model,os_version,app_version,last_seen_at
+			FROM im_client_devices device WHERE device.user_id=u.id ORDER BY last_seen_at DESC,installation_id LIMIT 1) latest ON true
 		WHERE ($1='' OR u.name ILIKE $2 OR u.phone ILIKE $2 OR u.id ILIKE $2 OR COALESCE(u.handle,'') ILIKE $2)
 		AND ($3='' OR ($3='active' AND NOT (u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))) OR ($3='banned' AND u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))
 			OR ($3='online' AND COALESCE(presence.online,false)) OR ($3='offline' AND NOT COALESCE(presence.online,false)))
@@ -847,8 +850,29 @@ func (p *Postgres) ListAdminUsers(ctx context.Context, q, status, cursor string,
 	var items []*model.User
 	for rows.Next() {
 		u := &model.User{}
-		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.AvatarURL, &u.Banned, &u.BannedUntil, &u.CreatedAt, &u.Online, &u.OnlineConnections, &u.LastOfflineAt); err != nil {
+		var installationID, platform, deviceName, deviceModel, osVersion, appVersion *string
+		var deviceLastSeen *time.Time
+		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.AvatarURL, &u.Gender, &u.Banned, &u.BannedUntil, &u.CreatedAt, &u.Online, &u.OnlineConnections, &u.LastOfflineAt,
+			&installationID, &platform, &deviceName, &deviceModel, &osVersion, &appVersion, &deviceLastSeen); err != nil {
 			return nil, 0, "", err
+		}
+		if installationID != nil {
+			u.LatestDevice = &model.ClientDeviceSummary{InstallationID: *installationID, LastSeenAt: deviceLastSeen}
+			if platform != nil {
+				u.LatestDevice.Platform = *platform
+			}
+			if deviceName != nil {
+				u.LatestDevice.DeviceName = *deviceName
+			}
+			if deviceModel != nil {
+				u.LatestDevice.DeviceModel = *deviceModel
+			}
+			if osVersion != nil {
+				u.LatestDevice.OSVersion = *osVersion
+			}
+			if appVersion != nil {
+				u.LatestDevice.AppVersion = *appVersion
+			}
 		}
 		items = append(items, u)
 	}
@@ -1521,7 +1545,8 @@ func (p *Postgres) InvalidatePushDevices(ctx context.Context, ids []string) erro
 }
 func (p *Postgres) SetBlock(ctx context.Context, uid, target string, blocked bool) error {
 	if blocked {
-		_, err := p.pool.Exec(ctx, `INSERT INTO im_blocks(user_id,blocked_user_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, uid, target)
+		_, err := p.pool.Exec(ctx, `INSERT INTO im_blocks(user_id,blocked_user_id,remark)
+			VALUES($1,$2,COALESCE((SELECT remark FROM im_friendships WHERE user_id=$1 AND friend_user_id=$2),'')) ON CONFLICT DO NOTHING`, uid, target)
 		return err
 	}
 	_, err := p.pool.Exec(ctx, `DELETE FROM im_blocks WHERE user_id=$1 AND blocked_user_id=$2`, uid, target)
@@ -2843,7 +2868,8 @@ func (p *Postgres) SetFriendBlock(ctx context.Context, uid, target string, block
 		return ErrNotFound
 	}
 	if blocked {
-		if _, err = tx.Exec(ctx, `INSERT INTO im_blocks(user_id,blocked_user_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, uid, target); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO im_blocks(user_id,blocked_user_id,remark)
+			VALUES($1,$2,COALESCE((SELECT remark FROM im_friendships WHERE user_id=$1 AND friend_user_id=$2),'')) ON CONFLICT DO NOTHING`, uid, target); err != nil {
 			return err
 		}
 		tag, e := tx.Exec(ctx, `DELETE FROM im_friendships WHERE (user_id=$1 AND friend_user_id=$2) OR (user_id=$2 AND friend_user_id=$1)`, uid, target)

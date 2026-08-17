@@ -304,6 +304,16 @@ class DemoImRepository implements ImRepository {
   }) async {}
 
   @override
+  Future<void> registerClientDevice({
+    required String installationId,
+    required String platform,
+    required String deviceName,
+    required String deviceModel,
+    required String osVersion,
+    required String appVersion,
+  }) async {}
+
+  @override
   Future<void> removeUserDevice(String deviceId) async {}
 
   @override

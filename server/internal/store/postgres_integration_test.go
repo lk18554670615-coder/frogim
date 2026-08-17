@@ -18,6 +18,118 @@ import (
 	"github.com/linli/im/server/internal/wukong"
 )
 
+func TestAdminUserCompletionPersistence(t *testing.T) {
+	url := os.Getenv("IM_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("IM_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	p, err := NewPostgres(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	ownerID, peerID := "admin_complete_owner_"+suffix, "admin_complete_peer_"+suffix
+	pairKey := friendPairKey(ownerID, peerID)
+	conversationID := "admin_complete_conversation_" + suffix
+	createdAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	defer func() {
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_wukong_outbox
+			WHERE aggregate_id=ANY($1::text[])`, []string{ownerID, peerID, pairKey, conversationID})
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_audits WHERE id=$1`, "aud_admin_user_"+ownerID)
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_wukong_message_extensions WHERE message_id IN
+			(SELECT message_id FROM im_wukong_message_index WHERE conversation_id=$1)`, conversationID)
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_members WHERE conversation_id=$1`, conversationID)
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_conversations WHERE id=$1`, conversationID)
+		_, _ = p.pool.Exec(context.Background(), `DELETE FROM im_users WHERE id=ANY($1::text[])`, []string{ownerID, peerID})
+	}()
+	owner, err := p.CreateAdminPasswordUser(ctx, "integration-admin", "138"+suffix[len(suffix)-8:], "Admin-created user", ownerID, "$2a$12$test", "female", "integration test", createdAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner.Gender != "female" || owner.Handle == "" {
+		t.Fatalf("created owner=%+v", owner)
+	}
+	if _, err = p.pool.Exec(ctx, `INSERT INTO im_users(id,phone,name,created_at,updated_at) VALUES($1,$2,'Peer',$3,$3)`, peerID, "139"+suffix[len(suffix)-8:], createdAt); err != nil {
+		t.Fatal(err)
+	}
+	updatedAt := createdAt.Add(10 * time.Minute)
+	if _, err = p.pool.Exec(ctx, `INSERT INTO im_friendships(user_id,friend_user_id,remark,tags,created_at,updated_at) VALUES
+		($1,$2,'原好友备注',ARRAY['同事'],$3,$4),($2,$1,'',ARRAY[]::text[],$3,$4)`, ownerID, peerID, createdAt, updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	friends, err := p.ListAdminUserFriends(ctx, ownerID)
+	if err != nil || len(friends) != 1 || friends[0].Remark != "原好友备注" || !friends[0].RelationshipCreatedAt.Equal(createdAt) || !friends[0].RelationshipUpdatedAt.Equal(updatedAt) {
+		t.Fatalf("friends=%+v error=%v", friends, err)
+	}
+	if _, err = p.pool.Exec(ctx, `INSERT INTO im_conversations(id,kind,created_at,updated_at) VALUES($1,'direct',$2,$2)`, conversationID, createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = p.pool.Exec(ctx, `INSERT INTO im_direct_index(pair_key,conversation_id) VALUES($1,$2)`, pairKey, conversationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = p.pool.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,joined_at) VALUES($1,$2,'member',$4),($1,$3,'member',$4)`, conversationID, ownerID, peerID, createdAt); err != nil {
+		t.Fatal(err)
+	}
+	messageID := time.Now().UnixNano()
+	insertTestWukongMessage(t, p, ctx, messageID, "admin-recall-"+suffix, conversationID, peerID, 7, wukong.ContentTypeText, nil, "", createdAt.Add(-48*time.Hour))
+	recalledAt := updatedAt.Add(72 * time.Hour)
+	already, recalledConversationID, recalledSeq, recipients, err := p.AdminRecallWukongMessage(ctx, ownerID, peerID, strconv.FormatInt(messageID, 10), "admin-integration", "违规内容", recalledAt)
+	if err != nil || already || recalledConversationID != conversationID || recalledSeq != 7 || len(recipients) != 2 {
+		t.Fatalf("admin recall already=%v conversation=%q seq=%d recipients=%v error=%v", already, recalledConversationID, recalledSeq, recipients, err)
+	}
+	var extension map[string]any
+	if err = p.pool.QueryRow(ctx, `SELECT payload FROM im_wukong_message_extensions WHERE message_id=$1`, messageID).Scan(&extension); err != nil {
+		t.Fatal(err)
+	}
+	if extension["adminRecall"] != true || extension["revoker"] != "system" || extension["moderatedBy"] != "admin-integration" || extension["moderationReason"] != "违规内容" {
+		t.Fatalf("unexpected admin recall extension: %+v", extension)
+	}
+	var recallCommands int
+	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_wukong_outbox WHERE operation=$1 AND aggregate_id=$2 AND payload->>'event'='message.recalled'`, wukong.OperationBusinessEvent, conversationID).Scan(&recallCommands); err != nil || recallCommands != 1 {
+		t.Fatalf("recall commands=%d error=%v", recallCommands, err)
+	}
+	already, _, _, recipients, err = p.AdminRecallWukongMessage(ctx, ownerID, peerID, strconv.FormatInt(messageID, 10), "admin-integration", "重复调用", recalledAt.Add(time.Minute))
+	if err != nil || !already || len(recipients) != 0 {
+		t.Fatalf("idempotent admin recall already=%v recipients=%v error=%v", already, recipients, err)
+	}
+	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_wukong_outbox WHERE operation=$1 AND aggregate_id=$2 AND payload->>'event'='message.recalled'`, wukong.OperationBusinessEvent, conversationID).Scan(&recallCommands); err != nil || recallCommands != 1 {
+		t.Fatalf("idempotent recall commands=%d error=%v", recallCommands, err)
+	}
+	if _, _, _, _, err = p.AdminRecallWukongMessage(ctx, ownerID, "missing-friend", strconv.FormatInt(messageID, 10), "admin-integration", "错误会话", recalledAt); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("wrong conversation error=%v", err)
+	}
+	expiredMessageID := messageID + 1
+	expiresAt := recalledAt.Add(-time.Minute)
+	insertTestWukongMessage(t, p, ctx, expiredMessageID, "admin-recall-expired-"+suffix, conversationID, peerID, 8, wukong.ContentTypeText, &expiresAt, "", createdAt)
+	if _, _, _, _, err = p.AdminRecallWukongMessage(ctx, ownerID, peerID, strconv.FormatInt(expiredMessageID, 10), "admin-integration", "过期消息", recalledAt); !errors.Is(err, ErrConflict) {
+		t.Fatalf("expired message recall error=%v", err)
+	}
+	if err = p.SetFriendBlock(ctx, ownerID, peerID, true, updatedAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := p.ListAdminUserBlocks(ctx, ownerID)
+	if err != nil || len(blocks) != 1 || blocks[0].Remark != "原好友备注" {
+		t.Fatalf("blocks=%+v error=%v", blocks, err)
+	}
+	first, err := p.UpsertClientDevice(ctx, ownerID, ClientDevice{InstallationID: "stable-install", Platform: "android", DeviceName: "Pixel 9", DeviceModel: "tokay", OSVersion: "Android 16", AppVersion: "1.0.0", LastSeenAt: updatedAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := p.UpsertClientDevice(ctx, ownerID, ClientDevice{InstallationID: "stable-install", Platform: "android", DeviceName: "Pixel 9 Pro", DeviceModel: "komodo", OSVersion: "Android 16", AppVersion: "1.1.0", LastSeenAt: updatedAt.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.FirstSeenAt.Equal(first.FirstSeenAt) || second.DeviceName != "Pixel 9 Pro" || second.AppVersion != "1.1.0" || !second.LastSeenAt.After(first.LastSeenAt) {
+		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+	devices, err := p.ListClientDevices(ctx, ownerID)
+	if err != nil || len(devices) != 1 || devices[0].InstallationID != "stable-install" {
+		t.Fatalf("devices=%+v error=%v", devices, err)
+	}
+}
+
 func insertTestWukongMessage(t *testing.T, p *Postgres, ctx context.Context, messageID int64, clientMsgNo, conversationID, senderID string, messageSeq int64, contentType int, expiresAt *time.Time, mediaID string, at time.Time) *model.Message {
 	t.Helper()
 	channelID := conversationID

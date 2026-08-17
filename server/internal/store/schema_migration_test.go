@@ -226,6 +226,21 @@ func TestUserGenderSchemaIsVersioned(t *testing.T) {
 	}
 }
 
+func TestAdminUserCompletionSchemaIsVersioned(t *testing.T) {
+	if schemaVersion < 54 {
+		t.Fatalf("admin user completion requires schema version 54 or newer, got %d", schemaVersion)
+	}
+	for _, fragment := range []string{
+		"ALTER TABLE im_blocks ADD COLUMN IF NOT EXISTS remark",
+		"CREATE TABLE IF NOT EXISTS im_client_devices",
+		"im_client_devices_user_recent_idx",
+	} {
+		if !strings.Contains(normalizedSchema, fragment) {
+			t.Fatalf("admin user completion schema is missing %q", fragment)
+		}
+	}
+}
+
 func TestTemporaryBusinessMembershipSchemaIsVersioned(t *testing.T) {
 	if schemaVersion < 39 {
 		t.Fatalf("temporary business membership requires schema version 39 or newer, got %d", schemaVersion)

@@ -3,27 +3,38 @@ package model
 import "time"
 
 type User struct {
-	ID                     string     `json:"id"`
-	Phone                  string     `json:"phone,omitempty"`
-	Name                   string     `json:"name"`
-	Handle                 string     `json:"handle"`
-	HandleChangeCount      int        `json:"handleChangeCount"`
-	HandleChangesRemaining int        `json:"handleChangesRemaining"`
-	AllowSearchByHandle    bool       `json:"allowSearchByHandle"`
-	AllowSearchByPhone     bool       `json:"allowSearchByPhone"`
-	Signature              string     `json:"signature"`
-	Gender                 string     `json:"gender"`
-	AvatarMediaID          string     `json:"avatarMediaId,omitempty"`
-	AvatarURL              string     `json:"avatarUrl,omitempty"`
-	Banned                 bool       `json:"banned"`
-	BannedUntil            *time.Time `json:"bannedUntil,omitempty"`
-	Online                 bool       `json:"online"`
-	OnlineConnections      int        `json:"onlineConnections"`
-	LastOfflineAt          *time.Time `json:"lastOfflineAt,omitempty"`
-	Remark                 string     `json:"remark,omitempty"`
-	Tags                   []string   `json:"tags,omitempty"`
-	CreatedAt              time.Time  `json:"createdAt"`
-	DeletedAt              *time.Time `json:"deletedAt,omitempty"`
+	ID                     string               `json:"id"`
+	Phone                  string               `json:"phone,omitempty"`
+	Name                   string               `json:"name"`
+	Handle                 string               `json:"handle"`
+	HandleChangeCount      int                  `json:"handleChangeCount"`
+	HandleChangesRemaining int                  `json:"handleChangesRemaining"`
+	AllowSearchByHandle    bool                 `json:"allowSearchByHandle"`
+	AllowSearchByPhone     bool                 `json:"allowSearchByPhone"`
+	Signature              string               `json:"signature"`
+	Gender                 string               `json:"gender"`
+	AvatarMediaID          string               `json:"avatarMediaId,omitempty"`
+	AvatarURL              string               `json:"avatarUrl,omitempty"`
+	Banned                 bool                 `json:"banned"`
+	BannedUntil            *time.Time           `json:"bannedUntil,omitempty"`
+	Online                 bool                 `json:"online"`
+	OnlineConnections      int                  `json:"onlineConnections"`
+	LastOfflineAt          *time.Time           `json:"lastOfflineAt,omitempty"`
+	LatestDevice           *ClientDeviceSummary `json:"latestDevice,omitempty"`
+	Remark                 string               `json:"remark,omitempty"`
+	Tags                   []string             `json:"tags,omitempty"`
+	CreatedAt              time.Time            `json:"createdAt"`
+	DeletedAt              *time.Time           `json:"deletedAt,omitempty"`
+}
+
+type ClientDeviceSummary struct {
+	InstallationID string     `json:"installationId"`
+	Platform       string     `json:"platform"`
+	DeviceName     string     `json:"deviceName"`
+	DeviceModel    string     `json:"deviceModel"`
+	OSVersion      string     `json:"osVersion"`
+	AppVersion     string     `json:"appVersion"`
+	LastSeenAt     *time.Time `json:"lastSeenAt,omitempty"`
 }
 
 type FriendRequest struct {
@@ -103,21 +114,25 @@ type GroupInvite struct {
 }
 
 type Message struct {
-	ID             string                   `json:"id"`
-	ClientMsgID    string                   `json:"clientMsgId"`
-	ConversationID string                   `json:"conversationId"`
-	SenderID       string                   `json:"senderId"`
-	Seq            int64                    `json:"conversationSeq"`
-	Type           string                   `json:"type"`
-	Body           map[string]any           `json:"body"`
-	ReplyToID      string                   `json:"replyToId,omitempty"`
-	RecalledAt     *time.Time               `json:"recalledAt,omitempty"`
-	ExpiresAt      *time.Time               `json:"expiresAt,omitempty"`
-	ExpiredAt      *time.Time               `json:"expiredAt,omitempty"`
-	EditedAt       *time.Time               `json:"editedAt,omitempty"`
-	EditVersion    int                      `json:"editVersion"`
-	Reactions      []MessageReactionSummary `json:"reactions,omitempty"`
-	CreatedAt      time.Time                `json:"createdAt"`
+	ID               string                   `json:"id"`
+	ClientMsgID      string                   `json:"clientMsgId"`
+	ConversationID   string                   `json:"conversationId"`
+	SenderID         string                   `json:"senderId"`
+	Seq              int64                    `json:"conversationSeq"`
+	Type             string                   `json:"type"`
+	Body             map[string]any           `json:"body"`
+	ReplyToID        string                   `json:"replyToId,omitempty"`
+	RecalledAt       *time.Time               `json:"recalledAt,omitempty"`
+	ExpiresAt        *time.Time               `json:"expiresAt,omitempty"`
+	ExpiredAt        *time.Time               `json:"expiredAt,omitempty"`
+	EditedAt         *time.Time               `json:"editedAt,omitempty"`
+	EditVersion      int                      `json:"editVersion"`
+	AdminRecall      bool                     `json:"adminRecall,omitempty"`
+	ModeratedBy      string                   `json:"moderatedBy,omitempty"`
+	ModerationReason string                   `json:"moderationReason,omitempty"`
+	ModeratedAt      *time.Time               `json:"moderatedAt,omitempty"`
+	Reactions        []MessageReactionSummary `json:"reactions,omitempty"`
+	CreatedAt        time.Time                `json:"createdAt"`
 }
 
 type ScheduledMessage struct {

@@ -72,6 +72,7 @@ export interface UserRecord {
   handle: string;
   remark: string;
   tags: string[];
+  gender: 'unspecified' | 'male' | 'female';
   handleChangeCount: number;
   bannedUntil?: string;
   avatar: string;
@@ -84,6 +85,17 @@ export interface UserRecord {
   lastSeen: string;
   deviceCount: number;
   messageCount: number;
+  latestDevice?: ClientDeviceSummary;
+}
+
+export interface ClientDeviceSummary {
+  installationId: string;
+  platform: ClientPlatform;
+  deviceName: string;
+  deviceModel: string;
+  osVersion: string;
+  appVersion: string;
+  lastSeenAt: string;
 }
 
 export interface AdminUserDeviceRecord {
@@ -96,6 +108,61 @@ export interface AdminUserDeviceRecord {
   soundEnabled: boolean;
   vibrationEnabled: boolean;
   updatedAt: string;
+}
+
+export interface AdminClientDeviceRecord extends ClientDeviceSummary {
+  userId: string;
+  firstSeenAt: string;
+}
+
+export interface AdminUserDevices {
+  items: AdminClientDeviceRecord[];
+  pushRegistrations: AdminUserDeviceRecord[];
+}
+
+export interface AdminUserRelationRecord {
+  user: UserRecord;
+  remark: string;
+  tags: string[];
+  relationshipCreatedAt: string;
+  relationshipUpdatedAt: string;
+}
+
+export interface AdminUserBlockRecord {
+  user: UserRecord;
+  remark: string;
+  blockedAt: string;
+}
+
+export interface AdminDirectMessageRecord {
+  id: string;
+  clientMsgId: string;
+  conversationId: string;
+  conversationSeq: number;
+  senderId: string;
+  sender?: UserRecord;
+  type: string;
+  body: Record<string, unknown>;
+  replyToId: string;
+  createdAt: string;
+  recalledAt?: string;
+  expiresAt?: string;
+  expiredAt?: string;
+  editedAt?: string;
+  editVersion: number;
+  encrypted: false;
+  deleted: boolean;
+  adminRecall: boolean;
+  moderatedBy: string;
+  moderationReason: string;
+  moderatedAt?: string;
+}
+
+export interface AdminDirectMessagePage {
+  conversationId: string;
+  participants: Record<string, UserRecord>;
+  items: AdminDirectMessageRecord[];
+  nextBeforeSeq?: number;
 }
 
 export interface AdminSystemMessageResult {
@@ -732,11 +799,14 @@ export interface AdminApi {
   deleteAdministratorRole(id: string, reason: string): Promise<void>;
   getDashboard(): Promise<DashboardData>;
   getUsers(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<UserRecord>>;
+  createUser(input: { phone: string; name: string; password: string; gender: UserRecord['gender'] }, reason: string): Promise<UserRecord>;
   getUserOverview(id: string): Promise<UserOverview>;
-  getUserFriends(id: string): Promise<UserRecord[]>;
-  getUserBlockedUsers(id: string): Promise<UserRecord[]>;
-  getUserDevices(id: string): Promise<AdminUserDeviceRecord[]>;
-  sendUserSystemMessage(id: string, content: string, reason: string): Promise<AdminSystemMessageResult>;
+  getUserFriends(id: string): Promise<AdminUserRelationRecord[]>;
+  getUserBlockedUsers(id: string): Promise<AdminUserBlockRecord[]>;
+  getUserDevices(id: string): Promise<AdminUserDevices>;
+  getUserFriendMessages(userId: string, friendId: string, beforeSeq?: number, limit?: number): Promise<AdminDirectMessagePage>;
+  recallUserFriendMessage(userId: string, friendId: string, messageId: string, reason: string): Promise<void>;
+  sendUserSystemMessage(id: string, senderUid: string, content: string, reason: string): Promise<AdminSystemMessageResult>;
   banUser(id: string, reason: string, durationHours: number): Promise<void>;
   unbanUser(id: string, reason: string): Promise<void>;
   getGroups(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<GroupRecord>>;
