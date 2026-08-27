@@ -263,6 +263,9 @@ describe('青蛙呱呱管理后台', () => {
     window.history.replaceState({}, '', '/users');
     render(<App />);
     await screen.findByText('林夏');
+    expect(screen.getByText('13800001001')).toBeInTheDocument();
+    expect(screen.queryByText('u_10291')).not.toBeInTheDocument();
+    expect(screen.queryByText('linxia')).not.toBeInTheDocument();
     await userEvent.click(screen.getAllByRole('button', { name: '查看详情' })[0]);
     const dialog = await screen.findByRole('dialog', { name: '用户详情' });
     expect(within(dialog).getByText('在青蛙呱呱保持联系')).toBeInTheDocument();

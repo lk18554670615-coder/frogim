@@ -1603,16 +1603,34 @@ tbody tr:focus-within {
 }
 
 .users-table {
-  min-width: 1240px;
+  min-width: 1040px;
+  table-layout: fixed;
 }
 
-.users-table th:nth-child(1) { width: 210px; }
-.users-table th:nth-child(2) { width: 150px; }
-.users-table th:nth-child(3) { width: 110px; }
-.users-table th:nth-child(4) { width: 170px; }
-.users-table th:nth-child(5) { width: 230px; }
-.users-table th:nth-child(6) { width: 160px; }
-.users-table th:nth-child(7) { width: 210px; }
+.users-table th:nth-child(1) { width: 230px; }
+.users-table th:nth-child(2) { width: 110px; }
+.users-table th:nth-child(3) { width: 175px; }
+.users-table th:nth-child(4) { width: 225px; }
+.users-table th:nth-child(5) { width: 150px; }
+.users-table th:nth-child(6) { width: 190px; }
+.users-table .identity > span,
+.users-table .device-summary {
+  min-width: 0;
+  overflow: hidden;
+}
+.users-table .identity strong,
+.users-table .identity small,
+.users-table .device-summary strong,
+.users-table .device-summary small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.device-summary strong {
+  color: var(--color-ink);
+  font-weight: 620;
+}
 .user-actions { min-width: 190px; gap: 2px; }
 .user-actions .row-action { min-height: 32px; padding-inline: 9px; }
 

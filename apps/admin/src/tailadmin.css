@@ -1405,6 +1405,24 @@ textarea:focus-visible {
     overflow-wrap: anywhere;
   }
 
+  .user-card-device-fact {
+    grid-column: 1 / -1;
+    padding-right: 0 !important;
+  }
+
+  .user-card-device-fact dd,
+  .user-card-device-fact .device-summary {
+    min-width: 0;
+  }
+
+  .user-card-device-fact .device-summary strong,
+  .user-card-device-fact .device-summary small {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .user-card-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
