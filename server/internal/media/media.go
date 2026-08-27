@@ -27,6 +27,22 @@ var (
 	ErrForbidden   = errors.New("forbidden")
 )
 
+type clientPlatformKey struct{}
+
+// WithClientPlatform records a validated client class for selecting a
+// preconfigured development signer. It never accepts an endpoint from the
+// request, and unknown values deliberately fall back to the normal public
+// endpoint.
+func WithClientPlatform(ctx context.Context, platform string) context.Context {
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	switch platform {
+	case "android", "ios", "web", "macos":
+		return context.WithValue(ctx, clientPlatformKey{}, platform)
+	default:
+		return context.WithValue(ctx, clientPlatformKey{}, "")
+	}
+}
+
 type Metadata interface {
 	CreateMedia(store.Media) error
 	CompleteMedia(string, string, int64, string) error
@@ -37,13 +53,14 @@ type CleanupMetadata interface {
 	CompleteMediaCleanup(context.Context, string, error, time.Time) error
 }
 type Service struct {
-	client   *minio.Client
-	signer   *minio.Client
-	bucket   string
-	metadata Metadata
-	maxBytes int64
-	mu       sync.Mutex
-	ready    bool
+	client        *minio.Client
+	signer        *minio.Client
+	androidSigner *minio.Client
+	bucket        string
+	metadata      Metadata
+	maxBytes      int64
+	mu            sync.Mutex
+	ready         bool
 }
 type Prepared struct {
 	MediaID   string            `json:"mediaId"`
@@ -54,7 +71,7 @@ type Prepared struct {
 	ExpiresAt time.Time         `json:"expiresAt"`
 }
 
-func New(endpoint, publicEndpoint, access, secret, bucket, region string, secure, publicSecure bool, maxBytes int64, m Metadata) (*Service, error) {
+func New(endpoint, publicEndpoint, androidPublicEndpoint, access, secret, bucket, region string, secure, publicSecure bool, maxBytes int64, m Metadata) (*Service, error) {
 	s := &Service{bucket: bucket, metadata: m, maxBytes: maxBytes}
 	if endpoint == "" {
 		return s, nil
@@ -72,7 +89,22 @@ func New(endpoint, publicEndpoint, access, secret, bucket, region string, secure
 		}
 		s.signer = signer
 	}
+	if androidPublicEndpoint != "" {
+		signer, signerErr := minio.New(androidPublicEndpoint, &minio.Options{Creds: credentials.NewStaticV4(access, secret, ""), Secure: publicSecure, Region: region})
+		if signerErr != nil {
+			return nil, signerErr
+		}
+		s.androidSigner = signer
+	}
 	return s, nil
+}
+
+func (s *Service) signerFor(ctx context.Context) *minio.Client {
+	platform, _ := ctx.Value(clientPlatformKey{}).(string)
+	if platform == "android" && s.androidSigner != nil {
+		return s.androidSigner
+	}
+	return s.signer
 }
 func token() string { var b [12]byte; _, _ = rand.Read(b[:]); return hex.EncodeToString(b[:]) }
 func allowed(mime string) bool {
@@ -122,7 +154,7 @@ func (s *Service) Prepare(ctx context.Context, uid, mime, name string, size int6
 		return Prepared{}, err
 	}
 	expires := 15 * time.Minute
-	url, err := s.signer.PresignedPutObject(ctx, s.bucket, key, expires)
+	url, err := s.signerFor(ctx).PresignedPutObject(ctx, s.bucket, key, expires)
 	if err != nil {
 		return Prepared{}, err
 	}
@@ -240,7 +272,7 @@ func (s *Service) DownloadURL(ctx context.Context, id string) (string, error) {
 	if err = s.ensure(ctx); err != nil {
 		return "", err
 	}
-	url, err := s.signer.PresignedGetObject(ctx, s.bucket, m.ObjectKey, 15*time.Minute, nil)
+	url, err := s.signerFor(ctx).PresignedGetObject(ctx, s.bucket, m.ObjectKey, 15*time.Minute, nil)
 	if err != nil {
 		return "", err
 	}

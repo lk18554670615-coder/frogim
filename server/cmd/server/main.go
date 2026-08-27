@@ -16,6 +16,7 @@ import (
 	"github.com/linli/im/server/internal/httpapi"
 	"github.com/linli/im/server/internal/push"
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/wukong"
 )
 
 func main() {
@@ -27,16 +28,29 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	var persistence store.Persistence = store.Memory{}
-	if cfg.Mode == "full" {
-		pg, err := store.NewPostgres(ctx, cfg.DatabaseURL)
-		if err != nil {
-			slog.Error("postgres unavailable", "error", err)
-			os.Exit(1)
-		}
-		persistence = pg
+	pg, err := store.NewPostgresWithOptions(ctx, cfg.DatabaseURL, store.PostgresOptions{
+		MaxConns: int32(cfg.DBMaxConns), MinConns: int32(cfg.DBMinConns),
+		MaxConnLifetime: cfg.DBMaxConnLifetime, MaxConnIdleTime: cfg.DBMaxConnIdleTime,
+		HealthCheckPeriod: cfg.DBHealthCheckPeriod, StatementTimeout: cfg.DBStatementTimeout,
+	})
+	if err != nil {
+		slog.Error("postgres unavailable", "error", err)
+		os.Exit(1)
 	}
-	if cfg.RedisURL != "" && cfg.Mode == "full" {
+	seededAdmin, err := pg.BootstrapAdmin(ctx, store.AdminAccountCreate{
+		ID: cfg.AdminID, Email: cfg.AdminEmail, DisplayName: cfg.AdminID,
+		PasswordHash: cfg.AdminPasswordHash, RoleID: cfg.AdminRole, At: time.Now().UTC(),
+	})
+	if err != nil {
+		slog.Error("administrator bootstrap failed", "error", err)
+		pg.Close()
+		os.Exit(1)
+	}
+	if seededAdmin {
+		slog.Info("initial database administrator created", "event", "admin.bootstrap.created", "admin_id", cfg.AdminID)
+	}
+	var persistence store.Persistence = pg
+	if cfg.RedisURL != "" {
 		wrapped, err := store.NewWithRedis(persistence, cfg.RedisURL)
 		if err != nil {
 			slog.Error("invalid redis URL", "error", err)
@@ -58,45 +72,78 @@ func main() {
 			slog.Error("push provider unavailable", "error", err)
 			os.Exit(1)
 		}
-		go push.NewDispatcher(outbox, provider).Run(workerCtx)
+		go push.NewDispatcherWithOptions(outbox, provider, push.DispatcherOptions{Workers: cfg.PushWorkers, BatchSize: cfg.PushBatchSize, Interval: 100 * time.Millisecond}).Run(workerCtx)
 	}
-	if cfg.DevMode {
+	if cfg.SeedDemo {
 		if err := application.SeedDemo(); err != nil {
 			slog.Error("seed demo", "error", err)
 			os.Exit(1)
 		}
 	}
 	api := httpapi.New(cfg, application)
+	if err = api.SetupError(); err != nil {
+		slog.Error("IM transport unavailable", "error", err)
+		os.Exit(1)
+	}
+	webhookStore, ok := persistence.(wukong.WebhookEventStore)
+	if !ok {
+		slog.Error("persistent WuKongIM webhook store is unavailable")
+		os.Exit(1)
+	}
+	webhookServer, err := wukong.ListenWebhookGRPC(cfg.WukongGRPCAddr, webhookStore)
+	if err != nil {
+		slog.Error("WuKongIM webhook listener unavailable", "error", err)
+		os.Exit(1)
+	}
+	go func() {
+		slog.Info("WuKongIM gRPC webhook started", "event", "wukong.webhook.started", "addr", cfg.WukongGRPCAddr)
+		if serveErr := webhookServer.Serve(); serveErr != nil {
+			slog.Error("WuKongIM webhook server failed", "error", serveErr)
+			os.Exit(1)
+		}
+	}()
+	outboxStore, ok := persistence.(wukong.OutboxStore)
+	if !ok {
+		slog.Error("persistent WuKongIM outbox store is unavailable")
+		os.Exit(1)
+	}
+	wukongClient, clientErr := wukong.NewClient(wukong.Config{
+		APIURL: cfg.WukongAPIURL, ManagerURL: cfg.WukongManagerURL,
+		ManagerToken: cfg.WukongManagerToken, Timeout: 5 * time.Second, MaxRetries: 2,
+	})
+	if clientErr != nil {
+		slog.Error("WuKongIM outbox client unavailable", "error", clientErr)
+		os.Exit(1)
+	}
+	worker, workerErr := wukong.NewOutboxWorker(outboxStore, wukongClient)
+	if workerErr != nil {
+		slog.Error("WuKongIM outbox worker unavailable", "error", workerErr)
+		os.Exit(1)
+	}
+	go worker.Run(workerCtx)
+	reconcileStore, reconcileOK := persistence.(wukong.ReconcileStore)
+	if !reconcileOK {
+		slog.Error("persistent WuKongIM reconcile store is unavailable")
+		os.Exit(1)
+	}
+	reconciler, reconcileErr := wukong.NewReconciler(reconcileStore, wukongClient)
+	if reconcileErr != nil {
+		slog.Error("WuKongIM reconciler unavailable", "error", reconcileErr)
+		os.Exit(1)
+	}
+	go reconciler.Run(workerCtx)
 	go api.RunMediaCleanup(workerCtx)
 	go application.RunCallTimeouts(workerCtx)
 	go application.RunFriendRequestTimeouts(workerCtx)
 	go application.RunAnnouncementScheduler(workerCtx)
 	go application.RunScheduledMessages(workerCtx)
 	go application.RunMessageExpirations(workerCtx)
+	go application.RunRuntimeCleanup(workerCtx, cfg.RuntimeCleanupInterval, store.RetentionPolicy{Outbox: cfg.OutboxRetention})
+	go application.RunBusinessMembershipExpirations(workerCtx)
 	go application.RunBanExpirations(workerCtx)
-	if events, ok := persistence.(store.EventSubscriber); ok {
-		go func() {
-			for workerCtx.Err() == nil {
-				if err := events.RunEvents(workerCtx, application.Deliver); err != nil && workerCtx.Err() == nil {
-					slog.Warn("realtime event subscriber stopped", "error", err)
-					time.Sleep(time.Second)
-				}
-			}
-		}()
-	}
-	if bus, ok := persistence.(store.EphemeralBus); ok {
-		go func() {
-			for workerCtx.Err() == nil {
-				if err := bus.RunEphemeral(workerCtx, application.Deliver); err != nil && workerCtx.Err() == nil {
-					slog.Warn("ephemeral event subscriber stopped", "error", err)
-					time.Sleep(time.Second)
-				}
-			}
-		}()
-	}
 	server := &http.Server{Addr: cfg.Addr, Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 75 * time.Second, MaxHeaderBytes: 1 << 20}
 	go func() {
-		slog.Info("IM 服务已启动", "event", "server.started", "addr", cfg.Addr, "mode", cfg.Mode)
+		slog.Info("IM 服务已启动", "event", "server.started", "addr", cfg.Addr, "messageTransport", "wukongim")
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("server failed", "error", err)
 			os.Exit(1)
@@ -105,6 +152,9 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
+	if webhookServer != nil {
+		webhookServer.Stop()
+	}
 	shutdown, cancelShutdown := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelShutdown()
 	if err := server.Shutdown(shutdown); err != nil {
@@ -130,24 +180,35 @@ func configuredPushProvider(cfg config.Config) (push.Provider, error) {
 		}
 		return provider, nil
 	}
+	var provider push.Provider
 	switch cfg.PushProvider {
 	case "log":
-		return push.Log{}, nil
+		provider = push.Log{}
 	case "webhook":
-		return push.Webhook{URL: cfg.PushWebhookURL, Token: cfg.PushWebhookToken}, nil
+		provider = push.Webhook{URL: cfg.PushWebhookURL, Token: cfg.PushWebhookToken}
 	case "getui":
-		return getui(false), nil
+		provider = getui(false)
 	case "apns_voip":
-		return apnsVoIP()
+		apns, err := apnsVoIP()
+		if err != nil {
+			return nil, err
+		}
+		provider = apns
 	case "getui_apns_voip":
 		apns, err := apnsVoIP()
 		if err != nil {
 			return nil, err
 		}
-		return push.MultiProvider{getui(true), apns}, nil
+		provider = push.MultiProvider{getui(true), apns}
 	default:
-		return push.Noop{}, nil
+		provider = push.Noop{}
 	}
+	if cfg.WebPushEnabled() {
+		provider = push.MultiProvider{provider, &push.WebPush{
+			PublicKey: cfg.WebPushPublicKey, PrivateKey: cfg.WebPushPrivateKey, Subject: cfg.WebPushSubject,
+		}}
+	}
+	return provider, nil
 }
 
 func configureLogging() {

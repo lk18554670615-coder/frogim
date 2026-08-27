@@ -180,7 +180,7 @@ func getuiNotification(item store.OutboxItem) (string, string, map[string]any) {
 	}
 	switch item.EventType {
 	case "message.created":
-		return "邻里通讯", messageSummary(navigation["messageType"]), navigation
+		return "青蛙呱呱", messageSummary(navigation["messageType"]), navigation
 	case "friend.request":
 		return "新的好友请求", "你收到一条好友申请", navigation
 	case "announcement.published":
@@ -199,7 +199,7 @@ func getuiNotification(item store.OutboxItem) (string, string, map[string]any) {
 		}
 		return "语音通话", "你收到一个语音通话邀请", navigation
 	default:
-		return "邻里通讯", "你有一条新通知", navigation
+		return "青蛙呱呱", "你有一条新通知", navigation
 	}
 }
 
@@ -217,6 +217,22 @@ func messageSummary(value any) string {
 		return "你收到一个位置"
 	case "contact":
 		return "你收到一张联系人名片"
+	case "chat_history":
+		return "你收到一条聊天记录"
+	case "system":
+		return "你收到一条系统消息"
+	case "sticker":
+		return "你收到一个表情"
+	case "moment":
+		return "你收到一条朋友圈分享"
+	case "call":
+		return "你有一条通话记录"
+	case "live":
+		return "你收到一条直播互动"
+	case "support":
+		return "你收到一条客服消息"
+	case "screenshot":
+		return "你收到一条截屏提示"
 	default:
 		return "你收到一条新消息"
 	}

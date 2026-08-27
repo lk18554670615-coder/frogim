@@ -2,10 +2,8 @@ package store
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"time"
 
 	"github.com/linli/im/server/internal/model"
@@ -31,12 +29,20 @@ type QueryStore interface {
 	ListFriendRequests(context.Context, string) ([]*model.FriendRequest, error)
 	ListGroupInvites(context.Context, string, string, int) ([]map[string]any, error)
 	ListConversations(context.Context, string, int) ([]map[string]any, error)
-	ListMessages(context.Context, string, string, int64, int) ([]*model.Message, error)
-	ListForwardMessages(context.Context, string, []string) ([]*model.Message, error)
-	ListSync(context.Context, string, int64, int) ([]*model.SyncEvent, int64, bool, error)
 	CanAccessConversation(context.Context, string, string) (bool, error)
 	ConversationMemberIDs(context.Context, string) ([]string, error)
 	ListConversationMembers(context.Context, string, string) ([]*model.ConversationMember, error)
+}
+
+type ConversationKindStore interface {
+	ConversationKind(context.Context, string) (string, error)
+}
+
+// ConversationMemberPageStore keeps large group membership reads bounded.
+// The legacy list method remains available for internal compatibility, while
+// public APIs should use this cursor-based interface.
+type ConversationMemberPageStore interface {
+	ListConversationMembersPage(context.Context, string, string, string, int) ([]*model.ConversationMember, string, error)
 }
 
 // AdminQueryStore keeps potentially large moderation tables out of the legacy
@@ -48,11 +54,39 @@ type AdminQueryStore interface {
 	ListAdminMessages(context.Context, string, string, string, int) ([]*model.Message, int64, string, error)
 	ListAdminMedia(context.Context, string, string, string, int) ([]*model.Media, int64, string, error)
 }
-
-// AdminDashboardStore 提供后台首页使用的聚合统计。实现必须直接从持久化数据计算，
-// 不能依赖前端演示值或进程内的过期快照。
-type AdminDashboardStore interface {
-	AdminDashboard(context.Context) (map[string]any, error)
+type AdminUserRelation struct {
+	User                  *model.User `json:"user"`
+	Remark                string      `json:"remark"`
+	Tags                  []string    `json:"tags"`
+	RelationshipCreatedAt time.Time   `json:"relationshipCreatedAt"`
+	RelationshipUpdatedAt time.Time   `json:"relationshipUpdatedAt"`
+}
+type AdminUserBlock struct {
+	User      *model.User `json:"user"`
+	Remark    string      `json:"remark"`
+	BlockedAt time.Time   `json:"blockedAt"`
+}
+type ClientDevice struct {
+	UserID         string    `json:"userId,omitempty"`
+	InstallationID string    `json:"installationId"`
+	Platform       string    `json:"platform"`
+	DeviceName     string    `json:"deviceName"`
+	DeviceModel    string    `json:"deviceModel"`
+	OSVersion      string    `json:"osVersion"`
+	AppVersion     string    `json:"appVersion"`
+	FirstSeenAt    time.Time `json:"firstSeenAt"`
+	LastSeenAt     time.Time `json:"lastSeenAt"`
+}
+type AdminUserManagementStore interface {
+	CreateAdminPasswordUser(context.Context, string, string, string, string, string, string, string, time.Time) (*model.User, error)
+	ListAdminUserFriends(context.Context, string) ([]AdminUserRelation, error)
+	ListAdminUserBlocks(context.Context, string) ([]AdminUserBlock, error)
+	FindDirectConversation(context.Context, string, string) (*model.Conversation, error)
+	AdminRecallWukongMessage(context.Context, string, string, string, string, string, time.Time) (bool, string, int64, []string, error)
+}
+type ClientDeviceStore interface {
+	UpsertClientDevice(context.Context, string, ClientDevice) (*ClientDevice, error)
+	ListClientDevices(context.Context, string) ([]ClientDevice, error)
 }
 type AdminFriendship struct {
 	UserID, FriendUserID, UserName, FriendName string
@@ -62,7 +96,23 @@ type AdminFeedback struct {
 	ID, UserID, UserName, Category, Content, Contact string
 	CreatedAt                                        time.Time
 }
+type ClientDiagnostic struct {
+	ID          string    `json:"id"`
+	UserID      string    `json:"userId"`
+	Kind        string    `json:"kind"`
+	Name        string    `json:"name"`
+	Fingerprint string    `json:"fingerprint"`
+	Platform    string    `json:"platform"`
+	AppVersion  string    `json:"appVersion"`
+	DurationMS  *int64    `json:"durationMs,omitempty"`
+	OccurredAt  time.Time `json:"occurredAt"`
+}
+type ClientDiagnosticsStore interface {
+	RecordClientDiagnostic(context.Context, ClientDiagnostic) error
+	ListAdminClientDiagnostics(context.Context, string, string, int) ([]ClientDiagnostic, map[string]any, error)
+}
 type AdminOperationsStore interface {
+	AdminStats(context.Context) (map[string]any, error)
 	ListAdminGroups(context.Context, string, string, string, int) ([]map[string]any, int64, string, error)
 	ListAdminFriendships(context.Context, string, string, int) ([]AdminFriendship, int64, string, error)
 	ListAdminFeedback(context.Context, string, string, string, int) ([]AdminFeedback, int64, string, error)
@@ -73,6 +123,33 @@ type AdminOperationsStore interface {
 	ListAdminGroupMembers(context.Context, string, string, string, int) ([]*model.ConversationMember, int64, string, error)
 	RecordAdminAudit(context.Context, *model.AuditEntry) error
 }
+
+type AdminGroupMemberAction struct {
+	ActorID, ConversationID, TargetID, Action, Role, Reason string
+	MutedUntil                                              *time.Time
+	At                                                      time.Time
+}
+
+type AdminGroupModerationStore interface {
+	AdminApplyGroupMemberAction(context.Context, AdminGroupMemberAction) error
+}
+type AdminGroupBlacklistEntry struct {
+	User         *model.User `json:"user"`
+	OperatorID   string      `json:"operatorId"`
+	OperatorName string      `json:"operatorName"`
+	Remark       string      `json:"remark"`
+	CreatedAt    time.Time   `json:"createdAt"`
+}
+type AdminGroupManagementStore interface {
+	ListAdminGroupsScoped(context.Context, string, string, string, string, int) ([]map[string]any, int64, string, error)
+	ListAdminGroupBlacklist(context.Context, string) ([]AdminGroupBlacklistEntry, error)
+	AdminAddGroupBlacklist(context.Context, string, string, string, string, time.Time) error
+	AdminRemoveGroupBlacklist(context.Context, string, string, string, string, time.Time) error
+	AdminSetGroupMuteAll(context.Context, string, string, bool, string, time.Time) error
+	AdminSetGroupBan(context.Context, string, string, bool, string, time.Time) error
+	AdminRecallGroupWukongMessage(context.Context, string, string, string, string, time.Time) (bool, int64, []string, error)
+	LoadAdminGroupMessageExtensions(context.Context, string, []string) (map[string]map[string]any, error)
+}
 type AuthStore interface {
 	LoginOrCreateUser(context.Context, string, string, string, time.Time) (*model.User, error)
 }
@@ -81,28 +158,107 @@ type PasswordAuthStore interface {
 	PasswordCredentials(context.Context, string) (*model.User, string, error)
 	UpdatePassword(context.Context, string, string, time.Time) error
 }
+type AdminAccount struct {
+	ID                string     `json:"id"`
+	Email             string     `json:"email"`
+	DisplayName       string     `json:"displayName"`
+	PasswordHash      string     `json:"-"`
+	RoleID            string     `json:"roleId"`
+	RoleName          string     `json:"roleName"`
+	Status            string     `json:"status"`
+	CreatedBy         string     `json:"createdBy"`
+	Permissions       []string   `json:"permissions"`
+	AuthVersion       int64      `json:"-"`
+	LastLoginAt       *time.Time `json:"lastLoginAt,omitempty"`
+	DisabledAt        *time.Time `json:"disabledAt,omitempty"`
+	PasswordUpdatedAt time.Time  `json:"passwordUpdatedAt"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	UpdatedAt         time.Time  `json:"updatedAt"`
+}
+type AdminRole struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description"`
+	CreatedBy    string    `json:"createdBy"`
+	BuiltIn      bool      `json:"builtIn"`
+	Permissions  []string  `json:"permissions"`
+	AccountCount int64     `json:"accountCount"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+type AdminAccountCreate struct {
+	ID, Email, DisplayName, PasswordHash, RoleID, CreatedBy string
+	At                                                      time.Time
+}
+type AdminAccountUpdate struct {
+	ID, ActorID                string
+	Email, DisplayName, RoleID *string
+	Status                     *string
+	At                         time.Time
+}
+type AdminRoleCreate struct {
+	ID, Name, Description, CreatedBy string
+	Permissions                      []string
+	At                               time.Time
+}
+type AdminRoleUpdate struct {
+	ID, Name, Description, ActorID string
+	Permissions                    []string
+	At                             time.Time
+}
+type AdminIdentityStore interface {
+	AdminAccountByEmail(context.Context, string) (*AdminAccount, error)
+	AdminAccountByID(context.Context, string) (*AdminAccount, error)
+	ListAdminAccounts(context.Context, string, string, string, int) ([]*AdminAccount, int64, string, error)
+	CreateAdminAccount(context.Context, AdminAccountCreate) (*AdminAccount, error)
+	UpdateAdminAccount(context.Context, AdminAccountUpdate) (*AdminAccount, error)
+	UpdateAdminAccountPassword(context.Context, string, string, time.Time) error
+	RecordAdminAccountLogin(context.Context, string, time.Time) error
+	ListAdminRoles(context.Context) ([]*AdminRole, error)
+	CreateAdminRole(context.Context, AdminRoleCreate) (*AdminRole, error)
+	UpdateAdminRole(context.Context, AdminRoleUpdate) (*AdminRole, error)
+	DeleteAdminRole(context.Context, string) error
+}
 type RefreshSessionStore interface {
 	CreateRefreshSession(context.Context, string, string, []byte, time.Time) error
 	RotateRefreshSession(context.Context, string, string, []byte, time.Time, string) error
 	RevokeRefreshSession(context.Context, string, string) error
 	RevokeUserRefreshSessions(context.Context, string) error
 }
+type QRLoginTicket struct {
+	ID, UserID, ClientPlatform, ClientName string
+	QRTokenHash, PollTokenHash             []byte
+	CreatedAt, ExpiresAt                   time.Time
+	ConfirmedAt, ConsumedAt                *time.Time
+}
+
+func (ticket QRLoginTicket) State(at time.Time) string {
+	if ticket.ConsumedAt != nil {
+		return "consumed"
+	}
+	if !at.Before(ticket.ExpiresAt) {
+		return "expired"
+	}
+	if ticket.ConfirmedAt != nil {
+		return "confirmed"
+	}
+	return "pending"
+}
+
+type QRLoginStore interface {
+	CreateQRLoginTicket(context.Context, QRLoginTicket) error
+	GetQRLoginTicketByToken(context.Context, []byte) (QRLoginTicket, error)
+	ConfirmQRLoginTicket(context.Context, []byte, string, time.Time) (QRLoginTicket, error)
+	ConsumeQRLoginTicket(context.Context, string, []byte, time.Time) (QRLoginTicket, bool, error)
+}
 type AccountStore interface {
 	AccountDeleted(context.Context, string) (bool, error)
 	DeleteAccount(context.Context, string, time.Time) (bool, error)
 }
 
-type Memory struct{}
-
-func (Memory) Load(context.Context) (*model.State, error) { return model.NewState(), nil }
-func (Memory) Save(context.Context, *model.State) error   { return nil }
-func (Memory) Ping(context.Context) error                 { return nil }
-func (Memory) Close()                                     {}
-
 type WithRedis struct {
 	base  Persistence
 	redis *redis.Client
-	id    string
 }
 
 func NewWithRedis(base Persistence, url string) (*WithRedis, error) {
@@ -110,9 +266,7 @@ func NewWithRedis(base Persistence, url string) (*WithRedis, error) {
 	if err != nil {
 		return nil, err
 	}
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return &WithRedis{base: base, redis: redis.NewClient(opts), id: hex.EncodeToString(b[:])}, nil
+	return &WithRedis{base: base, redis: redis.NewClient(opts)}, nil
 }
 func (p *WithRedis) Load(ctx context.Context) (*model.State, error) { return p.base.Load(ctx) }
 func (p *WithRedis) Save(ctx context.Context, s *model.State) error { return p.base.Save(ctx, s) }
@@ -173,24 +327,6 @@ func (p *WithRedis) ListConversations(ctx context.Context, uid string, n int) ([
 	}
 	return nil, ErrUnsupported
 }
-func (p *WithRedis) ListMessages(ctx context.Context, uid, cid string, before int64, n int) ([]*model.Message, error) {
-	if s, ok := p.base.(QueryStore); ok {
-		return s.ListMessages(ctx, uid, cid, before, n)
-	}
-	return nil, ErrUnsupported
-}
-func (p *WithRedis) ListForwardMessages(ctx context.Context, uid string, ids []string) ([]*model.Message, error) {
-	if s, ok := p.base.(QueryStore); ok {
-		return s.ListForwardMessages(ctx, uid, ids)
-	}
-	return nil, ErrUnsupported
-}
-func (p *WithRedis) ListSync(ctx context.Context, uid string, after int64, n int) ([]*model.SyncEvent, int64, bool, error) {
-	if s, ok := p.base.(QueryStore); ok {
-		return s.ListSync(ctx, uid, after, n)
-	}
-	return nil, 0, false, ErrUnsupported
-}
 func (p *WithRedis) CanAccessConversation(ctx context.Context, uid, cid string) (bool, error) {
 	if s, ok := p.base.(QueryStore); ok {
 		return s.CanAccessConversation(ctx, uid, cid)
@@ -214,12 +350,6 @@ func (p *WithRedis) ListAdminUsers(ctx context.Context, q, status, cursor string
 		return s.ListAdminUsers(ctx, q, status, cursor, limit)
 	}
 	return nil, 0, "", ErrUnsupported
-}
-func (p *WithRedis) AdminDashboard(ctx context.Context) (map[string]any, error) {
-	if s, ok := p.base.(AdminDashboardStore); ok {
-		return s.AdminDashboard(ctx)
-	}
-	return nil, ErrUnsupported
 }
 func (p *WithRedis) ListAdminReports(ctx context.Context, q, status, cursor string, limit int) ([]*model.Report, int64, string, error) {
 	if s, ok := p.base.(AdminQueryStore); ok {
@@ -251,6 +381,12 @@ func (p *WithRedis) ListAdminFriendships(ctx context.Context, q, cursor string, 
 	}
 	return nil, 0, "", ErrUnsupported
 }
+func (p *WithRedis) AdminStats(ctx context.Context) (map[string]any, error) {
+	if s, ok := p.base.(AdminOperationsStore); ok {
+		return s.AdminStats(ctx)
+	}
+	return nil, ErrUnsupported
+}
 func (p *WithRedis) ListAdminGroups(ctx context.Context, q, status, cursor string, limit int) ([]map[string]any, int64, string, error) {
 	if s, ok := p.base.(AdminOperationsStore); ok {
 		return s.ListAdminGroups(ctx, q, status, cursor, limit)
@@ -262,6 +398,18 @@ func (p *WithRedis) ListAdminFeedback(ctx context.Context, q, status, cursor str
 		return s.ListAdminFeedback(ctx, q, status, cursor, limit)
 	}
 	return nil, 0, "", ErrUnsupported
+}
+func (p *WithRedis) RecordClientDiagnostic(ctx context.Context, diagnostic ClientDiagnostic) error {
+	if s, ok := p.base.(ClientDiagnosticsStore); ok {
+		return s.RecordClientDiagnostic(ctx, diagnostic)
+	}
+	return ErrUnsupported
+}
+func (p *WithRedis) ListAdminClientDiagnostics(ctx context.Context, kind, platform string, limit int) ([]ClientDiagnostic, map[string]any, error) {
+	if s, ok := p.base.(ClientDiagnosticsStore); ok {
+		return s.ListAdminClientDiagnostics(ctx, kind, platform, limit)
+	}
+	return nil, nil, ErrUnsupported
 }
 func (p *WithRedis) AdminPushStatus(ctx context.Context) (map[string]any, error) {
 	if s, ok := p.base.(AdminOperationsStore); ok {
@@ -299,6 +447,13 @@ func (p *WithRedis) RecordAdminAudit(ctx context.Context, entry *model.AuditEntr
 	}
 	return ErrUnsupported
 }
+
+func (p *WithRedis) AdminApplyGroupMemberAction(ctx context.Context, action AdminGroupMemberAction) error {
+	if s, ok := p.base.(AdminGroupModerationStore); ok {
+		return s.AdminApplyGroupMemberAction(ctx, action)
+	}
+	return ErrUnsupported
+}
 func (p *WithRedis) LoginOrCreateUser(ctx context.Context, phone, name, id string, created time.Time) (*model.User, error) {
 	if s, ok := p.base.(AuthStore); ok {
 		return s.LoginOrCreateUser(ctx, phone, name, id, created)
@@ -316,6 +471,72 @@ func (p *WithRedis) PasswordCredentials(ctx context.Context, phone string) (*mod
 		return s.PasswordCredentials(ctx, phone)
 	}
 	return nil, "", ErrUnsupported
+}
+func (p *WithRedis) AdminAccountByEmail(ctx context.Context, email string) (*AdminAccount, error) {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.AdminAccountByEmail(ctx, email)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) AdminAccountByID(ctx context.Context, id string) (*AdminAccount, error) {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.AdminAccountByID(ctx, id)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) ListAdminAccounts(ctx context.Context, query, status, cursor string, limit int) ([]*AdminAccount, int64, string, error) {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.ListAdminAccounts(ctx, query, status, cursor, limit)
+	}
+	return nil, 0, "", ErrUnsupported
+}
+func (p *WithRedis) CreateAdminAccount(ctx context.Context, input AdminAccountCreate) (*AdminAccount, error) {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.CreateAdminAccount(ctx, input)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) UpdateAdminAccount(ctx context.Context, input AdminAccountUpdate) (*AdminAccount, error) {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.UpdateAdminAccount(ctx, input)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) UpdateAdminAccountPassword(ctx context.Context, id, hash string, at time.Time) error {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.UpdateAdminAccountPassword(ctx, id, hash, at)
+	}
+	return ErrUnsupported
+}
+func (p *WithRedis) RecordAdminAccountLogin(ctx context.Context, id string, at time.Time) error {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.RecordAdminAccountLogin(ctx, id, at)
+	}
+	return ErrUnsupported
+}
+func (p *WithRedis) ListAdminRoles(ctx context.Context) ([]*AdminRole, error) {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.ListAdminRoles(ctx)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) CreateAdminRole(ctx context.Context, input AdminRoleCreate) (*AdminRole, error) {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.CreateAdminRole(ctx, input)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) UpdateAdminRole(ctx context.Context, input AdminRoleUpdate) (*AdminRole, error) {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.UpdateAdminRole(ctx, input)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) DeleteAdminRole(ctx context.Context, id string) error {
+	if s, ok := p.base.(AdminIdentityStore); ok {
+		return s.DeleteAdminRole(ctx, id)
+	}
+	return ErrUnsupported
 }
 func (p *WithRedis) UpdatePassword(ctx context.Context, phone, hash string, updated time.Time) error {
 	if s, ok := p.base.(PasswordAuthStore); ok {
@@ -347,6 +568,30 @@ func (p *WithRedis) RevokeUserRefreshSessions(ctx context.Context, uid string) e
 	}
 	return ErrUnsupported
 }
+func (p *WithRedis) CreateQRLoginTicket(ctx context.Context, ticket QRLoginTicket) error {
+	if s, ok := p.base.(QRLoginStore); ok {
+		return s.CreateQRLoginTicket(ctx, ticket)
+	}
+	return ErrUnsupported
+}
+func (p *WithRedis) GetQRLoginTicketByToken(ctx context.Context, hash []byte) (QRLoginTicket, error) {
+	if s, ok := p.base.(QRLoginStore); ok {
+		return s.GetQRLoginTicketByToken(ctx, hash)
+	}
+	return QRLoginTicket{}, ErrUnsupported
+}
+func (p *WithRedis) ConfirmQRLoginTicket(ctx context.Context, hash []byte, uid string, at time.Time) (QRLoginTicket, error) {
+	if s, ok := p.base.(QRLoginStore); ok {
+		return s.ConfirmQRLoginTicket(ctx, hash, uid, at)
+	}
+	return QRLoginTicket{}, ErrUnsupported
+}
+func (p *WithRedis) ConsumeQRLoginTicket(ctx context.Context, id string, hash []byte, at time.Time) (QRLoginTicket, bool, error) {
+	if s, ok := p.base.(QRLoginStore); ok {
+		return s.ConsumeQRLoginTicket(ctx, id, hash, at)
+	}
+	return QRLoginTicket{}, false, ErrUnsupported
+}
 func (p *WithRedis) AccountDeleted(ctx context.Context, uid string) (bool, error) {
 	if s, ok := p.base.(AccountStore); ok {
 		return s.AccountDeleted(ctx, uid)
@@ -360,27 +605,465 @@ func (p *WithRedis) DeleteAccount(ctx context.Context, uid string, at time.Time)
 	return false, ErrUnsupported
 }
 
-// MessageStore is implemented by the normalized PostgreSQL repository. All
-// returned sync events and outbox rows are committed atomically with the message.
-type MessageStore interface {
-	SendMessage(context.Context, MessageInput) (*model.Message, bool, []*model.SyncEvent, error)
-}
 type MessageCollaborationStore interface {
-	EditMessage(context.Context, string, string, string, map[string]any, time.Time, time.Duration) (*model.Message, bool, error)
+	EditMessage(context.Context, string, string, string, map[string]any, map[string]any, time.Time, time.Duration) (*model.Message, bool, error)
 	ListMessageEdits(context.Context, string, string) ([]*model.MessageEdit, error)
 	SetMessageReaction(context.Context, string, string, string, bool, time.Time) (model.MessageReactionSummary, bool, error)
 	SetGroupMessagePin(context.Context, string, string, string, bool, time.Time) (*model.MessagePin, bool, error)
 	ListGroupMessagePins(context.Context, string, string, int64, int) ([]*model.MessagePin, error)
-	SearchConversationMessages(context.Context, string, string, string, int64, int) ([]*model.Message, error)
 }
-type MessageInput struct {
-	UserID, ConversationID, ClientMsgID, Type, ReplyToID string
-	Body                                                 map[string]any
-	Mentions                                             []string
-	MentionAll                                           bool
-	MessageID                                            string
-	CreatedAt                                            int64
-	ExpiresAt                                            *time.Time
+
+// WukongMessageRouteInput contains only the business-policy fields needed to
+// authorize a server-originated persistent message. The message body itself is
+// never returned from or stored by this adapter.
+type WukongMessageRouteInput struct {
+	UserID, ConversationID, Type, ReplyToID, Text string
+	Mentions                                      []string
+	MentionAll                                    bool
+}
+
+// WukongClientMessageInput is the canonical policy input for a message sent
+// directly by an official SDK. Unlike WukongMessageRouteInput, the SDK only
+// knows the wire channel and therefore cannot supply a business conversation.
+type WukongClientMessageInput struct {
+	UserID, ChannelID, Type, ReplyToID, Text, ResourceID, MediaMIME string
+	ChannelType                                                     uint8
+	ContentType                                                     int
+	Mentions                                                        []string
+	MentionAll                                                      bool
+}
+
+type WukongMessageRoute struct {
+	ChannelID   string
+	ChannelType uint8
+}
+
+type WukongMessageRouteStore interface {
+	AuthorizeWukongMessage(context.Context, WukongMessageRouteInput) (WukongMessageRoute, error)
+}
+
+type WukongClientMessagePolicyStore interface {
+	AuthorizeWukongClientMessage(context.Context, WukongClientMessageInput) (WukongMessageRoute, error)
+}
+
+type WukongChannelRouteStore interface {
+	ResolveWukongChannel(context.Context, string, string) (WukongMessageRoute, error)
+}
+
+type WukongMessageRef struct {
+	MessageID, ConversationID, ChannelID string
+	ChannelType                          uint8
+}
+
+type WukongForwardSourceStore interface {
+	ListWukongForwardMessageRefs(context.Context, string, []string) ([]WukongMessageRef, error)
+}
+
+type WukongMessageExtensionStore interface {
+	LoadWukongMessageExtensions(context.Context, string, []string) (map[string]map[string]any, error)
+	SyncWukongMessageExtras(context.Context, string, string, uint8, int64, int) ([]WukongMessageExtra, error)
+}
+
+type WukongReminderStore interface {
+	SyncWukongReminders(context.Context, string, int64, int) ([]WukongReminder, error)
+	DoneWukongReminders(context.Context, string, []int64) error
+}
+
+type WukongReminder struct {
+	ID, MessageSeq, Version            int64
+	UserID, MessageID, ChannelID, Text string
+	Publisher                          string
+	ChannelType                        uint8
+	Type, IsLocate, Done, NeedUpload   int
+	Data                               map[string]any
+}
+
+type WukongMessageExtra struct {
+	MessageID, ChannelID, Revoker string
+	ChannelType                   uint8
+	MessageSeq                    int64
+	Read, ReadCount, UnreadCount  int
+	Recalled, Pinned              bool
+	EditedAt                      int64
+	SyncVersion                   int64
+	EditedBody, Extra             map[string]any
+}
+
+type WukongChannelInfo struct {
+	ChannelID, Name, Remark, AvatarURL, Category string
+	ChannelType                                  uint8
+	ShowNick, Top, Save, Mute, Forbidden         int
+	Invite, Status, Follow, Online, Receipt      int
+	LastOffline, Version                         int64
+	CreatedAt, UpdatedAt                         time.Time
+	Extra                                        map[string]any
+}
+
+type WukongChannelMember struct {
+	ChannelID, UserID, Name, Remark, AvatarURL, Role string
+	ChannelType                                      uint8
+	Status, Deleted                                  int
+	Version                                          int64
+	CreatedAt, UpdatedAt                             time.Time
+	Extra                                            map[string]any
+}
+
+type WukongChannelDataStore interface {
+	LoadWukongChannelInfo(context.Context, string, string, uint8) (WukongChannelInfo, error)
+	SyncWukongChannelMembers(context.Context, string, string, uint8, int64, int) ([]WukongChannelMember, error)
+}
+
+type WukongSystemUser struct {
+	UserID, Name, SyncStatus, UpdatedBy, Reason string
+	Enabled                                     bool
+	UpdatedAt                                   time.Time
+}
+
+// WukongSystemUserStore owns the desired system-account set returned by the
+// WuKongIM datasource and the audited, outbox-backed admin mutations.
+type WukongSystemUserStore interface {
+	WukongSystemUIDs(context.Context) ([]string, error)
+	IsWukongSystemUser(context.Context, string) (bool, error)
+	ListWukongSystemUsers(context.Context) ([]*WukongSystemUser, error)
+	SetWukongSystemUser(context.Context, string, bool, string, string, time.Time) (*WukongSystemUser, error)
+}
+
+type RobotMenu struct {
+	Command string `json:"cmd"`
+	Remark  string `json:"remark"`
+	Type    string `json:"type"`
+}
+
+type RobotProfile struct {
+	UserID, Name, Username, Placeholder, UpdatedBy, Reason string
+	Enabled, InlineOn                                      bool
+	Version                                                int64
+	Menus                                                  []RobotMenu
+	UpdatedAt                                              time.Time
+}
+
+// RobotStore owns administrator-configured robot metadata and exposes only
+// robots that belong to conversations the current user can access.
+type RobotStore interface {
+	ListRobotProfiles(context.Context) ([]*RobotProfile, error)
+	RobotProfilesForConversation(context.Context, string, string) ([]*RobotProfile, error)
+	ConfigureRobotProfile(context.Context, RobotProfile, string, string, time.Time) (*RobotProfile, error)
+}
+
+// BusinessChannel is the business-owned metadata for WuKongIM channel types
+// that are not ordinary person/group conversations. Message bodies and channel
+// sequence numbers remain exclusively owned by WuKongIM.
+type BusinessChannel struct {
+	ID, Category, Name, AvatarURL, OwnerID, ParentID   string
+	Description, Visibility, JoinPolicy, PostingPolicy string
+	ChannelType, SlowModeSeconds, MemberCount          int
+	Ban, Disband, SendBan, AllowStranger               bool
+	Subscribed                                         bool
+	Role                                               string
+	Metadata                                           map[string]any
+	CreatedAt, UpdatedAt                               time.Time
+}
+
+type BusinessChannelMember struct {
+	ChannelID, UserID, Name, Handle, AvatarURL, Role string
+	MutedUntil, ExpiresAt                            *time.Time
+	JoinedAt, UpdatedAt                              time.Time
+}
+
+type BusinessChannelAccess struct {
+	ChannelID, UserID, Name, Handle, AvatarURL string
+	AccessType, Reason, CreatedBy              string
+	CreatedAt                                  time.Time
+}
+
+type BusinessChannelCreate struct {
+	ID, ActorID, Name, AvatarURL, ParentID             string
+	Description, Visibility, JoinPolicy, PostingPolicy string
+	ChannelType, SlowModeSeconds                       int
+	Metadata                                           map[string]any
+}
+
+type BusinessChannelUpdate struct {
+	ActorID                               string
+	Name, AvatarURL, Description          *string
+	Visibility, JoinPolicy, PostingPolicy *string
+	SlowModeSeconds                       *int
+	Ban, Disband, SendBan, AllowStranger  *bool
+	Metadata                              map[string]any
+	MetadataSet                           bool
+	At                                    time.Time
+}
+
+type BusinessChannelMemberAction struct {
+	ActorID, ChannelID, TargetID, Action, Role string
+	ChannelType                                int
+	MutedUntil, ExpiresAt                      *time.Time
+	At                                         time.Time
+}
+
+type BusinessChannelAccessAction struct {
+	ActorID, ChannelID, TargetID, AccessType, Reason string
+	ChannelType                                      int
+	Enabled                                          bool
+	At                                               time.Time
+}
+
+type BusinessChannelStore interface {
+	CreateBusinessChannel(context.Context, BusinessChannelCreate, time.Time) (*BusinessChannel, error)
+	GetBusinessChannel(context.Context, string, string, int) (*BusinessChannel, error)
+	ListBusinessChannels(context.Context, string, string, string, int, string, int) ([]*BusinessChannel, string, error)
+	UpdateBusinessChannel(context.Context, string, int, BusinessChannelUpdate) (*BusinessChannel, error)
+	ApplyBusinessChannelMemberAction(context.Context, BusinessChannelMemberAction) error
+	ListBusinessChannelMembers(context.Context, string, string, int, string, int) ([]*BusinessChannelMember, string, error)
+	ApplyBusinessChannelAccess(context.Context, BusinessChannelAccessAction) error
+	AuthorizeBusinessChannelSend(context.Context, string, string, int, time.Time) error
+}
+
+// BusinessChannelAdminStore exposes business-owned channel metadata to the
+// audited management API. It deliberately does not expose WuKongIM manager
+// credentials or message bodies.
+type BusinessChannelAdminStore interface {
+	ListAdminBusinessChannels(context.Context, string, string, int, string, int) ([]*BusinessChannel, int64, string, error)
+	AdminBusinessChannelOwner(context.Context, string, int) (string, error)
+	ListAdminBusinessChannelAccess(context.Context, string, int, string, string, int) ([]*BusinessChannelAccess, string, error)
+}
+
+type BusinessMembershipExpiryStore interface {
+	ExpireBusinessChannelMemberships(context.Context, time.Time, int) (int, error)
+}
+
+type SupportSkillGroup struct {
+	ID, Name, Description, RoutingStrategy string
+	MaxConcurrentPerAgent                  int
+	Enabled                                bool
+	QueueCount, AvailableAgents            int
+	CreatedAt, UpdatedAt                   time.Time
+}
+
+type SupportAgent struct {
+	UserID, Name, Handle, AvatarURL, Status string
+	MaxConcurrent, ActiveSessions           int
+	SkillGroupIDs                           []string
+	LastAssignedAt                          *time.Time
+	CreatedAt, UpdatedAt                    time.Time
+}
+
+type SupportSession struct {
+	ID, VisitorID, VisitorName, SkillGroupID, SkillGroupName string
+	ChannelID, Subject, Status, AssignedAgentID, AgentName   string
+	ChannelType, QueuePosition, TransferCount, Rating        int
+	Metadata                                                 map[string]any
+	RatingComment, EndedBy                                   string
+	QueueEnteredAt, CreatedAt, UpdatedAt                     time.Time
+	AssignedAt, EndedAt, RatedAt                             *time.Time
+}
+
+type SupportSkillGroupInput struct {
+	ID, Name, Description, RoutingStrategy, ActorID string
+	MaxConcurrentPerAgent                           int
+	Enabled                                         bool
+}
+
+type SupportAgentInput struct {
+	UserID, Status string
+	MaxConcurrent  int
+	SkillGroupIDs  []string
+}
+
+type SupportSessionCreate struct {
+	ID, VisitorID, SkillGroupID, Subject string
+	ChannelType                          int
+	Metadata                             map[string]any
+	At                                   time.Time
+}
+
+type SupportStore interface {
+	SaveSupportSkillGroup(context.Context, SupportSkillGroupInput, time.Time) (*SupportSkillGroup, error)
+	ListSupportSkillGroups(context.Context, bool) ([]*SupportSkillGroup, error)
+	SaveSupportAgent(context.Context, SupportAgentInput, time.Time) (*SupportAgent, error)
+	ListSupportAgents(context.Context, string) ([]*SupportAgent, error)
+	SetSupportAgentStatus(context.Context, string, string, time.Time) (*SupportAgent, *SupportSession, error)
+	CreateSupportSession(context.Context, SupportSessionCreate) (*SupportSession, bool, error)
+	GetSupportSession(context.Context, string, string) (*SupportSession, error)
+	ListSupportSessions(context.Context, string, string, string, int) ([]*SupportSession, error)
+	ClaimSupportSession(context.Context, string, string, time.Time) (*SupportSession, error)
+	TransferSupportSession(context.Context, string, string, string, time.Time) (*SupportSession, error)
+	EndSupportSession(context.Context, string, string, time.Time) (*SupportSession, error)
+	RateSupportSession(context.Context, string, string, int, string, time.Time) (*SupportSession, error)
+}
+
+type SupportAdminStore interface {
+	ListAdminSupportSessions(context.Context, string, string, string, string, int) ([]*SupportSession, int64, string, error)
+}
+
+type WukongPluginRelease struct {
+	PluginNo, Name, FileName, Version, SHA256, KeyID, Status string
+	LastActor, LastReason                                    string
+	NodeID                                                   uint64
+	Methods                                                  []string
+	SizeBytes                                                int64
+	Manifest                                                 map[string]any
+	InstalledAt                                              *time.Time
+	UpdatedAt                                                time.Time
+}
+
+type WukongPluginEvent struct {
+	ID                                      int64
+	PluginNo, Action, Status, Actor, Reason string
+	Details                                 map[string]any
+	CreatedAt                               time.Time
+}
+
+type WukongPluginLifecycleStore interface {
+	SaveWukongPluginRelease(context.Context, WukongPluginRelease) (*WukongPluginRelease, error)
+	GetWukongPluginRelease(context.Context, string) (*WukongPluginRelease, error)
+	ListWukongPluginReleases(context.Context) ([]*WukongPluginRelease, error)
+	RecordWukongPluginEvent(context.Context, WukongPluginEvent) error
+	ListWukongPluginEvents(context.Context, string, int) ([]*WukongPluginEvent, error)
+}
+
+type MomentMedia struct {
+	ID   string
+	MIME string
+}
+
+type MomentComment struct {
+	ID, MomentID, AuthorID, AuthorName, AuthorAvatarURL string
+	ParentID, ReplyToUserID, ReplyToName, Content       string
+	CreatedAt                                           time.Time
+}
+
+type Moment struct {
+	ID, AuthorID, AuthorName, AuthorAvatarURL string
+	Content, MediaKind, Visibility, Status    string
+	Media                                     []MomentMedia
+	VisibleUserIDs                            []string
+	Location                                  map[string]any
+	LikeCount, CommentCount                   int
+	LikedByMe                                 bool
+	Comments                                  []*MomentComment
+	CreatedAt, UpdatedAt                      time.Time
+}
+
+type MomentCreate struct {
+	ID, AuthorID, Content, MediaKind, Visibility string
+	MediaIDs, VisibleUserIDs                     []string
+	Location                                     map[string]any
+	At                                           time.Time
+}
+
+type MomentReminder struct {
+	ID                                        int64
+	MomentID, ActorID, ActorName, ActorAvatar string
+	Type, CommentID, MomentPreview            string
+	ReadAt                                    *time.Time
+	CreatedAt                                 time.Time
+}
+
+type MomentStore interface {
+	CreateMoment(context.Context, MomentCreate) (*Moment, error)
+	ListMoments(context.Context, string, string, string, int) ([]*Moment, string, error)
+	SetMomentLike(context.Context, string, string, bool, time.Time) (*Moment, error)
+	CreateMomentComment(context.Context, string, string, string, string, string, time.Time) (*MomentComment, error)
+	DeleteMoment(context.Context, string, string, time.Time) error
+	DeleteMomentComment(context.Context, string, string, string, time.Time) error
+	ListMomentReminders(context.Context, string, int) ([]*MomentReminder, error)
+	MarkMomentRemindersRead(context.Context, string, []int64, time.Time) error
+	CanAccessMoment(context.Context, string, string) (bool, error)
+}
+
+type StickerCategory struct {
+	ID, Name             string
+	SortOrder            int
+	Enabled              bool
+	CreatedAt, UpdatedAt time.Time
+}
+
+type StickerItem struct {
+	ID, PackID, Name, MediaID, MIME, Emoji, Status string
+	SortOrder                                      int
+	Metadata                                       map[string]any
+	Favorite                                       bool
+	UseCount                                       int
+	UsedAt                                         *time.Time
+	CreatedAt, UpdatedAt                           time.Time
+}
+
+type StickerPack struct {
+	ID, CategoryID, CategoryName, Name, Description string
+	CoverMediaID, CoverMIME, Status                 string
+	SortOrder                                       int
+	Favorite                                        bool
+	Items                                           []*StickerItem
+	CreatedBy, ReviewedBy, ReviewReason             string
+	ReviewedAt                                      *time.Time
+	CreatedAt, UpdatedAt                            time.Time
+}
+
+type StickerCategoryInput struct {
+	ID, Name  string
+	SortOrder int
+	Enabled   bool
+	At        time.Time
+}
+
+type StickerPackInput struct {
+	ID, CategoryID, Name, Description, CoverMediaID, Status, ActorID string
+	SortOrder                                                        int
+	At                                                               time.Time
+}
+
+type StickerItemInput struct {
+	ID, PackID, Name, MediaID, Emoji, Status string
+	SortOrder                                int
+	Metadata                                 map[string]any
+	At                                       time.Time
+}
+
+type StickerStore interface {
+	SaveStickerCategory(context.Context, StickerCategoryInput) (*StickerCategory, error)
+	ListStickerCategories(context.Context, bool) ([]*StickerCategory, error)
+	SaveStickerPack(context.Context, StickerPackInput) (*StickerPack, error)
+	ReviewStickerPack(context.Context, string, string, string, string, time.Time) (*StickerPack, error)
+	SaveStickerItem(context.Context, StickerItemInput) (*StickerItem, error)
+	ListStickerPacks(context.Context, string, string, bool) ([]*StickerPack, error)
+	GetStickerPack(context.Context, string, string, bool) (*StickerPack, error)
+	SetStickerPackFavorite(context.Context, string, string, bool, time.Time) error
+	SetStickerFavorite(context.Context, string, string, bool, time.Time) error
+	RecordStickerUse(context.Context, string, string, time.Time) error
+	ListRecentStickers(context.Context, string, int) ([]*StickerItem, error)
+	ListFavoriteStickers(context.Context, string, int) ([]*StickerItem, error)
+	CanUseSticker(context.Context, string, string) (bool, error)
+}
+
+// ContentModerationStore provides bounded operational views for user-created
+// moments and sticker packs. Public visibility rules must never be reused for
+// these administrator-only reads.
+type ContentModerationStore interface {
+	ListAdminMoments(context.Context, string, string, string, int) ([]*Moment, int64, string, error)
+	ModerateMoment(context.Context, string, string, string, string, time.Time) error
+	ListAdminStickerPacks(context.Context, string, string, string, int) ([]*StickerPack, int64, string, error)
+}
+
+func (p *WithRedis) ListAdminMoments(ctx context.Context, query, status, cursor string, limit int) ([]*Moment, int64, string, error) {
+	if s, ok := p.base.(ContentModerationStore); ok {
+		return s.ListAdminMoments(ctx, query, status, cursor, limit)
+	}
+	return nil, 0, "", ErrUnsupported
+}
+
+func (p *WithRedis) ModerateMoment(ctx context.Context, momentID, status, actor, reason string, at time.Time) error {
+	if s, ok := p.base.(ContentModerationStore); ok {
+		return s.ModerateMoment(ctx, momentID, status, actor, reason, at)
+	}
+	return ErrUnsupported
+}
+
+func (p *WithRedis) ListAdminStickerPacks(ctx context.Context, query, status, cursor string, limit int) ([]*StickerPack, int64, string, error) {
+	if s, ok := p.base.(ContentModerationStore); ok {
+		return s.ListAdminStickerPacks(ctx, query, status, cursor, limit)
+	}
+	return nil, 0, "", ErrUnsupported
 }
 
 type ScheduledMessageStore interface {
@@ -433,6 +1116,15 @@ type MediaStore interface {
 	GetMedia(context.Context, string) (Media, error)
 	CanAccessMedia(context.Context, string, string) (bool, error)
 }
+type MediaChannelBinding struct {
+	MediaID     string
+	ChannelID   string
+	ChannelType uint8
+	SenderID    string
+}
+type MediaChannelBindingStore interface {
+	BindMediaChannel(context.Context, MediaChannelBinding) error
+}
 type MediaCleanupItem struct {
 	ID, ObjectKey string
 }
@@ -463,6 +1155,9 @@ type FriendStore interface {
 	UpdateFriendMetadata(context.Context, string, string, FriendMetadata, time.Time) error
 	SetFriendBlock(context.Context, string, string, bool, time.Time) error
 	ExpireFriendRequests(context.Context, time.Time, int) ([]*model.FriendRequest, error)
+}
+type DirectConversationStore interface {
+	GetOrCreateDirectConversation(context.Context, string, string, string, time.Time) (*model.Conversation, bool, error)
 }
 type GroupStore interface {
 	CreateGroupRecord(context.Context, string, string, string, []string, time.Time) (*model.Conversation, error)
@@ -523,14 +1218,18 @@ type AnnouncementInput struct {
 	ActorID       string
 }
 type CallInvite struct {
-	ID, ConversationID, CallerID, CalleeID, MediaType string
-	InvitedAt, ExpiresAt                              time.Time
+	ID, ConversationID, Kind, CallerID, CalleeID, MediaType string
+	ParticipantIDs                                          []string
+	InvitedAt, ExpiresAt                                    time.Time
 }
 type UserProfileUpdate struct {
-	Name          *string `json:"name,omitempty"`
-	Handle        *string `json:"handle,omitempty"`
-	Signature     *string `json:"signature,omitempty"`
-	AvatarMediaID *string `json:"avatarMediaId,omitempty"`
+	Name                *string `json:"name,omitempty"`
+	Handle              *string `json:"handle,omitempty"`
+	Signature           *string `json:"signature,omitempty"`
+	Gender              *string `json:"gender,omitempty"`
+	AvatarMediaID       *string `json:"avatarMediaId,omitempty"`
+	AllowSearchByHandle *bool   `json:"allowSearchByHandle,omitempty"`
+	AllowSearchByPhone  *bool   `json:"allowSearchByPhone,omitempty"`
 }
 
 func (p *WithRedis) InviteCall(ctx context.Context, in CallInvite) (*model.CallSession, bool, error) {
@@ -538,6 +1237,12 @@ func (p *WithRedis) InviteCall(ctx context.Context, in CallInvite) (*model.CallS
 		return s.InviteCall(ctx, in)
 	}
 	return nil, false, ErrUnsupported
+}
+func (p *WithRedis) ConversationKind(ctx context.Context, cid string) (string, error) {
+	if s, ok := p.base.(ConversationKindStore); ok {
+		return s.ConversationKind(ctx, cid)
+	}
+	return "", ErrUnsupported
 }
 func (p *WithRedis) TransitionCall(ctx context.Context, id, uid, action, reason string, at time.Time) (*model.CallSession, bool, error) {
 	if s, ok := p.base.(CallStore); ok {
@@ -640,16 +1345,39 @@ type OutboxStore interface {
 	CompletePush(context.Context, int64, error) error
 }
 
+func (p *WithRedis) ListConversationMembersPage(ctx context.Context, uid, cid, cursor string, n int) ([]*model.ConversationMember, string, error) {
+	if s, ok := p.base.(ConversationMemberPageStore); ok {
+		return s.ListConversationMembersPage(ctx, uid, cid, cursor, n)
+	}
+	return nil, "", ErrUnsupported
+}
+
+type RetentionPolicy struct {
+	Outbox time.Duration
+}
+
+type RuntimeMaintenanceStore interface {
+	CleanupRuntimeData(context.Context, RetentionPolicy, int) (int64, error)
+}
+
+type RuntimeStats struct {
+	DBMaxConnections, DBTotalConnections, DBIdleConnections, DBAcquiredConnections int32
+	DBAcquireCount, DBEmptyAcquireCount, DBCanceledAcquireCount                    int64
+	DBAcquireDurationSeconds                                                       float64
+	RedisTotalConnections, RedisIdleConnections, RedisTimeouts                     uint32
+	PushPending, WukongOutboxPending, WukongWebhookPending                         int64
+	WukongOutboxFailed, WukongWebhookFailed                                        int64
+	OldestPushSeconds, OldestWukongOutboxSeconds                                   float64
+	OldestWukongWebhookSeconds                                                     float64
+}
+
+type RuntimeStatsStore interface {
+	RuntimeStats(context.Context) (RuntimeStats, error)
+}
+
 // PushDeviceInvalidator 按设备 ID 停用推送服务商已确认失效的 token，避免后续持续投递。
 type PushDeviceInvalidator interface {
 	InvalidatePushDevices(context.Context, []string) error
-}
-type EventSubscriber interface {
-	RunEvents(context.Context, func([]string, string, map[string]any)) error
-}
-type EphemeralBus interface {
-	PublishEphemeral(context.Context, []string, string, map[string]any) error
-	RunEphemeral(context.Context, func([]string, string, map[string]any)) error
 }
 
 // RateLimiterStore provides one atomic rate-limit budget shared by every IM
@@ -668,36 +1396,45 @@ type PolicyStore interface {
 	RuntimeSettings(context.Context) (map[string]any, error)
 	UpdateRuntimeSettings(context.Context, string, map[string]any, time.Time) error
 }
-type ephemeralEvent struct {
-	Origin  string         `json:"origin"`
-	Users   []string       `json:"users"`
-	Type    string         `json:"type"`
-	Payload map[string]any `json:"payload"`
+
+// ClientVersionPolicy is the durable rollout policy for one released client.
+// Install identifiers are evaluated by the application and are never stored.
+type ClientVersionPolicy struct {
+	Platform          string    `json:"platform"`
+	MinimumVersion    string    `json:"minimumVersion"`
+	LatestVersion     string    `json:"latestVersion"`
+	ForceUpdate       bool      `json:"forceUpdate"`
+	RolloutPercentage int       `json:"rolloutPercentage"`
+	ReleaseNotes      string    `json:"releaseNotes"`
+	DownloadURL       string    `json:"downloadUrl"`
+	UpdatedBy         string    `json:"updatedBy"`
+	UpdatedAt         time.Time `json:"updatedAt"`
 }
 
-func (p *WithRedis) PublishEphemeral(ctx context.Context, users []string, typ string, payload map[string]any) error {
-	raw, err := json.Marshal(ephemeralEvent{Origin: p.id, Users: users, Type: typ, Payload: payload})
-	if err != nil {
-		return err
-	}
-	return p.redis.Publish(ctx, "im:ephemeral", raw).Err()
+// ClientVersionReleaseRecord is an immutable policy snapshot reconstructed
+// from the audit entry written in the same transaction as a release.
+type ClientVersionReleaseRecord struct {
+	ID                string    `json:"id"`
+	Platform          string    `json:"platform"`
+	MinimumVersion    string    `json:"minimumVersion"`
+	LatestVersion     string    `json:"latestVersion"`
+	ForceUpdate       bool      `json:"forceUpdate"`
+	RolloutPercentage int       `json:"rolloutPercentage"`
+	ReleaseNotes      string    `json:"releaseNotes"`
+	DownloadURL       string    `json:"downloadUrl"`
+	Reason            string    `json:"reason"`
+	UpdatedBy         string    `json:"updatedBy"`
+	UpdatedAt         time.Time `json:"updatedAt"`
 }
-func (p *WithRedis) RunEphemeral(ctx context.Context, deliver func([]string, string, map[string]any)) error {
-	sub := p.redis.Subscribe(ctx, "im:ephemeral")
-	defer sub.Close()
-	if _, err := sub.Receive(ctx); err != nil {
-		return err
-	}
-	for {
-		msg, err := sub.ReceiveMessage(ctx)
-		if err != nil {
-			return err
-		}
-		var e ephemeralEvent
-		if json.Unmarshal([]byte(msg.Payload), &e) == nil && e.Origin != p.id {
-			deliver(e.Users, e.Type, e.Payload)
-		}
-	}
+
+type ClientVersionPolicyStore interface {
+	ListClientVersionPolicies(context.Context) ([]ClientVersionPolicy, error)
+	GetClientVersionPolicy(context.Context, string) (*ClientVersionPolicy, error)
+	UpsertClientVersionPolicy(context.Context, ClientVersionPolicy, string, string, time.Time) (*ClientVersionPolicy, error)
+}
+
+type ClientVersionHistoryStore interface {
+	ListClientVersionHistory(context.Context, string, string, int) ([]ClientVersionReleaseRecord, int64, string, error)
 }
 
 var allowRateScript = redis.NewScript(`
@@ -745,6 +1482,34 @@ func (p *WithRedis) UpdateRuntimeSettings(ctx context.Context, actor string, set
 	return ErrUnsupported
 }
 
+func (p *WithRedis) ListClientVersionPolicies(ctx context.Context) ([]ClientVersionPolicy, error) {
+	if s, ok := p.base.(ClientVersionPolicyStore); ok {
+		return s.ListClientVersionPolicies(ctx)
+	}
+	return nil, ErrUnsupported
+}
+
+func (p *WithRedis) GetClientVersionPolicy(ctx context.Context, platform string) (*ClientVersionPolicy, error) {
+	if s, ok := p.base.(ClientVersionPolicyStore); ok {
+		return s.GetClientVersionPolicy(ctx, platform)
+	}
+	return nil, ErrUnsupported
+}
+
+func (p *WithRedis) UpsertClientVersionPolicy(ctx context.Context, policy ClientVersionPolicy, actor, reason string, at time.Time) (*ClientVersionPolicy, error) {
+	if s, ok := p.base.(ClientVersionPolicyStore); ok {
+		return s.UpsertClientVersionPolicy(ctx, policy, actor, reason, at)
+	}
+	return nil, ErrUnsupported
+}
+
+func (p *WithRedis) ListClientVersionHistory(ctx context.Context, platform, cursor string, limit int) ([]ClientVersionReleaseRecord, int64, string, error) {
+	if s, ok := p.base.(ClientVersionHistoryStore); ok {
+		return s.ListClientVersionHistory(ctx, platform, cursor, limit)
+	}
+	return nil, 0, "", ErrUnsupported
+}
+
 type MutationStore interface {
 	SetBlock(context.Context, string, string, bool) error
 	RemoveMember(context.Context, string, string) error
@@ -762,28 +1527,24 @@ type RuntimeMutationStore interface {
 	SetUserBanRecord(context.Context, string, string, bool, *time.Time, string, string, time.Time) error
 	ResolveReportRecord(context.Context, string, string, string, string, string, time.Time) (string, error)
 }
+type WukongReceiptStore interface {
+	MarkWukongRead(context.Context, string, string, int64, time.Time) (int64, []string, error)
+}
 type BanExpiryStore interface {
 	ExpireUserBans(context.Context, time.Time, int) ([]string, error)
 }
 
 type ConversationPreferences struct {
 	Pinned             *bool `json:"pinned,omitempty"`
+	Saved              *bool `json:"saved,omitempty"`
 	Archived           *bool `json:"archived,omitempty"`
 	NotificationsMuted *bool `json:"notificationsMuted,omitempty"`
 	ManualUnread       *bool `json:"manualUnread,omitempty"`
 }
 
-type WithRedisMessage struct{ *WithRedis }
-
-func (p *WithRedis) SendMessage(ctx context.Context, in MessageInput) (*model.Message, bool, []*model.SyncEvent, error) {
-	if m, ok := p.base.(MessageStore); ok {
-		return m.SendMessage(ctx, in)
-	}
-	return nil, false, nil, ErrUnsupported
-}
-func (p *WithRedis) EditMessage(ctx context.Context, uid, mid, editID string, body map[string]any, at time.Time, window time.Duration) (*model.Message, bool, error) {
+func (p *WithRedis) EditMessage(ctx context.Context, uid, mid, editID string, body, originalBody map[string]any, at time.Time, window time.Duration) (*model.Message, bool, error) {
 	if s, ok := p.base.(MessageCollaborationStore); ok {
-		return s.EditMessage(ctx, uid, mid, editID, body, at, window)
+		return s.EditMessage(ctx, uid, mid, editID, body, originalBody, at, window)
 	}
 	return nil, false, ErrUnsupported
 }
@@ -808,12 +1569,6 @@ func (p *WithRedis) SetGroupMessagePin(ctx context.Context, uid, cid, mid string
 func (p *WithRedis) ListGroupMessagePins(ctx context.Context, uid, cid string, before int64, limit int) ([]*model.MessagePin, error) {
 	if s, ok := p.base.(MessageCollaborationStore); ok {
 		return s.ListGroupMessagePins(ctx, uid, cid, before, limit)
-	}
-	return nil, ErrUnsupported
-}
-func (p *WithRedis) SearchConversationMessages(ctx context.Context, uid, cid, query string, before int64, limit int) ([]*model.Message, error) {
-	if s, ok := p.base.(MessageCollaborationStore); ok {
-		return s.SearchConversationMessages(ctx, uid, cid, query, before, limit)
 	}
 	return nil, ErrUnsupported
 }
@@ -870,6 +1625,12 @@ func (p *WithRedis) CanAccessMedia(ctx context.Context, uid, id string) (bool, e
 		return s.CanAccessMedia(ctx, uid, id)
 	}
 	return false, ErrUnsupported
+}
+func (p *WithRedis) BindMediaChannel(ctx context.Context, binding MediaChannelBinding) error {
+	if s, ok := p.base.(MediaChannelBindingStore); ok {
+		return s.BindMediaChannel(ctx, binding)
+	}
+	return ErrUnsupported
 }
 func (p *WithRedis) UpdateUserProfile(ctx context.Context, uid string, update UserProfileUpdate) (*model.User, error) {
 	if s, ok := p.base.(ProfileStore); ok {
@@ -942,6 +1703,12 @@ func (p *WithRedis) ExpireFriendRequests(ctx context.Context, at time.Time, limi
 		return s.ExpireFriendRequests(ctx, at, limit)
 	}
 	return nil, ErrUnsupported
+}
+func (p *WithRedis) GetOrCreateDirectConversation(ctx context.Context, uid, other, conversationID string, at time.Time) (*model.Conversation, bool, error) {
+	if s, ok := p.base.(DirectConversationStore); ok {
+		return s.GetOrCreateDirectConversation(ctx, uid, other, conversationID, at)
+	}
+	return nil, false, ErrUnsupported
 }
 func (p *WithRedis) CreateGroupRecord(ctx context.Context, id, owner, name string, members []string, at time.Time) (*model.Conversation, error) {
 	if s, ok := p.base.(GroupStore); ok {
@@ -1027,11 +1794,28 @@ func (p *WithRedis) InvalidatePushDevices(ctx context.Context, ids []string) err
 	}
 	return ErrUnsupported
 }
-func (p *WithRedis) RunEvents(ctx context.Context, deliver func([]string, string, map[string]any)) error {
-	if s, ok := p.base.(EventSubscriber); ok {
-		return s.RunEvents(ctx, deliver)
+
+func (p *WithRedis) CleanupRuntimeData(ctx context.Context, policy RetentionPolicy, batch int) (int64, error) {
+	if s, ok := p.base.(RuntimeMaintenanceStore); ok {
+		return s.CleanupRuntimeData(ctx, policy, batch)
 	}
-	return ErrUnsupported
+	return 0, ErrUnsupported
+}
+
+func (p *WithRedis) RuntimeStats(ctx context.Context) (RuntimeStats, error) {
+	var stats RuntimeStats
+	if s, ok := p.base.(RuntimeStatsStore); ok {
+		var err error
+		stats, err = s.RuntimeStats(ctx)
+		if err != nil {
+			return stats, err
+		}
+	}
+	redisStats := p.redis.PoolStats()
+	stats.RedisTotalConnections = redisStats.TotalConns
+	stats.RedisIdleConnections = redisStats.IdleConns
+	stats.RedisTimeouts = redisStats.Timeouts
+	return stats, nil
 }
 func (p *WithRedis) SetBlock(ctx context.Context, a, b string, v bool) error {
 	if s, ok := p.base.(MutationStore); ok {
@@ -1066,6 +1850,12 @@ func (p *WithRedis) RecallMessage(ctx context.Context, id string, t time.Time) e
 func (p *WithRedis) MarkRead(ctx context.Context, u, c string, s int64, t time.Time) (int64, []string, error) {
 	if x, ok := p.base.(RuntimeMutationStore); ok {
 		return x.MarkRead(ctx, u, c, s, t)
+	}
+	return 0, nil, ErrUnsupported
+}
+func (p *WithRedis) MarkWukongRead(ctx context.Context, u, c string, s int64, t time.Time) (int64, []string, error) {
+	if x, ok := p.base.(WukongReceiptStore); ok {
+		return x.MarkWukongRead(ctx, u, c, s, t)
 	}
 	return 0, nil, ErrUnsupported
 }

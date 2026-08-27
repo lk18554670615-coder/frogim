@@ -82,7 +82,7 @@ services:
     build:
       context: ../apps/admin
       args:
-        VITE_ADMIN_API_URL: /api/v1/admin
+        VITE_ADMIN_API_URL: /api/v2/admin
         VITE_ALLOW_DEMO: "false"
     expose:
       - "8080"

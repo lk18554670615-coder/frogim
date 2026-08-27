@@ -10,102 +10,100 @@ import (
 	"github.com/linli/im/server/internal/model"
 )
 
-// AdminDashboard 返回后台首页的权威业务统计。所有数值都在数据库中按请求时刻聚合，
-// 趋势使用最近 24 个整点，消息构成使用最近 24 小时，避免前端自行补造数据。
-func (p *Postgres) AdminDashboard(ctx context.Context) (map[string]any, error) {
-	var users, newUsersToday, bannedUsers, groups, newGroupsToday, conversations, messages, messagesToday, pendingReports int64
-	err := p.pool.QueryRow(ctx, `SELECT
-		(SELECT count(*) FROM im_users),
-		(SELECT count(*) FROM im_users WHERE created_at >= date_trunc('day', now())),
-		(SELECT count(*) FROM im_users WHERE banned AND (banned_until IS NULL OR banned_until > now())),
-		(SELECT count(*) FROM im_groups WHERE dissolved_at IS NULL),
-		(SELECT count(*) FROM im_groups g JOIN im_conversations c ON c.id=g.conversation_id WHERE g.dissolved_at IS NULL AND c.created_at >= date_trunc('day', now())),
-		(SELECT count(*) FROM im_conversations),
-		(SELECT count(*) FROM im_messages),
-		(SELECT count(*) FROM im_messages WHERE created_at >= date_trunc('day', now())),
-		(SELECT count(*) FROM im_reports WHERE status='pending')`).Scan(
-		&users, &newUsersToday, &bannedUsers, &groups, &newGroupsToday, &conversations, &messages, &messagesToday, &pendingReports,
+func (p *Postgres) AdminStats(ctx context.Context) (map[string]any, error) {
+	var users, bannedUsers, conversations, messages, pendingReports int64
+	err := p.pool.QueryRow(ctx, `WITH all_messages AS (`+adminMessageUnion+`) SELECT
+		(SELECT count(*) FROM im_users),(SELECT count(*) FROM im_users WHERE banned),
+		(SELECT count(*) FROM im_conversations),(SELECT count(*) FROM all_messages),
+		(SELECT count(*) FROM im_reports WHERE status='pending')
+	`).Scan(&users, &bannedUsers, &conversations, &messages, &pendingReports)
+	if err != nil {
+		return nil, err
+	}
+	messageTrend := make([]map[string]any, 0, 12)
+	rows, err := p.pool.Query(ctx, `WITH buckets AS (
+		SELECT generate_series(
+			date_trunc('hour', now())-interval '11 hours',
+			date_trunc('hour', now()),
+			interval '1 hour'
+		) AS bucket
 	)
+	SELECT bucket,count(message_index.message_id)
+	FROM buckets
+	LEFT JOIN im_wukong_message_index message_index
+		ON message_index.message_timestamp>=bucket
+		AND message_index.message_timestamp<bucket+interval '1 hour'
+	GROUP BY bucket ORDER BY bucket`)
 	if err != nil {
 		return nil, err
 	}
-
-	trendRows, err := p.pool.Query(ctx, `SELECT bucket, count(message_row.id)
-		FROM generate_series(date_trunc('hour', now()) - interval '23 hours', date_trunc('hour', now()), interval '1 hour') AS bucket
-		LEFT JOIN im_messages message_row ON message_row.created_at >= bucket AND message_row.created_at < bucket + interval '1 hour'
-		GROUP BY bucket ORDER BY bucket`)
-	if err != nil {
-		return nil, err
-	}
-	messageTrend := make([]map[string]any, 0, 24)
-	for trendRows.Next() {
+	for rows.Next() {
 		var bucket time.Time
 		var count int64
-		if err = trendRows.Scan(&bucket, &count); err != nil {
-			trendRows.Close()
+		if err = rows.Scan(&bucket, &count); err != nil {
+			rows.Close()
 			return nil, err
 		}
-		messageTrend = append(messageTrend, map[string]any{"time": bucket.UTC(), "count": count})
+		messageTrend = append(messageTrend, map[string]any{"time": bucket, "count": count})
 	}
-	err = trendRows.Err()
-	trendRows.Close()
-	if err != nil {
+	if err = rows.Err(); err != nil {
+		rows.Close()
 		return nil, err
 	}
+	rows.Close()
 
-	mixRows, err := p.pool.Query(ctx, `SELECT CASE WHEN conversation.kind='direct' THEN 'direct' WHEN conversation.kind='group' THEN 'group' ELSE 'other' END, count(*)
-		FROM im_messages message_row JOIN im_conversations conversation ON conversation.id=message_row.conversation_id
-		WHERE message_row.created_at >= now() - interval '24 hours'
-		GROUP BY 1 ORDER BY 2 DESC`)
+	channelMix := make([]map[string]any, 0, 3)
+	rows, err = p.pool.Query(ctx, `SELECT
+		CASE channel_type WHEN 1 THEN 'direct' WHEN 2 THEN 'group' ELSE 'other' END AS kind,
+		count(*)
+	FROM im_wukong_message_index
+	GROUP BY kind ORDER BY kind`)
 	if err != nil {
 		return nil, err
 	}
-	channelMix := make([]map[string]any, 0, 3)
-	for mixRows.Next() {
+	for rows.Next() {
 		var kind string
 		var count int64
-		if err = mixRows.Scan(&kind, &count); err != nil {
-			mixRows.Close()
+		if err = rows.Scan(&kind, &count); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		channelMix = append(channelMix, map[string]any{"kind": kind, "count": count})
 	}
-	err = mixRows.Err()
-	mixRows.Close()
-	if err != nil {
+	if err = rows.Err(); err != nil {
+		rows.Close()
 		return nil, err
 	}
+	rows.Close()
 
-	auditRows, err := p.pool.Query(ctx, `SELECT id,actor_id,action,target_type,target_id,metadata,created_at
-		FROM im_audits ORDER BY created_at DESC,id DESC LIMIT 8`)
+	activity := make([]map[string]any, 0, 5)
+	rows, err = p.pool.Query(ctx, `SELECT id,actor_id,action,target_type,target_id,COALESCE(result,'success'),COALESCE(ip,''),created_at
+		FROM im_audits ORDER BY created_at DESC,id DESC LIMIT 5`)
 	if err != nil {
 		return nil, err
 	}
-	activity := make([]*model.AuditEntry, 0, 8)
-	for auditRows.Next() {
-		entry := new(model.AuditEntry)
-		var raw []byte
-		if err = auditRows.Scan(&entry.ID, &entry.ActorID, &entry.Action, &entry.TargetType, &entry.TargetID, &raw, &entry.CreatedAt); err != nil {
-			auditRows.Close()
+	for rows.Next() {
+		var id, actorID, action, targetType, targetID, result, ip string
+		var createdAt time.Time
+		if err = rows.Scan(&id, &actorID, &action, &targetType, &targetID, &result, &ip, &createdAt); err != nil {
+			rows.Close()
 			return nil, err
 		}
-		if len(raw) > 0 {
-			_ = json.Unmarshal(raw, &entry.Metadata)
-		}
-		activity = append(activity, entry)
+		activity = append(activity, map[string]any{
+			"id": id, "actorId": actorID, "action": action, "targetType": targetType,
+			"targetId": targetID, "result": result, "ip": ip, "createdAt": createdAt,
+		})
 	}
-	err = auditRows.Err()
-	auditRows.Close()
-	if err != nil {
+	if err = rows.Err(); err != nil {
+		rows.Close()
 		return nil, err
 	}
+	rows.Close()
 
 	return map[string]any{
-		"users": users, "newUsersToday": newUsersToday, "bannedUsers": bannedUsers,
-		"groups": groups, "newGroupsToday": newGroupsToday, "conversations": conversations,
-		"messages": messages, "messagesToday": messagesToday, "pendingReports": pendingReports,
-		"messageTrend": messageTrend, "channelMix": channelMix, "activity": activity,
-		"trendWindowHours": 24, "mixWindowHours": 24,
+		"users": users, "bannedUsers": bannedUsers, "conversations": conversations,
+		"messages": messages, "pendingReports": pendingReports, "messageTrend": messageTrend,
+		"channelMix": channelMix, "activity": activity,
 	}, nil
 }
 
@@ -117,7 +115,7 @@ func (p *Postgres) ListAdminGroups(ctx context.Context, q, status, cursor string
 	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_groups g JOIN im_conversations c ON c.id=g.conversation_id JOIN im_users owner ON owner.id=g.owner_id WHERE `+where, q, pattern, status).Scan(&total); err != nil {
 		return nil, 0, "", err
 	}
-	rows, err := p.pool.Query(ctx, `SELECT c.id,c.title,g.owner_id,owner.name,(SELECT count(*) FROM im_members m WHERE m.conversation_id=c.id),c.last_message_seq,CASE WHEN g.dissolved_at IS NOT NULL THEN 'dissolved' WHEN g.all_muted_until>now() THEN 'muted' ELSE 'active' END,c.created_at,(SELECT count(*) FROM im_reports r WHERE r.target_type='group' AND r.target_id=c.id) FROM im_groups g JOIN im_conversations c ON c.id=g.conversation_id JOIN im_users owner ON owner.id=g.owner_id WHERE `+where+` ORDER BY c.created_at DESC,c.id LIMIT $4 OFFSET $5`, q, pattern, status, limit, offset)
+	rows, err := p.pool.Query(ctx, `SELECT c.id,c.title,g.owner_id,owner.name,(SELECT count(*) FROM im_members m WHERE m.conversation_id=c.id),GREATEST(c.last_message_seq,COALESCE((SELECT max(message_seq) FROM im_wukong_message_index WHERE conversation_id=c.id),0)),CASE WHEN g.dissolved_at IS NOT NULL THEN 'dissolved' WHEN g.all_muted_until>now() THEN 'muted' ELSE 'active' END,c.created_at,(SELECT count(*) FROM im_reports r WHERE r.target_type='group' AND r.target_id=c.id) FROM im_groups g JOIN im_conversations c ON c.id=g.conversation_id JOIN im_users owner ON owner.id=g.owner_id WHERE `+where+` ORDER BY c.created_at DESC,c.id LIMIT $4 OFFSET $5`, q, pattern, status, limit, offset)
 	if err != nil {
 		return nil, 0, "", err
 	}
@@ -244,11 +242,46 @@ func (p *Postgres) AdminTaskStatus(ctx context.Context) (map[string]any, error) 
 	if err := p.pool.QueryRow(ctx, `SELECT count(*) FILTER(WHERE status='pending'),count(*) FILTER(WHERE status='processing'),count(*) FILTER(WHERE status='failed') FROM im_scheduled_messages`).Scan(&scheduledPending, &scheduledProcessing, &scheduledFailed); err != nil {
 		return nil, err
 	}
-	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_messages WHERE expires_at IS NOT NULL AND expired_at IS NULL`).Scan(&expiring); err != nil {
+	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_wukong_message_index WHERE expires_at>now() AND expired_at IS NULL`).Scan(&expiring); err != nil {
 		return nil, err
 	}
 	result["scheduledMessages"] = map[string]any{"pending": scheduledPending, "processing": scheduledProcessing, "failed": scheduledFailed}
 	result["messageExpiry"] = map[string]any{"waiting": expiring}
+	var outboxPending, outboxProcessing, outboxFailed, reconcilePending, reconcileCompleted, reconcileFailed int64
+	var outboxOldestSeconds float64
+	var outboxLastCompleted *time.Time
+	if err := p.pool.QueryRow(ctx, `SELECT
+		count(*) FILTER(WHERE status='pending'),count(*) FILTER(WHERE status='processing'),count(*) FILTER(WHERE status='failed'),
+		count(*) FILTER(WHERE operation='channel.reconcile' AND status IN ('pending','processing')),
+		count(*) FILTER(WHERE operation='channel.reconcile' AND status='completed'),
+		count(*) FILTER(WHERE operation='channel.reconcile' AND status='failed'),
+		COALESCE(EXTRACT(EPOCH FROM (now()-min(created_at) FILTER(WHERE status IN ('pending','processing')))),0),
+		max(completed_at) FROM im_wukong_outbox`).Scan(
+		&outboxPending, &outboxProcessing, &outboxFailed, &reconcilePending, &reconcileCompleted, &reconcileFailed,
+		&outboxOldestSeconds, &outboxLastCompleted,
+	); err != nil {
+		return nil, err
+	}
+	result["wukongOutbox"] = map[string]any{
+		"pending": outboxPending, "processing": outboxProcessing, "failed": outboxFailed,
+		"oldestPendingSeconds": outboxOldestSeconds, "lastCompletedAt": outboxLastCompleted,
+		"reconcilePending": reconcilePending, "reconcileCompleted": reconcileCompleted, "reconcileFailed": reconcileFailed,
+	}
+	var webhookPending, webhookProcessing, webhookFailed int64
+	var webhookOldestSeconds float64
+	var webhookLastCompleted *time.Time
+	if err := p.pool.QueryRow(ctx, `SELECT
+		count(*) FILTER(WHERE status='pending'),count(*) FILTER(WHERE status='processing'),count(*) FILTER(WHERE status='failed'),
+		COALESCE(EXTRACT(EPOCH FROM (now()-min(received_at) FILTER(WHERE status IN ('pending','processing')))),0),
+		max(completed_at) FROM im_wukong_webhook_events`).Scan(
+		&webhookPending, &webhookProcessing, &webhookFailed, &webhookOldestSeconds, &webhookLastCompleted,
+	); err != nil {
+		return nil, err
+	}
+	result["wukongWebhook"] = map[string]any{
+		"pending": webhookPending, "processing": webhookProcessing, "failed": webhookFailed,
+		"oldestPendingSeconds": webhookOldestSeconds, "lastCompletedAt": webhookLastCompleted,
+	}
 	return result, nil
 }
 
@@ -256,9 +289,15 @@ func (p *Postgres) AdminUserOverview(ctx context.Context, id string) (map[string
 	var user model.User
 	var devices, friends, groups int64
 	var updatedAt any
-	err := p.pool.QueryRow(ctx, `SELECT u.id,u.phone,u.name,COALESCE(u.handle,''),u.signature,u.avatar_url,u.banned,u.handle_change_count,u.created_at,u.updated_at,
+	err := p.pool.QueryRow(ctx, `SELECT u.id,u.phone,u.name,COALESCE(u.handle,''),u.signature,u.avatar_url,u.gender,
+		(u.banned AND (u.banned_until IS NULL OR u.banned_until>now())),u.banned_until,u.handle_change_count,u.created_at,u.updated_at,
+		COALESCE(presence.online,false),COALESCE(presence.total_online_count,0),presence.last_offline_at,
 		(SELECT count(*) FROM im_devices d WHERE d.user_id=u.id),(SELECT count(*) FROM im_friendships f WHERE f.user_id=u.id),(SELECT count(*) FROM im_members m WHERE m.user_id=u.id)
-		FROM im_users u WHERE u.id=$1`, id).Scan(&user.ID, &user.Phone, &user.Name, &user.Handle, &user.Signature, &user.AvatarURL, &user.Banned, &user.HandleChangeCount, &user.CreatedAt, &updatedAt, &devices, &friends, &groups)
+		FROM im_users u LEFT JOIN im_wukong_presence presence ON presence.user_id=u.id WHERE u.id=$1`, id).Scan(
+		&user.ID, &user.Phone, &user.Name, &user.Handle, &user.Signature, &user.AvatarURL, &user.Gender,
+		&user.Banned, &user.BannedUntil, &user.HandleChangeCount, &user.CreatedAt, &updatedAt,
+		&user.Online, &user.OnlineConnections, &user.LastOfflineAt, &devices, &friends, &groups,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -269,18 +308,22 @@ func (p *Postgres) AdminUserOverview(ctx context.Context, id string) (map[string
 }
 
 func (p *Postgres) AdminGroupOverview(ctx context.Context, id string) (map[string]any, error) {
-	var title, owner, announcement, joinPolicy string
+	var title, avatar, ownerID, ownerPhone, ownerName, ownerHandle, ownerAvatar, announcement, joinPolicy, bannedBy, banReason string
 	var memberCount, announcementVersion, messageCount int64
-	var allowMemberAddFriend bool
-	err := p.pool.QueryRow(ctx, `SELECT c.title,g.owner_id,g.announcement,g.announcement_version,g.join_policy,g.allow_member_add_friend,c.last_message_seq,(SELECT count(*) FROM im_members m WHERE m.conversation_id=c.id)
-		FROM im_conversations c JOIN im_groups g ON g.conversation_id=c.id WHERE c.id=$1`, id).Scan(&title, &owner, &announcement, &announcementVersion, &joinPolicy, &allowMemberAddFriend, &messageCount, &memberCount)
+	var allowMemberAddFriend, banned bool
+	var allMutedUntil, bannedAt, dissolvedAt *time.Time
+	err := p.pool.QueryRow(ctx, `SELECT c.title,c.avatar_url,g.owner_id,owner.phone,owner.name,COALESCE(owner.handle,''),owner.avatar_url,g.announcement,g.announcement_version,g.join_policy,g.allow_member_add_friend,
+		GREATEST(c.last_message_seq,COALESCE((SELECT max(message_seq) FROM im_wukong_message_index WHERE conversation_id=c.id),0)),(SELECT count(*) FROM im_members m WHERE m.conversation_id=c.id),
+		CASE WHEN g.all_muted_until>now() THEN g.all_muted_until END,g.banned,g.banned_at,g.banned_by,g.ban_reason,g.dissolved_at
+		FROM im_conversations c JOIN im_groups g ON g.conversation_id=c.id JOIN im_users owner ON owner.id=g.owner_id WHERE c.id=$1`, id).Scan(&title, &avatar, &ownerID, &ownerPhone, &ownerName, &ownerHandle, &ownerAvatar, &announcement, &announcementVersion, &joinPolicy, &allowMemberAddFriend, &messageCount, &memberCount, &allMutedUntil, &banned, &bannedAt, &bannedBy, &banReason, &dissolvedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": id, "title": title, "ownerId": owner, "announcement": announcement, "announcementVersion": announcementVersion, "joinPolicy": joinPolicy, "allowMemberAddFriend": allowMemberAddFriend, "messageCount": messageCount, "memberCount": memberCount}, nil
+	owner := &model.User{ID: ownerID, Phone: ownerPhone, Name: ownerName, Handle: ownerHandle, AvatarURL: ownerAvatar}
+	return map[string]any{"id": id, "title": title, "avatarUrl": avatar, "ownerId": ownerID, "owner": owner, "announcement": announcement, "announcementVersion": announcementVersion, "joinPolicy": joinPolicy, "allowMemberAddFriend": allowMemberAddFriend, "messageCount": messageCount, "memberCount": memberCount, "allMutedUntil": allMutedUntil, "banned": banned, "bannedAt": bannedAt, "bannedBy": bannedBy, "banReason": banReason, "dissolvedAt": dissolvedAt}, nil
 }
 
 func (p *Postgres) ListAdminGroupMembers(ctx context.Context, id, q, cursor string, limit int) ([]*model.ConversationMember, int64, string, error) {
@@ -291,7 +334,7 @@ func (p *Postgres) ListAdminGroupMembers(ctx context.Context, id, q, cursor stri
 	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_members m JOIN im_users u ON u.id=m.user_id WHERE `+where, id, q, pattern).Scan(&total); err != nil {
 		return nil, 0, "", err
 	}
-	rows, err := p.pool.Query(ctx, `SELECT m.conversation_id,m.user_id,u.name,COALESCE(u.handle,''),u.avatar_url,m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.group_nickname,m.joined_at FROM im_members m JOIN im_users u ON u.id=m.user_id WHERE `+where+` ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,m.joined_at,m.user_id LIMIT $4 OFFSET $5`, id, q, pattern, limit, offset)
+	rows, err := p.pool.Query(ctx, `SELECT m.conversation_id,m.user_id,u.phone,u.name,COALESCE(u.handle,''),u.avatar_url,m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.group_nickname,m.joined_at FROM im_members m JOIN im_users u ON u.id=m.user_id WHERE `+where+` ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,m.joined_at,m.user_id LIMIT $4 OFFSET $5`, id, q, pattern, limit, offset)
 	if err != nil {
 		return nil, 0, "", err
 	}
@@ -299,7 +342,7 @@ func (p *Postgres) ListAdminGroupMembers(ctx context.Context, id, q, cursor stri
 	items := make([]*model.ConversationMember, 0, limit)
 	for rows.Next() {
 		item := new(model.ConversationMember)
-		if err = rows.Scan(&item.ConversationID, &item.UserID, &item.Name, &item.Handle, &item.AvatarURL, &item.Role, &item.MutedUntil, &item.LastReadSeq, &item.LastDeliveredSeq, &item.GroupNickname, &item.JoinedAt); err != nil {
+		if err = rows.Scan(&item.ConversationID, &item.UserID, &item.Phone, &item.Name, &item.Handle, &item.AvatarURL, &item.Role, &item.MutedUntil, &item.LastReadSeq, &item.LastDeliveredSeq, &item.GroupNickname, &item.JoinedAt); err != nil {
 			return nil, 0, "", err
 		}
 		item.ID = item.UserID

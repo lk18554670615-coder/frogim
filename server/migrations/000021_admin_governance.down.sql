@@ -1,3 +1,0 @@
-ALTER TABLE im_users DROP COLUMN IF EXISTS banned_until;
-ALTER TABLE im_audits DROP COLUMN IF EXISTS ip;
-ALTER TABLE im_audits DROP COLUMN IF EXISTS result;

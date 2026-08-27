@@ -40,7 +40,7 @@ func TestGetuiTokenCacheAndCIDFiltering(t *testing.T) {
 			if len(audience) != 1 || audience[0] != "getui-cid" || len(body["request_id"].(string)) != 30 {
 				t.Fatalf("push body=%v", body)
 			}
-			assertGetuiChannels(t, body, "邻里通讯", "你收到一条新消息", "c1", "")
+			assertGetuiChannels(t, body, "青蛙呱呱", "你收到一条新消息", "c1", "")
 			writeGetui(w, 0, map[string]any{})
 		default:
 			http.NotFound(w, r)
@@ -84,7 +84,7 @@ func TestGetuiOfflineChannelsUseSafeEventSummaryAndRoutingPayload(t *testing.T) 
 	if err := provider.Send(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	assertGetuiChannels(t, pushed, "邻里通讯", "你收到一张图片", "conv-1", "msg-1")
+	assertGetuiChannels(t, pushed, "青蛙呱呱", "你收到一张图片", "conv-1", "msg-1")
 	raw, _ := json.Marshal(pushed)
 	if strings.Contains(string(raw), "private caption") {
 		t.Fatalf("private message text leaked into push body: %s", raw)
@@ -103,7 +103,23 @@ func TestMessageSummaryForContactAndLocationDoesNotExposeBody(t *testing.T) {
 		typ, want string
 	}{{"contact", "你收到一张联系人名片"}, {"location", "你收到一个位置"}} {
 		title, summary, navigation := getuiNotification(store.OutboxItem{EventType: "message.created", Payload: map[string]any{"message": map[string]any{"id": "m1", "conversationId": "c1", "type": tc.typ, "body": map[string]any{"address": "secret address", "phone": "secret phone"}}}})
-		if title != "邻里通讯" || summary != tc.want || navigation["address"] != nil || navigation["phone"] != nil {
+		if title != "青蛙呱呱" || summary != tc.want || navigation["address"] != nil || navigation["phone"] != nil {
+			t.Fatalf("type=%s title=%q summary=%q navigation=%v", tc.typ, title, summary, navigation)
+		}
+	}
+}
+
+func TestMessageSummaryCoversWukongCustomContentWithoutExposingBody(t *testing.T) {
+	for _, tc := range []struct {
+		typ, want string
+	}{
+		{"chat_history", "你收到一条聊天记录"}, {"system", "你收到一条系统消息"},
+		{"sticker", "你收到一个表情"}, {"moment", "你收到一条朋友圈分享"},
+		{"call", "你有一条通话记录"}, {"live", "你收到一条直播互动"},
+		{"support", "你收到一条客服消息"}, {"screenshot", "你收到一条截屏提示"},
+	} {
+		title, summary, navigation := getuiNotification(store.OutboxItem{EventType: "message.created", Payload: map[string]any{"message": map[string]any{"id": "m1", "conversationId": "c1", "type": tc.typ, "body": map[string]any{"content": "private content", "digest": "private digest"}}}})
+		if title != "青蛙呱呱" || summary != tc.want || navigation["content"] != nil || navigation["digest"] != nil {
 			t.Fatalf("type=%s title=%q summary=%q navigation=%v", tc.typ, title, summary, navigation)
 		}
 	}

@@ -21,7 +21,7 @@ func (fakeMetadata) GetMedia(string) (store.Media, error) {
 }
 
 func TestPrepareValidatesBeforeStorage(t *testing.T) {
-	s, err := New("", "", "", "", "bucket", "us-east-1", false, false, 100<<20, fakeMetadata{})
+	s, err := New("", "", "", "", "", "bucket", "us-east-1", false, false, 100<<20, fakeMetadata{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,6 +33,31 @@ func TestPrepareValidatesBeforeStorage(t *testing.T) {
 	}
 	if _, err = s.Prepare(context.Background(), "u", "image/png", "x.png", 10); err != ErrUnavailable {
 		t.Fatalf("storage err=%v", err)
+	}
+}
+
+func TestSignerSelectionUsesAndroidDevelopmentEndpointOnlyForAndroid(t *testing.T) {
+	s, err := New(
+		"minio:9000", "127.0.0.1:9000", "10.0.2.2:9000",
+		"access", "secret", "bucket", "us-east-1", false, false,
+		100<<20, fakeMetadata{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		platform string
+		host     string
+	}{
+		{platform: "android", host: "10.0.2.2:9000"},
+		{platform: "web", host: "127.0.0.1:9000"},
+		{platform: "macos", host: "127.0.0.1:9000"},
+		{platform: "unknown", host: "127.0.0.1:9000"},
+	} {
+		got := s.signerFor(WithClientPlatform(context.Background(), test.platform)).EndpointURL().Host
+		if got != test.host {
+			t.Fatalf("platform=%s host=%s want=%s", test.platform, got, test.host)
+		}
 	}
 }
 

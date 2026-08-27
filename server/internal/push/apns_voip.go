@@ -206,8 +206,8 @@ func apnsVoIPPayload(item store.OutboxItem) ([]byte, error) {
 		"callId":         callID,
 		"conversationId": conversationID,
 		"mediaType":      mediaType,
-		"nameCaller":     "邻里联系人",
-		"handle":         "邻里通讯",
+		"nameCaller":     "青蛙呱呱联系人",
+		"handle":         "青蛙呱呱",
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
