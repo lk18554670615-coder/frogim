@@ -25,7 +25,7 @@ openssl x509 -in "$certificate" -noout -checkend 43200 >/dev/null || {
   exit 1
 }
 
-compose=(docker compose --env-file "$ENV_FILE" -f "$ROOT_DIR/infra/compose.ip.yaml" -f "$ROOT_DIR/infra/compose.ip.production.yaml")
+compose=(docker compose --env-file "$ENV_FILE" -f "$ROOT_DIR/infra/compose.ip.yaml" -f "$ROOT_DIR/infra/compose.ip.production.yaml" -f "$ROOT_DIR/infra/compose.wukong.production.yaml")
 if [[ "$IM_PUSH_PROVIDER" == "apns_voip" || "$IM_PUSH_PROVIDER" == "getui_apns_voip" ]]; then
   compose+=(-f "$ROOT_DIR/infra/compose.apns-voip.yaml")
 fi
@@ -35,7 +35,7 @@ fi
 if [[ "$IM_PUSH_PROVIDER" == "apns_voip" || "$IM_PUSH_PROVIDER" == "getui_apns_voip" ]]; then
   "${compose[@]}" run --rm --no-deps --entrypoint /bin/sh server -c 'test -r "$IM_APNS_VOIP_PRIVATE_KEY_FILE"'
 fi
-"${compose[@]}" pull gateway postgres redis minio coturn
+"${compose[@]}" pull gateway postgres redis minio prometheus backup-metrics wukongim livekit
 "${compose[@]}" up -d --remove-orphans --scale "server=${IM_REPLICAS:-1}"
 "${compose[@]}" wait minio-init
 "${compose[@]}" rm -f minio-init

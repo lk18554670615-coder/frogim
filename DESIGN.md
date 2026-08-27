@@ -174,11 +174,11 @@ components:
     padding: 12px
 ---
 
-# 邻里通讯设计系统
+# 青蛙呱呱设计系统
 
 ## Overview
 
-邻里通讯是一款面向高频日常使用、安静而精确的通讯产品。交互遵循 Apple 平台的清晰层级、直接操作、安全区、可预测反馈和无障碍规范，但不复制 Apple Messages 或微信；识别度来自深夜色顶部区域与克制使用的暖色信号黄。
+青蛙呱呱是一款面向高频日常使用、安静而精确的通讯产品。交互遵循 Apple 平台的清晰层级、直接操作、安全区、可预测反馈和无障碍规范，但不复制 Apple Messages 或微信；识别度来自深夜色顶部区域与克制使用的暖色信号黄。
 
 The approved message-list source of truth is the fused conversation design at `/Users/joker/.codex/generated_images/019fb7a1-f640-7b23-854a-be1108d03f14/exec-0e4f47f8-7afe-4dfc-8ffe-2f024ae018d7.png`. The approved chat-detail and interaction source is the user's own ZCOOL work `ZNDc4MjUzNjg`, captured under `artifacts/reference/zcool-chat/`. Match their composition and density while translating both into this midnight-and-signal token system.
 

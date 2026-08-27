@@ -12,3 +12,23 @@ scrape_configs:
       - targets: ["server:8080"]
         labels:
           service: im-server
+
+  - job_name: wukongim
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["wukongim:5300"]
+        labels:
+          service: wukongim
+
+  - job_name: livekit
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["livekit:6789"]
+        labels:
+          service: livekit
+
+  - job_name: backup-metrics
+    static_configs:
+      - targets: ["backup-metrics:9100"]
+        labels:
+          service: backup

@@ -28,7 +28,9 @@ mkdir -p \
   "$DATA_ROOT/data/redis" \
   "$DATA_ROOT/data/minio" \
   "$DATA_ROOT/data/caddy/data" \
-  "$DATA_ROOT/data/caddy/config"
+  "$DATA_ROOT/data/caddy/config" \
+  "$DATA_ROOT/data/wukongim/data/plugins" \
+  "$DATA_ROOT/data/wukongim/logs"
 chmod 700 "$SHARED_DIR" "$SHARED_DIR/secrets" "$DATA_ROOT/backups" "$DATA_ROOT/logs" "$DATA_ROOT/logs/archive" "$DATA_ROOT/logs/incidents"
 # 保留旧命令兼容入口，但唯一权威配置和证书都位于 /data/linli-im/shared。
 mkdir -p /opt/nexachat
@@ -57,9 +59,7 @@ redis_password="$(random_alnum 36)"
 jwt_secret="$(random_alnum 64)"
 admin_password="$(random_alnum 22)"
 minio_password="$(random_alnum 36)"
-turn_password="$(random_alnum 36)"
 dev_otp="$(shuf -i 100000-999999 -n 1)"
-totp_secret="$(python3 -c 'import base64,os; print(base64.b32encode(os.urandom(20)).decode().rstrip("="))')"
 admin_email="admin@nexachat.local"
 
 admin_hash="$(printf '%s\n' "$admin_password" | docker run --rm -i httpd:2.4-alpine htpasswd -niBC 12 admin | cut -d: -f2 | tr -d '\r\n')"
@@ -69,7 +69,7 @@ if [[ "$admin_hash" != '$2'* ]]; then
 fi
 
 cat > "$CONFIG_FILE" <<EOF
-# 邻里通讯 IP 验收测试配置。包含固定开发验证码，严禁用于生产。
+# 青蛙呱呱 IP 验收测试配置。包含固定开发验证码，严禁用于生产。
 # 生产必须以 .env.ip.production.example 为模板并使用 deploy-ip-production.sh。
 
 PRODUCTION_ENDPOINT_MODE=ip
@@ -84,6 +84,8 @@ CERTBOT_DIR=/data/linli-im/shared/letsencrypt
 CERTBOT_WEBROOT=/data/linli-im/shared/certbot-webroot
 DOWNLOAD_DIR=/data/linli-im/shared/downloads
 LINLI_DATA_ROOT=/data/linli-im/data
+WUKONG_REQUIRE_1TIB_DISK=false
+WUKONG_PERFORMANCE_EVIDENCE=
 CERTBOT_IMAGE=certbot/certbot:latest
 
 # ===== 容器运行日志 =====
@@ -114,7 +116,6 @@ IM_DEV_OTP_CODE=$dev_otp
 # ===== 管理后台 =====
 IM_ADMIN_EMAIL=$admin_email
 IM_ADMIN_PASSWORD_HASH='$admin_hash'
-IM_ADMIN_TOTP_SECRET=$totp_secret
 
 # ===== 私有对象存储与上传 =====
 MINIO_ROOT_USER=nexachat-storage
@@ -124,23 +125,25 @@ IM_S3_REGION=us-east-1
 # 单文件上限，单位字节；Flutter 打包的 MEDIA_MAX_BYTES 必须保持一致。
 IM_MEDIA_MAX_BYTES=104857600
 
-# ===== 音视频通话与 TURN 中继 =====
+# ===== 音视频通话（LiveKit） =====
 IM_CALL_INVITE_TTL=30s
-IM_RTC_STUN_URLS=stun:$SERVER_IP:3478
-IM_RTC_TURN_URLS=turn:$SERVER_IP:3478?transport=udp,turn:$SERVER_IP:3478?transport=tcp
-IM_RTC_TURN_USERNAME=linli-im
-IM_RTC_TURN_CREDENTIAL=$turn_password
 
 # ===== 备份 =====
 BACKUP_DIR=/data/linli-im/backups
+BACKUP_METRICS_DIR=/data/linli-im/backups/.metrics
+BACKUP_OFFSITE_ENABLED=false
+BACKUP_OFFSITE_ENDPOINT=
+BACKUP_OFFSITE_ACCESS_KEY=
+BACKUP_OFFSITE_SECRET_KEY=
+BACKUP_OFFSITE_BUCKET=
+BACKUP_OFFSITE_PREFIX=linli-im
 EOF
 
 cat > "$CREDENTIAL_FILE" <<EOF
-邻里通讯初始凭据（首次登录后请修改，并继续将本文件保留为 root 600 权限）
+青蛙呱呱初始凭据（首次登录后请修改，并继续将本文件保留为 root 600 权限）
 管理后台：https://$SERVER_IP
 管理员邮箱：$admin_email
 管理员密码：$admin_password
-TOTP 密钥：$totp_secret
 App 测试登录验证码：$dev_otp
 集中配置：$CONFIG_FILE
 EOF

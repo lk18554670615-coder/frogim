@@ -8,7 +8,7 @@ make production-smoke PROD_ENV=.env.production
 docker compose --env-file .env.production -f infra/compose.production.yaml logs --since=15m server admin gateway
 ```
 
-检查：容器健康、HTTP 错误率与延迟、WebSocket 连接、数据库连接/WAL、Redis 内存、推送失败与积压、对象存储容量、磁盘、证书和最近备份。
+检查：容器健康、HTTP 错误率与延迟、WuKong 连接/提案延迟/失败、LiveKit 房间与参与者、数据库连接/WAL、Redis 内存、Outbox/推送积压、对象存储容量、磁盘、证书和最近备份。
 
 容器日志启用大小轮转，详细命令、字段和中文服务对照见 [LOGGING.md](LOGGING.md)。禁止记录访问令牌、验证码、TOTP、推送 token/CID、消息正文和私有连接串。管理员审计需要独立保留。
 
@@ -21,7 +21,12 @@ Prometheus 每 15 秒抓取内部 `/metrics`，规则文件目前保留兼容名
 - `NexaChatServerDown`（兼容告警 ID）：立即通知值班人员。
 - 错误率持续上升：15 分钟内开始调查。
 - 长时间无 HTTP 流量：核对业务时段、入口和客户端。
-- 主机磁盘、PostgreSQL 连接/WAL、Redis 内存、MinIO 容量、证书到期和备份失败。
+- `NexaChatHighHTTPP95Latency`：检查慢请求、数据库池等待和依赖延迟。
+- `NexaChatDatabasePoolSaturated`：检查实例连接总预算和慢 SQL。
+- `NexaChatPushBacklogOld`：检查推送提供商、后台 worker 和数据库写入能力。消息投递和离线同步由 WuKongIM 指标覆盖，不再存在业务库 fanout 队列。
+- `NexaChatWukongChannelProposeFailures` / `NexaChatWukongChannelP95Latency`：检查 WuKong 节点、磁盘、网络和策略服务。
+- `NexaChatBackupMetricsMissing` / `NexaChatBackupFailed` / `NexaChatBackupStale` / `NexaChatBackupRunningTooLong` / `NexaChatIncompleteBackupGenerations` / `NexaChatBackupOffsiteDisabled`：检查systemd任务、完整三存储备份、异地复制和未发布代次；禁止把`.incomplete-*`或`.offsite-download-*`当作恢复点。
+- 主机磁盘、PostgreSQL 连接/WAL、Redis 内存、MinIO 容量和证书到期。
 
 每条告警必须有负责人、升级路径和本手册链接。上线前、变更后和每季度测试送达。
 
@@ -37,7 +42,7 @@ Prometheus 每 15 秒抓取内部 `/metrics`，规则文件目前保留兼容名
 
 ## 容量与可用性
 
-仓库提供的是加固单机基线，不是跨可用区高可用。需要 HA 时，应使用高可用 PostgreSQL、Redis 和对象存储，在网关后运行多个无状态服务实例，并验证 Pub/Sub 恢复、慢连接、重连风暴和同步游标。
+仓库提供的是加固单机基线，不是跨可用区高可用。需要 HA 时，必须分别采用官方支持的 WuKong、LiveKit、PostgreSQL、Redis 和对象存储集群方案，并验证策略服务、Webhook、Outbox、重连风暴和离线补齐。
 
 扩容前收集：峰值在线、消息 TPS、P95/P99 延迟、数据库连接、队列等待、Redis 带宽、对象增长、CPU/内存和 24 小时泄漏趋势。不要以理论并发替代压测证据。
 

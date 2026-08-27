@@ -1,79 +1,28 @@
-# IM 节点集群与横向扩展
+# 集群与横向扩展前置条件
 
-## 目标
+## 当前事实
 
-客户端始终只连接统一 HTTPS/WSS 地址。IM 节点从 1 个增加到 2、3 或更多时，Flutter 协议、消息表和历史数据都不需要迁移。
+当前服务器使用单节点 WuKongIM、PostgreSQL、Redis、MinIO 和 LiveKit。Go 业务服务的部分 worker 已具备数据库租约和幂等能力，但整个部署没有跨主机故障转移，因此不能宣称高可用。
 
-```mermaid
-flowchart LR
-  Client["Flutter / Web"] --> Gateway["Caddy / 云负载均衡"]
-  Gateway --> IM1["IM 节点 1"]
-  Gateway --> IM2["IM 节点 2"]
-  Gateway --> IM3["IM 节点 N"]
-  IM1 --> PG[("PostgreSQL")]
-  IM2 --> PG
-  IM3 --> PG
-  IM1 <--> Redis[("Redis")]
-  IM2 <--> Redis
-  IM3 <--> Redis
-  IM1 --> MinIO[("MinIO / S3")]
-  IM2 --> MinIO
-  IM3 --> MinIO
-```
+不得通过简单增加 `server` 容器数量来规避消息、数据库、对象存储或 SFU 的单点。也不得直接复制 WuKong 数据目录、PostgreSQL volume 或 MinIO volume 作为集群方案。
 
-## 已实现的集群边界
+## 扩容顺序
 
-- HTTP JWT 无服务端粘性会话，任意请求可进入任意节点。
-- 每个节点仅保存自己承载的 WebSocket 连接，不共享连接对象。
-- 消息、会话序号、用户同步序号、持久事件 Outbox 和推送 Outbox 在一个 PostgreSQL 事务提交。
-- `clientMsgId` 使用数据库约束与事务锁实现跨节点幂等。
-- PostgreSQL `LISTEN/NOTIFY` 只负责低延迟唤醒；每个节点周期扫描未完成 Outbox，因此通知丢失可以恢复。
-- Redis 原子计数提供跨节点登录、验证码、搜索和请求频率预算；Redis 故障期间保留本机保护，同时 readiness 报警。
-- 输入状态等允许过期的事件走 Redis Pub/Sub；聊天消息不依赖 Pub/Sub 保证完整性。
-- 推送、公告、好友申请超时和通话超时使用事务或 `FOR UPDATE SKIP LOCKED`，多节点不会重复处理同一任务。
-- 媒体由客户端直传共享 S3/MinIO，IM 节点不保存本地上传文件。
-- Caddy 使用 Docker DNS 动态发现 `server` 服务副本，并采用最少连接策略；WebSocket 不要求粘性会话。
+1. 完成 10k 连接、1k msg/s、ACK P95/P99 和 24 小时资源增长压测，确认瓶颈属于哪一层。
+2. 把 PostgreSQL、对象存储和备份迁移到经过恢复演练的高可用方案；为 Redis 配置故障转移，但仍不把它变成唯一事实来源。
+3. 按 WuKongIM 固定版本官方集群协议设计独立节点、Slot、Raft 和数据迁移，不混用单节点数据目录。
+4. 为 LiveKit 选择官方支持的多节点路由/Redis 部署，并验证房间归属、重连和 UDP 入口。
+5. 最后扩展无状态 Go API/worker，并按实例数重新计算 PostgreSQL 连接池、定时任务租约和 Webhook 吞吐。
+6. 公网入口改为具备健康检查、连接保持和 WSS/TCP/UDP 能力的负载均衡；客户端地址和协议保持不变。
 
-## 当前服务器扩容
+## 必须重新验证
 
-集中配置保持默认：
+- 相同业务 Outbox 在多个 worker 下只执行一次，过期租约能接管且操作幂等。
+- WuKong 节点故障期间已确认消息不丢失，恢复后 95% 客户端在 10 秒内重连并补齐。
+- 跨节点单聊、群聊、CMD、最近会话、离线历史、多设备踢出和策略插件结果一致。
+- Webhook 重复、乱序和延迟不会产生重复扩展、推送或审核任务。
+- LiveKit 房间在目标并发下支持 9 人、屏幕共享、活动发言人和重连。
+- PostgreSQL/MinIO/WuKong 的备份恢复点相互一致，实际 RPO/RTO 达标。
+- 所有节点 CPU、内存、磁盘、连接数、队列和 P95/P99 均在门槛内。
 
-```dotenv
-IM_REPLICAS=1
-```
-
-需要同机扩容时先确认 PostgreSQL 连接、CPU 和内存，再改为 `2` 或 `3`：
-
-```bash
-cp -a /data/linli-im/shared/config.env /data/linli-im/backups/config.env.before-scale
-sed -i 's/^IM_REPLICAS=.*/IM_REPLICAS=2/' /data/linli-im/shared/config.env
-linli-im deploy
-linli-im status
-linli-im smoke
-```
-
-不要直接复制数据库、Redis 或 MinIO 容器。横向增加的是无状态 `server` 节点；数据服务的高可用是下一层独立方案。
-
-## 跨主机阶段
-
-当单台机器的 CPU、网络或连接数成为瓶颈时：
-
-1. 将 PostgreSQL 切换到主备或托管高可用服务。
-2. 将 Redis 切换到具备自动故障转移的高可用服务。
-3. 将 MinIO 切换为分布式 MinIO 或兼容 S3 的对象存储。
-4. 在多台主机或 Kubernetes 上运行相同 `linli-im-server` 镜像。
-5. 公网入口改为云负载均衡，健康检查使用 `/ready`。
-6. 按实例数重新计算数据库连接池：当前每节点最多 20 条连接。
-
-## 扩容验收
-
-- 并发发送的 `conversationSeq` 连续且不重复。
-- 相同 `clientMsgId` 同时打到不同节点只生成一条消息。
-- 任意节点重启后，客户端按 `userSyncSeq` 补齐全部事件。
-- WebSocket 分布在不同节点的两位用户可以互收消息、回执和通话信令。
-- Redis 暂停期间已确认聊天消息不丢失；恢复后临时功能自动恢复。
-- 推送 Outbox、公告和超时任务没有重复执行。
-- 滚动发布期间 HTTPS、WebSocket 重连和后台管理可用。
-- 数据库总连接数、P95/P99 延迟、Outbox 积压和重连峰值在阈值内。
-
-同机副本用于吸收 CPU 和连接压力，不等于高可用；真正的高可用必须把节点和数据副本分布到不同故障域。
+在上述证据完成前，运维文档和产品说明只能描述“可扩展设计准备”，不能描述“已实现集群”或“高可用”。

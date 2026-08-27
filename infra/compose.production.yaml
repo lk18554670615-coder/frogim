@@ -11,6 +11,11 @@ x-logging: &production-logging
 x-service-defaults: &service-defaults
   restart: unless-stopped
   init: true
+  pids_limit: ${CONTAINER_PIDS_LIMIT:-256}
+  ulimits:
+    nofile:
+      soft: ${CONTAINER_NOFILE_SOFT:-65536}
+      hard: ${CONTAINER_NOFILE_HARD:-65536}
   logging: *production-logging
   security_opt:
     - no-new-privileges:true
@@ -53,8 +58,11 @@ services:
       dockerfile: apps/mobile/Dockerfile.web
       args:
         WEB_API_BASE_URL: https://${DOMAIN:?set DOMAIN}
-        WEB_WS_URL: wss://${DOMAIN:?set DOMAIN}/v1/ws
         WEB_BASE_HREF: /web/
+        APP_ENV: production
+        ENABLE_DEMO: "false"
+        TERMS_URL: ${TERMS_URL:?set TERMS_URL}
+        PRIVACY_URL: ${PRIVACY_URL:?set PRIVACY_URL}
     expose:
       - "8080"
     networks:
@@ -101,22 +109,30 @@ services:
       context: ../server
     environment:
       IM_ADDR: :8080
-      IM_MODE: full
       IM_ENV: production
       IM_LOG_LEVEL: ${IM_LOG_LEVEL:-info}
+      GOMEMLIMIT: ${SERVER_GO_MEMORY_LIMIT:-768MiB}
+      GOMAXPROCS: ${SERVER_GO_MAX_PROCS:-2}
       IM_DATABASE_URL: ${IM_DATABASE_URL:?set IM_DATABASE_URL}
+      IM_DB_MAX_CONNS: ${IM_DB_MAX_CONNS:-20}
+      IM_DB_MIN_CONNS: ${IM_DB_MIN_CONNS:-2}
+      IM_DB_MAX_CONN_LIFETIME: ${IM_DB_MAX_CONN_LIFETIME:-1h}
+      IM_DB_MAX_CONN_IDLE_TIME: ${IM_DB_MAX_CONN_IDLE_TIME:-15m}
+      IM_DB_HEALTH_CHECK_PERIOD: ${IM_DB_HEALTH_CHECK_PERIOD:-1m}
+      IM_DB_STATEMENT_TIMEOUT: ${IM_DB_STATEMENT_TIMEOUT:-15s}
       IM_REDIS_URL: ${IM_REDIS_URL:?set IM_REDIS_URL}
       IM_JWT_SECRET: ${IM_JWT_SECRET:?set IM_JWT_SECRET}
-      IM_ADMIN_EMAIL: ${IM_ADMIN_EMAIL:?set IM_ADMIN_EMAIL}
-      IM_ADMIN_PASSWORD_HASH: ${IM_ADMIN_PASSWORD_HASH:?set IM_ADMIN_PASSWORD_HASH}
-      IM_ADMIN_TOTP_SECRET: ${IM_ADMIN_TOTP_SECRET:?set IM_ADMIN_TOTP_SECRET}
-      IM_ADMIN_SHARED_KEY_ENABLED: "false"
-      IM_ADMIN_KEY: ""
+      IM_ADMIN_EMAIL: ${IM_ADMIN_EMAIL:-}
+      IM_ADMIN_PASSWORD_HASH: ${IM_ADMIN_PASSWORD_HASH:-}
       IM_PUSH_PROVIDER: ${IM_PUSH_PROVIDER:?set IM_PUSH_PROVIDER}
+      IM_WEB_PUSH_PUBLIC_KEY: ${IM_WEB_PUSH_PUBLIC_KEY:-}
+      IM_WEB_PUSH_PRIVATE_KEY: ${IM_WEB_PUSH_PRIVATE_KEY:-}
+      IM_WEB_PUSH_SUBJECT: ${IM_WEB_PUSH_SUBJECT:-}
       IM_GETUI_APP_ID: ${IM_GETUI_APP_ID:-}
       IM_GETUI_APP_KEY: ${IM_GETUI_APP_KEY:-}
       IM_GETUI_MASTER_SECRET: ${IM_GETUI_MASTER_SECRET:-}
       IM_DEV_MODE: "false"
+      IM_SEED_DEMO: "false"
       IM_DEV_ALLOW_CONTAINER_BIND: "false"
       IM_TRUST_PROXY: "true"
       IM_ACCESS_TTL: ${IM_ACCESS_TTL:-15m}
@@ -135,10 +151,12 @@ services:
       IM_S3_SECURE: "false"
       IM_S3_PUBLIC_SECURE: ${IM_S3_PUBLIC_SECURE:-true}
       IM_CALL_INVITE_TTL: ${IM_CALL_INVITE_TTL:-30s}
-      IM_RTC_STUN_URLS: ${IM_RTC_STUN_URLS:?set IM_RTC_STUN_URLS}
-      IM_RTC_TURN_URLS: ${IM_RTC_TURN_URLS:?set IM_RTC_TURN_URLS}
-      IM_RTC_TURN_USERNAME: ${IM_RTC_TURN_USERNAME:?set IM_RTC_TURN_USERNAME}
-      IM_RTC_TURN_CREDENTIAL: ${IM_RTC_TURN_CREDENTIAL:?set IM_RTC_TURN_CREDENTIAL}
+      IM_PUSH_WORKERS: ${IM_PUSH_WORKERS:-16}
+      IM_PUSH_BATCH_SIZE: ${IM_PUSH_BATCH_SIZE:-200}
+      IM_RUNTIME_CLEANUP_INTERVAL: ${IM_RUNTIME_CLEANUP_INTERVAL:-1h}
+      IM_OUTBOX_RETENTION: ${IM_OUTBOX_RETENTION:-168h}
+      IM_HTTP_LOG_SUCCESS_SAMPLE_RATE: ${IM_HTTP_LOG_SUCCESS_SAMPLE_RATE:-0.01}
+      IM_WUKONG_INTERNAL_RATE_LIMIT_PER_MINUTE: ${IM_WUKONG_INTERNAL_RATE_LIMIT_PER_MINUTE:-120000}
     expose:
       - "8080"
     networks:
@@ -165,40 +183,8 @@ services:
     cap_drop:
       - ALL
     stop_grace_period: 30s
-
-  # WebRTC 媒体中继服务。生产环境需要在云防火墙放行 3478 TCP/UDP 与 49160-49200 UDP。
-  coturn:
-    <<: *service-defaults
-    image: coturn/coturn:4.16.0-r0
-    network_mode: host
-    environment:
-      DETECT_EXTERNAL_IP: "yes"
-      DETECT_RELAY_IP: "yes"
-    command:
-      - --log-file=stdout
-      - --fingerprint
-      - --lt-cred-mech
-      - --user=${IM_RTC_TURN_USERNAME:?set IM_RTC_TURN_USERNAME}:${IM_RTC_TURN_CREDENTIAL:?set IM_RTC_TURN_CREDENTIAL}
-      - --realm=${DOMAIN:?set DOMAIN}
-      - --server-name=linli-im-turn
-      - --min-port=49160
-      - --max-port=49200
-      - --stale-nonce=600
-      - --no-multicast-peers
-    read_only: true
-    tmpfs:
-      - /tmp
-      - /var/lib/coturn
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE
-    healthcheck:
-      test: ["CMD-SHELL", "turnutils_stunclient 127.0.0.1 >/dev/null 2>&1"]
-      interval: 20s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+    cpus: ${SERVER_CPU_LIMIT:-2.0}
+    mem_limit: ${SERVER_MEMORY_LIMIT:-1g}
 
   postgres:
     <<: *service-defaults
@@ -208,6 +194,14 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_INITDB_ARGS: --data-checksums
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - track_io_timing=on
+      - -c
+      - log_min_duration_statement=${POSTGRES_LOG_MIN_DURATION_MS:-500}
     expose:
       - "5432"
     volumes:
@@ -221,13 +215,15 @@ services:
       timeout: 5s
       retries: 10
     shm_size: 256mb
+    cpus: ${POSTGRES_CPU_LIMIT:-2.0}
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-2g}
 
   redis:
     <<: *service-defaults
     image: redis:8-alpine
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
-    command: ["sh", "-c", "exec redis-server --appendonly yes --appendfsync everysec --requirepass \"$${REDIS_PASSWORD}\""]
+    command: ["sh", "-c", "exec redis-server --appendonly yes --appendfsync everysec --maxmemory \"${REDIS_MAXMEMORY:-384mb}\" --maxmemory-policy volatile-lru --requirepass \"$${REDIS_PASSWORD}\""]
     expose:
       - "6379"
     volumes:
@@ -239,6 +235,8 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
+    cpus: ${REDIS_CPU_LIMIT:-1.0}
+    mem_limit: ${REDIS_MEMORY_LIMIT:-512m}
 
   minio:
     <<: *service-defaults
@@ -298,6 +296,31 @@ services:
     depends_on:
       server:
         condition: service_healthy
+      backup-metrics:
+        condition: service_started
+
+  backup-metrics:
+    <<: *service-defaults
+    image: docker.io/prom/node-exporter@sha256:863b62ff9f392b6f472e22b4b670ad1cabb66b3042502ebd4b2cd192733e1bce
+    platform: linux/amd64
+    command:
+      - --collector.disable-defaults
+      - --collector.textfile
+      - --collector.textfile.directory=/var/lib/node_exporter/textfile
+      - --web.listen-address=:9100
+    volumes:
+      - ${BACKUP_METRICS_DIR:?set BACKUP_METRICS_DIR}:/var/lib/node_exporter/textfile:ro
+    expose:
+      - "9100"
+    networks:
+      - app
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
   grafana:
     <<: *service-defaults
@@ -324,10 +347,16 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
       IM_S3_BUCKET: ${IM_S3_BUCKET:-nexachat-media}
+      BACKUP_OFFSITE_ENDPOINT: ${BACKUP_OFFSITE_ENDPOINT:-}
+      BACKUP_OFFSITE_ACCESS_KEY: ${BACKUP_OFFSITE_ACCESS_KEY:-}
+      BACKUP_OFFSITE_SECRET_KEY: ${BACKUP_OFFSITE_SECRET_KEY:-}
+      BACKUP_OFFSITE_BUCKET: ${BACKUP_OFFSITE_BUCKET:-}
+      BACKUP_OFFSITE_PREFIX: ${BACKUP_OFFSITE_PREFIX:-}
     volumes:
       - ${BACKUP_DIR:-./backups}:/backup
     networks:
       - data
+      - edge
     entrypoint: ["/bin/sh"]
 
 networks:

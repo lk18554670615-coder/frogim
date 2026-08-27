@@ -22,7 +22,9 @@ source "$APP_ROOT/infra/scripts/load-env.sh"
 load_env_file "$CONFIG_FILE"
 
 compose=(docker compose --env-file "$CONFIG_FILE" -f "$COMPOSE_FILE")
-if [[ "${IM_ENV:-development}" == "production" ]]; then
+if [[ "${WUKONG_DEV_PUBLIC_REPLACEMENT:-false}" == "true" ]]; then
+  compose+=(-f "$APP_ROOT/infra/compose.wukong.production.yaml" -f "$APP_ROOT/infra/compose.ip.wukong-dev.yaml")
+elif [[ "${IM_ENV:-development}" == "production" ]]; then
   "$APP_ROOT/infra/scripts/validate-production-env.sh" "$CONFIG_FILE"
   compose+=(-f "$APP_ROOT/infra/compose.ip.production.yaml")
   if [[ "${IM_PUSH_PROVIDER:-}" == "apns_voip" || "${IM_PUSH_PROVIDER:-}" == "getui_apns_voip" ]]; then
@@ -35,8 +37,22 @@ case "${1:-help}" in
     if [[ "${IM_ENV:-development}" == "production" ]]; then
       exec "$APP_ROOT/infra/scripts/deploy-ip-production.sh" "$CONFIG_FILE"
     fi
-    "${compose[@]}" up -d --build --scale "server=${IM_REPLICAS:-1}"
-    "${compose[@]}" wait minio-init
+    "${compose[@]}" config -q
+    if [[ "${WUKONG_DEV_PUBLIC_REPLACEMENT:-false}" == "true" ]]; then
+      "${compose[@]}" up -d --no-build --remove-orphans --scale "server=${IM_REPLICAS:-1}"
+    else
+      "${compose[@]}" up -d --build --scale "server=${IM_REPLICAS:-1}"
+    fi
+    minio_init_id="$("${compose[@]}" ps -aq minio-init)"
+    if [[ -z "$minio_init_id" ]]; then
+      echo "minio-init 容器不存在，无法确认存储初始化结果" >&2
+      exit 1
+    fi
+    minio_init_status="$(docker wait "$minio_init_id")"
+    if [[ "$minio_init_status" != "0" ]]; then
+      echo "minio-init 执行失败，退出码：$minio_init_status" >&2
+      exit "$minio_init_status"
+    fi
     "${compose[@]}" rm -f minio-init
     ;;
   restart)
@@ -69,29 +85,13 @@ case "${1:-help}" in
     echo "日志归档已完成：$destination"
     ;;
   smoke)
-    curl --fail --silent --show-error "https://$SERVER_IP/health"
-    echo
-    curl --fail --silent --show-error "https://$SERVER_IP/healthz"
-    echo
+    exec "$APP_ROOT/infra/scripts/smoke.sh" "$CONFIG_FILE"
     ;;
   backup)
-    timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-    destination="${BACKUP_DIR:-/opt/nexachat/backups}/$timestamp"
-    working="${BACKUP_DIR:-/opt/nexachat/backups}/.incomplete-$timestamp"
-    [[ ! -e "$destination" && ! -e "$working" ]] || { echo "backup destination already exists" >&2; exit 1; }
-    mkdir -p -m 700 "$working/minio"
-    backup_complete=false
-    trap 'if [[ "$backup_complete" != true ]]; then echo "backup incomplete: $working" >&2; fi' EXIT
-    "${compose[@]}" exec -T postgres pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom --no-owner --no-acl > "$working/postgres.dump"
-    "${compose[@]}" --profile ops run --rm --no-deps minio-client -c '
-      mc alias set source http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
-      mc mirror --preserve "source/$IM_S3_BUCKET" "/backup/.incomplete-'"$timestamp"'/minio"
-    '
-    (cd "$working" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum) > "$working/SHA256SUMS"
-    chmod -R go-rwx "$working"
-    mv "$working" "$destination"
-    backup_complete=true
-    echo "backup completed: $destination"
+    # The installed systemd/CLI compatibility entrypoint delegates to the
+    # authoritative implementation. The removed inline path omitted WuKongIM
+    # data and the fixed dependency lock.
+    exec "$APP_ROOT/infra/scripts/backup.sh" "$CONFIG_FILE"
     ;;
   renew-cert)
     docker run --rm \

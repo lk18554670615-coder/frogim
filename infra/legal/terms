@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>青蛙呱呱用户协议</title>
+  <style>body{max-width:760px;margin:0 auto;padding:32px 20px;font:16px/1.75 system-ui,sans-serif;color:#172033}h1{font-size:28px}h2{margin-top:28px;font-size:20px}.muted{color:#667085}</style>
+</head>
+<body>
+  <h1>青蛙呱呱用户协议</h1>
+  <p class="muted">更新日期：2026 年 8 月 12 日</p>
+  <p>欢迎使用青蛙呱呱。本服务目前处于开发测试阶段，仅供获得授权的测试用户进行即时通讯及相关业务功能验收。</p>
+  <h2>账号与使用</h2>
+  <p>请妥善保管账号，不得利用本服务发布违法、有害、侵权或骚扰内容，不得干扰服务正常运行。</p>
+  <h2>内容与服务</h2>
+  <p>用户应对其发送的内容负责。测试期间功能、数据和服务可因开发、维护或测试需要调整，重要资料请自行留存。</p>
+  <h2>联系我们</h2>
+  <p>如对本协议有疑问，请通过应用内反馈或管理员提供的联系方式联系我们。</p>
+</body>
+</html>

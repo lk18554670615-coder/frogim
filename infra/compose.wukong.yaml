@@ -1,0 +1,203 @@
+services:
+  server:
+    environment:
+      IM_WUKONG_ENABLED: "true"
+      IM_WUKONG_API_URL: http://wukongim:5001
+      IM_WUKONG_MANAGER_URL: http://wukongim:5300
+      IM_WUKONG_MANAGER_TOKEN: ${IM_WUKONG_MANAGER_TOKEN:-local-wukong-manager-token-change-me}
+      IM_WUKONG_TOKEN_SECRET: ${IM_WUKONG_TOKEN_SECRET:-local-wukong-user-token-secret-change-me}
+      IM_WUKONG_POLICY_SECRET: ${IM_WUKONG_POLICY_SECRET:-local-wukong-policy-secret-change-me-123456}
+      IM_WUKONG_GRPC_ADDR: :6970
+      IM_WUKONG_TCP_URL: ${IM_WUKONG_TCP_URL:-tcp://127.0.0.1:5100}
+      IM_WUKONG_WS_URL: ${IM_WUKONG_WS_URL:-ws://127.0.0.1:5200}
+      IM_WUKONG_PLUGIN_DIR: ${IM_WUKONG_PLUGIN_DIR:-}
+      IM_WUKONG_PLUGIN_TRUSTED_KEYS: ${IM_WUKONG_PLUGIN_TRUSTED_KEYS:-}
+      IM_WUKONG_PLUGIN_ALLOWLIST: ${IM_WUKONG_PLUGIN_ALLOWLIST:-}
+      IM_WUKONG_PLUGIN_MAX_BYTES: ${IM_WUKONG_PLUGIN_MAX_BYTES:-67108864}
+      IM_LIVEKIT_ENABLED: "true"
+      IM_LIVEKIT_URL: ${IM_LIVEKIT_URL:-ws://127.0.0.1:7880}
+      IM_LIVEKIT_API_URL: http://livekit:7880
+      IM_LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      IM_LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-local-livekit-secret-change-me-123456}
+      IM_LIVEKIT_TOKEN_TTL: ${IM_LIVEKIT_TOKEN_TTL:-5m}
+      IM_PROMETHEUS_URL: http://prometheus:9090
+    expose:
+      - "6970"
+    volumes:
+      - wukong_plugins:/var/lib/nexachat/wukong-plugins
+
+  wukongim:
+    build:
+      context: ..
+      dockerfile: infra/wukongim/server-patch/Dockerfile
+    image: linli/wukongim:v2.2.5-20260422-linli.3-a888f895
+    platform: linux/amd64
+    environment:
+      WK_MODE: release
+      WK_MANAGERTOKEN: ${IM_WUKONG_MANAGER_TOKEN:-local-wukong-manager-token-change-me}
+      WK_TOKENAUTHON: "true"
+      WK_EXTERNAL_IP: ${WUKONG_EXTERNAL_IP:-127.0.0.1}
+      WK_EXTERNAL_TCPADDR: ${IM_WUKONG_TCP_URL:-tcp://127.0.0.1:5100}
+      WK_EXTERNAL_WSADDR: ${IM_WUKONG_WS_URL:-ws://127.0.0.1:5200}
+      WK_WEBHOOK_GRPCADDR: server:6970
+      WK_DATASOURCE_ADDR: http://server:8080/internal/wukong/datasource
+      WK_DATASOURCE_CHANNELINFOON: "false"
+      WK_TRACE_PROMETHEUSAPIURL: http://prometheus:9090
+      IM_WUKONG_POLICY_URL: http://server:8080/internal/wukong/policy/send
+      IM_WUKONG_POLICY_SECRET: ${IM_WUKONG_POLICY_SECRET:-local-wukong-policy-secret-change-me-123456}
+      IM_WUKONG_POLICY_TIMEOUT: ${IM_WUKONG_POLICY_TIMEOUT:-500ms}
+    volumes:
+      - ./wukongim/wk.yaml:/root/wukongim/wk.yaml:ro
+      - wukong_data:/root/wukongim/data
+      - wukong_logs:/root/wukongim/logs
+      - wukong_plugins:/root/wukongim/data/plugins
+    ports:
+      - "127.0.0.1:${WUKONG_API_PORT:-5001}:5001"
+      - "127.0.0.1:${WUKONG_TCP_PORT:-5100}:5100"
+      - "127.0.0.1:${WUKONG_WS_PORT:-5200}:5200"
+    expose:
+      - "5001"
+      - "5300"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --header='token: '$$WK_MANAGERTOKEN -O /dev/null http://127.0.0.1:5001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+      wukong-policy-plugin-init:
+        condition: service_completed_successfully
+
+  wukong-policy-plugin-init:
+    build:
+      context: ..
+      dockerfile: tools/wukong-policy-plugin/Dockerfile
+    platform: linux/amd64
+    volumes:
+      - wukong_plugins:/data/plugins
+    restart: "no"
+
+  wukong-probe:
+    profiles: ["probe"]
+    build:
+      context: ../tools/wukong-probe
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    command:
+      - -api
+      - http://wukongim:5001
+      - -manager-api
+      - http://wukongim:5300
+      - -tcp
+      - tcp://wukongim:5100
+      - -manager-token
+      - ${IM_WUKONG_MANAGER_TOKEN:-local-wukong-manager-token-change-me}
+      - -business-api
+      - http://server:8080
+      - -otp
+      - ${IM_DEV_OTP_CODE:-123456}
+      - -timeout
+      - 120s
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      server:
+        condition: service_healthy
+      wukongim:
+        condition: service_healthy
+
+  wukong-load:
+    profiles: ["loadtest"]
+    build:
+      context: ../tools/wukong-load
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    command: ["-h"]
+    environment:
+      WUKONG_API_URL: http://wukongim:5001
+      WUKONG_BUSINESS_API_URL: http://server:8080
+      WUKONG_TCP_URL: tcp://wukongim:5100
+      WUKONG_LOAD_OTP: ${IM_DEV_OTP_CODE:-123456}
+      IM_WUKONG_MANAGER_TOKEN: ${IM_WUKONG_MANAGER_TOKEN:-local-wukong-manager-token-change-me}
+      IM_WUKONG_POLICY_SECRET: ${IM_WUKONG_POLICY_SECRET:-local-wukong-policy-secret-change-me-123456}
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      server:
+        condition: service_healthy
+      wukongim:
+        condition: service_healthy
+
+  livekit:
+    image: docker.io/livekit/livekit-server@sha256:d0d1cfdbe95617647bbe91630454526c2cdd88cec83f41114b3495b444918b9a
+    platform: linux/amd64
+    command: ["--config", "/etc/livekit.yaml"]
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-local-livekit-secret-change-me-123456}"
+    volumes:
+      - ./livekit/livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "127.0.0.1:${LIVEKIT_SIGNAL_PORT:-7880}:7880"
+      - "127.0.0.1:${LIVEKIT_TCP_PORT:-7881}:7881"
+      - "127.0.0.1:7882-7889:7882-7889/udp"
+    expose:
+      - "6789"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:7880/"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  # Official synthetic WebRTC publishers/subscribers. This profile is opt-in
+  # and has a harmless help command so normal Compose startup cannot create
+  # media load accidentally.
+  livekit-load:
+    profiles: ["loadtest"]
+    image: docker.io/livekit/livekit-cli@sha256:4404f9428d7a048373661f6caf8ce099dbdcc1af47c9d046ad97cfb032b62029
+    platform: linux/amd64
+    command: ["perf", "load-test", "--help"]
+    environment:
+      LIVEKIT_URL: ws://livekit:7880
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-local-livekit-secret-change-me-123456}
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      livekit:
+        condition: service_healthy
+
+volumes:
+  wukong_data:
+  wukong_logs:
+  wukong_plugins:

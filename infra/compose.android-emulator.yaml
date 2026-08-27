@@ -1,0 +1,16 @@
+# Android Studio Emulator overlay. The emulator reaches the Windows host
+# through 10.0.2.2. Advertising 127.0.0.1 would point the official Flutter SDK
+# back to the emulator itself and leave the TCP connection offline.
+services:
+  server:
+    environment:
+      IM_WUKONG_TCP_URL: tcp://10.0.2.2:5100
+      # Only Android receives the emulator host alias. Web/macOS keep the base
+      # public endpoint (127.0.0.1 locally), so one stack can serve both.
+      # Production forbids this development-only override.
+      IM_S3_ANDROID_PUBLIC_ENDPOINT: 10.0.2.2:9000
+
+  wukongim:
+    environment:
+      WK_EXTERNAL_IP: 10.0.2.2
+      WK_EXTERNAL_TCPADDR: tcp://10.0.2.2:5100

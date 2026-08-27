@@ -1,5 +1,5 @@
 [Unit]
-Description=Back up Linli IM PostgreSQL and media
+Description=Back up NexaChat PostgreSQL, MinIO and WuKongIM data
 After=docker.service network-online.target
 Wants=network-online.target
 

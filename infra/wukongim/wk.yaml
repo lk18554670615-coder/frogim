@@ -1,0 +1,68 @@
+mode: release
+addr: "tcp://0.0.0.0:5100"
+httpAddr: "0.0.0.0:5001"
+wsAddr: "ws://0.0.0.0:5200"
+rootDir: "/root/wukongim/data"
+tokenAuthOn: true
+whitelistOffOfPerson: false
+pprofOn: false
+
+manager:
+  on: true
+  addr: "0.0.0.0:5300"
+
+demo:
+  on: false
+
+logger:
+  level: 2
+  dir: "/root/wukongim/logs"
+  lineNum: false
+
+channel:
+  createIfNoExist: false
+  cacheCount: 10000
+  subscriberCompressOfCount: 1000
+
+conversation:
+  on: true
+  cacheExpire: 24h
+  syncInterval: 30s
+  syncOnce: 100
+  userMaxCount: 1000
+
+messageRetry:
+  interval: 60s
+  scanInterval: 5s
+  maxCount: 5
+
+webhook:
+  grpcAddr: "server:6970"
+  msgNotifyEventPushInterval: 200ms
+  # Keep disk-backed webhook events retrying across an application restart.
+  # The fixed source retries about once per second after the first failure.
+  msgNotifyEventRetryMaxCount: 3600
+  msgNotifyEventCountPerPush: 200
+  focusEvents:
+    - "msg.offline"
+    - "msg.notify"
+    - "user.onlinestatus"
+    - "msg.stream"
+
+datasource:
+  addr: "http://server:8080/internal/wukong/datasource"
+  # Fixed server v2.2.5-20260422 returns an empty value from
+  # Datasource.GetChannelInfo. Keep this off and provision channel info through
+  # the authenticated internal REST API until the pinned-source issue is resolved.
+  channelInfoOn: false
+
+trace:
+  prometheusApiUrl: "http://prometheus:9090"
+
+plugin:
+  timeout: 1s
+  install: []
+
+customerService:
+  visitorsOn: false
+  visitorsSuffix: "____vstr"

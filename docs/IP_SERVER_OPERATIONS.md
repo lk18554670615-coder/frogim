@@ -1,6 +1,6 @@
 # IP 服务器配置与运维
 
-> 兼容命名说明：远端目录 `/opt/nexachat`、Compose project、数据库和对象存储标识属于已部署资源，迁移前继续保留；产品名称统一为“邻里通讯”。
+> 兼容命名说明：远端目录 `/opt/nexachat`、Compose project、数据库和对象存储标识属于已部署资源，迁移前继续保留；产品名称统一为“青蛙呱呱”。
 
 ## 生产与测试边界
 
@@ -72,7 +72,7 @@ sudo install -o 10001 -g 10001 -m 0400 \
 infra/scripts/deploy-ip-production.sh .env.ip.production
 ```
 
-脚本会校验生产环境、叠加 production overlay，按推送模式自动叠加 APNs overlay，构建/拉取镜像、启动服务、等待 MinIO 初始化并执行 HTTPS 冒烟。
+脚本会校验生产环境、叠加 production overlay，按推送模式自动叠加 APNs overlay，构建/拉取镜像、启动服务、等待 MinIO 初始化并执行 HTTPS 冒烟。公网冒烟必须同时取得 WuKongIM `/im` 的 WebSocket `101`，以及 LiveKit `/rtc/rtc/validate` 无 Token 请求的 `401`；任一实时路由失败都会阻止发布完成。
 
 只读检查可以使用完整生产组合：
 
@@ -93,8 +93,9 @@ infra/scripts/smoke.sh .env.ip.production
 ## 认证与实时验收
 
 - REST Access Token 只允许 `Authorization: Bearer <token>`；query、请求体或 Cookie 中的 token 应返回未认证。
-- WebSocket 只允许先经 `POST /v1/ws/ticket` 获取的 30 秒一次性 ticket；Access Token query、升级请求 `Authorization` 和 ticket 重放都应被拒绝。
-- Redis Pub/Sub 的通话信令 publish 失败时服务端 fail-closed，但 SDP/ICE 仍是 ephemeral，不写 PostgreSQL、没有 replay。Flutter 客户端通过 `signalId` 重试和去重；accepted/rejected/cancelled/ended/timeout 状态会事务性写入双方同步流供重连收敛。必须真机验证跨节点、Redis 短时故障和重连。
+- `/v2/auth/im-session` 返回独立、短期的 WuKongIM Token；REST Access Token 不得进入 WSS/TCP URL。
+- 使用 `tools/wukong-probe` 验证真实 TCP 握手、ACK、互发、离线/历史同步、DataSource、CMD 和策略插件；生产 Compose 探针必须设置短期 `WUKONG_PROBE_OTP` 并通过业务 API 创建真实好友/频道，仅做 HTTP 101 升级或绕过业务策略创建 WuKong 原生临时频道都不算消息链路验收。
+- LiveKit 通话必须真机验证房间鉴权、2–9 人音视频、屏幕共享、成员离开和网络重连；业务服务与 PostgreSQL 不接收 SDP/ICE。
 
 ## MinIO 与媒体
 
@@ -104,22 +105,34 @@ infra/scripts/smoke.sh .env.ip.production
 
 ## 备份与恢复点
 
-备份过程使用 `umask 077`，先写入 `.incomplete-<UTC timestamp>`，生成 `postgres.dump`、MinIO 镜像和 `SHA256SUMS`，收紧权限后再原子重命名为最终时间戳目录。只有最终目录是有效恢复点；残留 `.incomplete-*` 表示失败，必须告警和排查，不能直接恢复。
+备份过程使用 `umask 077`，先写入 `.incomplete-<UTC timestamp>`，依次生成 WuKong 数据归档、`postgres.dump`、MinIO 镜像、固定依赖锁和 `SHA256SUMS`，收紧权限后再原子重命名为最终时间戳目录。只有最终目录是有效恢复点；残留 `.incomplete-*` 表示失败，必须告警和排查，不能直接恢复。
 
 生产部署后应立即执行一次备份并复制到异机加密存储。恢复流程与演练要求见 [BACKUP_RESTORE.md](BACKUP_RESTORE.md)。
 
 ## HTTPS IP 证书与 Flutter 真机包
 
-证书保存在 `CERTBOT_DIR`，ACME 校验目录由 `CERTBOT_WEBROOT` 指定。Let's Encrypt 的 IP 证书是约 6 天的短期证书，必须启用 `nexachat-cert-renew.timer` 每日续期；续期命令通过共享 webroot 完成验证并热加载 Caddy。不要手工移动 `live/` 下的软链接。公网仅暴露 80/443；数据库、Redis、MinIO 与监控端口保持私网。
+证书保存在 `CERTBOT_DIR`，ACME 校验目录由 `CERTBOT_WEBROOT` 指定。Let's Encrypt 的 IP 证书是约 6 天的短期证书，必须启用 `nexachat-cert-renew.timer` 每日续期；续期命令通过共享 webroot 完成验证并热加载 Caddy。不要手工移动 `live/` 下的软链接。公网暴露 Caddy `80/443`、WuKongIM 原生客户端 `5100/TCP`、LiveKit TCP 回退 `7881/TCP` 与媒体 `7882–7889/UDP`；WuKongIM API/Manager `5001/5200/5300`、LiveKit 管理面 `7880`、数据库、Redis、MinIO 与监控端口保持私网。生产云安全组和主机防火墙必须与此端口清单一致。
+
+TencentOS/firewalld 主机使用仓库脚本幂等校准规则：
+
+```bash
+sudo bash infra/scripts/configure-ip-firewall.sh
+```
+
+脚本仅补充 `80/443/5100/7881/TCP` 与 `7882–7889/UDP`，并移除本项目已经
+弃用的 Coturn `3478/TCP+UDP`、`49160–49200/UDP`；不会改动 SSH、宝塔、
+FTP 或其他非本项目规则。云安全组仍需在云平台单独保持同一入口清单。
 
 正式 IP HTTPS 包示例：
 
 ```bash
-flutter build apk --release \
+fvm flutter build apk --release \
   --dart-define=APP_ENV=production \
   --dart-define=API_BASE_URL=https://203.0.113.10 \
-  --dart-define=WS_URL=wss://203.0.113.10/v1/ws \
+  --dart-define=WS_URL=wss://203.0.113.10/im \
   --dart-define=ENABLE_DEMO=false \
+  --dart-define=TERMS_URL=https://203.0.113.10/legal/terms \
+  --dart-define=PRIVACY_URL=https://203.0.113.10/legal/privacy \
   --dart-define=MEDIA_MAX_BYTES=104857600
 ```
 

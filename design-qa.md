@@ -1,4 +1,4 @@
-# 邻里通讯设计 QA
+# 青蛙呱呱设计 QA
 
 ## Visual truth
 
@@ -40,12 +40,27 @@ The complete iteration log and fidelity checklist are in `apps/mobile/design-qa.
 
 ## Admin console QA — 2026-08-01
 
-- Visual direction: the compact left rail, dense operational tables and restrained card hierarchy were checked against `artifacts/pc-web-redesign/source-board-05.webp`; the implementation retains the existing 邻里通讯 green brand system and does not copy third-party artwork.
+- Visual direction: the compact left rail, dense operational tables and restrained card hierarchy were checked against `artifacts/pc-web-redesign/source-board-05.webp`; the implementation retains the existing 青蛙呱呱 green brand system and does not copy third-party artwork.
 - Desktop browser pass: 1280 x 720, 212 px fixed navigation rail, 15 reachable navigation items, four-column metric strip, no horizontal viewport overflow. Overview and operations pages were inspected after data loading completed.
 - Responsive browser pass: 390 x 844, navigation moves fully off canvas behind an accessible menu button, operations cards collapse to one 354 px column and no horizontal viewport overflow was found.
 - Interaction pass: the timed-ban dialog exposes all five duration choices, restores focus, traps keyboard navigation, requires an operator reason and disables confirmation when the reason is empty.
 - State pass: loading, empty, error/retry and paginated table components are present. The demo-only operations and relationship pages contain representative data; production builds cannot enable the demo selector.
 - Runtime pass: no application console error was observed during the inspected desktop/mobile navigation and destructive-confirmation flow.
 - Static and build checks: admin tests 16/16, TypeScript lint, production build and dependency audit passed. Backend tests, vet and the PostgreSQL-backed lifecycle/operations suite passed.
+
+## Admin sidebar grouping QA — 2026-08-17
+
+- Page and state: `http://127.0.0.1:4173/users`, signed in against real server data with 用户管理 active.
+- Reference: `artifacts/design-qa/sidebar-menu/reference.png` (501 × 867 px).
+- Full implementation evidence: `artifacts/design-qa/sidebar-menu/implementation.png` at a 1059 × 898 px browser viewport.
+- Focused comparison: `artifacts/design-qa/sidebar-menu/comparison.png` (628 × 867 px) places the reference and implementation sidebar together.
+- Preserved difference: the project keeps its dark-green brand theme and existing four business domains; the reference supplies the grouping hierarchy rather than replacement information architecture or colors.
+- First pass: implemented section headings, disclosure arrows, nested directory lines, child indentation and a thin active indicator. The active group heading was slightly over-emphasized (P2).
+- Final pass: reduced the active group heading emphasis, then re-captured and compared the same signed-in state. No actionable P0/P1/P2 mismatch remained.
+- Interaction pass: 内容与运营 changed from `aria-expanded="false"` to `true` and back to `false`; the active route group still opens automatically.
+- Automated result: 4 admin test files and all 95 tests passed; TypeScript and the Vite production build passed.
+- Naming follow-up: abstract domains were replaced with the reference's object-oriented names — 用户、群组、消息、举报、工具、设置 — while all 19 existing routes remained reachable.
+- Naming evidence: `artifacts/design-qa/sidebar-menu/implementation-naming.png` and `artifacts/design-qa/sidebar-menu/comparison-naming.png` show the signed-in 用户管理 state after regrouping.
+- Naming interaction pass: 用户 remains auto-expanded on `/users`; 工具 changes from collapsed to expanded and back to collapsed. The same 95-test suite and production build passed after updating navigation expectations.
 
 final result: passed

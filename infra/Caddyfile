@@ -8,7 +8,7 @@
 
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-		Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https: wss:; font-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https: wss:; font-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'"
 		Referrer-Policy "no-referrer"
 		Permissions-Policy "camera=(self), microphone=(self), geolocation=(self), payment=(), usb=()"
 		X-Content-Type-Options "nosniff"
@@ -16,7 +16,7 @@
 		-Server
 	}
 
-	@backend path /v1/* /api/* /health
+	@backend path /v2/* /api/* /health /ready
 	handle @backend {
 		reverse_proxy {
 			dynamic a server 8080 {
@@ -27,6 +27,23 @@
 			lb_try_interval 250ms
 			header_up X-Request-ID {http.request.uuid}
 		}
+	}
+
+	@retired_api path /v1 /v1/*
+	handle @retired_api {
+		respond `{"error":{"code":"NOT_FOUND","message":"endpoint not found"}}` 404
+	}
+
+	@wukong_ws path /im /im/*
+	handle @wukong_ws {
+		uri strip_prefix /im
+		reverse_proxy wukongim:5200
+	}
+
+	@livekit_signal path /rtc /rtc/*
+	handle @livekit_signal {
+		uri strip_prefix /rtc
+		reverse_proxy livekit:7880
 	}
 
 	handle /healthz {

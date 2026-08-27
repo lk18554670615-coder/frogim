@@ -1,0 +1,880 @@
+diff --git a/internal/api/channel_model.go b/internal/api/channel_model.go
+index 91afc11..989ff08 100644
+--- a/internal/api/channel_model.go
++++ b/internal/api/channel_model.go
+@@ -7,9 +7,27 @@ import (
+ 	"github.com/WuKongIM/WuKongIM/internal/options"
+ 	"github.com/WuKongIM/WuKongIM/internal/types"
+ 	"github.com/WuKongIM/WuKongIM/pkg/wkdb"
++	wkproto "github.com/WuKongIM/WuKongIMGoProto"
+ 	"github.com/pkg/errors"
+ )
+ 
++func invalidChannelID(channelID string, channelType uint8) bool {
++	if channelType != wkproto.ChannelTypeCommunityTopic {
++		return options.IsSpecialChar(channelID)
++	}
++
++	parts := strings.Split(channelID, "@")
++	if len(parts) != 2 {
++		return true
++	}
++	for _, part := range parts {
++		if strings.TrimSpace(part) == "" || options.IsSpecialChar(part) {
++			return true
++		}
++	}
++	return false
++}
++
+ // ChannelInfoReq ChannelInfoReq
+ type channelInfoReq struct {
+ 	ChannelID   string `json:"channel_id"`   // 频道ID
+@@ -55,7 +73,7 @@ func (r channelCreateReq) Check() error {
+ 	if r.ChannelType == 0 {
+ 		return errors.New("频道类型错误！")
+ 	}
+-	if options.IsSpecialChar(r.ChannelID) {
++	if invalidChannelID(r.ChannelID, r.ChannelType) {
+ 		return errors.New("频道ID不能包含特殊字符！")
+ 	}
+ 	return nil
+@@ -73,7 +91,7 @@ func (s subscriberAddReq) Check() error {
+ 	if strings.TrimSpace(s.ChannelId) == "" {
+ 		return errors.New("频道ID不能为空！")
+ 	}
+-	if options.IsSpecialChar(s.ChannelId) {
++	if invalidChannelID(s.ChannelId, s.ChannelType) {
+ 		return errors.New("频道ID不能包含特殊字符！")
+ 	}
+ 	if stringArrayIsEmpty(s.Subscribers) {
+@@ -93,7 +111,7 @@ func (s subscriberRemoveReq) Check() error {
+ 	if strings.TrimSpace(s.ChannelId) == "" {
+ 		return errors.New("频道ID不能为空！")
+ 	}
+-	if options.IsSpecialChar(s.ChannelId) {
++	if invalidChannelID(s.ChannelId, s.ChannelType) {
+ 		return errors.New("频道ID不能包含特殊字符！")
+ 	}
+ 	if stringArrayIsEmpty(s.Subscribers) {
+@@ -183,7 +201,7 @@ func (r whitelistReq) Check() error {
+ 	if r.ChannelId == "" {
+ 		return errors.New("channel_id不能为空！")
+ 	}
+-	if options.IsSpecialChar(r.ChannelId) {
++	if invalidChannelID(r.ChannelId, r.ChannelType) {
+ 		return errors.New("频道ID不能包含特殊字符！")
+ 	}
+ 	if r.ChannelType == 0 {
+diff --git a/internal/api/channel_model_linli_patch_test.go b/internal/api/channel_model_linli_patch_test.go
+new file mode 100755
+index 0000000..e4c0192
+--- /dev/null
++++ b/internal/api/channel_model_linli_patch_test.go
+@@ -0,0 +1,49 @@
++package api
++
++import (
++	"testing"
++
++	wkproto "github.com/WuKongIM/WuKongIMGoProto"
++)
++
++func TestCommunityTopicChannelIDValidation(t *testing.T) {
++	valid := []string{"community@topic", " community @ topic "}
++	for _, channelID := range valid {
++		if invalidChannelID(channelID, wkproto.ChannelTypeCommunityTopic) {
++			t.Fatalf("expected community topic channel ID %q to be valid", channelID)
++		}
++	}
++
++	invalid := []string{"community", "@topic", "community@", "community@topic@extra", "community#one@topic", "community@topic&one"}
++	for _, channelID := range invalid {
++		if !invalidChannelID(channelID, wkproto.ChannelTypeCommunityTopic) {
++			t.Fatalf("expected community topic channel ID %q to be invalid", channelID)
++		}
++	}
++}
++
++func TestNonCommunityTopicChannelIDValidationIsUnchanged(t *testing.T) {
++	if !invalidChannelID("group@topic", wkproto.ChannelTypeGroup) {
++		t.Fatal("non-community channel IDs must continue to reject @")
++	}
++	if invalidChannelID("group-topic", wkproto.ChannelTypeGroup) {
++		t.Fatal("ordinary non-community channel ID should remain valid")
++	}
++}
++
++func TestCommunityTopicChecksUseScopedValidation(t *testing.T) {
++	const channelID = "community@topic"
++	const channelType = wkproto.ChannelTypeCommunityTopic
++	if err := (channelCreateReq{channelInfoReq: channelInfoReq{ChannelID: channelID, ChannelType: channelType}}).Check(); err != nil {
++		t.Fatalf("channel create rejected valid community topic: %v", err)
++	}
++	if err := (subscriberAddReq{ChannelId: channelID, ChannelType: channelType, Subscribers: []string{"u1"}}).Check(); err != nil {
++		t.Fatalf("subscriber add rejected valid community topic: %v", err)
++	}
++	if err := (subscriberRemoveReq{ChannelId: channelID, ChannelType: channelType, Subscribers: []string{"u1"}}).Check(); err != nil {
++		t.Fatalf("subscriber remove rejected valid community topic: %v", err)
++	}
++	if err := (whitelistReq{ChannelId: channelID, ChannelType: channelType, UIDs: []string{"u1"}}).Check(); err != nil {
++		t.Fatalf("whitelist rejected valid community topic: %v", err)
++	}
++}
+diff --git a/internal/api/message.go b/internal/api/message.go
+index 19d264d..9cf3707 100644
+--- a/internal/api/message.go
++++ b/internal/api/message.go
+@@ -44,6 +44,21 @@ func newMessage(s *Server) *message {
+ 	}
+ }
+ 
++func safeMessageSendLogFields(req messageSendReq) []zap.Field {
++	return []zap.Field{
++		zap.String("clientMsgNo", req.ClientMsgNo),
++		zap.String("fromUid", req.FromUID),
++		zap.String("channelId", req.ChannelID),
++		zap.Uint8("channelType", req.ChannelType),
++		zap.Int("subscriberCount", len(req.Subscribers)),
++		zap.Int("payloadBytes", len(req.Payload)),
++		zap.Int("isStream", req.IsStream),
++		zap.Uint32("expire", req.Expire),
++		zap.Int("noPersist", req.Header.NoPersist),
++		zap.Int("syncOnce", req.Header.SyncOnce),
++	}
++}
++
+ // Route route
+ func (m *message) route(r *wkhttp.WKHttp) {
+ 	r.POST("/message/send", m.send)           // 发送消息
+@@ -85,21 +100,21 @@ func (m *message) send(c *wkhttp.Context) {
+ 	channelId := req.ChannelID
+ 	channelType := req.ChannelType
+ 
+-	m.Debug("发送消息内容：", zap.String("msg", wkutil.ToJSON(req)))
++	m.Debug("发送消息", safeMessageSendLogFields(req)...)
+ 	if strings.TrimSpace(channelId) == "" && len(req.Subscribers) == 0 { //指定了频道 才能正常发送
+-		m.Error("无法处理发送消息请求！", zap.Any("req", req))
++		m.Error("无法处理发送消息请求！", safeMessageSendLogFields(req)...)
+ 		c.ResponseError(errors.New("无法处理发送消息请求！"))
+ 		return
+ 	}
+ 
+ 	if len(req.Subscribers) > 0 && req.Header.SyncOnce != 1 {
+-		m.Error("subscribers有值的情况下，消息必须是syncOnce消息", zap.Any("req", req))
++		m.Error("subscribers有值的情况下，消息必须是syncOnce消息", safeMessageSendLogFields(req)...)
+ 		c.ResponseError(errors.New("无法处理发送消息请求！"))
+ 		return
+ 	}
+ 
+ 	if strings.TrimSpace(channelId) != "" && len(req.Subscribers) > 0 {
+-		m.Error("channelId和subscribers不能同时存在！", zap.Any("req", req))
++		m.Error("channelId和subscribers不能同时存在！", safeMessageSendLogFields(req)...)
+ 		c.ResponseError(errors.New("无法处理发送消息请求！"))
+ 		return
+ 	}
+@@ -120,7 +135,7 @@ func (m *message) send(c *wkhttp.Context) {
+ 			tmpChannelId = options.G.OrginalConvertCmdChannel(tmpChannelId) // 转换为cmd频道
+ 			err := m.requestSetSubscribersForTmpChannel(tmpChannelId, req.Subscribers)
+ 			if err != nil {
+-				m.Error("请求设置临时频道的订阅者失败！", zap.Error(err), zap.String("channelId", tmpChannelId), zap.Strings("subscribers", req.Subscribers))
++				m.Error("请求设置临时频道的订阅者失败！", zap.Error(err), zap.String("channelId", tmpChannelId), zap.Int("subscriberCount", len(req.Subscribers)))
+ 				c.ResponseError(errors.New("请求设置临时频道的订阅者失败！"))
+ 				return
+ 			}
+@@ -965,7 +980,7 @@ func (m *message) handleStreamPersist(c *wkhttp.Context, req *eventAppendReq, fa
+ 	}
+ 
+ 	// 同步持久化结果到缓存
+-	m.syncEventCacheAfterPersist(req, fakeChannelID, eventKey, stored.MsgEventSeq, eventState.Status)
++	m.syncEventCacheAfterPersist(req, fakeChannelID, eventKey, eventType, stored.MsgEventSeq, eventState.Status)
+ 
+ 	// 推送事件到在线客户端
+ 	m.sendEvent(req, fakeChannelID, eventKey, req.MessageID, stored.MsgEventSeq, eventState.Status)
+@@ -983,7 +998,7 @@ func (m *message) handleStreamPersist(c *wkhttp.Context, req *eventAppendReq, fa
+ }
+ 
+ // syncEventCacheAfterPersist 在 raft 提案落盘后，将结果同步到内存缓存。
+-func (m *message) syncEventCacheAfterPersist(req *eventAppendReq, fakeChannelID, eventKey string, persistedSeq uint64, status string) {
++func (m *message) syncEventCacheAfterPersist(req *eventAppendReq, fakeChannelID, eventKey, eventType string, persistedSeq uint64, status string) {
+ 	if service.MessageEventCache == nil {
+ 		return
+ 	}
+@@ -997,6 +1012,14 @@ func (m *message) syncEventCacheAfterPersist(req *eventAppendReq, fakeChannelID,
+ 	}, eventKey, persistedSeq); err != nil && err != wkcache.ErrMessageEventChannelMismatch {
+ 		m.Warn("eventAppend: upsert cache failed", zap.Error(err), zap.String("clientMsgNo", req.ClientMsgNo))
+ 	}
++	if eventType == wkdb.EventTypeStreamSnapshot {
++		if _, err := service.MessageEventCache.ReplaceSnapshot(
++			req.ClientMsgNo, fakeChannelID, req.ChannelType, eventKey,
++			req.EventID, eventType, req.Visibility, req.OccurredAt, req.Payload,
++		); err != nil && err != wkcache.ErrMessageEventSessionNotFound {
++			m.Warn("eventAppend: replace stream snapshot cache failed", zap.Error(err), zap.String("clientMsgNo", req.ClientMsgNo))
++		}
++	}
+ 	if err := service.MessageEventCache.MarkEventKeyPersisted(req.ClientMsgNo, fakeChannelID, req.ChannelType, eventKey, status, persistedSeq); err != nil && err != wkcache.ErrMessageEventSessionNotFound {
+ 		m.Warn("eventAppend: mark event key persisted failed", zap.Error(err), zap.String("clientMsgNo", req.ClientMsgNo))
+ 	}
+diff --git a/internal/api/user.go b/internal/api/user.go
+index 3a6c482..d81c8c2 100644
+--- a/internal/api/user.go
++++ b/internal/api/user.go
+@@ -281,7 +281,11 @@ func (u *user) updateToken(c *wkhttp.Context) {
+ 		return
+ 	}
+ 
+-	u.Debug("req", zap.Any("req", req))
++	u.Debug("update user token",
++		zap.String("uid", req.UID),
++		zap.Uint8("deviceFlag", uint8(req.DeviceFlag)),
++		zap.Uint8("deviceLevel", uint8(req.DeviceLevel)),
++	)
+ 
+ 	// 使用共享权限服务检查频道权限
+ 	reasonCode, err := service.Permission.HasPermissionForChannel(req.UID, wkproto.ChannelTypePerson)
+diff --git a/internal/eventbus/conn.go b/internal/eventbus/conn.go
+index 3aa5c58..e4b9317 100644
+--- a/internal/eventbus/conn.go
++++ b/internal/eventbus/conn.go
+@@ -137,6 +137,5 @@ func (c *Conn) Equal(cn *Conn) bool {
+ }
+ 
+ func (c *Conn) String() string {
+-
+-	return fmt.Sprintf("ConnId:%d, Uid:%s, DeviceId:%s, DeviceFlag:%d, DeviceLevel:%d, NodeId:%d, Auth:%v, ProtoVersion:%d, AesIV:%s, AesKey:%s", c.ConnId, c.Uid, c.DeviceId, c.DeviceFlag, c.DeviceLevel, c.NodeId, c.Auth, c.ProtoVersion, c.AesIV, c.AesKey)
++	return fmt.Sprintf("ConnId:%d, Uid:%s, DeviceId:%s, DeviceFlag:%d, DeviceLevel:%d, NodeId:%d, Auth:%v, ProtoVersion:%d", c.ConnId, c.Uid, c.DeviceId, c.DeviceFlag, c.DeviceLevel, c.NodeId, c.Auth, c.ProtoVersion)
+ }
+diff --git a/internal/eventbus/conn_linli_patch_test.go b/internal/eventbus/conn_linli_patch_test.go
+new file mode 100755
+index 0000000..e428380
+--- /dev/null
++++ b/internal/eventbus/conn_linli_patch_test.go
+@@ -0,0 +1,26 @@
++package eventbus
++
++import (
++	"strings"
++	"testing"
++
++	wkproto "github.com/WuKongIM/WuKongIMGoProto"
++)
++
++func TestConnStringNeverIncludesSessionEncryptionMaterial(t *testing.T) {
++	conn := &Conn{
++		Uid: "user-a", DeviceId: "device-a", ConnId: 42, NodeId: 1001,
++		DeviceFlag: wkproto.APP, DeviceLevel: wkproto.DeviceLevelMaster,
++		Auth: true, ProtoVersion: 4,
++		AesIV: []byte("sentinel-aes-iv"), AesKey: []byte("sentinel-aes-key"),
++	}
++	value := conn.String()
++	for _, secret := range []string{"sentinel-aes-iv", "sentinel-aes-key", "AesIV", "AesKey"} {
++		if strings.Contains(value, secret) {
++			t.Fatalf("connection string leaked %q: %s", secret, value)
++		}
++	}
++	if !strings.Contains(value, "ConnId:42") || !strings.Contains(value, "Uid:user-a") {
++		t.Fatalf("connection diagnostics were lost: %s", value)
++	}
++}
+diff --git a/internal/plugin/api.go b/internal/plugin/api.go
+index 8a259fa..a166093 100644
+--- a/internal/plugin/api.go
++++ b/internal/plugin/api.go
+@@ -32,6 +32,7 @@ func (s *Server) SetRoute(r *wkhttp.WKHttp) {
+ 	r.Any("/plugins/:plugin/*path", s.handlePluginRoute) // 处理插件的路由，将http请求转发给插件
+ 
+ 	r.GET("/plugins", s.handleGetPlugins) // 获取插件列表
++	r.GET("/pluginlogs/:plugin", s.handleGetPluginLogs)
+ 
+ 	r.POST("/pluginconfig/:plugin", s.handleUpdatePluginConfig) // 更新插件配置
+ 	r.POST("/plugin/bind", s.handlePluginBind)                  // 绑定插件
+@@ -573,3 +574,48 @@ func (s *Server) handleUninstall(c *wkhttp.Context) {
+ 	}
+ 	c.ResponseOK()
+ }
++
++func (s *Server) handleGetPluginLogs(c *wkhttp.Context) {
++	pluginNo := strings.TrimSpace(c.Param("plugin"))
++	if pluginNo == "" {
++		c.ResponseErrorWithStatus(http.StatusBadRequest, errors.New("plugin is required"))
++		return
++	}
++
++	nodeId := wkutil.ParseUint64(c.Query("node_id"))
++	if nodeId == 0 {
++		nodeId = options.G.Cluster.NodeId
++	}
++	if !options.G.IsLocalNode(nodeId) {
++		node := service.Cluster.NodeInfoById(nodeId)
++		if node == nil {
++			c.ResponseErrorWithStatus(http.StatusNotFound, errors.New("node not found"))
++			return
++		}
++		c.Forward(fmt.Sprintf("%s%s", node.ApiServerAddr, c.Request.URL.RequestURI()))
++		return
++	}
++
++	plugin, err := service.Store.DB().GetPlugin(pluginNo)
++	if err != nil {
++		c.ResponseError(err)
++		return
++	}
++	if wkdb.IsEmptyPlugin(plugin) {
++		c.ResponseErrorWithStatus(http.StatusNotFound, errors.New("plugin not found"))
++		return
++	}
++
++	limit := wkutil.ParseInt(c.Query("limit"))
++	if limit <= 0 {
++		limit = 100
++	}
++	if limit > 500 {
++		limit = 500
++	}
++	c.JSON(http.StatusOK, gin.H{
++		"plugin_no": plugin.No,
++		"node_id":   nodeId,
++		"entries":   s.runtimeLogs.Get(plugin.Name, limit),
++	})
++}
+diff --git a/internal/plugin/runtime_log.go b/internal/plugin/runtime_log.go
+new file mode 100755
+index 0000000..b75d527
+--- /dev/null
++++ b/internal/plugin/runtime_log.go
+@@ -0,0 +1,140 @@
++package plugin
++
++import (
++	"bytes"
++	"io"
++	"regexp"
++	"strings"
++	"sync"
++	"time"
++	"unicode"
++)
++
++const maxRuntimeLogLineBytes = 4096
++
++var (
++	authorizationLogSecret = regexp.MustCompile(`(?i)(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,;]+`)
++	namedLogSecret         = regexp.MustCompile(`(?i)((?:token|secret|password|api[_-]?key)\s*[:=]\s*)[^\s,;]+`)
++)
++
++type runtimeLogEntry struct {
++	Sequence  uint64 `json:"sequence"`
++	Stream    string `json:"stream"`
++	Timestamp int64  `json:"timestamp"`
++	Message   string `json:"message"`
++}
++
++type runtimeLogBuffer struct {
++	entries []runtimeLogEntry
++	bytes   int
++}
++
++type runtimeLogStore struct {
++	mu         sync.Mutex
++	buffers    map[string]*runtimeLogBuffer
++	nextSeq    uint64
++	maxEntries int
++	maxBytes   int
++}
++
++func newRuntimeLogStore(maxEntries, maxBytes int) *runtimeLogStore {
++	return &runtimeLogStore{buffers: make(map[string]*runtimeLogBuffer), maxEntries: maxEntries, maxBytes: maxBytes}
++}
++
++func (s *runtimeLogStore) Writer(name, stream string) io.Writer {
++	return &runtimeLogWriter{store: s, name: name, stream: stream}
++}
++
++func (s *runtimeLogStore) append(name, stream, message string) {
++	name = strings.TrimSpace(name)
++	if name == "" {
++		return
++	}
++	message = sanitizeRuntimeLogMessage(message)
++	if message == "" {
++		return
++	}
++	if len(message) > maxRuntimeLogLineBytes {
++		message = message[:maxRuntimeLogLineBytes] + "…"
++	}
++
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	s.nextSeq++
++	buffer := s.buffers[name]
++	if buffer == nil {
++		buffer = &runtimeLogBuffer{}
++		s.buffers[name] = buffer
++	}
++	entry := runtimeLogEntry{Sequence: s.nextSeq, Stream: stream, Timestamp: time.Now().UnixMilli(), Message: message}
++	buffer.entries = append(buffer.entries, entry)
++	buffer.bytes += len(message)
++	for len(buffer.entries) > s.maxEntries || buffer.bytes > s.maxBytes {
++		buffer.bytes -= len(buffer.entries[0].Message)
++		buffer.entries = buffer.entries[1:]
++	}
++}
++
++func (s *runtimeLogStore) Get(name string, limit int) []runtimeLogEntry {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	if limit <= 0 || limit > 500 {
++		limit = 100
++	}
++	buffer := s.buffers[name]
++	if buffer == nil || len(buffer.entries) == 0 {
++		return []runtimeLogEntry{}
++	}
++	start := len(buffer.entries) - limit
++	if start < 0 {
++		start = 0
++	}
++	result := make([]runtimeLogEntry, len(buffer.entries)-start)
++	copy(result, buffer.entries[start:])
++	return result
++}
++
++func (s *runtimeLogStore) Delete(name string) {
++	s.mu.Lock()
++	delete(s.buffers, name)
++	s.mu.Unlock()
++}
++
++type runtimeLogWriter struct {
++	mu      sync.Mutex
++	store   *runtimeLogStore
++	name    string
++	stream  string
++	pending []byte
++}
++
++func (w *runtimeLogWriter) Write(p []byte) (int, error) {
++	w.mu.Lock()
++	defer w.mu.Unlock()
++	w.pending = append(w.pending, p...)
++	for {
++		newline := bytes.IndexByte(w.pending, '\n')
++		if newline < 0 {
++			if len(w.pending) <= maxRuntimeLogLineBytes {
++				break
++			}
++			w.store.append(w.name, w.stream, string(w.pending[:maxRuntimeLogLineBytes]))
++			w.pending = w.pending[maxRuntimeLogLineBytes:]
++			continue
++		}
++		w.store.append(w.name, w.stream, string(w.pending[:newline]))
++		w.pending = w.pending[newline+1:]
++	}
++	return len(p), nil
++}
++
++func sanitizeRuntimeLogMessage(message string) string {
++	message = strings.TrimSpace(strings.Map(func(r rune) rune {
++		if unicode.IsControl(r) && r != '\t' {
++			return -1
++		}
++		return r
++	}, message))
++	message = authorizationLogSecret.ReplaceAllString(message, `${1}******`)
++	return namedLogSecret.ReplaceAllString(message, `${1}******`)
++}
+diff --git a/internal/plugin/runtime_log_linli_patch_test.go b/internal/plugin/runtime_log_linli_patch_test.go
+new file mode 100755
+index 0000000..1b0c8eb
+--- /dev/null
++++ b/internal/plugin/runtime_log_linli_patch_test.go
+@@ -0,0 +1,60 @@
++package plugin
++
++import (
++	"fmt"
++	"sync"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++)
++
++func TestRuntimeLogStoreRetainsBoundedTailAndStreams(t *testing.T) {
++	store := newRuntimeLogStore(3, 1024)
++	stdout := store.Writer("plugin.wkp", "stdout")
++	stderr := store.Writer("plugin.wkp", "stderr")
++	_, _ = stdout.Write([]byte("one\ntwo\n"))
++	_, _ = stderr.Write([]byte("three\nfour\n"))
++	entries := store.Get("plugin.wkp", 500)
++	require.Len(t, entries, 3)
++	require.Equal(t, "two", entries[0].Message)
++	require.Equal(t, "stderr", entries[1].Stream)
++	require.Equal(t, "four", entries[2].Message)
++	require.Less(t, entries[0].Sequence, entries[2].Sequence)
++}
++
++func TestRuntimeLogStoreRedactsSecretsAndNormalizesControls(t *testing.T) {
++	store := newRuntimeLogStore(10, 1024)
++	writer := store.Writer("plugin.wkp", "stdout")
++	_, _ = writer.Write([]byte("token=abc123 password: hunter2 authorization: Bearer jwt-value\x00\n"))
++	entries := store.Get("plugin.wkp", 1)
++	require.Len(t, entries, 1)
++	require.NotContains(t, entries[0].Message, "abc123")
++	require.NotContains(t, entries[0].Message, "hunter2")
++	require.NotContains(t, entries[0].Message, "jwt-value")
++	require.NotContains(t, entries[0].Message, "\x00")
++}
++
++func TestRuntimeLogStoreConcurrentWritesAndLimit(t *testing.T) {
++	store := newRuntimeLogStore(1000, 256*1024)
++	var wg sync.WaitGroup
++	for streamIndex := 0; streamIndex < 8; streamIndex++ {
++		wg.Add(1)
++		go func(index int) {
++			defer wg.Done()
++			writer := store.Writer("plugin.wkp", fmt.Sprintf("stream-%d", index))
++			for line := 0; line < 20; line++ {
++				_, _ = fmt.Fprintf(writer, "%d-%d\n", index, line)
++			}
++		}(streamIndex)
++	}
++	wg.Wait()
++	require.Len(t, store.Get("plugin.wkp", 25), 25)
++	require.Empty(t, store.Get("missing.wkp", 25))
++}
++
++func TestRuntimeLogStoreDelete(t *testing.T) {
++	store := newRuntimeLogStore(10, 1024)
++	_, _ = store.Writer("plugin.wkp", "stdout").Write([]byte("line\n"))
++	store.Delete("plugin.wkp")
++	require.Empty(t, store.Get("plugin.wkp", 10))
++}
+diff --git a/internal/plugin/server.go b/internal/plugin/server.go
+index b1ccbd9..995cb03 100644
+--- a/internal/plugin/server.go
++++ b/internal/plugin/server.go
+@@ -34,6 +34,7 @@ type Server struct {
+ 
+ 	userPluginBuckets []*userPluginBucket
+ 	bucketSize        int // 缓存桶大小
++	runtimeLogs       *runtimeLogStore
+ }
+ 
+ func NewServer(opts *Options) *Server {
+@@ -73,6 +74,7 @@ func NewServer(opts *Options) *Server {
+ 		Log:           wklog.NewWKLog("plugin.server"),
+ 		sandboxDir:    sandboxDir,
+ 		bucketSize:    10,
++		runtimeLogs:   newRuntimeLogStore(1000, 256*1024),
+ 	}
+ 	s.rpc = newRpc(s)
+ 
+@@ -493,8 +495,8 @@ func (s *Server) startPluginApp(name string) error {
+ 
+ 	// 启动插件
+ 	cmd := exec.Command("./"+name, "--socket", socketPath, "--sandbox", shadboxDir)
+-	cmd.Stdout = os.Stdout
+-	cmd.Stderr = os.Stderr
++	cmd.Stdout = io.MultiWriter(os.Stdout, s.runtimeLogs.Writer(name, "stdout"))
++	cmd.Stderr = io.MultiWriter(os.Stderr, s.runtimeLogs.Writer(name, "stderr"))
+ 	cmd.Dir = s.opts.Dir
+ 
+ 	// 允许相对路径运行
+@@ -566,6 +568,7 @@ func (s *Server) UninstallPlugin(pluginNo string, name string) error {
+ 
+ 	// 删除插件
+ 	pluginPath := path.Join(s.opts.Dir, name)
++	defer s.runtimeLogs.Delete(name)
+ 
+ 	// 判断文件是否存在
+ 	_, err = os.Stat(pluginPath)
+diff --git a/internal/server/proto.go b/internal/server/proto.go
+index c3bf043..118d06a 100644
+--- a/internal/server/proto.go
++++ b/internal/server/proto.go
+@@ -223,19 +223,19 @@ func (s *Server) handleUnauthenticatedConn(conn wknet.Conn, buff []byte, isJson
+ 		}
+ 
+ 		if frameType != wkproto.CONNECT {
+-			s.Warn("frameType is not CONNECT, closing connection", zap.String("frameType", frameType.String()), zap.ByteString("data", frameData))
++			s.Warn("frameType is not CONNECT, closing connection", zap.String("frameType", frameType.String()), zap.Int("frameBytes", len(frameData)))
+ 			conn.Close()
+ 			return
+ 		}
+ 
+ 		packet, firstFrameSize, decodeErr := s.opts.Proto.DecodeFrame(frameData, wkproto.LatestVersion)
+ 		if decodeErr != nil {
+-			s.Warn("Failed to decode first frame, closing connection", zap.Error(decodeErr), zap.ByteString("data", frameData))
++			s.Warn("Failed to decode first frame, closing connection", zap.Error(decodeErr), zap.Int("frameBytes", len(frameData)))
+ 			conn.Close()
+ 			return nil, 0, decodeErr
+ 		}
+ 		if packet == nil {
+-			s.Warn("Decoded first frame is nil, closing connection", zap.ByteString("data", frameData))
++			s.Warn("Decoded first frame is nil, closing connection", zap.Int("frameBytes", len(frameData)))
+ 			conn.Close()
+ 			return nil, 0, errors.New("decoded nil frame")
+ 		}
+diff --git a/internal/user/handler/event_connect.go b/internal/user/handler/event_connect.go
+index 065ea34..6447685 100644
+--- a/internal/user/handler/event_connect.go
++++ b/internal/user/handler/event_connect.go
+@@ -70,7 +70,7 @@ func (h *Handler) handleConnect(event *eventbus.Event) (wkproto.ReasonCode, *wkp
+ 	// -------------------- token verify --------------------
+ 	if connectPacket.UID == options.G.ManagerUID {
+ 		if options.G.ManagerTokenOn && connectPacket.Token != options.G.ManagerToken {
+-			h.Error("manager token verify fail", zap.String("uid", uid), zap.String("token", connectPacket.Token))
++			h.Error("manager token verify fail", zap.String("uid", uid), zap.Uint64("sourceNodeId", event.SourceNodeId))
+ 			return wkproto.ReasonAuthFail, nil, nil
+ 		}
+ 		devceLevel = wkproto.DeviceLevelSlave // 默认都是slave设备
+@@ -85,7 +85,7 @@ func (h *Handler) handleConnect(event *eventbus.Event) (wkproto.ReasonCode, *wkp
+ 			return wkproto.ReasonAuthFail, nil, err
+ 		}
+ 		if device.Token != connectPacket.Token {
+-			h.Error("token verify fail", zap.String("uid", uid), zap.Uint64("sourceNodeId", event.SourceNodeId), zap.String("expectToken", device.Token), zap.String("actToken", connectPacket.Token))
++			h.Error("token verify fail", zap.String("uid", uid), zap.String("deviceFlag", connectPacket.DeviceFlag.String()), zap.Uint64("sourceNodeId", event.SourceNodeId))
+ 			return wkproto.ReasonAuthFail, nil, errors.New("token verify fail")
+ 		}
+ 		devceLevel = wkproto.DeviceLevel(device.DeviceLevel)
+diff --git a/internal/user/handler/event_onsend.go b/internal/user/handler/event_onsend.go
+index d82c7f6..33c9579 100644
+--- a/internal/user/handler/event_onsend.go
++++ b/internal/user/handler/event_onsend.go
+@@ -233,13 +233,13 @@ func (h *Handler) sendPacketIsVail(sendPacket *wkproto.SendPacket, conn *eventbu
+ 
+ 	actMsgKey, err := wkutil.AesEncryptPkcs7Base64(signBuff.Bytes(), aesKey, aesIV)
+ 	if err != nil {
+-		h.Error("msgKey is illegal！", zap.Error(err), zap.String("sign", signStr), zap.String("aesKey", string(aesKey)), zap.String("aesIV", string(aesIV)), zap.Any("conn", conn))
++		h.Error("msgKey generation failed", zap.Error(err), zap.String("uid", conn.Uid), zap.Int64("connId", conn.ConnId))
+ 		return false, err
+ 	}
+ 	actMsgKeyStr := sendPacket.MsgKey
+ 	exceptMsgKey := wkutil.MD5Bytes(actMsgKey)
+ 	if actMsgKeyStr != exceptMsgKey {
+-		h.Error("msgKey is illegal！", zap.String("except", exceptMsgKey), zap.String("act", actMsgKeyStr), zap.String("sign", signStr), zap.String("aesKey", string(aesKey)), zap.String("aesIV", string(aesIV)), zap.Any("conn", conn))
++		h.Error("msgKey verification failed", zap.String("uid", conn.Uid), zap.Int64("connId", conn.ConnId))
+ 		return false, errors.New("msgKey is illegal！")
+ 	}
+ 	return true, nil
+diff --git a/pkg/wkcache/message_event_cache.go b/pkg/wkcache/message_event_cache.go
+index e6b99bb..93660fb 100644
+--- a/pkg/wkcache/message_event_cache.go
++++ b/pkg/wkcache/message_event_cache.go
+@@ -49,6 +49,7 @@ type EventKeyState struct {
+ 	LastEventType   string
+ 	LastVisibility  string
+ 	LastOccurredAt  int64
++	HasTextSnapshot bool
+ 	TextSnapshot    string
+ 	SnapshotPayload []byte
+ 	UpdatedAt       time.Time
+@@ -288,9 +289,13 @@ func (c *MessageEventCache) AppendDelta(clientMsgNo, channelId string, channelTy
+ 		return nil, ErrStreamClosed
+ 	}
+ 
+-	if textDelta := extractCacheTextDelta(payload); textDelta != "" {
++	if textDelta, ok := extractCacheTextDelta(payload); ok {
++		ks.HasTextSnapshot = true
+ 		ks.TextSnapshot += textDelta
++		ks.SnapshotPayload = nil
+ 	} else if len(payload) > 0 {
++		ks.HasTextSnapshot = false
++		ks.TextSnapshot = ""
+ 		ks.SnapshotPayload = append([]byte(nil), payload...)
+ 	}
+ 
+@@ -305,6 +310,55 @@ func (c *MessageEventCache) AppendDelta(clientMsgNo, channelId string, channelTy
+ 	return cloneEventKeyState(ks), nil
+ }
+ 
++// ReplaceSnapshot makes a persisted stream.snapshot authoritative for future
++// deltas and terminal payloads. It deliberately replaces, rather than appends
++// to, any snapshot accumulated before the persisted event.
++func (c *MessageEventCache) ReplaceSnapshot(clientMsgNo, channelId string, channelType uint8, eventKey, eventID, eventType, visibility string, occurredAt int64, payload []byte) (*EventKeyState, error) {
++	clientMsgNo = strings.TrimSpace(clientMsgNo)
++	eventKey = normalizeEventKey(eventKey)
++	if clientMsgNo == "" {
++		return nil, ErrInvalidClientMsgNo
++	}
++
++	now := time.Now()
++	c.mu.Lock()
++	defer c.mu.Unlock()
++
++	s, ok := c.sessions[clientMsgNo]
++	if !ok {
++		return nil, ErrMessageEventSessionNotFound
++	}
++	if s.meta.ChannelId != channelId || s.meta.ChannelType != channelType {
++		return nil, ErrMessageEventChannelMismatch
++	}
++	ks := s.keyStates[eventKey]
++	if ks == nil {
++		return nil, ErrMessageEventKeyNotFound
++	}
++	if isEventKeyTerminal(ks.Status) {
++		return nil, ErrStreamClosed
++	}
++
++	if text, ok := extractCacheTextSnapshot(payload); ok {
++		ks.HasTextSnapshot = true
++		ks.TextSnapshot = text
++		ks.SnapshotPayload = nil
++	} else {
++		ks.HasTextSnapshot = false
++		ks.TextSnapshot = ""
++		ks.SnapshotPayload = append([]byte(nil), payload...)
++	}
++	ks.LastEventID = strings.TrimSpace(eventID)
++	ks.LastEventType = strings.TrimSpace(eventType)
++	ks.LastVisibility = strings.TrimSpace(visibility)
++	ks.LastOccurredAt = occurredAt
++	ks.Status = wkdb.EventStatusOpen
++	ks.UpdatedAt = now
++	s.updatedAt = now
++
++	return cloneEventKeyState(ks), nil
++}
++
+ func (c *MessageEventCache) BuildTerminalPayload(clientMsgNo, channelId string, channelType uint8, eventKey string, payload []byte, eventID, eventType, visibility string, occurredAt int64) ([]byte, *EventKeyState, error) {
+ 	clientMsgNo = strings.TrimSpace(clientMsgNo)
+ 	eventKey = normalizeEventKey(eventKey)
+@@ -335,10 +389,10 @@ func (c *MessageEventCache) BuildTerminalPayload(clientMsgNo, channelId string,
+ 	ks.UpdatedAt = now
+ 	s.updatedAt = now
+ 
+-	if ks.TextSnapshot == "" && len(ks.SnapshotPayload) == 0 {
++	if !ks.HasTextSnapshot && len(ks.SnapshotPayload) == 0 {
+ 		return payload, cloneEventKeyState(ks), nil
+ 	}
+-	return mergeTerminalPayloadWithSnapshot(payload, ks.TextSnapshot, ks.SnapshotPayload), cloneEventKeyState(ks), nil
++	return mergeTerminalPayloadWithSnapshot(payload, ks.HasTextSnapshot, ks.TextSnapshot, ks.SnapshotPayload), cloneEventKeyState(ks), nil
+ }
+ 
+ func (c *MessageEventCache) MarkEventKeyPersisted(clientMsgNo, channelId string, channelType uint8, eventKey, status string, persistedSeq uint64) error {
+@@ -472,14 +526,14 @@ func cloneEventKeyState(ks *EventKeyState) *EventKeyState {
+ 	return &cp
+ }
+ 
+-func mergeTerminalPayloadWithSnapshot(payload []byte, textSnapshot string, snapshotPayload []byte) []byte {
++func mergeTerminalPayloadWithSnapshot(payload []byte, hasTextSnapshot bool, textSnapshot string, snapshotPayload []byte) []byte {
+ 	body := map[string]interface{}{}
+ 	if len(payload) > 0 {
+ 		if err := json.Unmarshal(payload, &body); err != nil {
+ 			body["raw_payload"] = string(payload)
+ 		}
+ 	}
+-	if textSnapshot != "" {
++	if hasTextSnapshot {
+ 		body["snapshot"] = map[string]interface{}{
+ 			"kind": wkdb.SnapshotKindText,
+ 			"text": textSnapshot,
+@@ -499,18 +553,34 @@ func mergeTerminalPayloadWithSnapshot(payload []byte, textSnapshot string, snaps
+ 	return data
+ }
+ 
+-func extractCacheTextDelta(payload []byte) string {
++func extractCacheTextDelta(payload []byte) (string, bool) {
++	if len(payload) == 0 {
++		return "", false
++	}
++	m := map[string]interface{}{}
++	if err := json.Unmarshal(payload, &m); err != nil {
++		return "", false
++	}
++	kind, _ := m["kind"].(string)
++	if kind != wkdb.SnapshotKindText {
++		return "", false
++	}
++	delta, ok := m["delta"].(string)
++	return delta, ok
++}
++
++func extractCacheTextSnapshot(payload []byte) (string, bool) {
+ 	if len(payload) == 0 {
+-		return ""
++		return "", false
+ 	}
+ 	m := map[string]interface{}{}
+ 	if err := json.Unmarshal(payload, &m); err != nil {
+-		return ""
++		return "", false
+ 	}
+ 	kind, _ := m["kind"].(string)
+ 	if kind != wkdb.SnapshotKindText {
+-		return ""
++		return "", false
+ 	}
+-	delta, _ := m["delta"].(string)
+-	return delta
++	text, ok := m["text"].(string)
++	return text, ok
+ }
+diff --git a/pkg/wkcache/message_event_snapshot_linli_patch_test.go b/pkg/wkcache/message_event_snapshot_linli_patch_test.go
+new file mode 100755
+index 0000000..5702c68
+--- /dev/null
++++ b/pkg/wkcache/message_event_snapshot_linli_patch_test.go
+@@ -0,0 +1,61 @@
++package wkcache
++
++import (
++	"encoding/json"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++)
++
++func TestMessageEventCacheSnapshotReplacesPriorDeltas(t *testing.T) {
++	cache := NewMessageEventCache(nil)
++	defer cache.Close()
++
++	_, err := cache.UpsertSession(MessageEventSessionMeta{ClientMsgNo: "snapshot-replace", ChannelId: "channel", ChannelType: 1}, "main", 0)
++	require.NoError(t, err)
++	_, err = cache.AppendDelta("snapshot-replace", "channel", 1, "main", "d1", "stream.delta", "public", 1, []byte(`{"kind":"text","delta":"old"}`))
++	require.NoError(t, err)
++	state, err := cache.ReplaceSnapshot("snapshot-replace", "channel", 1, "main", "s1", "stream.snapshot", "public", 2, []byte(`{"kind":"text","text":"replacement"}`))
++	require.NoError(t, err)
++	require.True(t, state.HasTextSnapshot)
++	require.Equal(t, "replacement", state.TextSnapshot)
++	_, err = cache.AppendDelta("snapshot-replace", "channel", 1, "main", "d2", "stream.delta", "public", 3, []byte(`{"kind":"text","delta":" after"}`))
++	require.NoError(t, err)
++
++	payload, _, err := cache.BuildTerminalPayload("snapshot-replace", "channel", 1, "main", []byte(`{"end_reason":0}`), "close", "stream.close", "public", 4)
++	require.NoError(t, err)
++	var body map[string]any
++	require.NoError(t, json.Unmarshal(payload, &body))
++	snapshot := body["snapshot"].(map[string]any)
++	require.Equal(t, "replacement after", snapshot["text"])
++}
++
++func TestMessageEventCacheEmptyTextSnapshotIsAuthoritative(t *testing.T) {
++	cache := NewMessageEventCache(nil)
++	defer cache.Close()
++	_, err := cache.UpsertSession(MessageEventSessionMeta{ClientMsgNo: "snapshot-empty", ChannelId: "channel", ChannelType: 1}, "main", 0)
++	require.NoError(t, err)
++	_, err = cache.AppendDelta("snapshot-empty", "channel", 1, "main", "d1", "stream.delta", "public", 1, []byte(`{"kind":"text","delta":"discard me"}`))
++	require.NoError(t, err)
++	_, err = cache.ReplaceSnapshot("snapshot-empty", "channel", 1, "main", "s1", "stream.snapshot", "public", 2, []byte(`{"kind":"text","text":""}`))
++	require.NoError(t, err)
++	payload, _, err := cache.BuildTerminalPayload("snapshot-empty", "channel", 1, "main", []byte(`{"end_reason":0}`), "close", "stream.close", "public", 3)
++	require.NoError(t, err)
++	var body map[string]any
++	require.NoError(t, json.Unmarshal(payload, &body))
++	require.Equal(t, "", body["snapshot"].(map[string]any)["text"])
++}
++
++func TestMessageEventCacheNonTextSnapshotReplacesText(t *testing.T) {
++	cache := NewMessageEventCache(nil)
++	defer cache.Close()
++	_, err := cache.UpsertSession(MessageEventSessionMeta{ClientMsgNo: "snapshot-raw", ChannelId: "channel", ChannelType: 1}, "main", 0)
++	require.NoError(t, err)
++	_, err = cache.AppendDelta("snapshot-raw", "channel", 1, "main", "d1", "stream.delta", "public", 1, []byte(`{"kind":"text","delta":"discard me"}`))
++	require.NoError(t, err)
++	state, err := cache.ReplaceSnapshot("snapshot-raw", "channel", 1, "main", "s1", "stream.snapshot", "public", 2, []byte(`{"kind":"tool_result","value":"ok"}`))
++	require.NoError(t, err)
++	require.False(t, state.HasTextSnapshot)
++	require.Empty(t, state.TextSnapshot)
++	require.JSONEq(t, `{"kind":"tool_result","value":"ok"}`, string(state.SnapshotPayload))
++}

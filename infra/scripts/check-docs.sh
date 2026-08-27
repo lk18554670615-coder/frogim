@@ -8,18 +8,24 @@ from __future__ import annotations
 
 import re
 import sys
+import os
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 root = Path(sys.argv[1]).resolve()
-ignored = {".dart_tool", ".git", ".symlinks", "Pods", "build", "dist", "node_modules"}
+# Vendored/frozen upstream sources keep their original documentation topology
+# and are verified by checksums, not by this repository's relative-link rules.
+ignored = {".dart_tool", ".git", ".symlinks", "Pods", "build", "dist", "node_modules", "third_party"}
 link_pattern = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 failures: list[str] = []
 checked = 0
 
-for markdown in sorted(root.rglob("*.md")):
-    if any(part in ignored for part in markdown.relative_to(root).parts):
-        continue
+markdown_files: list[Path] = []
+for directory, child_directories, files in os.walk(root):
+    child_directories[:] = [name for name in child_directories if name not in ignored]
+    markdown_files.extend(Path(directory) / name for name in files if name.endswith(".md"))
+
+for markdown in sorted(markdown_files):
     checked += 1
     for line_number, line in enumerate(markdown.read_text(encoding="utf-8").splitlines(), 1):
         for raw_target in link_pattern.findall(line):
@@ -48,3 +54,173 @@ if failures:
 
 print(f"documentation links verified: {checked} Markdown files")
 PY
+
+invalid_manager_name="WK_MANGER""TOKEN"
+if grep -R -n -- "$invalid_manager_name" "$ROOT_DIR/infra" >/dev/null; then
+  echo "invalid WuKongIM manager environment name: use WK_MANAGERTOKEN exactly" >&2
+  exit 1
+fi
+for compose_file in infra/compose.wukong.yaml infra/compose.wukong.production.yaml; do
+  if ! grep -q 'WK_MANAGERTOKEN:' "$ROOT_DIR/$compose_file"; then
+    echo "$compose_file does not bind the pinned server managerToken environment" >&2
+    exit 1
+  fi
+done
+
+# Real data is the default in every runnable stack. Demo accounts remain an
+# explicit development-only fixture and must never reappear through a Compose
+# interpolation default or a checked-in example environment.
+if ! grep -Fq 'IM_SEED_DEMO: ${IM_SEED_DEMO:-false}' "$ROOT_DIR/infra/compose.yaml"; then
+  echo "local Compose must keep demo seeding opt-in" >&2
+  exit 1
+fi
+for compose_file in infra/compose.production.yaml infra/compose.ip.yaml; do
+  if ! grep -Fq 'IM_SEED_DEMO: "false"' "$ROOT_DIR/$compose_file"; then
+    echo "$compose_file must disable demo seeding" >&2
+    exit 1
+  fi
+done
+for env_example in .env.example server/.env.example; do
+  if ! grep -Fq 'IM_SEED_DEMO=false' "$ROOT_DIR/$env_example"; then
+    echo "$env_example must document the real-data default" >&2
+    exit 1
+  fi
+done
+if ! grep -Fq 'image: ${WUKONG_IMAGE:?set WUKONG_IMAGE to the promoted repository@sha256 digest}' "$ROOT_DIR/infra/compose.wukong.production.yaml"; then
+  echo "production WuKongIM must use the promoted WUKONG_IMAGE digest" >&2
+  exit 1
+fi
+if awk '/^  wukongim:/{in_service=1; next} in_service && /^  [A-Za-z0-9_-]+:/{exit} in_service && /^[[:space:]]+build:/{found=1} END{exit found ? 0 : 1}' "$ROOT_DIR/infra/compose.wukong.production.yaml"; then
+  echo "production WuKongIM must not be built on the target host" >&2
+  exit 1
+fi
+
+# `app` is an internal Docker network in both production base files. Services
+# that publish native client/media ports must also join `edge`; otherwise
+# Docker accepts the Compose `ports` declaration but creates no host listener
+# or DNAT rule (NetworkSettings.Ports remains empty).
+for service in wukongim livekit; do
+  if ! awk -v target="$service" '
+    $0 == "  " target ":" { in_service=1; next }
+    in_service && /^  [A-Za-z0-9_-]+:/ { exit }
+    in_service && $0 == "      - edge" { found=1 }
+    END { exit found ? 0 : 1 }
+  ' "$ROOT_DIR/infra/compose.wukong.production.yaml"; then
+    echo "production $service must join edge so its published ports are reachable" >&2
+    exit 1
+  fi
+done
+
+for caddyfile in infra/Caddyfile infra/Caddyfile.ip; do
+  if ! grep -Fq '@retired_api path /v1 /v1/*' "$ROOT_DIR/$caddyfile"; then
+    echo "$caddyfile must return an explicit 404 for the retired v1 API" >&2
+    exit 1
+  fi
+done
+
+# The development reset deliberately removed the self-built message runtime.
+# Keep the destructive upgrade DROP statements and regression assertions, but
+# reject any production Go dependency on the retired payload/fanout tables or
+# v1 transport handlers.
+if grep -R -n -E --include='*.go' --exclude='*_test.go' '(^|[^[:alnum:]_])im_messages([^[:alnum:]_]|$)|im_message_fanout|ProcessMessageFanout|/v1/(sync|ws)' "$ROOT_DIR/server/internal" "$ROOT_DIR/server/cmd" >/dev/null; then
+  echo "retired self-built IM runtime was reintroduced in production Go code" >&2
+  exit 1
+fi
+if grep -R -n -E --include='*.go' --exclude='*_test.go' --exclude-dir='teststore' 'type (Memory|MemoryWebhookStore) struct|NewMemoryWebhookStore|IM_MODE' "$ROOT_DIR/server/internal" "$ROOT_DIR/server/cmd" >/dev/null; then
+  echo "production Go code must not contain an alternate in-memory runtime or IM_MODE branch" >&2
+  exit 1
+fi
+
+if ! grep -Fq '.imSession.sdk == "wukongimfluttersdk"' "$ROOT_DIR/infra/scripts/remote-e2e.sh"; then
+  echo "remote E2E must validate the pinned Flutter SDK identifier" >&2
+  exit 1
+fi
+if ! grep -Fq '\"channelId\":\"$user_b\",\"channelType\":1' "$ROOT_DIR/infra/scripts/remote-e2e.sh"; then
+  echo "remote E2E must use the peer UID as the WuKong person-channel id" >&2
+  exit 1
+fi
+if ! grep -Fq '.item.remote_extra.conversationId == $conversation' "$ROOT_DIR/infra/scripts/remote-e2e.sh"; then
+  echo "remote E2E must validate the client datasource remote_extra contract" >&2
+  exit 1
+fi
+if ! grep -Fq 'exec bash "$TARGET" "$@"' "$ROOT_DIR/infra/scripts/linli-im-ops.sh"; then
+  echo "linli-im operations wrapper must tolerate release archives without executable mode bits" >&2
+  exit 1
+fi
+android_release_script="$ROOT_DIR/infra/scripts/build-android-release.ps1"
+for required_define in APP_ENV API_BASE_URL ENABLE_DEMO TERMS_URL PRIVACY_URL; do
+  if ! grep -Fq -- "--dart-define=$required_define=" "$android_release_script"; then
+    echo "Android release script must provide $required_define" >&2
+    exit 1
+  fi
+done
+if ! grep -Fq 'apksigner verify --verbose --print-certs' "$android_release_script" ||
+   ! grep -Fq 'jarsigner -verify' "$android_release_script"; then
+  echo "Android release script must verify both APK and AAB signatures" >&2
+  exit 1
+fi
+for release_gate in \
+  "$android_release_script" \
+  "$ROOT_DIR/infra/scripts/build-apple-release.sh" \
+  "$ROOT_DIR/infra/scripts/smoke.sh"; do
+  if ! grep -Fq '/v2/config/auth' "$release_gate"; then
+    echo "release gate must reject a server without the public authentication contract: $release_gate" >&2
+    exit 1
+  fi
+done
+if ! grep -Fq '/v2/admin/client-versions/$platform' "$ROOT_DIR/infra/scripts/publish-client-version.sh" ||
+   ! grep -Fq 'release-verification' "$ROOT_DIR/infra/scripts/publish-client-version.sh"; then
+  echo "client version publication must use the audited admin API and verify the public decision" >&2
+  exit 1
+fi
+
+for caddyfile in "$ROOT_DIR/infra/Caddyfile" "$ROOT_DIR/infra/Caddyfile.ip"; do
+  if ! grep -Fq 'uri strip_prefix /rtc' "$caddyfile"; then
+    echo "documentation check failed: LiveKit proxy must strip the configured /rtc base path in $caddyfile" >&2
+    exit 1
+  fi
+done
+if ! grep -Fq 'net.core.rmem_max' "$ROOT_DIR/infra/scripts/configure-livekit-host.sh" ||
+   ! grep -Fq '5000000' "$ROOT_DIR/infra/scripts/configure-livekit-host.sh"; then
+  echo "LiveKit host setup must persist the minimum production UDP receive buffer" >&2
+  exit 1
+fi
+for livekit_config in infra/livekit/livekit.yaml infra/livekit/livekit.public.yaml; do
+  if grep -Fq 'prometheus_port:' "$ROOT_DIR/$livekit_config" ||
+     ! grep -A1 '^prometheus:$' "$ROOT_DIR/$livekit_config" | grep -Fq 'port: 6789'; then
+    echo "$livekit_config must use the LiveKit v1.13 prometheus.port setting" >&2
+    exit 1
+  fi
+done
+if ! grep -Fq 'android:launchMode="singleTask"' "$ROOT_DIR/apps/mobile/android/app/src/main/AndroidManifest.xml"; then
+  echo "Android MainActivity must remain singleTask so CallKit acceptance cannot start a duplicate Flutter/RTC engine" >&2
+  exit 1
+fi
+if ! grep -Fq 'probe_websocket_upgrade "$BASE_URL/im"' "$ROOT_DIR/infra/scripts/smoke.sh" ||
+   ! grep -Fq '"$BASE_URL/rtc/rtc/validate"' "$ROOT_DIR/infra/scripts/smoke.sh"; then
+  echo "production smoke must gate both WuKongIM and LiveKit public WebSocket routes" >&2
+  exit 1
+fi
+if ! grep -Fq 'WUKONG_REQUIRE_1TIB_DISK' "$ROOT_DIR/infra/scripts/validate-production-env.sh" ||
+   ! grep -Fq 'WUKONG_REQUIRE_1TIB_DISK' "$ROOT_DIR/infra/scripts/production-cutover-preflight.sh" ||
+   ! grep -Fq 'WUKONG_REQUIRE_1TIB_DISK=true' "$ROOT_DIR/.env.ip.production.example" ||
+   ! grep -Fq 'WUKONG_REQUIRE_1TIB_DISK=true' "$ROOT_DIR/.env.production.example"; then
+  echo "the explicit 1 TiB capacity waiver contract is incomplete" >&2
+  exit 1
+fi
+for required_port in 5100/tcp 7881/tcp 7882-7889/udp; do
+  if ! grep -Fq "$required_port" "$ROOT_DIR/infra/scripts/configure-ip-firewall.sh"; then
+    echo "IP firewall script is missing required port $required_port" >&2
+    exit 1
+  fi
+done
+for retired_port in 3478/tcp 3478/udp 49160-49200/udp; do
+  if ! grep -Fq "$retired_port" "$ROOT_DIR/infra/scripts/configure-ip-firewall.sh"; then
+    echo "IP firewall script does not remove retired port $retired_port" >&2
+    exit 1
+  fi
+done
+if find "$ROOT_DIR/server/migrations" -type f -print -quit 2>/dev/null | grep -q .; then
+  echo "retired hand-applied SQL migration chain must remain removed; use the embedded schema" >&2
+  exit 1
+fi

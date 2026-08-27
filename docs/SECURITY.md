@@ -3,8 +3,10 @@
 ## 消息加密边界
 
 - 当前首发模式不是端到端加密，不得在产品文案中标注为 E2EE。消息在客户端与网关之间使用 HTTPS/WSS，客户端缓存使用 AES-256-GCM，服务器依靠网络隔离、访问控制、备份加密和最小权限保护数据。
-- 用户 REST Access Token 只允许放在 `Authorization: Bearer`；query、请求体和 Cookie 不作为认证来源。WebSocket 不接受 Access Token URL 参数或升级请求 `Authorization`，客户端必须先通过认证 REST 接口换取 30 秒、一次性 `ws` 票据；生产环境依赖共享 Redis 原子消费，Redis 不可用时票据验证失败关闭，不降级为可重放模式。
-- Caddy 的结构化 access log 在编码前把 `ticket` 与 `token` 查询参数值替换为 `REDACTED`；短期一次性 ticket 仍按凭据处理，不得进入普通日志、指标标签或错误上报。
+- 用户 REST Access Token 只允许放在 `Authorization: Bearer`；query、请求体和 Cookie 不作为认证来源。登录后的 `ImSession` 返回独立 WuKong UID、派生 Token、设备标识和 TCP/WSS 地址；业务 Access Token 不能直接用于 WuKong 握手。
+- Caddy 和应用结构化日志不得记录 query 中的 token、`ImSession.token`、WuKong Manager Token、LiveKit Secret 或 LiveKit 参与者 Token。所有短期 Token 仍按凭据处理，不得进入指标标签、审计元数据或错误上报。
+- WuKongIM固定上游曾在连接字符串、认证失败、消息验签、消息发送、Token更新和首帧解析错误中输出AES Key/IV、Token、签名、消息正文、订阅者列表或原始协议帧；仓库内`linli.3`可审计补丁已从源头移除这些值。发布门禁同时使用源码静态扫描、Linux单测和真实日志检查，不能仅依赖日志采集端二次脱敏。
+- WuKongIM固定源码的`managerToken`环境名是精确的`WK_MANAGERTOKEN`。生产冒烟必须证明5001无Token返回401，并用同一服务端私密Token验证5001健康和5300节点查询；仅检查容器存活不能证明管理面鉴权已启用。
 - 图片、语音、视频和文件只保存私有对象 ID；下载前再次校验会话成员关系并签发短期 URL。退群、封禁或账号删除后权限立即失效。
 - 媒体 `complete` 会核验预声明 size、完整 SHA-256 和 magic MIME 后才标记 ready。这是完整性与类型校验，不是恶意内容检测；通用文件仍需外部杀毒、压缩包递归检查、媒体安全审核和隔离处置。
 - 推送只包含事件类型、未读数和有限路由 ID，不包含私聊正文、好友验证文字、文件名、位置或联系人信息。
@@ -32,13 +34,13 @@
 - Run `infra/scripts/validate-production-env.sh`; production must reject placeholder secrets, development verification codes and noop/log push providers.
 - Keep only the TLS gateway public. PostgreSQL, Redis, MinIO, Prometheus, Grafana, `/metrics` and `/ready` stay private.
 - Enable `IM_TRUST_PROXY` only when the API is reachable exclusively through the managed gateway; this lets per-IP limits use Caddy's sanitized forwarded address without trusting client-supplied headers on direct binds.
-- Use named administrator accounts, a bcrypt password hash, TOTP, short-lived JWTs and server-side RBAC. Never place passwords, hashes or TOTP seeds in `VITE_*` variables; the console stores only the active JWT in `sessionStorage`.
+- Use named database administrator accounts, bcrypt password hashes, short-lived JWTs, authentication versions and server-side RBAC. Never place passwords, hashes or tokens in `VITE_*` variables; the console stores only the active JWT in `sessionStorage`.
 
 ## Trust boundaries
 
 Clients are untrusted. Conversation membership, administrative permissions, message sizes, MIME types and sequence ownership are always validated by the server. Redis and log storage contain operational data and must not expose message bodies unnecessarily.
 
-Redis Pub/Sub call signaling is fail-closed on publish errors so the sender does not receive false delivery success. It is still an ephemeral online channel: SDP/ICE is not written to PostgreSQL and has no server replay. Clients attach `signalId`, retry until peer acknowledgement, and deduplicate received IDs; this reliability mechanism must not be described as durable delivery. Call lifecycle states (`accepted`, `rejected`, `cancelled`, `ended`, `timeout`) are a separate safe metadata path and are transactionally appended to both participants' durable sync streams for reconnect convergence.
+Call lifecycle commands are delivered through WuKongIM and durable call metadata is stored in PostgreSQL. LiveKit alone carries SDP/ICE and media; neither Redis nor the Go API is a signaling transcript or replay log. Clients must not treat a business API response as proof that the peer received a call event.
 
 Backup jobs use `umask 077`, write to `.incomplete-*`, checksum and permission-tighten all content, then atomically rename within `BACKUP_DIR`. An incomplete directory is a failed backup and must never be selected for restore.
 

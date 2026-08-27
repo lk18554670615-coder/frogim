@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily Linli IM database and media backup
+Description=Daily NexaChat PostgreSQL, MinIO and WuKongIM backup
 
 [Timer]
 OnCalendar=*-*-* 04:23:00

@@ -32,6 +32,7 @@ services:
       - ${CERTBOT_DIR:?set CERTBOT_DIR}:/etc/letsencrypt:ro
       - ${CERTBOT_WEBROOT:?set CERTBOT_WEBROOT}:/var/www/certbot:ro
       - ${DOWNLOAD_DIR:-/data/linli-im/shared/downloads}:/srv/downloads:ro
+      - ./legal:/srv/legal:ro
       - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/caddy/data:/data
       - ${LINLI_DATA_ROOT:?set LINLI_DATA_ROOT}/caddy/config:/config
     networks:
@@ -60,8 +61,11 @@ services:
       dockerfile: apps/mobile/Dockerfile.web
       args:
         WEB_API_BASE_URL: https://${SERVER_IP:?set SERVER_IP}
-        WEB_WS_URL: wss://${SERVER_IP:?set SERVER_IP}/v1/ws
         WEB_BASE_HREF: /web/
+        APP_ENV: staging
+        ENABLE_DEMO: "false"
+        TERMS_URL: ${TERMS_URL:-}
+        PRIVACY_URL: ${PRIVACY_URL:-}
     expose:
       - "8080"
     networks:
@@ -108,22 +112,22 @@ services:
       context: ../server
     environment:
       IM_ADDR: :8080
-      IM_MODE: full
       IM_ENV: development
       IM_LOG_LEVEL: ${IM_LOG_LEVEL:-info}
       IM_DATABASE_URL: ${IM_DATABASE_URL:?set IM_DATABASE_URL}
       IM_REDIS_URL: ${IM_REDIS_URL:?set IM_REDIS_URL}
       IM_JWT_SECRET: ${IM_JWT_SECRET:?set IM_JWT_SECRET}
-      IM_ADMIN_EMAIL: ${IM_ADMIN_EMAIL:?set IM_ADMIN_EMAIL}
-      IM_ADMIN_PASSWORD_HASH: ${IM_ADMIN_PASSWORD_HASH:?set IM_ADMIN_PASSWORD_HASH}
-      IM_ADMIN_TOTP_SECRET: ${IM_ADMIN_TOTP_SECRET:?set IM_ADMIN_TOTP_SECRET}
-      IM_ADMIN_SHARED_KEY_ENABLED: "false"
-      IM_ADMIN_KEY: ""
+      IM_ADMIN_EMAIL: ${IM_ADMIN_EMAIL:-}
+      IM_ADMIN_PASSWORD_HASH: ${IM_ADMIN_PASSWORD_HASH:-}
       IM_PUSH_PROVIDER: ${IM_PUSH_PROVIDER:?set IM_PUSH_PROVIDER}
+      IM_WEB_PUSH_PUBLIC_KEY: ${IM_WEB_PUSH_PUBLIC_KEY:-}
+      IM_WEB_PUSH_PRIVATE_KEY: ${IM_WEB_PUSH_PRIVATE_KEY:-}
+      IM_WEB_PUSH_SUBJECT: ${IM_WEB_PUSH_SUBJECT:-}
       IM_GETUI_APP_ID: ${IM_GETUI_APP_ID:-}
       IM_GETUI_APP_KEY: ${IM_GETUI_APP_KEY:-}
       IM_GETUI_MASTER_SECRET: ${IM_GETUI_MASTER_SECRET:-}
       IM_DEV_MODE: "true"
+      IM_SEED_DEMO: "false"
       IM_DEV_ALLOW_CONTAINER_BIND: "true"
       IM_IP_TEST_ONLY: "true"
       IM_DEV_OTP_CODE: ${IM_DEV_OTP_CODE:-}
@@ -141,10 +145,6 @@ services:
       IM_S3_SECURE: "false"
       IM_S3_PUBLIC_SECURE: "true"
       IM_CALL_INVITE_TTL: ${IM_CALL_INVITE_TTL:-30s}
-      IM_RTC_STUN_URLS: ${IM_RTC_STUN_URLS:?set IM_RTC_STUN_URLS}
-      IM_RTC_TURN_URLS: ${IM_RTC_TURN_URLS:?set IM_RTC_TURN_URLS}
-      IM_RTC_TURN_USERNAME: ${IM_RTC_TURN_USERNAME:?set IM_RTC_TURN_USERNAME}
-      IM_RTC_TURN_CREDENTIAL: ${IM_RTC_TURN_CREDENTIAL:?set IM_RTC_TURN_CREDENTIAL}
     expose:
       - "8080"
     networks:
@@ -169,40 +169,6 @@ services:
     cap_drop:
       - ALL
     stop_grace_period: 30s
-
-  # WebRTC 媒体中继服务。使用主机网络避免 Docker 大端口范围转发带来的额外开销。
-  coturn:
-    <<: *service-defaults
-    image: coturn/coturn:4.16.0-r0
-    network_mode: host
-    environment:
-      DETECT_EXTERNAL_IP: "yes"
-      DETECT_RELAY_IP: "yes"
-    command:
-      - --log-file=stdout
-      - --fingerprint
-      - --lt-cred-mech
-      - --user=${IM_RTC_TURN_USERNAME:?set IM_RTC_TURN_USERNAME}:${IM_RTC_TURN_CREDENTIAL:?set IM_RTC_TURN_CREDENTIAL}
-      - --realm=linli-im
-      - --server-name=linli-im-turn
-      - --min-port=49160
-      - --max-port=49200
-      - --stale-nonce=600
-      - --no-multicast-peers
-    read_only: true
-    tmpfs:
-      - /tmp
-      - /var/lib/coturn
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE
-    healthcheck:
-      test: ["CMD-SHELL", "turnutils_stunclient 127.0.0.1 >/dev/null 2>&1"]
-      interval: 20s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
 
   postgres:
     <<: *service-defaults
