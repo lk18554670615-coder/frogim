@@ -35,5 +35,10 @@ dist/
 build/
 *.log
 
+# 本地界面验收产物可能包含测试账号、手机号或会话内容，只保留在验收机器。
+artifacts/admin-content-redesign-*/
+artifacts/admin-design-audit-*/
+artifacts/web-audit-*/
+
 # Local service state
 .data/

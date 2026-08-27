@@ -48,6 +48,12 @@ type AdminQueryStore interface {
 	ListAdminMessages(context.Context, string, string, string, int) ([]*model.Message, int64, string, error)
 	ListAdminMedia(context.Context, string, string, string, int) ([]*model.Media, int64, string, error)
 }
+
+// AdminDashboardStore 提供后台首页使用的聚合统计。实现必须直接从持久化数据计算，
+// 不能依赖前端演示值或进程内的过期快照。
+type AdminDashboardStore interface {
+	AdminDashboard(context.Context) (map[string]any, error)
+}
 type AdminFriendship struct {
 	UserID, FriendUserID, UserName, FriendName string
 	CreatedAt, UpdatedAt                       time.Time
@@ -208,6 +214,12 @@ func (p *WithRedis) ListAdminUsers(ctx context.Context, q, status, cursor string
 		return s.ListAdminUsers(ctx, q, status, cursor, limit)
 	}
 	return nil, 0, "", ErrUnsupported
+}
+func (p *WithRedis) AdminDashboard(ctx context.Context) (map[string]any, error) {
+	if s, ok := p.base.(AdminDashboardStore); ok {
+		return s.AdminDashboard(ctx)
+	}
+	return nil, ErrUnsupported
 }
 func (p *WithRedis) ListAdminReports(ctx context.Context, q, status, cursor string, limit int) ([]*model.Report, int64, string, error) {
 	if s, ok := p.base.(AdminQueryStore); ok {

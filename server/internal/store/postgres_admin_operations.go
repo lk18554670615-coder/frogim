@@ -4,10 +4,110 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/linli/im/server/internal/model"
 )
+
+// AdminDashboard 返回后台首页的权威业务统计。所有数值都在数据库中按请求时刻聚合，
+// 趋势使用最近 24 个整点，消息构成使用最近 24 小时，避免前端自行补造数据。
+func (p *Postgres) AdminDashboard(ctx context.Context) (map[string]any, error) {
+	var users, newUsersToday, bannedUsers, groups, newGroupsToday, conversations, messages, messagesToday, pendingReports int64
+	err := p.pool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM im_users),
+		(SELECT count(*) FROM im_users WHERE created_at >= date_trunc('day', now())),
+		(SELECT count(*) FROM im_users WHERE banned AND (banned_until IS NULL OR banned_until > now())),
+		(SELECT count(*) FROM im_groups WHERE dissolved_at IS NULL),
+		(SELECT count(*) FROM im_groups g JOIN im_conversations c ON c.id=g.conversation_id WHERE g.dissolved_at IS NULL AND c.created_at >= date_trunc('day', now())),
+		(SELECT count(*) FROM im_conversations),
+		(SELECT count(*) FROM im_messages),
+		(SELECT count(*) FROM im_messages WHERE created_at >= date_trunc('day', now())),
+		(SELECT count(*) FROM im_reports WHERE status='pending')`).Scan(
+		&users, &newUsersToday, &bannedUsers, &groups, &newGroupsToday, &conversations, &messages, &messagesToday, &pendingReports,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	trendRows, err := p.pool.Query(ctx, `SELECT bucket, count(message_row.id)
+		FROM generate_series(date_trunc('hour', now()) - interval '23 hours', date_trunc('hour', now()), interval '1 hour') AS bucket
+		LEFT JOIN im_messages message_row ON message_row.created_at >= bucket AND message_row.created_at < bucket + interval '1 hour'
+		GROUP BY bucket ORDER BY bucket`)
+	if err != nil {
+		return nil, err
+	}
+	messageTrend := make([]map[string]any, 0, 24)
+	for trendRows.Next() {
+		var bucket time.Time
+		var count int64
+		if err = trendRows.Scan(&bucket, &count); err != nil {
+			trendRows.Close()
+			return nil, err
+		}
+		messageTrend = append(messageTrend, map[string]any{"time": bucket.UTC(), "count": count})
+	}
+	err = trendRows.Err()
+	trendRows.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	mixRows, err := p.pool.Query(ctx, `SELECT CASE WHEN conversation.kind='direct' THEN 'direct' WHEN conversation.kind='group' THEN 'group' ELSE 'other' END, count(*)
+		FROM im_messages message_row JOIN im_conversations conversation ON conversation.id=message_row.conversation_id
+		WHERE message_row.created_at >= now() - interval '24 hours'
+		GROUP BY 1 ORDER BY 2 DESC`)
+	if err != nil {
+		return nil, err
+	}
+	channelMix := make([]map[string]any, 0, 3)
+	for mixRows.Next() {
+		var kind string
+		var count int64
+		if err = mixRows.Scan(&kind, &count); err != nil {
+			mixRows.Close()
+			return nil, err
+		}
+		channelMix = append(channelMix, map[string]any{"kind": kind, "count": count})
+	}
+	err = mixRows.Err()
+	mixRows.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	auditRows, err := p.pool.Query(ctx, `SELECT id,actor_id,action,target_type,target_id,metadata,created_at
+		FROM im_audits ORDER BY created_at DESC,id DESC LIMIT 8`)
+	if err != nil {
+		return nil, err
+	}
+	activity := make([]*model.AuditEntry, 0, 8)
+	for auditRows.Next() {
+		entry := new(model.AuditEntry)
+		var raw []byte
+		if err = auditRows.Scan(&entry.ID, &entry.ActorID, &entry.Action, &entry.TargetType, &entry.TargetID, &raw, &entry.CreatedAt); err != nil {
+			auditRows.Close()
+			return nil, err
+		}
+		if len(raw) > 0 {
+			_ = json.Unmarshal(raw, &entry.Metadata)
+		}
+		activity = append(activity, entry)
+	}
+	err = auditRows.Err()
+	auditRows.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]any{
+		"users": users, "newUsersToday": newUsersToday, "bannedUsers": bannedUsers,
+		"groups": groups, "newGroupsToday": newGroupsToday, "conversations": conversations,
+		"messages": messages, "messagesToday": messagesToday, "pendingReports": pendingReports,
+		"messageTrend": messageTrend, "channelMix": channelMix, "activity": activity,
+		"trendWindowHours": 24, "mixWindowHours": 24,
+	}, nil
+}
 
 func (p *Postgres) ListAdminGroups(ctx context.Context, q, status, cursor string, limit int) ([]map[string]any, int64, string, error) {
 	offset, limit := pageOffset(cursor, limit)

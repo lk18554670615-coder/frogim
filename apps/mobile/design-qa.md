@@ -1,4 +1,4 @@
-# 邻里通讯移动端设计 QA
+# 青蛙呱呱移动端设计 QA
 
 - Source visual truth: `/Users/joker/.codex/generated_images/019fb7a1-f640-7b23-854a-be1108d03f14/exec-0e4f47f8-7afe-4dfc-8ffe-2f024ae018d7.png`
 - Superseded implementation screenshot: `/Users/joker/Documents/New project 2/apps/mobile/artifacts/screenshots/messages-light.png`
@@ -106,7 +106,7 @@ The final same-viewport comparison confirms that the conversation list begins ma
 
 No actionable P0/P1/P2 mismatch remains in the conversation page.
 
-- [P3] The authorized work uses a system-blue outgoing bubble; the approved 邻里通讯 brand brief explicitly requires midnight navy, so `#0F172A` is retained while the message alignment, tail geometry and status placement follow the reference.
+- [P3] The authorized work uses a system-blue outgoing bubble; the approved 青蛙呱呱 brand brief explicitly requires midnight navy, so `#0F172A` is retained while the message alignment, tail geometry and status placement follow the reference.
 - [P3] The authorized work presents a broader seven-item utility row. The production implementation exposes only the three verified attachment paths（相册、拍摄、文件）behind `+` and keeps emoji adjacent to the composer, preserving 44 pt targets on narrower devices.
 
 ### Fidelity Review
@@ -135,7 +135,7 @@ Fixes and post-fix evidence:
 - `ChatScreen` now applies dark status-bar content; `HomeScreen` explicitly restores light content over the navy header and dark content on light tabs.
 - Time separators now appear only at the first message, day boundaries, or gaps of at least 15 minutes.
 - Group member count uses secondary-label color; green is reserved for a direct contact who is actually online.
-- Group header uses the real 邻里通讯 brand asset. The updated `chat-main.png` shows all four fixes at the same iPhone 17 Pro viewport.
+- Group header uses the real 青蛙呱呱 brand asset. The updated `chat-main.png` shows all four fixes at the same iPhone 17 Pro viewport.
 
 The post-fix side-by-side pass found no remaining P0/P1/P2 mismatch.
 

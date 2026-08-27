@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../../core/app_controller.dart';
 import '../../core/app_theme.dart';
 import '../../core/models.dart';
+import '../../core/user_identity.dart';
 import '../widgets/linli_widgets.dart';
 import 'chat_screen.dart';
 import 'settings_screens.dart';
@@ -39,6 +40,19 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
   bool get isFriend =>
       widget.controller.contacts.any((item) => item.id == widget.user.id);
 
+  FriendRequest? get pendingRequest =>
+      widget.controller.pendingFriendRequestFor(widget.user.id);
+
+  bool get awaitingTheirApproval =>
+      widget.controller.awaitingFriendApprovalFor(widget.user.id);
+
+  String get primaryActionLabel {
+    if (isFriend) return '发消息';
+    if (awaitingTheirApproval) return '等待对方通过';
+    if (pendingRequest != null) return '同意添加';
+    return '添加好友';
+  }
+
   String get displayName => isFriend && user.remark.trim().isNotEmpty
       ? user.remark.trim()
       : user.name;
@@ -58,17 +72,23 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
               Expanded(
                 child: FilledButton.icon(
                   key: const Key('friend-primary-action'),
-                  onPressed: busy || blockedThisSession
+                  onPressed: busy || blockedThisSession || awaitingTheirApproval
                       ? null
                       : isFriend
                       ? _openChat
+                      : pendingRequest != null
+                      ? _acceptPendingRequest
                       : _requestFriend,
                   icon: Icon(
                     isFriend
                         ? CupertinoIcons.chat_bubble_fill
+                        : awaitingTheirApproval
+                        ? CupertinoIcons.hourglass
+                        : pendingRequest != null
+                        ? CupertinoIcons.person_crop_circle_badge_checkmark
                         : CupertinoIcons.person_add_solid,
                   ),
-                  label: Text(isFriend ? '发消息' : '添加好友'),
+                  label: Text(primaryActionLabel),
                 ),
               ),
             ],
@@ -78,8 +98,8 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
             children: [
               SettingTile(
                 icon: CupertinoIcons.at,
-                title: '邻里号',
-                subtitle: '@${user.handle}',
+                title: '呱呱号',
+                subtitle: publicUserHandleLabel(user.handle),
               ),
               SettingTile(
                 icon: CupertinoIcons.quote_bubble,
@@ -88,6 +108,13 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
                     ? user.signature!
                     : user.presence,
               ),
+              if (user.gender == 'male' || user.gender == 'female')
+                SettingTile(
+                  key: const Key('friend-profile-gender'),
+                  icon: CupertinoIcons.person_crop_circle,
+                  title: '性别',
+                  subtitle: user.gender == 'male' ? '男' : '女',
+                ),
               if (isFriend)
                 SettingTile(
                   key: const Key('edit-friend-metadata'),
@@ -147,13 +174,16 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
 
   Future<void> _openChat() async {
     final conversation = await widget.controller.createDirect(user);
-    if (!mounted || conversation == null) return;
+    if (!mounted) return;
+    if (conversation == null) {
+      _feedback(widget.controller.error ?? '暂时无法开始会话，请稍后重试');
+      return;
+    }
     await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ChatScreen(
-          controller: widget.controller,
-          conversation: conversation,
-        ),
+      chatScreenRoute(
+        context,
+        controller: widget.controller,
+        conversation: conversation,
       ),
     );
   }
@@ -162,6 +192,7 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
     final verification = await _FriendVerificationSheet.show(
       context,
       targetName: user.name,
+      requesterName: widget.controller.currentUser?.name ?? '',
     );
     if (verification == null) return;
     setState(() => busy = true);
@@ -174,6 +205,18 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
     if (!mounted) return;
     setState(() => busy = false);
     _feedback(success ? '好友申请已发送' : widget.controller.error ?? '发送失败');
+  }
+
+  Future<void> _acceptPendingRequest() async {
+    final request = pendingRequest;
+    if (request == null || request.outgoing) return;
+    setState(() => busy = true);
+    final success = await widget.controller.acceptRequest(request);
+    if (!mounted) return;
+    setState(() => busy = false);
+    _feedback(
+      success ? '已添加 ${user.name} 为好友' : widget.controller.error ?? '添加失败',
+    );
   }
 
   Future<void> _editMetadata() async {
@@ -282,7 +325,10 @@ class _ProfileHeader extends StatelessWidget {
         Text('昵称：${user.name}', style: Theme.of(context).textTheme.bodySmall),
       ],
       const SizedBox(height: 4),
-      Text('@${user.handle}', style: Theme.of(context).textTheme.bodyMedium),
+      Text(
+        publicUserHandleLabel(user.handle),
+        style: Theme.of(context).textTheme.bodyMedium,
+      ),
     ],
   );
 }
@@ -428,7 +474,7 @@ class _RequestStatusBanner extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: pending
-            ? LinliColors.paleWarm
+            ? LinliColors.brandMint
             : Theme.of(context).colorScheme.surfaceContainerHigh,
         borderRadius: BorderRadius.circular(14),
       ),
@@ -485,7 +531,7 @@ String friendRequestSourceLabel(String source) => switch (source) {
   'contacts' => '手机通讯录',
   'group' => '共同群聊',
   'card' => '好友名片',
-  _ => '邻里号或姓名搜索',
+  _ => '呱呱号或姓名搜索',
 };
 
 String _formatDate(DateTime value) {
@@ -496,16 +542,24 @@ String _formatDate(DateTime value) {
 }
 
 class _FriendVerificationSheet extends StatefulWidget {
-  const _FriendVerificationSheet({required this.targetName});
+  const _FriendVerificationSheet({
+    required this.targetName,
+    required this.requesterName,
+  });
   final String targetName;
+  final String requesterName;
 
   static Future<String?> show(
     BuildContext context, {
     required String targetName,
+    required String requesterName,
   }) => showModalBottomSheet<String>(
     context: context,
     isScrollControlled: true,
-    builder: (_) => _FriendVerificationSheet(targetName: targetName),
+    builder: (_) => _FriendVerificationSheet(
+      targetName: targetName,
+      requesterName: requesterName,
+    ),
   );
 
   @override
@@ -519,7 +573,8 @@ class _FriendVerificationSheetState extends State<_FriendVerificationSheet> {
   @override
   void initState() {
     super.initState();
-    controller.text = '你好，我是${widget.targetName}附近的邻居';
+    final requesterName = widget.requesterName.trim();
+    controller.text = requesterName.isEmpty ? '' : '你好，我是$requesterName';
   }
 
   @override
@@ -541,7 +596,10 @@ class _FriendVerificationSheetState extends State<_FriendVerificationSheet> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('好友验证', style: Theme.of(context).textTheme.titleLarge),
+          Text(
+            '添加 ${widget.targetName}',
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
           const SizedBox(height: 6),
           Text(
             '填写对方能识别你的信息，最多 300 字。',

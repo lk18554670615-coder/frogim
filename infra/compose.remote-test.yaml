@@ -59,8 +59,7 @@ services:
     build:
       context: ../apps/admin
       args:
-        VITE_ADMIN_API_URL: /api/v1/admin
-        VITE_ALLOW_DEMO: "false"
+        VITE_ADMIN_API_URL: /api/v2/admin
     environment:
       REMOTE_SERVER_ORIGIN: ${REMOTE_SERVER_ORIGIN:?请在 .env.remote-test 配置远程 HTTPS 地址}
       NGINX_ENVSUBST_FILTER: ^REMOTE_SERVER_ORIGIN$$

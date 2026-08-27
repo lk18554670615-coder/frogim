@@ -1,12 +1,44 @@
-export type DataMode = 'demo' | 'live';
-export type AdminRole = 'platform_admin' | 'moderator' | 'support';
+export type AdminRole = string;
+export type ClientPlatform = 'android' | 'ios' | 'web' | 'macos';
 export type StatusTone = 'success' | 'warning' | 'danger' | 'info' | 'neutral';
 
 export interface AdminSession {
   token: string;
+  id: string;
+  email: string;
   displayName: string;
-  role: AdminRole;
+  roleId: string;
+  roleName: string;
+  permissions: string[];
   expiresAt: number;
+}
+
+export interface AdministratorRecord {
+  id: string;
+  email: string;
+  displayName: string;
+  roleId: string;
+  roleName: string;
+  status: 'active' | 'disabled';
+  permissions: string[];
+  lastLoginAt?: string;
+  passwordUpdatedAt: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  disabledAt?: string;
+}
+
+export interface AdministratorRoleRecord {
+  id: string;
+  name: string;
+  description: string;
+  builtIn: boolean;
+  createdBy: string;
+  permissions: string[];
+  accountCount: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface PageResult<T> {
@@ -31,6 +63,9 @@ export interface DashboardData {
   channelMix: Array<{ label: string; value: number; color: string }>;
   alerts: Array<{ id: string; title: string; detail: string; severity: 'warning' | 'critical'; time: string }>;
   activity: AuditLog[];
+  generatedAt?: string;
+  trendWindowHours?: number;
+  mixWindowHours?: number;
 }
 
 export interface UserRecord {
@@ -38,26 +73,176 @@ export interface UserRecord {
   nickname: string;
   phone: string;
   handle: string;
+  remark: string;
+  tags: string[];
+  gender: 'unspecified' | 'male' | 'female';
   handleChangeCount: number;
   bannedUntil?: string;
   avatar: string;
-  status: 'active' | 'banned' | 'risk';
+  avatarUrl: string;
+  status: 'active' | 'banned';
+  online: boolean;
+  onlineConnections: number;
+  lastOfflineAt?: string;
   registeredAt: string;
   lastSeen: string;
   deviceCount: number;
   messageCount: number;
+  latestDevice?: ClientDeviceSummary;
+}
+
+export interface ClientDeviceSummary {
+  installationId: string;
+  platform: ClientPlatform;
+  deviceName: string;
+  deviceModel: string;
+  osVersion: string;
+  appVersion: string;
+  lastSeenAt: string;
+}
+
+export interface AdminUserDeviceRecord {
+  id: string;
+  userId: string;
+  platform: string;
+  provider: string;
+  notificationsEnabled: boolean;
+  previewEnabled: boolean;
+  soundEnabled: boolean;
+  vibrationEnabled: boolean;
+  updatedAt: string;
+}
+
+export interface AdminClientDeviceRecord extends ClientDeviceSummary {
+  userId: string;
+  firstSeenAt: string;
+}
+
+export interface AdminUserDevices {
+  items: AdminClientDeviceRecord[];
+  pushRegistrations: AdminUserDeviceRecord[];
+}
+
+export interface AdminUserRelationRecord {
+  user: UserRecord;
+  remark: string;
+  tags: string[];
+  relationshipCreatedAt: string;
+  relationshipUpdatedAt: string;
+}
+
+export interface AdminUserBlockRecord {
+  user: UserRecord;
+  remark: string;
+  blockedAt: string;
+}
+
+export interface AdminDirectMessageRecord {
+  id: string;
+  clientMsgId: string;
+  conversationId: string;
+  conversationSeq: number;
+  senderId: string;
+  sender?: UserRecord;
+  type: string;
+  body: Record<string, unknown>;
+  replyToId: string;
+  createdAt: string;
+  recalledAt?: string;
+  expiresAt?: string;
+  expiredAt?: string;
+  editedAt?: string;
+  editVersion: number;
+  encrypted: false;
+  deleted: boolean;
+  adminRecall: boolean;
+  moderatedBy: string;
+  moderationReason: string;
+  moderatedAt?: string;
+}
+
+export interface AdminDirectMessagePage {
+  conversationId: string;
+  participants: Record<string, UserRecord>;
+  items: AdminDirectMessageRecord[];
+  nextBeforeSeq?: number;
+}
+
+export interface AdminSystemMessageResult {
+  targetUid: string;
+  senderUid: string;
+  conversationId: string;
+  messageId: string;
+  clientMsgNo: string;
+}
+
+export interface UserOverview {
+  user: UserRecord;
+  signature: string;
+  gender: 'unspecified' | 'male' | 'female';
+  deviceCount: number;
+  friendCount: number;
+  groupCount: number;
+  handleChangesUsed: number;
+  handleChangesRemaining: number;
 }
 
 export interface GroupRecord {
   id: string;
   name: string;
-  owner: string;
+  avatarUrl: string;
+  ownerId: string;
+  owner: UserRecord;
   memberCount: number;
   messageCount: number;
-  status: 'active' | 'muted' | 'dissolved';
+  status: 'active' | 'muted' | 'banned' | 'dissolved';
   createdAt: string;
   reportCount: number;
+  allMutedUntil?: string;
+  banned: boolean;
+  bannedAt?: string;
+  bannedBy: string;
+  banReason: string;
 }
+
+export interface GroupOverview {
+  id: string;
+  title: string;
+  avatarUrl: string;
+  ownerId: string;
+  owner: UserRecord;
+  announcement: string;
+  announcementVersion: number;
+  joinPolicy: string;
+  allowMemberAddFriend: boolean;
+  messageCount: number;
+  memberCount: number;
+  allMutedUntil?: string;
+  banned: boolean;
+  bannedAt?: string;
+  bannedBy: string;
+  banReason: string;
+  dissolvedAt?: string;
+}
+
+export interface GroupMemberRecord {
+  conversationId: string;
+  userId: string;
+  phone: string;
+  name: string;
+  handle: string;
+  avatarUrl: string;
+  role: string;
+  mutedUntil?: string;
+  lastReadSeq: number;
+  lastDeliveredSeq: number;
+  groupNickname: string;
+  joinedAt: string;
+}
+
+export type AdminGroupMessageRecord = Omit<AdminDirectMessageRecord, 'clientMsgId' | 'replyToId' | 'editVersion' | 'encrypted' | 'deleted' | 'moderatedAt'>;
+export interface AdminGroupMessagePage { items: AdminGroupMessageRecord[]; nextBeforeSeq?: number }
+export interface AdminGroupBlacklistRecord { user: UserRecord; operatorId: string; operatorName: string; remark: string; createdAt: string }
 
 export interface ReportRecord {
   id: string;
@@ -82,7 +267,7 @@ export interface SensitiveWord {
 
 export interface HealthService {
   name: string;
-  status: 'healthy' | 'degraded' | 'down';
+  status: 'healthy' | 'degraded' | 'down' | 'unknown';
   latency: number;
   uptime: string;
   version: string;
@@ -94,7 +279,7 @@ export interface AuditLog {
   actor: string;
   action: string;
   target: string;
-  result: 'success' | 'failed';
+  result: 'success' | 'failed' | 'unknown';
   ip: string;
   createdAt: string;
 }
@@ -104,6 +289,7 @@ export interface MessageRecord {
   clientMsgId: string;
   conversationId: string;
   senderId: string;
+  sender?: UserRecord;
   conversationSeq: number;
   type: string;
   preview: string;
@@ -132,7 +318,39 @@ export interface OnlineRecord {
 }
 export interface FriendshipRecord { userId: string; friendUserId: string; userName: string; friendName: string; createdAt: string; updatedAt: string; }
 export interface FeedbackRecord { id: string; userId: string; userName: string; category: string; content: string; contact: string; createdAt: string; }
-export interface OperationsStatus { push: { providers: Array<{ provider: string; activeDevices: number; disabledDevices: number }>; queue: Array<{ status: string; count: number; attempts: number }> }; tasks: Record<string, unknown>; access: { current: { id: string; role: AdminRole }; administrators: Array<{ id: string; role: AdminRole; source: string; mutable: boolean }>; roles: Array<{ id: AdminRole; permissions: string[] }>; note: string } }
+export interface BackupStatus {
+  configured: boolean;
+  available: boolean;
+  status: 'healthy' | 'running' | 'never' | 'failed' | 'warning' | 'stale' | 'unavailable' | 'unconfigured';
+  lastStatus: boolean;
+  running: boolean;
+  lastDurationSeconds: number;
+  incompleteGenerations: number;
+  offsiteEnabled: boolean;
+  lastAttemptAt?: string;
+  lastSuccessAt?: string;
+}
+export interface ClientDiagnosticRecord {
+  id: string;
+  userId: string;
+  kind: 'crash' | 'performance' | 'connection' | 'call';
+  name: string;
+  fingerprint: string;
+  platform: string;
+  appVersion: string;
+  durationMs?: number;
+  occurredAt: string;
+}
+export interface OperationsStatus {
+  push: { providers: Array<{ provider: string; activeDevices: number; disabledDevices: number }>; queue: Array<{ status: string; count: number; attempts: number }> };
+  backups: BackupStatus;
+  diagnostics: {
+    summary: { windowHours: number; crashes: number; connectionFailures: number; callFailures: number; performanceSamples: number; performanceP95Ms?: number };
+    items: ClientDiagnosticRecord[];
+  };
+  tasks: Record<string, unknown>;
+  access: { current: { id: string; role: AdminRole }; administrators: Array<{ id: string; role: AdminRole; source: string; mutable: boolean }>; roles: Array<{ id: AdminRole; permissions: string[] }>; note: string };
+}
 
 export interface AnnouncementRecord {
   id: string;
@@ -154,11 +372,17 @@ export type AnnouncementInput = Pick<AnnouncementRecord, 'title' | 'content' | '
 export interface CallRecord {
   id: string;
   conversationId: string;
+  kind: 'direct' | 'group';
   callerId: string;
   calleeId: string;
+  participantIds: string[];
+  joinedUserIds: string[];
+  declinedUserIds: string[];
+  leftUserIds: string[];
   mediaType: 'audio' | 'video';
   status: string;
   endReason: string;
+  endedBy: string;
   invitedAt: string;
   acceptedAt?: string;
   endedAt?: string;
@@ -182,30 +406,451 @@ export interface AdminSettings {
   reportSlaHours: number;
   maintenanceMode: boolean;
   announcement: string;
-  configurationStatus: Record<'database' | 'redis' | 'objectStorage' | 'otpProvider' | 'pushProvider' | 'turn' | 'adminTOTP', boolean>;
+  configurationStatus: Record<'database' | 'redis' | 'objectStorage' | 'otpProvider' | 'pushProvider' | 'liveKit', boolean>;
   infrastructure: {
     pushProvider: string;
     mediaMaxSizeMB: number;
     callInviteTimeoutSeconds: number;
-    websocketMaxPerUser: number;
-    websocketMaxPerIP: number;
     accessTokenMinutes: number;
     refreshTokenHours: number;
   };
   restartRequiredKeys: string[];
 }
 
+export interface ClientVersionPolicy {
+  platform: ClientPlatform;
+  minimumVersion: string;
+  latestVersion: string;
+  forceUpdate: boolean;
+  rolloutPercentage: number;
+  releaseNotes: string;
+  downloadUrl: string;
+  updatedBy: string;
+  updatedAt: string;
+}
+
+export interface ClientVersionReleaseRecord extends ClientVersionPolicy {
+  id: string;
+  reason: string;
+}
+
+export interface MomentModerationRecord {
+  id: string;
+  authorId: string;
+  authorName: string;
+  content: string;
+  mediaKind: string;
+  mediaCount: number;
+  visibility: string;
+  likeCount: number;
+  commentCount: number;
+  status: 'published' | 'hidden' | 'deleted';
+  createdAt: string;
+}
+
+export interface StickerPackModerationRecord {
+  id: string;
+  name: string;
+  categoryName: string;
+  description: string;
+  status: 'draft' | 'reviewing' | 'published' | 'rejected' | 'disabled';
+  itemCount: number;
+  createdBy: string;
+  reviewedBy: string;
+  reviewReason: string;
+  updatedAt: string;
+  categoryId?: string;
+  coverMediaId?: string;
+  sortOrder?: number;
+  items?: StickerItemOperationsRecord[];
+}
+
+export interface StickerCategoryOperationsRecord {
+  id: string;
+  name: string;
+  sortOrder: number;
+  enabled: boolean;
+}
+
+export interface StickerItemOperationsRecord {
+  id: string;
+  packId: string;
+  name: string;
+  mediaId: string;
+  emoji: string;
+  sortOrder: number;
+  status: 'published' | 'disabled';
+}
+
+export interface StickerCategoryInput {
+  id?: string;
+  name: string;
+  sortOrder: number;
+  enabled: boolean;
+}
+
+export interface StickerPackInput {
+  id?: string;
+  categoryId: string;
+  name: string;
+  description: string;
+  coverMediaId: string;
+  status: 'draft' | 'reviewing';
+  sortOrder: number;
+}
+
+export interface StickerItemInput {
+  id?: string;
+  name: string;
+  mediaId: string;
+  emoji: string;
+  status: 'published' | 'disabled';
+  sortOrder: number;
+}
+
+export interface WukongOverview {
+  serverId: string;
+  version: string;
+  uptime: string;
+  connections: number | null;
+  userHandlers: number | null;
+  cpu: number | null;
+  memoryBytes: number | null;
+  goroutines: number | null;
+  inMessages: number | null;
+  outMessages: number | null;
+  retryQueue: number | null;
+}
+
+export interface WukongRuntimeSettings {
+  traceEnabled: boolean | null;
+  lokiEnabled: boolean | null;
+  prometheusEnabled: boolean | null;
+  stressEnabled: boolean | null;
+}
+
+export interface WukongNode {
+  id: number;
+  online: boolean;
+  leader: boolean;
+  apiAddress: string;
+  version: string;
+  slotCount: number;
+  slotLeaderCount: number;
+}
+
+export interface WukongConnection {
+  id: number;
+  uid: string;
+  ip: string;
+  device: string;
+  deviceId: string;
+  nodeId: number;
+  lastActivity: string;
+  inMessages: number;
+  outMessages: number;
+}
+
+export interface WukongChannel {
+  channelId: string;
+  channelType: number;
+  subscriberCount: number;
+  denylistCount: number;
+  allowlistCount: number;
+  banned: boolean;
+  disbanded: boolean;
+  createdAt: number;
+}
+
+export interface WukongStoredMessage {
+  messageId: string;
+  messageSeq: number;
+  clientMsgNo: string;
+  fromUid: string;
+  channelId: string;
+  channelType: number;
+  timestamp: number;
+}
+
+export interface WukongDevice {
+  uid: string;
+  deviceFlag: number;
+  deviceLevel: number;
+  tokenPresent: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface WukongSystemUser {
+  userId: string;
+  name: string;
+  enabled: boolean;
+  syncStatus: 'pending' | 'processing' | 'synced' | 'failed';
+  updatedBy: string;
+  reason: string;
+  updatedAt: string;
+}
+
+export interface WukongRobotMenu {
+  cmd: string;
+  remark: string;
+  type: 'command';
+}
+
+export interface WukongRobotProfile {
+  userId: string;
+  name: string;
+  username: string;
+  placeholder: string;
+  enabled: boolean;
+  inlineOn: boolean;
+  version: number;
+  menus: WukongRobotMenu[];
+  updatedBy: string;
+  reason: string;
+  updatedAt: string;
+}
+
+export interface WukongPlugin {
+  no: string;
+  nodeId: number;
+  name: string;
+  version: string;
+  status: string;
+  methods: string[];
+  priority: number;
+  isAi: boolean;
+  config: Record<string, unknown>;
+  managed: boolean;
+  verified: boolean;
+  builtIn: boolean;
+  lifecycleStatus: string;
+  fileName: string;
+  sha256: string;
+  keyId: string;
+  installedAt: string;
+  updatedAt: string;
+}
+
+export interface WukongPluginRelease {
+  pluginNo: string;
+  nodeId: number;
+  name: string;
+  fileName: string;
+  version: string;
+  methods: string[];
+  sha256: string;
+  sizeBytes: number;
+  keyId: string;
+  status: string;
+  lastActor: string;
+  lastReason: string;
+  installedAt: string;
+  updatedAt: string;
+}
+
+export interface WukongPluginEvent {
+  id: number;
+  pluginNo: string;
+  action: string;
+  status: string;
+  actor: string;
+  reason: string;
+  details: Record<string, unknown>;
+	createdAt: string;
+}
+
+export interface WukongPluginLogEntry {
+  sequence: number;
+  stream: 'stdout' | 'stderr' | string;
+  timestamp: number;
+  message: string;
+}
+
+export interface LiveKitRoom {
+  sid: string;
+  name: string;
+  createdAt: string;
+  participantCount: number;
+  publisherCount: number;
+  maxParticipants: number;
+  activeRecording: boolean;
+}
+
+export interface LiveKitParticipant {
+  sid: string;
+  identity: string;
+  name: string;
+  state: string;
+  joinedAt: string;
+  trackCount: number;
+  screenSharing: boolean;
+}
+
+export interface LiveKitMetrics {
+  healthy: boolean;
+  activeRooms: number;
+  activeParticipants: number;
+  cpuPercent: number;
+  residentMemoryBytes: number;
+  networkReceiveBytesPerSecond: number;
+  networkTransmitBytesPerSecond: number;
+  packetLossPercent: number;
+  participantJoinsLastHour: number;
+  roomsCompletedLastHour: number;
+  sampledAt: string;
+}
+
+export interface BusinessChannelRecord {
+  id: string;
+  channelType: 4 | 5 | 6 | 9;
+  category: string;
+  name: string;
+  avatarUrl: string;
+  ownerId: string;
+  parentId: string;
+  description: string;
+  visibility: 'public' | 'private';
+  joinPolicy: 'open' | 'approval' | 'invite' | 'closed';
+  postingPolicy: 'members' | 'operators';
+  slowModeSeconds: number;
+  memberCount: number;
+  ban: boolean;
+  disband: boolean;
+  sendBan: boolean;
+  allowStranger: boolean;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BusinessChannelMemberRecord {
+  channelId: string;
+  userId: string;
+  name: string;
+  handle: string;
+  avatarUrl: string;
+  role: string;
+  mutedUntil?: string;
+  expiresAt?: string;
+  joinedAt: string;
+  updatedAt: string;
+}
+
+export interface BusinessChannelAccessRecord {
+  channelId: string;
+  userId: string;
+  name: string;
+  handle: string;
+  avatarUrl: string;
+  accessType: 'allow' | 'deny';
+  reason: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface BusinessChannelInput {
+  ownerId: string;
+  channelType: 4 | 5 | 6 | 9;
+  name: string;
+  avatarUrl?: string;
+  parentId?: string;
+  description?: string;
+  visibility: 'public' | 'private';
+  joinPolicy: 'open' | 'approval' | 'invite' | 'closed';
+  postingPolicy: 'members' | 'operators';
+  slowModeSeconds: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SupportSkillRecord {
+  id: string;
+  name: string;
+  description: string;
+  routingStrategy: 'least_active' | 'round_robin';
+  maxConcurrentPerAgent: number;
+  enabled: boolean;
+  queueCount: number;
+  availableAgents: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SupportAgentRecord {
+  userId: string;
+  name: string;
+  handle: string;
+  avatarUrl: string;
+  status: 'offline' | 'available' | 'busy' | 'away';
+  maxConcurrent: number;
+  activeSessions: number;
+  skillGroupIds: string[];
+  lastAssignedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SupportSessionRecord {
+  id: string;
+  visitorId: string;
+  visitorName: string;
+  skillGroupId: string;
+  skillGroupName: string;
+  channelId: string;
+  channelType: number;
+  subject: string;
+  status: 'queued' | 'active' | 'transferring' | 'ended';
+  queuePosition: number;
+  assignedAgentId: string;
+  agentName: string;
+  transferCount: number;
+  rating: number;
+  ratingComment: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AdminApi {
+  getCurrentAdmin(): Promise<Omit<AdminSession, 'token' | 'expiresAt'>>;
+  changeCurrentAdminPassword(currentPassword: string, newPassword: string): Promise<void>;
+  getAdministrators(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<AdministratorRecord>>;
+  createAdministrator(input: { email: string; displayName: string; roleId: string; password: string }, reason: string): Promise<AdministratorRecord>;
+  updateAdministrator(id: string, input: Partial<Pick<AdministratorRecord, 'email' | 'displayName' | 'roleId' | 'status'>>, reason: string): Promise<AdministratorRecord>;
+  resetAdministratorPassword(id: string, password: string, reason: string): Promise<void>;
+  getAdministratorRoles(): Promise<AdministratorRoleRecord[]>;
+  createAdministratorRole(input: Pick<AdministratorRoleRecord, 'name' | 'description' | 'permissions'>, reason: string): Promise<AdministratorRoleRecord>;
+  updateAdministratorRole(id: string, input: Pick<AdministratorRoleRecord, 'name' | 'description' | 'permissions'>, reason: string): Promise<AdministratorRoleRecord>;
+  deleteAdministratorRole(id: string, reason: string): Promise<void>;
   getDashboard(): Promise<DashboardData>;
   getUsers(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<UserRecord>>;
+  createUser(input: { phone: string; name: string; password: string; gender: UserRecord['gender'] }, reason: string): Promise<UserRecord>;
+  getUserOverview(id: string): Promise<UserOverview>;
+  getUserFriends(id: string): Promise<AdminUserRelationRecord[]>;
+  getUserBlockedUsers(id: string): Promise<AdminUserBlockRecord[]>;
+  getUserDevices(id: string): Promise<AdminUserDevices>;
+  getUserFriendMessages(userId: string, friendId: string, beforeSeq?: number, limit?: number): Promise<AdminDirectMessagePage>;
+  recallUserFriendMessage(userId: string, friendId: string, messageId: string, reason: string): Promise<void>;
+  sendUserSystemMessage(id: string, senderUid: string, content: string, reason: string): Promise<AdminSystemMessageResult>;
   banUser(id: string, reason: string, durationHours: number): Promise<void>;
   unbanUser(id: string, reason: string): Promise<void>;
-  getGroups(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<GroupRecord>>;
+  getGroups(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string, scope?: 'normal' | 'banned' | 'all'): Promise<PageResult<GroupRecord>>;
+  getGroupOverview(id: string): Promise<GroupOverview>;
+  getGroupMembers(id: string, query?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<GroupMemberRecord>>;
+  updateGroupMember(id: string, userId: string, update: { action: 'role' | 'mute'; role?: 'member' | 'admin'; mutedUntil?: string }, reason: string): Promise<void>;
+  removeGroupMember(id: string, userId: string, reason: string): Promise<void>;
+  sendGroupMessage(id: string, senderUid: string, content: string, reason: string): Promise<void>;
+  getGroupMessages(id: string, beforeSeq?: number, limit?: number): Promise<AdminGroupMessagePage>;
+  recallGroupMessage(id: string, messageId: string, reason: string): Promise<void>;
+  getGroupBlacklist(id: string): Promise<AdminGroupBlacklistRecord[]>;
+  addGroupBlacklist(id: string, userId: string, remark: string, reason: string): Promise<void>;
+  removeGroupBlacklist(id: string, userId: string, reason: string): Promise<void>;
+  setGroupMuteAll(id: string, muted: boolean, reason: string): Promise<void>;
+  setGroupBan(id: string, banned: boolean, reason: string): Promise<void>;
   disbandGroup(id: string, reason: string): Promise<void>;
   getReports(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<ReportRecord>>;
   resolveReport(id: string, action: ReportResolutionAction, note: string): Promise<ReportResolutionResult>;
   getSensitiveWords(): Promise<SensitiveWord[]>;
-  addSensitiveWord(input: Omit<SensitiveWord, 'id' | 'createdAt'>): Promise<SensitiveWord>;
+  addSensitiveWord(input: Omit<SensitiveWord, 'id' | 'createdAt'>, reason: string): Promise<SensitiveWord>;
   deleteSensitiveWord(id: string, reason: string): Promise<void>;
   getHealth(): Promise<HealthService[]>;
   getAuditLogs(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<AuditLog>>;
@@ -216,12 +861,65 @@ export interface AdminApi {
   getFeedback(query?: string, category?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<FeedbackRecord>>;
   getOperationsStatus(): Promise<OperationsStatus>;
   getAnnouncements(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<AnnouncementRecord>>;
-  createAnnouncement(input: AnnouncementInput): Promise<AnnouncementRecord>;
-  updateAnnouncement(id: string, input: AnnouncementInput): Promise<AnnouncementRecord>;
-  publishAnnouncement(id: string, enqueuePush: boolean): Promise<AnnouncementRecord>;
-  withdrawAnnouncement(id: string): Promise<AnnouncementRecord>;
+  createAnnouncement(input: AnnouncementInput, reason: string): Promise<AnnouncementRecord>;
+  updateAnnouncement(id: string, input: AnnouncementInput, reason: string): Promise<AnnouncementRecord>;
+  publishAnnouncement(id: string, enqueuePush: boolean, reason: string): Promise<AnnouncementRecord>;
+  withdrawAnnouncement(id: string, reason: string): Promise<AnnouncementRecord>;
   deleteAnnouncement(id: string, reason: string): Promise<void>;
   getCalls(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<CallRecord>>;
   getSettings(): Promise<AdminSettings>;
-  updateSettings(settings: AdminSettings): Promise<AdminSettings>;
+  updateSettings(settings: AdminSettings, reason: string): Promise<AdminSettings>;
+  getClientVersions(): Promise<ClientVersionPolicy[]>;
+  getClientVersionHistory(platform: ClientPlatform, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<ClientVersionReleaseRecord>>;
+  updateClientVersion(policy: ClientVersionPolicy, reason: string): Promise<ClientVersionPolicy>;
+  getModerationMoments(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<MomentModerationRecord>>;
+  moderateMoment(id: string, status: MomentModerationRecord['status'], reason: string): Promise<void>;
+  getModerationStickerPacks(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<StickerPackModerationRecord>>;
+  reviewStickerPack(id: string, status: StickerPackModerationRecord['status'], reason: string): Promise<StickerPackModerationRecord>;
+  getStickerCategories(): Promise<StickerCategoryOperationsRecord[]>;
+  saveStickerCategory(input: StickerCategoryInput, reason: string): Promise<StickerCategoryOperationsRecord>;
+  saveStickerPack(input: StickerPackInput, reason: string): Promise<StickerPackModerationRecord>;
+  saveStickerItem(packId: string, input: StickerItemInput, reason: string): Promise<StickerItemOperationsRecord>;
+  getWukongOverview(): Promise<WukongOverview>;
+  getWukongSettings(): Promise<WukongRuntimeSettings>;
+  getWukongNodes(): Promise<WukongNode[]>;
+  getWukongConnections(uid?: string, page?: number, pageSize?: number): Promise<PageResult<WukongConnection>>;
+  getWukongChannels(channelId?: string, channelType?: number, limit?: number): Promise<WukongChannel[]>;
+  getWukongMessages(channelId?: string, channelType?: number, fromUid?: string, limit?: number): Promise<WukongStoredMessage[]>;
+  getWukongDevices(uid?: string, deviceFlag?: number, limit?: number): Promise<WukongDevice[]>;
+  quitWukongDevice(uid: string, deviceFlag: number, reason: string): Promise<void>;
+  getWukongSystemUsers(): Promise<WukongSystemUser[]>;
+  setWukongSystemUser(uid: string, enabled: boolean, reason: string): Promise<WukongSystemUser>;
+  getWukongRobots(): Promise<WukongRobotProfile[]>;
+  setWukongRobot(uid: string, input: Pick<WukongRobotProfile, 'enabled' | 'username' | 'placeholder' | 'inlineOn' | 'menus'>, reason: string): Promise<WukongRobotProfile>;
+  getWukongPlugins(nodeId?: number): Promise<WukongPlugin[]>;
+  installWukongPlugin(bundle: File, manifest: File, signature: string, nodeId: number, reason: string): Promise<WukongPluginRelease>;
+  upgradeWukongPlugin(no: string, bundle: File, manifest: File, signature: string, nodeId: number, reason: string): Promise<WukongPluginRelease>;
+  setWukongPluginEnabled(no: string, nodeId: number, enabled: boolean, reason: string): Promise<WukongPluginRelease>;
+  getWukongPluginEvents(no?: string): Promise<WukongPluginEvent[]>;
+  getWukongPluginLogs(no: string, nodeId?: number, limit?: number): Promise<WukongPluginLogEntry[]>;
+  updateWukongPluginConfig(no: string, nodeId: number, config: Record<string, unknown>, reason: string): Promise<void>;
+  uninstallWukongPlugin(no: string, nodeId: number, reason: string): Promise<void>;
+  getLiveKitRooms(): Promise<LiveKitRoom[]>;
+  getLiveKitMetrics(): Promise<LiveKitMetrics>;
+  getLiveKitParticipants(room: string): Promise<LiveKitParticipant[]>;
+  removeLiveKitParticipant(room: string, identity: string, reason: string): Promise<void>;
+  deleteLiveKitRoom(room: string, reason: string): Promise<void>;
+  getBusinessChannels(query?: string, channelType?: number, category?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<BusinessChannelRecord>>;
+  createBusinessChannel(input: BusinessChannelInput, reason: string): Promise<BusinessChannelRecord>;
+  updateBusinessChannel(id: string, channelType: number, update: Partial<BusinessChannelRecord>, reason: string): Promise<BusinessChannelRecord>;
+  getBusinessChannelMembers(id: string, channelType: number, cursor?: string): Promise<{ items: BusinessChannelMemberRecord[]; nextCursor?: string }>;
+  addBusinessChannelMember(id: string, channelType: number, userId: string, expiresAt: string | undefined, reason: string): Promise<void>;
+  updateBusinessChannelMember(id: string, channelType: number, userId: string, update: { role?: string; mutedUntil?: string; clearMute?: boolean; expiresAt?: string; clearExpiry?: boolean }, reason: string): Promise<void>;
+  removeBusinessChannelMember(id: string, channelType: number, userId: string, reason: string): Promise<void>;
+  getBusinessChannelAccess(id: string, channelType: number): Promise<BusinessChannelAccessRecord[]>;
+  setBusinessChannelAccess(id: string, channelType: number, userId: string, accessType: 'allow' | 'deny', enabled: boolean, reason: string): Promise<void>;
+  getSupportSkills(): Promise<SupportSkillRecord[]>;
+  saveSupportSkill(input: Partial<SupportSkillRecord> & Pick<SupportSkillRecord, 'name' | 'routingStrategy' | 'maxConcurrentPerAgent' | 'enabled'>, reason: string): Promise<SupportSkillRecord>;
+  getSupportAgents(skillGroupId?: string): Promise<SupportAgentRecord[]>;
+  saveSupportAgent(userId: string, input: Pick<SupportAgentRecord, 'status' | 'maxConcurrent' | 'skillGroupIds'>, reason: string): Promise<SupportAgentRecord>;
+  getSupportSessions(query?: string, status?: string, skillGroupId?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<SupportSessionRecord>>;
+  claimSupportSession(id: string, agentId: string, reason: string): Promise<SupportSessionRecord>;
+  transferSupportSession(id: string, targetAgentId: string, reason: string): Promise<SupportSessionRecord>;
+  endSupportSession(id: string, reason: string): Promise<SupportSessionRecord>;
 }

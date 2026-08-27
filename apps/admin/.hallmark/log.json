@@ -1,0 +1,11 @@
+[
+  {
+    "date": "2026-08-28",
+    "scope": "app",
+    "macrostructure": "Workbench",
+    "theme": "studied-DNA",
+    "theme_axes": "TailAdmin light / Outfit / Qingwa green brand mapping",
+    "enrichment": "none",
+    "brief": "青蛙呱呱运营控制台直接采用 TailAdmin Free React 结构，仅替换品牌色、Logo、真实菜单与业务数据"
+  }
+]

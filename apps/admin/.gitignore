@@ -6,3 +6,6 @@ dist
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts
+
+# 本地设计验收截图可能包含真实后台数据，只保留在开发机，不提交仓库。
+artifacts/design-qa/

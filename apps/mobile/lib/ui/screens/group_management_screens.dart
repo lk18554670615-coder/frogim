@@ -6,7 +6,9 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../core/app_controller.dart';
 import '../../core/app_theme.dart';
+import '../../core/avatar_image.dart';
 import '../../core/models.dart';
+import '../../core/user_identity.dart';
 import '../widgets/linli_widgets.dart';
 import 'relationship_screens.dart';
 import 'qr_tools_screen.dart';
@@ -107,6 +109,18 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
             const SectionHeader('群聊'),
             SectionCard(
               children: [
+                SettingTile(
+                  key: const Key('group-save-to-contacts'),
+                  icon: CupertinoIcons.book,
+                  title: '保存到通讯录',
+                  subtitle: conversation.saved
+                      ? '可在通讯录的群聊中快速找到'
+                      : '保存后可在通讯录中快速找到',
+                  trailing: CupertinoSwitch(
+                    value: conversation.saved,
+                    onChanged: busy ? null : (_) => _toggleSaved(),
+                  ),
+                ),
                 SettingTile(
                   key: const Key('group-members-entry'),
                   icon: CupertinoIcons.person_2,
@@ -287,36 +301,48 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
   }
 
   Future<void> _pickAvatar() async {
-    final file = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
-      imageQuality: 88,
-      maxWidth: 1600,
-      maxHeight: 1600,
-    );
-    if (file == null) return;
-    final Uint8List bytes = await file.readAsBytes();
-    if (bytes.length > 8 * 1024 * 1024) {
-      if (mounted) {
+    try {
+      final file = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 88,
+        maxWidth: 1600,
+        maxHeight: 1600,
+      );
+      if (file == null) return;
+      final Uint8List bytes = await file.readAsBytes();
+      if (!mounted) return;
+      if (bytes.length > 8 * 1024 * 1024) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('群头像不能超过 8 MB')));
+        return;
       }
-      return;
-    }
-    final lower = file.name.toLowerCase();
-    final mimeType = lower.endsWith('.png') ? 'image/png' : 'image/jpeg';
-    await _runProfileUpdate(
-      () => widget.controller.updateGroupProfile(
-        widget.conversation.id,
-        avatar: MediaUpload(
-          bytes: bytes,
-          fileName: file.name,
-          mimeType: mimeType,
-          kind: MessageContentKind.image,
-          localPath: file.path,
+      final mimeType = avatarImageMimeType(bytes);
+      if (mimeType == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('请选择 JPG、PNG 或 WebP 格式的图片')),
+        );
+        return;
+      }
+      await _runProfileUpdate(
+        () => widget.controller.updateGroupProfile(
+          widget.conversation.id,
+          avatar: MediaUpload(
+            bytes: bytes,
+            fileName: file.name,
+            mimeType: mimeType,
+            kind: MessageContentKind.image,
+            localPath: file.path,
+          ),
         ),
-      ),
-    );
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => busy = false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('无法读取群头像，请检查相册权限后重试')));
+    }
   }
 
   Future<void> _openGroupQr() async {
@@ -379,6 +405,16 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
   Future<void> _togglePinned() async {
     setState(() => busy = true);
     final success = await widget.controller.toggleConversationPinned(
+      widget.conversation.id,
+    );
+    if (!mounted) return;
+    setState(() => busy = false);
+    if (!success) _showError();
+  }
+
+  Future<void> _toggleSaved() async {
+    setState(() => busy = true);
+    final success = await widget.controller.toggleConversationSaved(
       widget.conversation.id,
     );
     if (!mounted) return;
@@ -853,7 +889,7 @@ class _GroupMembersManagementScreenState
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
           child: CupertinoSearchTextField(
             key: const Key('group-member-search'),
-            placeholder: '搜索昵称或邻里号',
+            placeholder: '搜索昵称或呱呱号',
             onChanged: (value) => setState(() => query = value),
           ),
         ),
@@ -894,7 +930,11 @@ class _GroupMembersManagementScreenState
     title: Text(
       member.groupNickname.isNotEmpty ? member.groupNickname : member.user.name,
     ),
-    subtitle: Text(_roleLabel(member.role)),
+    subtitle: Text(
+      member.isMuted
+          ? '${_roleLabel(member.role)} · 已禁言'
+          : _roleLabel(member.role),
+    ),
     trailing: _canManage(member)
         ? IconButton(
             tooltip: '管理成员',
@@ -988,6 +1028,16 @@ class _GroupMembersManagementScreenState
                 onTap: () => Navigator.pop(context, 'transfer'),
               ),
             ListTile(
+              leading: Icon(
+                member.isMuted
+                    ? CupertinoIcons.speaker_2
+                    : CupertinoIcons.speaker_slash,
+              ),
+              title: Text(member.isMuted ? '解除禁言' : '禁言 1 小时'),
+              onTap: () =>
+                  Navigator.pop(context, member.isMuted ? 'unmute' : 'mute'),
+            ),
+            ListTile(
               leading: const Icon(
                 CupertinoIcons.person_crop_circle_badge_minus,
                 color: LinliColors.systemRed,
@@ -1034,6 +1084,16 @@ class _GroupMembersManagementScreenState
       'remove' => await widget.controller.removeGroupMember(
         widget.conversationId,
         member.user,
+      ),
+      'mute' => await widget.controller.setGroupMemberMuted(
+        widget.conversationId,
+        member.user,
+        DateTime.now().add(const Duration(hours: 1)),
+      ),
+      'unmute' => await widget.controller.setGroupMemberMuted(
+        widget.conversationId,
+        member.user,
+        null,
       ),
       _ => await widget.controller.setGroupRole(
         widget.conversationId,
@@ -1087,7 +1147,7 @@ class _GroupMemberPickerState extends State<_GroupMemberPicker> {
           value: selected.contains(user.id),
           secondary: PersonAvatar(name: user.name, avatarUrl: user.avatarUrl),
           title: Text(user.name),
-          subtitle: Text('@${user.handle}'),
+          subtitle: Text(publicUserHandleLabel(user.handle)),
           onChanged: (value) => setState(
             () => value == true
                 ? selected.add(user.id)

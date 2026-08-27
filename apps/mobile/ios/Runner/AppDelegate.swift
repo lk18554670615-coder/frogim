@@ -10,6 +10,8 @@ import flutter_callkit_incoming
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate,
   PKPushRegistryDelegate, CallkitIncomingAppDelegate {
   private var voipRegistry: PKPushRegistry?
+  private var screenshotChannel: FlutterMethodChannel?
+  private var screenshotObserver: NSObjectProtocol?
 
   override func application(
     _ application: UIApplication,
@@ -24,6 +26,44 @@ import flutter_callkit_incoming
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "LinliScreenshotDetection")
+    let channel = FlutterMethodChannel(
+      name: "com.qingwaguagua.imapp/screenshot",
+      binaryMessenger: registrar.messenger()
+    )
+    screenshotChannel = channel
+    channel.setMethodCallHandler { [weak self] call, result in
+      switch call.method {
+      case "start":
+        self?.startScreenshotDetection()
+        result(["supported": true])
+      case "stop":
+        self?.stopScreenshotDetection()
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  private func startScreenshotDetection() {
+    guard screenshotObserver == nil else { return }
+    screenshotObserver = NotificationCenter.default.addObserver(
+      forName: UIApplication.userDidTakeScreenshotNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      self?.screenshotChannel?.invokeMethod(
+        "detected",
+        arguments: ["occurredAt": Int64(Date().timeIntervalSince1970 * 1_000)]
+      )
+    }
+  }
+
+  private func stopScreenshotDetection() {
+    guard let observer = screenshotObserver else { return }
+    NotificationCenter.default.removeObserver(observer)
+    screenshotObserver = nil
   }
 
   func pushRegistry(
@@ -60,15 +100,15 @@ import flutter_callkit_incoming
     let systemCallId = (body["systemCallId"] as? String).flatMap(UUID.init(uuidString:))?.uuidString
       ?? deterministicCallUUID(serverCallId).uuidString
     let mediaType = body["mediaType"] as? String ?? "audio"
-    let callerName = body["nameCaller"] as? String ?? "邻里联系人"
-    let handle = body["handle"] as? String ?? "邻里通讯"
+    let callerName = body["nameCaller"] as? String ?? "青蛙呱呱联系人"
+    let handle = body["handle"] as? String ?? "青蛙呱呱"
     let data = flutter_callkit_incoming.Data(
       id: systemCallId,
       nameCaller: callerName,
       handle: handle,
       type: mediaType == "video" ? 1 : 0
     )
-    data.appName = "邻里通讯"
+    data.appName = "青蛙呱呱"
     data.duration = 30_000
     data.includesCallsInRecents = false
     data.supportsDTMF = false

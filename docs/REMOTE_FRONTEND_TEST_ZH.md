@@ -20,7 +20,7 @@ make remote-test-up
 - Flutter Web：`http://127.0.0.1:8093`
 - 管理后台：`http://127.0.0.1:8088`
 
-两个本地 Nginx 仅承载静态前端，并通过只允许业务路径的本地 TLS 网关，把 `/v1/`、`/api/` 和 WebSocket 安全转发到 `REMOTE_SERVER_ORIGIN`。网关严格验证公网 IP 证书；WebSocket 握手会把本地浏览器的 Origin 改写为已授权的远端 Origin，不需要放宽生产 IM 服务白名单。这样既避免生产服务器开放本地调试 Origin，也确保浏览器不会误连本地 API。
+两个本地 Nginx 仅承载静态前端，并通过只允许业务路径的本地 TLS 网关，把 `/v1/`、`/v2/`、`/api/` 和 WebSocket 安全转发到 `REMOTE_SERVER_ORIGIN`。网关严格验证公网 IP 证书；WebSocket 握手会把本地浏览器的 Origin 改写为已授权的远端 Origin，不需要放宽生产 IM 服务白名单。这样既避免生产服务器开放本地调试 Origin，也确保浏览器不会误连本地 API。
 
 ```bash
 make remote-test-status

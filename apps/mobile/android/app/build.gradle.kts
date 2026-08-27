@@ -6,13 +6,46 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+val releaseSigningProperties = Properties().apply {
+    val file = rootProject.file("key.properties")
+    if (file.exists()) file.inputStream().use(::load)
+}
+
+fun releaseSigningValue(name: String): String? = providers.gradleProperty(name)
+    .orElse(providers.environmentVariable(name))
+    .orElse(releaseSigningProperties.getProperty(name, ""))
+    .orNull
+    ?.trim()
+
+val releaseStoreFile = releaseSigningValue("RELEASE_STORE_FILE")
+val releaseStorePassword = releaseSigningValue("RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = releaseSigningValue("RELEASE_KEY_ALIAS")
+val releaseKeyPassword = releaseSigningValue("RELEASE_KEY_PASSWORD")
+val releaseSigningValues = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+)
+val hasAnyReleaseSigningValue = releaseSigningValues.any { !it.isNullOrEmpty() }
+val hasReleaseSigning = releaseSigningValues.all { !it.isNullOrEmpty() }
+
+if (hasAnyReleaseSigningValue && !hasReleaseSigning) {
+    throw GradleException(
+        "Incomplete release signing configuration. Provide RELEASE_STORE_FILE, " +
+            "RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS and RELEASE_KEY_PASSWORD.",
+    )
+}
+
 android {
     val localProperties = Properties().apply {
         val file = rootProject.file("local.properties")
         if (file.exists()) file.inputStream().use(::load)
     }
-    namespace = "com.linlitong.imapp"
-    compileSdk = flutter.compileSdkVersion
+    namespace = "com.qingwaguagua.imapp"
+    // API 36 is required transitively by the pinned LiveKit 2.7.0 graph.
+    // This does not opt the app into new target-SDK runtime behavior.
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -21,7 +54,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.linlitong.imapp"
+        applicationId = "com.qingwaguagua.imapp"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
@@ -33,15 +66,45 @@ android {
                 .get()
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = true
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // CI injects the production signing config. Never ship a debug key.
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
         }
     }
+}
+
+val releaseTaskRequested = gradle.startParameter.taskNames.any { taskName ->
+    taskName.contains("release", ignoreCase = true) &&
+        (taskName.contains("assemble", ignoreCase = true) ||
+            taskName.contains("bundle", ignoreCase = true) ||
+            taskName.contains("package", ignoreCase = true))
+}
+if (releaseTaskRequested && !hasReleaseSigning) {
+    throw GradleException(
+        "Release signing is required. Configure the four RELEASE_* signing values; " +
+            "debug keys must never be used for a formal release.",
+    )
 }
 
 dependencies {

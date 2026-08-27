@@ -1,10 +1,11 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:livekit_client/livekit_client.dart';
 
 import '../core/app_theme.dart';
 import '../ui/widgets/linli_widgets.dart';
 import 'call_controller.dart';
+import 'call_media_engine.dart';
 import 'call_models.dart';
 
 class CallUiHost extends StatefulWidget {
@@ -59,7 +60,9 @@ class CallScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final video = controller.isVideo;
+    // An audio call can gain a video surface later when a participant starts
+    // screen sharing. Drive the stage from the actual subscribed tracks too.
+    final video = controller.isVideo || controller.remoteVideos.isNotEmpty;
     return Material(
       key: const Key('call-screen'),
       color: const Color(0xFF07101F),
@@ -94,6 +97,11 @@ class CallScreen extends StatelessWidget {
                     child: Column(
                       children: [
                         _CallHeading(controller: controller),
+                        if (controller.errorMessage?.trim().isNotEmpty ==
+                                true &&
+                            controller.phase != CallPhase.failed &&
+                            controller.phase != CallPhase.ended)
+                          _CallControlError(message: controller.errorMessage!),
                         const Spacer(),
                         if (controller.phase == CallPhase.failed)
                           _CallFailurePanel(controller: controller)
@@ -114,25 +122,67 @@ class CallScreen extends StatelessWidget {
   }
 }
 
+class _CallControlError extends StatelessWidget {
+  const _CallControlError({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    liveRegion: true,
+    child: Container(
+      key: const Key('call-control-error'),
+      margin: const EdgeInsets.only(top: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xC72A0F1A),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0x70FF6B6B)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            CupertinoIcons.exclamationmark_triangle_fill,
+            color: Color(0xFFFFB4AB),
+            size: 17,
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                height: 1.35,
+                fontWeight: FontWeight.w500,
+                decoration: TextDecoration.none,
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 class _VideoStage extends StatelessWidget {
   const _VideoStage({required this.controller});
   final CallController controller;
 
   @override
   Widget build(BuildContext context) {
-    final remote = controller.remoteRenderer;
-    final local = controller.localRenderer;
+    final remotes = controller.remoteVideos;
+    final local = controller.localVideoTrack;
     return Stack(
       fit: StackFit.expand,
       children: [
-        if (remote?.srcObject != null)
-          RTCVideoView(
-            remote!,
-            objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-          )
+        if (remotes.isNotEmpty)
+          _RemoteVideoStage(videos: remotes)
         else
           _AudioBackdrop(controller: controller),
-        if (local?.srcObject != null && controller.cameraEnabled)
+        if (local != null && controller.cameraEnabled)
           Positioned(
             top: MediaQuery.paddingOf(context).top + 72,
             right: 18,
@@ -147,15 +197,51 @@ class _VideoStage extends StatelessWidget {
                     BoxShadow(color: Colors.black38, blurRadius: 18),
                   ],
                 ),
-                child: RTCVideoView(
-                  local!,
-                  mirror: true,
-                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                child: VideoTrackRenderer(
+                  local,
+                  mirrorMode: VideoViewMirrorMode.mirror,
+                  fit: VideoViewFit.cover,
                 ),
               ),
             ),
           ),
       ],
+    );
+  }
+}
+
+class _RemoteVideoStage extends StatelessWidget {
+  const _RemoteVideoStage({required this.videos});
+
+  final List<CallRemoteVideo> videos;
+
+  @override
+  Widget build(BuildContext context) {
+    if (videos.length == 1) {
+      return VideoTrackRenderer(videos.first.track, fit: VideoViewFit.cover);
+    }
+    final columns = videos.length <= 4 ? 2 : 3;
+    return GridView.builder(
+      physics: const NeverScrollableScrollPhysics(),
+      padding: EdgeInsets.zero,
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: columns,
+        childAspectRatio: 9 / 16,
+        crossAxisSpacing: 2,
+        mainAxisSpacing: 2,
+      ),
+      itemCount: videos.length,
+      itemBuilder: (context, index) {
+        final video = videos[index];
+        return DecoratedBox(
+          decoration: BoxDecoration(
+            border: video.isActiveSpeaker
+                ? Border.all(color: LinliColors.systemGreen, width: 2)
+                : null,
+          ),
+          child: VideoTrackRenderer(video.track, fit: VideoViewFit.cover),
+        );
+      },
     );
   }
 }
@@ -198,7 +284,10 @@ class _CallHeading extends StatelessWidget {
       CallPhase.incoming => controller.isVideo ? '邀请你视频通话' : '邀请你语音通话',
       CallPhase.outgoing => '正在等待对方接听…',
       CallPhase.connecting => '正在建立安全连接…',
-      CallPhase.active => _duration(controller.elapsed),
+      CallPhase.active =>
+        controller.session?.isGroup == true
+            ? '${controller.participantCount} 人 · ${_duration(controller.elapsed)}'
+            : _duration(controller.elapsed),
       CallPhase.ended => controller.errorMessage ?? '通话结束',
       CallPhase.failed => '通话未接通',
       CallPhase.idle => '',
@@ -206,7 +295,7 @@ class _CallHeading extends StatelessWidget {
     return Column(
       children: [
         Text(
-          controller.peer?.name ?? controller.conversation?.title ?? '邻里联系人',
+          controller.peer?.name ?? controller.conversation?.title ?? '青蛙呱呱联系人',
           textAlign: TextAlign.center,
           maxLines: 2,
           style: const TextStyle(
@@ -386,6 +475,21 @@ class _OngoingActions extends StatelessWidget {
             style: TextButton.styleFrom(foregroundColor: Colors.white),
             icon: const Icon(CupertinoIcons.camera_rotate, size: 19),
             label: const Text('切换摄像头'),
+          ),
+        ],
+        if (controller.supportsScreenShare) ...[
+          const SizedBox(height: 12),
+          TextButton.icon(
+            key: const Key('toggle-screen-share'),
+            onPressed: controller.toggleScreenShare,
+            style: TextButton.styleFrom(foregroundColor: Colors.white),
+            icon: Icon(
+              controller.screenShareEnabled
+                  ? CupertinoIcons.stop_circle
+                  : CupertinoIcons.rectangle_on_rectangle,
+              size: 19,
+            ),
+            label: Text(controller.screenShareEnabled ? '停止共享' : '共享屏幕'),
           ),
         ],
         const SizedBox(height: 30),

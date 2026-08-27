@@ -1,14 +1,21 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../core/app_controller.dart';
 import '../../core/app_theme.dart';
+import '../../core/avatar_image.dart';
 import '../../core/browser_notification_permission.dart';
+import '../../core/image_send_editor.dart';
 import '../../core/media_opener.dart';
 import '../../core/models.dart';
+import '../../core/user_identity.dart';
+import '../legal_documents.dart';
 import '../widgets/linli_widgets.dart';
 import 'chat_screen.dart';
 import 'settings_preferences.dart';
@@ -39,7 +46,7 @@ class SettingsScreen extends StatelessWidget {
               key: const Key('settings-account'),
               icon: CupertinoIcons.person_crop_circle,
               title: '账号与安全',
-              subtitle: '邻里号、登录设备与账号注销',
+              subtitle: '密码、手机号、登录设备与账号注销',
               onTap: () =>
                   _push(context, AccountSecurityScreen(controller: controller)),
             ),
@@ -98,6 +105,16 @@ class SettingsScreen extends StatelessWidget {
               ),
             ),
             _SettingsRow(
+              key: const Key('settings-chat-background'),
+              icon: CupertinoIcons.paintbrush,
+              title: '聊天背景',
+              subtitle: '选择舒适、统一的会话底色',
+              onTap: () => _push(
+                context,
+                ChatBackgroundSettingsScreen(store: settingsStore),
+              ),
+            ),
+            _SettingsRow(
               key: const Key('settings-storage'),
               icon: CupertinoIcons.archivebox,
               title: '存储空间',
@@ -126,7 +143,7 @@ class SettingsScreen extends StatelessWidget {
             _SettingsRow(
               key: const Key('settings-about'),
               icon: CupertinoIcons.info_circle,
-              title: '关于邻里通讯',
+              title: '关于青蛙呱呱',
               subtitle: '版本、协议与开源许可',
               onTap: () => _push(context, const AboutScreen()),
             ),
@@ -139,7 +156,7 @@ class SettingsScreen extends StatelessWidget {
               key: const Key('settings-logout'),
               icon: CupertinoIcons.square_arrow_right,
               title: '退出登录',
-              subtitle: '退出后保留本机缓存',
+              subtitle: '清除本机登录凭据和账号缓存',
               destructive: true,
               onTap: () => _confirmLogout(context),
             ),
@@ -157,7 +174,7 @@ class SettingsScreen extends StatelessWidget {
     context: context,
     builder: (sheetContext) => CupertinoActionSheet(
       title: const Text('退出登录？'),
-      message: const Text('本机缓存会保留，重新登录后可以继续同步。'),
+      message: const Text('本机登录凭据与账号缓存将清除；云端消息和联系人不会删除，重新登录后可以再次同步。'),
       actions: [
         CupertinoActionSheetAction(
           isDestructiveAction: true,
@@ -185,90 +202,344 @@ class AccountSecurityScreen extends StatelessWidget {
   final AppController controller;
 
   @override
-  Widget build(BuildContext context) {
-    final user = controller.currentUser;
-    return Scaffold(
-      appBar: const GlassAppBar(title: Text('账号与安全')),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 36),
-        children: [
-          SectionCard(
-            children: [
-              ListTile(
-                minTileHeight: 84,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-                leading: PersonAvatar(
-                  name: user?.name ?? '我',
-                  size: 56,
-                  avatarUrl: user?.avatarUrl,
-                  online: controller.connected,
-                ),
-                title: Text(
-                  user?.name ?? '我的账号',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-                subtitle: Text('@${user?.handle ?? '未设置'}'),
-                trailing: const Icon(CupertinoIcons.chevron_forward, size: 17),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => EditProfileScreen(controller: controller),
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: controller,
+    builder: (context, _) {
+      final user = controller.currentUser;
+      final publicHandle = publicUserHandle(user?.handle);
+      final handleIncomplete = publicHandle == null;
+      final canEditHandle =
+          !handleIncomplete && (user?.handleChangesRemaining ?? 0) > 0;
+      return Scaffold(
+        appBar: const GlassAppBar(title: Text('账号与安全')),
+        body: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 36),
+          children: [
+            SectionCard(
+              children: [
+                ListTile(
+                  minTileHeight: 84,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                  leading: PersonAvatar(
+                    name: user?.name ?? '我',
+                    size: 56,
+                    avatarUrl: user?.avatarUrl,
+                    online: controller.connected,
+                  ),
+                  title: Text(
+                    user?.name ?? '我的账号',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  subtitle: Text(
+                    publicHandle == null ? '呱呱号未设置' : '@$publicHandle',
+                  ),
+                  trailing: const Icon(
+                    CupertinoIcons.chevron_forward,
+                    size: 17,
+                  ),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => EditProfileScreen(controller: controller),
+                    ),
                   ),
                 ),
-              ),
-            ],
-          ),
-          const SectionHeader('账号标识'),
-          SectionCard(
-            children: [
-              _SettingsRow(
-                icon: CupertinoIcons.at,
-                title: '邻里号',
-                subtitle: user?.handle ?? '未设置',
-                status: '只读',
-              ),
-              _SettingsRow(
-                icon: CupertinoIcons.phone,
-                title: '绑定手机号',
-                subtitle: _maskedPhone(user?.phone),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => ChangePhoneScreen(controller: controller),
+              ],
+            ),
+            const SectionHeader('账号标识'),
+            SectionCard(
+              children: [
+                _SettingsRow(
+                  key: const Key('account-edit-handle'),
+                  icon: CupertinoIcons.at,
+                  title: '呱呱号',
+                  subtitle: publicHandle ?? '由账号服务自动生成',
+                  status: handleIncomplete
+                      ? '等待生成'
+                      : (user?.handleChangesRemaining ?? 0) > 0
+                      ? '还可修改 ${user!.handleChangesRemaining} 次'
+                      : '不可修改',
+                  onTap: canEditHandle
+                      ? () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                EditProfileScreen(controller: controller),
+                          ),
+                        )
+                      : null,
+                ),
+                _SettingsRow(
+                  icon: CupertinoIcons.phone,
+                  title: '绑定手机号',
+                  subtitle: _maskedPhone(user?.phone),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => ChangePhoneScreen(controller: controller),
+                    ),
                   ),
                 ),
-              ),
-            ],
-          ),
-          const SectionHeader('安全'),
-          SectionCard(
-            children: [
-              _SettingsRow(
-                icon: CupertinoIcons.device_phone_portrait,
-                title: '登录设备',
-                subtitle: '检查当前设备与在线状态',
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => DevicesScreen(controller: controller),
+              ],
+            ),
+            const SectionHeader('安全'),
+            SectionCard(
+              children: [
+                _SettingsRow(
+                  key: const Key('account-change-password'),
+                  icon: CupertinoIcons.lock,
+                  title: '修改登录密码',
+                  subtitle: '验证绑定手机号后更新，完成后重新登录',
+                  onTap: user?.phone?.trim().isNotEmpty == true
+                      ? () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                ChangePasswordScreen(controller: controller),
+                          ),
+                        )
+                      : null,
+                ),
+                _SettingsRow(
+                  icon: CupertinoIcons.device_phone_portrait,
+                  title: '登录设备',
+                  subtitle: '检查当前设备与在线状态',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => DevicesScreen(controller: controller),
+                    ),
                   ),
                 ),
-              ),
-              _SettingsRow(
-                icon: CupertinoIcons.delete,
-                title: '注销账号',
-                subtitle: '永久删除资料、关系与云端消息',
-                destructive: true,
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) =>
-                        AccountDeletionScreen(controller: controller),
+                _SettingsRow(
+                  icon: CupertinoIcons.delete,
+                  title: '注销账号',
+                  subtitle: '永久删除资料、关系与云端消息',
+                  destructive: true,
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          AccountDeletionScreen(controller: controller),
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
+          ],
+        ),
+      );
+    },
+  );
+}
+
+class ChangePasswordScreen extends StatefulWidget {
+  const ChangePasswordScreen({super.key, required this.controller});
+
+  final AppController controller;
+
+  @override
+  State<ChangePasswordScreen> createState() => _ChangePasswordScreenState();
+}
+
+class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
+  final formKey = GlobalKey<FormState>();
+  final codeController = TextEditingController();
+  final passwordController = TextEditingController();
+  final confirmationController = TextEditingController();
+  bool codeRequested = false;
+  bool busy = false;
+  bool submitted = false;
+  bool obscurePassword = true;
+  bool obscureConfirmation = true;
+
+  String get phone => widget.controller.currentUser?.phone?.trim() ?? '';
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || widget.controller.authPolicyLoaded) return;
+      unawaited(widget.controller.refreshAuthPolicy());
+    });
+  }
+
+  @override
+  void dispose() {
+    codeController.dispose();
+    passwordController.dispose();
+    confirmationController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _requestCode() async {
+    if (phone.isEmpty || busy) return;
+    setState(() => busy = true);
+    final success = await widget.controller.requestResetCode(phone);
+    if (!mounted) return;
+    setState(() {
+      busy = false;
+      if (success) codeRequested = true;
+    });
+    if (success) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('验证码已发送至 ${_maskedPhone(phone)}')));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(widget.controller.error ?? '验证码发送失败，请稍后重试')),
+      );
+    }
+  }
+
+  Future<void> _submit() async {
+    if (busy) return;
+    setState(() => submitted = true);
+    if (!codeRequested) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请先获取短信验证码')));
+      return;
+    }
+    if (!(formKey.currentState?.validate() ?? false)) return;
+    setState(() => busy = true);
+    final success = await widget.controller.resetPassword(
+      phone: phone,
+      code: codeController.text,
+      password: passwordController.text,
+    );
+    if (!mounted) return;
+    setState(() => busy = false);
+    if (!success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(widget.controller.error ?? '密码修改失败，请稍后重试')),
+      );
+      return;
+    }
+    await showCupertinoDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => CupertinoAlertDialog(
+        title: const Text('密码已修改'),
+        content: const Text('本机将退出登录；其他设备的登录凭据到期后也需要重新验证。'),
+        actions: [
+          CupertinoDialogAction(
+            key: const Key('password-change-relogin'),
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('重新登录'),
           ),
         ],
       ),
     );
+    if (mounted) await widget.controller.logout();
   }
+
+  Widget _buildForm(BuildContext context) => Form(
+    key: formKey,
+    autovalidateMode: submitted
+        ? AutovalidateMode.onUserInteraction
+        : AutovalidateMode.disabled,
+    child: ListView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 36),
+      children: [
+        SectionCard(
+          children: [
+            _SettingsRow(
+              icon: CupertinoIcons.phone,
+              title: '验证绑定手机号',
+              subtitle: _maskedPhone(phone),
+              status: '当前账号',
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _PageIntro('为保护账号安全，修改成功后本机会退出登录。请使用新密码重新登录。'),
+        const SectionHeader('短信验证'),
+        TextFormField(
+          key: const Key('password-change-code'),
+          controller: codeController,
+          enabled: !busy,
+          keyboardType: TextInputType.number,
+          textInputAction: TextInputAction.next,
+          autofillHints: const [AutofillHints.oneTimeCode],
+          decoration: InputDecoration(
+            labelText: '验证码',
+            helperText: codeRequested ? '验证码 5 分钟内有效' : '验证码将发送到当前绑定手机号',
+            suffixIcon: TextButton(
+              key: const Key('password-change-request-code'),
+              onPressed: busy || phone.isEmpty ? null : _requestCode,
+              child: Text(codeRequested ? '重新获取' : '获取验证码'),
+            ),
+          ),
+          validator: (value) =>
+              (value?.trim().length ?? 0) >= 4 ? null : '请输入收到的验证码',
+        ),
+        const SectionHeader('设置新密码'),
+        TextFormField(
+          key: const Key('password-change-new'),
+          controller: passwordController,
+          enabled: !busy,
+          obscureText: obscurePassword,
+          textInputAction: TextInputAction.next,
+          autofillHints: const [AutofillHints.newPassword],
+          decoration: InputDecoration(
+            labelText: '新密码',
+            helperText: widget.controller.authPolicy.passwordHelperText,
+            suffixIcon: IconButton(
+              tooltip: obscurePassword ? '显示密码' : '隐藏密码',
+              onPressed: () =>
+                  setState(() => obscurePassword = !obscurePassword),
+              icon: Icon(
+                obscurePassword ? CupertinoIcons.eye : CupertinoIcons.eye_slash,
+              ),
+            ),
+          ),
+          validator: (value) =>
+              widget.controller.authPolicy.passwordError(value ?? ''),
+        ),
+        const SizedBox(height: 14),
+        TextFormField(
+          key: const Key('password-change-confirmation'),
+          controller: confirmationController,
+          enabled: !busy,
+          obscureText: obscureConfirmation,
+          textInputAction: TextInputAction.done,
+          autofillHints: const [AutofillHints.newPassword],
+          decoration: InputDecoration(
+            labelText: '再次输入新密码',
+            suffixIcon: IconButton(
+              tooltip: obscureConfirmation ? '显示密码' : '隐藏密码',
+              onPressed: () =>
+                  setState(() => obscureConfirmation = !obscureConfirmation),
+              icon: Icon(
+                obscureConfirmation
+                    ? CupertinoIcons.eye
+                    : CupertinoIcons.eye_slash,
+              ),
+            ),
+          ),
+          validator: (value) =>
+              value == passwordController.text ? null : '两次输入的密码不一致',
+          onFieldSubmitted: (_) => _submit(),
+        ),
+        const SizedBox(height: 24),
+        FilledButton(
+          key: const Key('password-change-submit'),
+          onPressed: busy || !codeRequested ? null : _submit,
+          child: busy
+              ? const SizedBox.square(
+                  dimension: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('确认修改密码'),
+        ),
+      ],
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: const GlassAppBar(title: Text('修改登录密码')),
+    body: AnimatedBuilder(
+      animation: widget.controller,
+      builder: (context, _) => _buildForm(context),
+    ),
+  );
 }
 
 class EditProfileScreen extends StatefulWidget {
@@ -285,21 +556,66 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late final TextEditingController nameController;
   late final TextEditingController handleController;
   late final TextEditingController signatureController;
+  late final String initialName;
+  late final String initialHandle;
+  late final String submittedInitialHandle;
+  late final bool initialHandleIsInternal;
+  late final String initialSignature;
+  late final String initialGender;
+  late String selectedGender;
   Uint8List? avatarBytes;
   String? avatarFileName;
   String? avatarMime;
   String? avatarPath;
+  String? saveError;
   bool saving = false;
+  bool allowExit = false;
 
   @override
   void initState() {
     super.initState();
     final user = widget.controller.currentUser;
-    nameController = TextEditingController(text: user?.name ?? '');
-    handleController = TextEditingController(text: user?.handle ?? '');
-    signatureController = TextEditingController(
-      text: user?.signature ?? user?.presence ?? '',
-    );
+    initialName = user?.name ?? '';
+    submittedInitialHandle = user?.handle.trim() ?? '';
+    initialHandleIsInternal = isInternalUserHandle(submittedInitialHandle);
+    initialHandle = publicUserHandle(submittedInitialHandle) ?? '';
+    initialSignature = user?.signature ?? user?.presence ?? '';
+    initialGender = switch (user?.gender) {
+      'male' => 'male',
+      'female' => 'female',
+      _ => 'unspecified',
+    };
+    selectedGender = initialGender;
+    nameController = TextEditingController(text: initialName)
+      ..addListener(_onDraftChanged);
+    handleController = TextEditingController(text: initialHandle)
+      ..addListener(_onDraftChanged);
+    signatureController = TextEditingController(text: initialSignature)
+      ..addListener(_onDraftChanged);
+  }
+
+  void _onDraftChanged() {
+    if (!mounted) return;
+    setState(() => saveError = null);
+  }
+
+  bool get _hasChanges =>
+      avatarBytes != null ||
+      nameController.text.trim() != initialName.trim() ||
+      handleController.text.trim().toLowerCase() !=
+          initialHandle.trim().toLowerCase() ||
+      signatureController.text.trim() != initialSignature.trim() ||
+      selectedGender != initialGender;
+
+  bool get _draftLooksValid {
+    final name = nameController.text.trim();
+    final handle = handleController.text.trim().toLowerCase();
+    final signature = signatureController.text.trim();
+    final handleIsValid = RegExp(r'^[a-z0-9_]{4,24}$').hasMatch(handle);
+    return name.isNotEmpty &&
+        name.runes.length <= 40 &&
+        (handleIsValid || (initialHandleIsInternal && handle.isEmpty)) &&
+        signature.runes.length <= 160;
   }
 
   @override
@@ -310,35 +626,135 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     super.dispose();
   }
 
-  Future<void> _pickAvatar() async {
-    final file = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
-      imageQuality: 88,
-      maxWidth: 1600,
-      maxHeight: 1600,
+  Future<void> _chooseAvatarSource() async {
+    if (saving) return;
+    final source = await showCupertinoModalPopup<ImageSource>(
+      context: context,
+      builder: (sheetContext) => CupertinoActionSheet(
+        title: const Text('更换头像'),
+        message: const Text('选择照片后可以裁剪和旋转，头像会按正方形保存。'),
+        actions: [
+          CupertinoActionSheetAction(
+            key: const Key('profile-avatar-camera'),
+            onPressed: () => Navigator.pop(sheetContext, ImageSource.camera),
+            child: const Text('拍照'),
+          ),
+          CupertinoActionSheetAction(
+            key: const Key('profile-avatar-gallery'),
+            onPressed: () => Navigator.pop(sheetContext, ImageSource.gallery),
+            child: const Text('从手机相册选择'),
+          ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(sheetContext),
+          child: const Text('取消'),
+        ),
+      ),
     );
-    if (file == null) return;
-    final bytes = await file.readAsBytes();
-    if (bytes.length > 8 * 1024 * 1024) {
-      if (mounted) {
+    if (source != null && mounted) await _pickAvatar(source);
+  }
+
+  Future<void> _pickAvatar(ImageSource source) async {
+    try {
+      final file = await ImagePicker().pickImage(
+        source: source,
+        imageQuality: 88,
+        maxWidth: 1600,
+        maxHeight: 1600,
+      );
+      if (file == null) return;
+      final bytes = await file.readAsBytes();
+      if (!mounted) return;
+      if (bytes.length > 8 * 1024 * 1024) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('头像不能超过 8 MB')));
+        return;
       }
-      return;
+      final mimeType = avatarImageMimeType(bytes);
+      if (mimeType == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('请选择 JPG、PNG 或 WebP 格式的图片')),
+        );
+        return;
+      }
+      final editedBytes = await editAvatarImage(context, bytes);
+      if (!mounted || editedBytes == null) return;
+      final editedMime = avatarImageMimeType(editedBytes);
+      if (editedMime == null || editedBytes.length > 8 * 1024 * 1024) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('头像处理失败，请重新选择图片')));
+        return;
+      }
+      setState(() {
+        avatarBytes = editedBytes;
+        avatarFileName = editedMime == 'image/png'
+            ? 'avatar.png'
+            : editedMime == 'image/webp'
+            ? 'avatar.webp'
+            : 'avatar.jpg';
+        avatarPath = null;
+        avatarMime = editedMime;
+        saveError = null;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('无法读取头像图片，请检查相册权限后重试')));
     }
-    final lower = file.name.toLowerCase();
-    setState(() {
-      avatarBytes = bytes;
-      avatarFileName = file.name;
-      avatarPath = file.path;
-      avatarMime = lower.endsWith('.png') ? 'image/png' : 'image/jpeg';
-    });
+  }
+
+  Future<void> _chooseGender() async {
+    if (saving) return;
+    final value = await showCupertinoModalPopup<String>(
+      context: context,
+      builder: (sheetContext) => CupertinoActionSheet(
+        title: const Text('选择性别'),
+        message: const Text('选择“不展示”时，其他用户不会在个人资料中看到这一项。'),
+        actions: [
+          for (final option in const [
+            ('unspecified', '不展示'),
+            ('male', '男'),
+            ('female', '女'),
+          ])
+            CupertinoActionSheetAction(
+              key: Key('profile-gender-${option.$1}'),
+              onPressed: () => Navigator.pop(sheetContext, option.$1),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(option.$2),
+                  if (selectedGender == option.$1) ...[
+                    const SizedBox(width: 8),
+                    const Icon(CupertinoIcons.check_mark, size: 18),
+                  ],
+                ],
+              ),
+            ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(sheetContext),
+          child: const Text('取消'),
+        ),
+      ),
+    );
+    if (value != null && mounted && value != selectedGender) {
+      setState(() {
+        selectedGender = value;
+        saveError = null;
+      });
+    }
   }
 
   Future<void> _save() async {
+    if (!_hasChanges || !_draftLooksValid) return;
     if (!(formKey.currentState?.validate() ?? false)) return;
-    setState(() => saving = true);
+    setState(() {
+      saving = true;
+      saveError = null;
+    });
     final avatar = avatarBytes == null
         ? null
         : MediaUpload(
@@ -350,202 +766,325 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           );
     final success = await widget.controller.saveProfile(
       name: nameController.text,
-      handle: handleController.text,
+      handle: initialHandleIsInternal && handleController.text.trim().isEmpty
+          ? submittedInitialHandle
+          : handleController.text,
       signature: signatureController.text,
+      gender: selectedGender,
       avatar: avatar,
     );
     if (!mounted) return;
-    setState(() => saving = false);
     if (success) {
+      setState(() => saving = false);
+      allowExit = true;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('个人资料已更新')));
       Navigator.pop(context);
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(widget.controller.error ?? '保存失败')),
-      );
+      setState(() {
+        saving = false;
+        saveError = widget.controller.error ?? '个人资料保存失败，请稍后重试';
+      });
     }
+  }
+
+  Future<void> _confirmDiscard() async {
+    if (saving || !_hasChanges) return;
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('放弃修改？'),
+        content: const Text('你尚未保存本页修改，离开后将无法恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('继续编辑'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(context).colorScheme.error,
+            ),
+            child: const Text('放弃修改'),
+          ),
+        ],
+      ),
+    );
+    if (discard != true || !mounted) return;
+    setState(() => allowExit = true);
+    Navigator.pop(context);
   }
 
   @override
   Widget build(BuildContext context) {
     final user = widget.controller.currentUser;
-    return Scaffold(
-      appBar: GlassAppBar(
-        title: const Text('编辑资料'),
-        actions: [
-          TextButton(
-            key: const Key('save-profile'),
-            onPressed: saving ? null : _save,
-            child: Text(saving ? '保存中' : '保存'),
-          ),
-        ],
-      ),
-      body: Form(
-        key: formKey,
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 20, 16, 36),
-          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+    final canSave = !saving && _hasChanges && _draftLooksValid;
+    return PopScope(
+      canPop: allowExit || !_hasChanges,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _confirmDiscard();
+      },
+      child: Scaffold(
+        appBar: GlassAppBar(
+          title: const Text('编辑资料'),
+          actions: [
+            TextButton(
+              key: const Key('save-profile'),
+              onPressed: canSave ? _save : null,
+              child: Text(saving ? '保存中' : '保存'),
+            ),
+          ],
+        ),
+        body: Column(
           children: [
-            Center(
-              child: Semantics(
-                button: true,
-                label: '更换头像',
-                child: GestureDetector(
-                  onTap: saving ? null : _pickAvatar,
-                  child: Stack(
-                    children: [
-                      ClipOval(
-                        child: avatarBytes != null
-                            ? Image.memory(
-                                avatarBytes!,
-                                width: 88,
-                                height: 88,
-                                fit: BoxFit.cover,
-                              )
-                            : SizedBox(
-                                width: 88,
-                                height: 88,
-                                child: PersonAvatar(
-                                  name: user?.name ?? '我',
-                                  size: 88,
-                                  avatarUrl: user?.avatarUrl,
-                                ),
-                              ),
-                      ),
-                      Positioned(
-                        right: 0,
-                        bottom: 0,
-                        child: Container(
-                          width: 30,
-                          height: 30,
-                          decoration: BoxDecoration(
-                            color:
-                                Theme.of(context).brightness == Brightness.dark
-                                ? LinliColors.yellow
-                                : LinliColors.navy,
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: Theme.of(context).colorScheme.surface,
-                              width: 2,
-                            ),
-                          ),
-                          child: Icon(
-                            CupertinoIcons.camera_fill,
-                            size: 15,
-                            color:
-                                Theme.of(context).brightness == Brightness.dark
-                                ? LinliColors.navy
-                                : Colors.white,
-                          ),
-                        ),
-                      ),
-                    ],
+            if (saveError != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Semantics(
+                  key: const Key('profile-save-error'),
+                  container: true,
+                  liveRegion: true,
+                  label: saveError,
+                  child: _SettingsNotice(
+                    message: saveError!,
+                    actionLabel: '重试',
+                    onAction: canSave ? _save : null,
                   ),
                 ),
               ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '头像会先上传到 MinIO，完成校验后再更新个人资料。',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 24),
-            TextFormField(
-              key: const Key('profile-name'),
-              controller: nameController,
-              maxLength: 40,
-              textInputAction: TextInputAction.next,
-              decoration: const InputDecoration(labelText: '昵称'),
-              validator: (value) {
-                final text = value?.trim() ?? '';
-                if (text.isEmpty) return '请输入昵称';
-                if (text.characters.length > 40) return '昵称不能超过 40 个字符';
-                return null;
-              },
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              key: const Key('profile-handle'),
-              controller: handleController,
-              maxLength: 24,
-              autocorrect: false,
-              textCapitalization: TextCapitalization.none,
-              textInputAction: TextInputAction.next,
-              enabled:
-                  (user?.handleChangesRemaining ?? 0) > 0 ||
-                  (user?.handle.isEmpty ?? true),
-              decoration: InputDecoration(
-                labelText: '邻里号 / 用户名',
-                prefixText: '@',
-                helperText: (user?.handleChangesRemaining ?? 0) > 0
-                    ? '还可修改 ${user!.handleChangesRemaining} 次，4–24 位小写字母、数字或下划线'
-                    : '修改次数已用完，如需处理请联系平台客服',
-              ),
-              validator: (value) {
-                final text = value?.trim().toLowerCase() ?? '';
-                if (!RegExp(r'^[a-z0-9_]{4,24}$').hasMatch(text)) {
-                  return '请输入有效的邻里号';
-                }
-                return null;
-              },
-            ),
-            const SizedBox(height: 12),
-            _SettingsRow(
-              icon: CupertinoIcons.search,
-              title: '通过邻里号找到我',
-              subtitle: user?.allowSearchByHandle == true
-                  ? '平台当前已开放'
-                  : '平台当前已关闭',
-              trailing: Icon(
-                user?.allowSearchByHandle == true
-                    ? CupertinoIcons.checkmark_circle_fill
-                    : CupertinoIcons.xmark_circle,
-                color: user?.allowSearchByHandle == true
-                    ? LinliColors.systemGreen
-                    : LinliColors.tertiaryLabel,
-              ),
-            ),
-            _SettingsRow(
-              icon: CupertinoIcons.phone,
-              title: '通过手机号找到我',
-              subtitle: user?.allowSearchByPhone == true
-                  ? '平台当前已开放，搜索结果仍不会展示手机号'
-                  : '平台当前已关闭，手机号不会用于用户搜索',
-              trailing: Icon(
-                user?.allowSearchByPhone == true
-                    ? CupertinoIcons.checkmark_circle_fill
-                    : CupertinoIcons.lock_fill,
-                color: user?.allowSearchByPhone == true
-                    ? LinliColors.systemGreen
-                    : LinliColors.tertiaryLabel,
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              key: const Key('profile-signature'),
-              controller: signatureController,
-              minLines: 2,
-              maxLines: 4,
-              maxLength: 160,
-              decoration: const InputDecoration(labelText: '个性签名'),
-            ),
-            const SizedBox(height: 12),
-            _SettingsRow(
-              icon: CupertinoIcons.phone,
-              title: '手机号',
-              subtitle: _maskedPhone(user?.phone),
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) =>
-                      ChangePhoneScreen(controller: widget.controller),
+            Expanded(
+              child: Form(
+                key: formKey,
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 20, 16, 36),
+                  keyboardDismissBehavior:
+                      ScrollViewKeyboardDismissBehavior.onDrag,
+                  children: [
+                    Center(
+                      child: Semantics(
+                        button: true,
+                        label: '更换头像',
+                        child: GestureDetector(
+                          onTap: saving ? null : _chooseAvatarSource,
+                          child: Stack(
+                            children: [
+                              ClipOval(
+                                child: avatarBytes != null
+                                    ? Image.memory(
+                                        avatarBytes!,
+                                        width: 88,
+                                        height: 88,
+                                        fit: BoxFit.cover,
+                                      )
+                                    : SizedBox(
+                                        width: 88,
+                                        height: 88,
+                                        child: PersonAvatar(
+                                          name: user?.name ?? '我',
+                                          size: 88,
+                                          avatarUrl: user?.avatarUrl,
+                                        ),
+                                      ),
+                              ),
+                              Positioned(
+                                right: 0,
+                                bottom: 0,
+                                child: Container(
+                                  width: 30,
+                                  height: 30,
+                                  decoration: BoxDecoration(
+                                    color:
+                                        Theme.of(context).brightness ==
+                                            Brightness.dark
+                                        ? LinliColors.brandGreen
+                                        : LinliColors.navy,
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.surface,
+                                      width: 2,
+                                    ),
+                                  ),
+                                  child: Icon(
+                                    CupertinoIcons.camera_fill,
+                                    size: 15,
+                                    color:
+                                        Theme.of(context).brightness ==
+                                            Brightness.dark
+                                        ? LinliColors.navy
+                                        : Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '点击头像更换照片',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 24),
+                    TextFormField(
+                      key: const Key('profile-name'),
+                      controller: nameController,
+                      maxLength: 40,
+                      buildCounter: _hideTextFieldCounter,
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(labelText: '昵称'),
+                      validator: (value) {
+                        final text = value?.trim() ?? '';
+                        if (text.isEmpty) return '请输入昵称';
+                        if (text.runes.length > 40) return '昵称不能超过 40 个字符';
+                        return null;
+                      },
+                    ),
+                    _ProfileFieldMeta(
+                      count: '${nameController.text.runes.length}/40',
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      key: const Key('profile-handle'),
+                      controller: handleController,
+                      maxLength: 24,
+                      buildCounter: _hideTextFieldCounter,
+                      autocorrect: false,
+                      textCapitalization: TextCapitalization.none,
+                      textInputAction: TextInputAction.next,
+                      enabled:
+                          !initialHandleIsInternal &&
+                          ((user?.handleChangesRemaining ?? 0) > 0 ||
+                              initialHandle.isEmpty),
+                      decoration: const InputDecoration(
+                        labelText: '呱呱号',
+                        hintText: '请设置 4–24 位呱呱号',
+                        prefixText: '@',
+                      ),
+                      validator: (value) {
+                        final text = value?.trim().toLowerCase() ?? '';
+                        if (initialHandleIsInternal && text.isEmpty) {
+                          return null;
+                        }
+                        if (!RegExp(r'^[a-z0-9_]{4,24}$').hasMatch(text)) {
+                          return '请输入有效的呱呱号';
+                        }
+                        return null;
+                      },
+                    ),
+                    _ProfileFieldMeta(
+                      helper: initialHandleIsInternal
+                          ? '账号服务升级后会自动生成，生成后可修改'
+                          : (user?.handleChangesRemaining ?? 0) > 0
+                          ? '还可修改 ${user!.handleChangesRemaining} 次 · 4–24 位小写字母、数字或下划线'
+                          : '修改次数已用完，如需处理请联系平台客服',
+                      count: '${handleController.text.characters.length}/24',
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      key: const Key('profile-signature'),
+                      controller: signatureController,
+                      minLines: 2,
+                      maxLines: 4,
+                      maxLength: 160,
+                      buildCounter: _hideTextFieldCounter,
+                      decoration: const InputDecoration(labelText: '个性签名'),
+                    ),
+                    _ProfileFieldMeta(
+                      count: '${signatureController.text.runes.length}/160',
+                    ),
+                    const SectionHeader('资料展示'),
+                    SectionCard(
+                      key: const Key('profile-gender-card'),
+                      children: [
+                        _SettingsRow(
+                          key: const Key('profile-gender'),
+                          icon: CupertinoIcons.person_crop_circle,
+                          title: '性别',
+                          subtitle: _profileGenderLabel(selectedGender),
+                          status: selectedGender == 'unspecified'
+                              ? '仅自己可见'
+                              : null,
+                          onTap: _chooseGender,
+                        ),
+                      ],
+                    ),
+                    const SectionHeader('绑定信息'),
+                    SectionCard(
+                      key: const Key('profile-phone-card'),
+                      children: [
+                        _SettingsRow(
+                          icon: CupertinoIcons.phone,
+                          title: '手机号',
+                          subtitle: _maskedPhone(user?.phone),
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => ChangePhoneScreen(
+                                controller: widget.controller,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+Widget? _hideTextFieldCounter(
+  BuildContext context, {
+  required int currentLength,
+  required bool isFocused,
+  required int? maxLength,
+}) => null;
+
+String _profileGenderLabel(String value) => switch (value) {
+  'male' => '男',
+  'female' => '女',
+  _ => '不展示',
+};
+
+class _ProfileFieldMeta extends StatelessWidget {
+  const _ProfileFieldMeta({this.helper, required this.count});
+
+  final String? helper;
+  final String count;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = Theme.of(context).textTheme.bodySmall?.copyWith(
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    );
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (helper != null)
+            Expanded(
+              child: Text(
+                helper!,
+                style: style,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            )
+          else
+            const Spacer(),
+          const SizedBox(width: 12),
+          Text(count, style: style),
+        ],
       ),
     );
   }
@@ -561,96 +1100,222 @@ class ChangePhoneScreen extends StatefulWidget {
 }
 
 class _ChangePhoneScreenState extends State<ChangePhoneScreen> {
+  final formKey = GlobalKey<FormState>();
   final phoneController = TextEditingController();
   final codeController = TextEditingController();
   bool requested = false;
   bool busy = false;
+  bool submitted = false;
+  int resendSeconds = 0;
+  Timer? resendTimer;
+
+  String get currentPhone => widget.controller.currentUser?.phone?.trim() ?? '';
+
+  String get newPhone => phoneController.text.trim();
+
+  bool get phoneLooksValid =>
+      RegExp(r'^\+?[0-9]{6,32}$').hasMatch(newPhone) &&
+      newPhone != currentPhone;
+
+  bool get codeLooksValid => codeController.text.trim().length >= 4;
 
   @override
   void dispose() {
+    resendTimer?.cancel();
     phoneController.dispose();
     codeController.dispose();
     super.dispose();
   }
 
+  void _startResendCountdown() {
+    resendTimer?.cancel();
+    setState(() => resendSeconds = 60);
+    resendTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted || resendSeconds <= 1) {
+        timer.cancel();
+        if (mounted) setState(() => resendSeconds = 0);
+        return;
+      }
+      setState(() => resendSeconds -= 1);
+    });
+  }
+
+  void _editPhone() {
+    resendTimer?.cancel();
+    setState(() {
+      requested = false;
+      submitted = false;
+      resendSeconds = 0;
+      codeController.clear();
+    });
+  }
+
   Future<void> _requestCode() async {
-    final phone = phoneController.text.trim();
-    if (phone.length < 6) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('请输入有效手机号')));
-      return;
-    }
+    if (busy || resendSeconds > 0) return;
+    setState(() => submitted = true);
+    if (!(formKey.currentState?.validate() ?? false)) return;
     setState(() => busy = true);
-    final success = await widget.controller.requestPhoneUpdateCode(phone);
+    final success = await widget.controller.requestPhoneUpdateCode(newPhone);
     if (!mounted) return;
     setState(() {
       busy = false;
-      requested = success;
+      if (success) requested = true;
     });
     if (success) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('验证码已发送')));
+      _startResendCountdown();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('验证码已发送至 ${_maskedPhone(newPhone)}')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(widget.controller.error ?? '验证码发送失败，请稍后重试')),
+      );
     }
   }
 
   Future<void> _confirm() async {
-    if (codeController.text.trim().length < 4) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('请输入验证码')));
-      return;
-    }
+    if (busy || !requested) return;
+    setState(() => submitted = true);
+    if (!(formKey.currentState?.validate() ?? false)) return;
     setState(() => busy = true);
     final success = await widget.controller.updatePhone(
-      phoneController.text,
+      newPhone,
       codeController.text,
     );
     if (!mounted) return;
     setState(() => busy = false);
-    if (success) Navigator.pop(context);
+    if (!success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(widget.controller.error ?? '手机号换绑失败，请稍后重试')),
+      );
+      return;
+    }
+    resendTimer?.cancel();
+    await showCupertinoDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => CupertinoAlertDialog(
+        title: const Text('手机号已换绑'),
+        content: Text('新的登录手机号为 ${_maskedPhone(newPhone)}。以后请使用新手机号登录。'),
+        actions: [
+          CupertinoDialogAction(
+            key: const Key('phone-change-done'),
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('完成'),
+          ),
+        ],
+      ),
+    );
+    if (mounted) Navigator.pop(context, true);
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: const GlassAppBar(title: Text('换绑手机号')),
-    body: ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        _PageIntro(
-          '当前绑定：${_maskedPhone(widget.controller.currentUser?.phone)}',
-        ),
-        const SizedBox(height: 20),
-        TextField(
-          key: const Key('new-phone'),
-          controller: phoneController,
-          enabled: !requested && !busy,
-          keyboardType: TextInputType.phone,
-          autofillHints: const [AutofillHints.telephoneNumber],
-          decoration: const InputDecoration(labelText: '新手机号'),
-        ),
-        if (requested) ...[
+    body: Form(
+      key: formKey,
+      autovalidateMode: submitted
+          ? AutovalidateMode.onUserInteraction
+          : AutovalidateMode.disabled,
+      child: ListView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 36),
+        children: [
+          SectionCard(
+            children: [
+              _SettingsRow(
+                icon: CupertinoIcons.phone_fill,
+                title: '当前绑定手机号',
+                subtitle: _maskedPhone(currentPhone),
+                status: '已验证',
+              ),
+            ],
+          ),
           const SizedBox(height: 12),
-          TextField(
-            key: const Key('phone-change-code'),
-            controller: codeController,
-            keyboardType: TextInputType.number,
-            autofillHints: const [AutofillHints.oneTimeCode],
-            decoration: const InputDecoration(labelText: '验证码'),
+          const _PageIntro('验证码将发送到新手机号。换绑成功后，手机号登录和找回密码都会使用新号码。'),
+          const SectionHeader('验证新手机号'),
+          TextFormField(
+            key: const Key('new-phone'),
+            controller: phoneController,
+            enabled: !requested && !busy,
+            keyboardType: TextInputType.phone,
+            textInputAction: requested
+                ? TextInputAction.next
+                : TextInputAction.done,
+            autofillHints: const [AutofillHints.telephoneNumber],
+            onChanged: (_) => setState(() {}),
+            onFieldSubmitted: (_) {
+              if (!requested) _requestCode();
+            },
+            decoration: InputDecoration(
+              labelText: '新手机号',
+              helperText: requested
+                  ? '验证码已发送至 ${_maskedPhone(newPhone)}'
+                  : '请输入可正常接收短信的手机号',
+              suffixIcon: requested
+                  ? TextButton(
+                      key: const Key('phone-change-edit-number'),
+                      onPressed: busy ? null : _editPhone,
+                      child: const Text('修改'),
+                    )
+                  : null,
+            ),
+            validator: (value) {
+              final phone = value?.trim() ?? '';
+              if (!RegExp(r'^\+?[0-9]{6,32}$').hasMatch(phone)) {
+                return '请输入有效手机号';
+              }
+              if (phone == currentPhone) return '新手机号不能与当前绑定相同';
+              return null;
+            },
+          ),
+          if (requested) ...[
+            const SizedBox(height: 14),
+            TextFormField(
+              key: const Key('phone-change-code'),
+              controller: codeController,
+              enabled: !busy,
+              keyboardType: TextInputType.number,
+              textInputAction: TextInputAction.done,
+              autofillHints: const [AutofillHints.oneTimeCode],
+              onChanged: (_) => setState(() {}),
+              onFieldSubmitted: (_) => _confirm(),
+              decoration: InputDecoration(
+                labelText: '短信验证码',
+                helperText: '验证码 5 分钟内有效',
+                suffixIcon: TextButton(
+                  key: const Key('phone-change-resend'),
+                  onPressed: busy || resendSeconds > 0 ? null : _requestCode,
+                  child: Text(
+                    resendSeconds > 0 ? '${resendSeconds}s 后重发' : '重新获取',
+                  ),
+                ),
+              ),
+              validator: (value) =>
+                  (value?.trim().length ?? 0) >= 4 ? null : '请输入收到的验证码',
+            ),
+          ],
+          const SizedBox(height: 24),
+          FilledButton(
+            key: const Key('phone-change-action'),
+            onPressed: busy
+                ? null
+                : requested
+                ? codeLooksValid
+                      ? _confirm
+                      : null
+                : phoneLooksValid
+                ? _requestCode
+                : null,
+            child: busy
+                ? const SizedBox.square(
+                    dimension: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Text(requested ? '确认换绑手机号' : '获取短信验证码'),
           ),
         ],
-        const SizedBox(height: 20),
-        FilledButton(
-          key: const Key('phone-change-action'),
-          onPressed: busy
-              ? null
-              : requested
-              ? _confirm
-              : _requestCode,
-          child: Text(requested ? '确认换绑' : '发送验证码'),
-        ),
-      ],
+      ),
     ),
   );
 }
@@ -666,6 +1331,7 @@ class FavoritesScreen extends StatefulWidget {
 
 class _FavoritesScreenState extends State<FavoritesScreen> {
   List<ChatMessage>? items;
+  _FavoriteFilter filter = _FavoriteFilter.all;
 
   @override
   void initState() {
@@ -679,63 +1345,96 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: const GlassAppBar(title: Text('我的收藏')),
-    body: items == null
-        ? const Center(child: CupertinoActivityIndicator())
-        : items!.isEmpty
-        ? const StatePanel(
-            icon: CupertinoIcons.bookmark,
-            title: '还没有收藏',
-            body: '在聊天中长按消息并选择收藏，内容会同步显示在这里。',
-          )
-        : RefreshIndicator(
-            onRefresh: _load,
-            child: ListView.separated(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
-              itemCount: items!.length,
-              separatorBuilder: (_, _) => const SizedBox(height: 8),
-              itemBuilder: (context, index) {
-                final message = items![index];
-                return Dismissible(
-                  key: ValueKey('favorite-${message.id}'),
-                  direction: DismissDirection.endToStart,
-                  confirmDismiss: (_) => _confirmRemove(message),
-                  background: Container(
-                    alignment: Alignment.centerRight,
-                    padding: const EdgeInsets.only(right: 20),
-                    decoration: BoxDecoration(
-                      color: LinliColors.systemRed,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Icon(
-                      CupertinoIcons.delete,
-                      color: Colors.white,
-                    ),
+  Widget build(BuildContext context) {
+    final allItems = items;
+    final filteredItems = allItems
+        ?.where((message) => filter.matches(message.kind))
+        .toList(growable: false);
+    return Scaffold(
+      appBar: const GlassAppBar(title: Text('我的收藏')),
+      body: allItems == null
+          ? const Center(child: CupertinoActivityIndicator())
+          : allItems.isEmpty
+          ? const StatePanel(
+              icon: CupertinoIcons.bookmark,
+              title: '还没有收藏',
+              body: '在聊天中长按消息并选择收藏，内容会同步显示在这里。',
+            )
+          : Column(
+              children: [
+                SizedBox(
+                  height: 52,
+                  child: ListView.separated(
+                    key: const Key('favorite-filters'),
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                    itemCount: _FavoriteFilter.values.length,
+                    separatorBuilder: (_, _) => const SizedBox(width: 8),
+                    itemBuilder: (context, index) {
+                      final option = _FavoriteFilter.values[index];
+                      return ChoiceChip(
+                        key: Key('favorite-filter-${option.name}'),
+                        label: Text(option.label),
+                        selected: filter == option,
+                        onSelected: (_) => setState(() => filter = option),
+                        showCheckmark: false,
+                      );
+                    },
                   ),
-                  child: Card(
-                    child: ListTile(
-                      minTileHeight: 72,
-                      leading: const Icon(CupertinoIcons.bookmark_fill),
-                      title: Text(
-                        message.text.isEmpty ? '[非文本消息]' : message.text,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: Text(
-                        '${message.senderName} · ${message.sentAt.month}/${message.sentAt.day}',
-                      ),
-                      trailing: const Icon(
-                        CupertinoIcons.chevron_forward,
-                        size: 16,
-                      ),
-                      onTap: () => _openConversation(message),
-                    ),
-                  ),
-                );
-              },
+                ),
+                Expanded(
+                  child: filteredItems!.isEmpty
+                      ? StatePanel(
+                          icon: CupertinoIcons.bookmark,
+                          title: '没有${filter.label}收藏',
+                          body: '切换分类可查看其他已收藏内容。',
+                        )
+                      : RefreshIndicator(
+                          onRefresh: _load,
+                          child: ListView.separated(
+                            padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+                            itemCount: filteredItems.length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(height: 8),
+                            itemBuilder: (context, index) =>
+                                _favoriteTile(filteredItems[index]),
+                          ),
+                        ),
+                ),
+              ],
             ),
-          ),
+    );
+  }
+
+  Widget _favoriteTile(ChatMessage message) => Dismissible(
+    key: ValueKey('favorite-${message.id}'),
+    direction: DismissDirection.endToStart,
+    confirmDismiss: (_) => _confirmRemove(message),
+    background: Container(
+      alignment: Alignment.centerRight,
+      padding: const EdgeInsets.only(right: 20),
+      decoration: BoxDecoration(
+        color: LinliColors.systemRed,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: const Icon(CupertinoIcons.delete, color: Colors.white),
+    ),
+    child: Card(
+      child: ListTile(
+        minTileHeight: 72,
+        leading: const Icon(CupertinoIcons.bookmark_fill),
+        title: Text(
+          message.text.isEmpty ? '[非文本消息]' : message.text,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          '${message.senderName} · ${message.sentAt.month}/${message.sentAt.day}',
+        ),
+        trailing: const Icon(CupertinoIcons.chevron_forward, size: 16),
+        onTap: () => _openConversation(message),
+      ),
+    ),
   );
 
   Future<bool> _confirmRemove(ChatMessage message) async {
@@ -783,15 +1482,48 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       return;
     }
     await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ChatScreen(
-          controller: widget.controller,
-          conversation: conversation!,
-          initialMessageId: message.id,
-        ),
+      chatScreenRoute(
+        context,
+        controller: widget.controller,
+        conversation: conversation,
+        initialMessageId: message.id,
       ),
     );
   }
+}
+
+enum _FavoriteFilter {
+  all('全部'),
+  text('文字'),
+  media('媒体'),
+  file('文件'),
+  other('其他');
+
+  const _FavoriteFilter(this.label);
+
+  final String label;
+
+  bool matches(MessageContentKind kind) => switch (this) {
+    _FavoriteFilter.all => true,
+    _FavoriteFilter.text =>
+      kind == MessageContentKind.text || kind == MessageContentKind.reply,
+    _FavoriteFilter.media =>
+      kind == MessageContentKind.image ||
+          kind == MessageContentKind.voice ||
+          kind == MessageContentKind.video ||
+          kind == MessageContentKind.sticker ||
+          kind == MessageContentKind.momentShare,
+    _FavoriteFilter.file => kind == MessageContentKind.file,
+    _FavoriteFilter.other =>
+      kind != MessageContentKind.text &&
+          kind != MessageContentKind.reply &&
+          kind != MessageContentKind.image &&
+          kind != MessageContentKind.voice &&
+          kind != MessageContentKind.video &&
+          kind != MessageContentKind.sticker &&
+          kind != MessageContentKind.momentShare &&
+          kind != MessageContentKind.file,
+  };
 }
 
 class DevicesScreen extends StatefulWidget {
@@ -805,6 +1537,8 @@ class DevicesScreen extends StatefulWidget {
 
 class _DevicesScreenState extends State<DevicesScreen> {
   List<UserDevice>? devices;
+  List<ImDeviceSession>? imSessions;
+  bool loading = true;
 
   @override
   void initState() {
@@ -813,14 +1547,24 @@ class _DevicesScreenState extends State<DevicesScreen> {
   }
 
   Future<void> _load() async {
-    final loaded = await widget.controller.loadUserDevices();
-    if (mounted) setState(() => devices = loaded);
+    if (mounted) setState(() => loading = true);
+    final results = await Future.wait<Object?>([
+      widget.controller.loadImDeviceSessions(),
+      widget.controller.loadUserDevices(),
+    ]);
+    if (mounted) {
+      setState(() {
+        imSessions = results[0] as List<ImDeviceSession>?;
+        devices = results[1] as List<UserDevice>?;
+        loading = false;
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: const GlassAppBar(title: Text('登录设备')),
-    body: devices == null
+    body: loading
         ? const Center(child: CupertinoActivityIndicator())
         : RefreshIndicator(
             onRefresh: _load,
@@ -828,26 +1572,63 @@ class _DevicesScreenState extends State<DevicesScreen> {
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
               children: [
-                const _PageIntro('设备列表来自服务端，不展示推送令牌。移除后，该设备需要重新完成登录。'),
-                const SectionHeader('登录会话'),
-                if (devices!.isEmpty)
+                const _PageIntro('在这里管理各端的登录状态和新消息通知。'),
+                const SectionHeader('登录设备'),
+                if (imSessions == null)
+                  StatePanel(
+                    icon: CupertinoIcons.exclamationmark_triangle,
+                    title: '登录设备暂时无法加载',
+                    body: '请检查网络连接后重试，现有登录状态不会受到影响。',
+                    actionLabel: '重新加载',
+                    onAction: _load,
+                  )
+                else if (imSessions!.isEmpty)
                   const StatePanel(
                     icon: CupertinoIcons.device_phone_portrait,
-                    title: '暂无已注册设备',
-                    body: '当前登录尚未注册推送设备，完成 APNs 或 FCM 注册后会显示。',
+                    title: '暂无其他登录设备',
+                    body: '在其他手机、网页或电脑端登录后，会显示在这里。',
+                  )
+                else
+                  SectionCard(
+                    children: imSessions!
+                        .map(
+                          (session) => _SettingsRow(
+                            icon: _imDeviceIcon(session.deviceFlag),
+                            title: _imDeviceName(session.deviceFlag),
+                            subtitle:
+                                '${session.isOnline ? '${session.connectionCount} 个连接在线' : '当前离线'} · ${_dateText(session.updatedAt)}',
+                            status: '下线',
+                            destructive: true,
+                            onTap: () => _confirmQuitSession(session),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                const SectionHeader('消息通知设备'),
+                if (devices == null)
+                  StatePanel(
+                    icon: CupertinoIcons.exclamationmark_triangle,
+                    title: '通知设备暂时无法加载',
+                    body: '请检查网络连接后重试，当前设备的通知设置不会改变。',
+                    actionLabel: '重新加载',
+                    onAction: _load,
+                  )
+                else if (devices!.isEmpty)
+                  const StatePanel(
+                    icon: CupertinoIcons.bell_slash,
+                    title: '暂无消息通知设备',
+                    body: '设备允许接收新消息通知后，会显示在这里。',
                   )
                 else
                   SectionCard(
                     children: devices!
                         .map(
                           (device) => _SettingsRow(
-                            icon: device.platform == 'ios'
-                                ? CupertinoIcons.device_phone_portrait
-                                : CupertinoIcons.device_phone_portrait,
+                            icon: CupertinoIcons.bell,
                             title: _platformName(device.platform),
                             subtitle:
                                 '${device.provider.toUpperCase()} · ${_dateText(device.updatedAt)}',
-                            status: '移除',
+                            status: '停止通知',
                             destructive: true,
                             onTap: () => _confirmRemove(device),
                           ),
@@ -863,8 +1644,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
     final remove = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('退出这台设备？'),
-        content: Text('${_platformName(device.platform)} 将从设备列表移除。'),
+        title: const Text('停止这台设备的通知？'),
+        content: Text('${_platformName(device.platform)} 将不再接收推送通知，不影响登录会话。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
@@ -872,14 +1653,59 @@ class _DevicesScreenState extends State<DevicesScreen> {
           ),
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('移除设备'),
+            child: const Text('停止通知'),
           ),
         ],
       ),
     );
     if (remove != true) return;
     final success = await widget.controller.removeUserDevice(device.id);
-    if (success) await _load();
+    if (!mounted) return;
+    if (success) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已停止该设备的消息通知')));
+      await _load();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(widget.controller.error ?? '停止通知失败，请稍后重试')),
+      );
+    }
+  }
+
+  Future<void> _confirmQuitSession(ImDeviceSession session) async {
+    final quit = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('下线${_imDeviceName(session.deviceFlag)}？'),
+        content: const Text('该端的当前连接会立即断开，再次使用时需要重新登录。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('确认下线'),
+          ),
+        ],
+      ),
+    );
+    if (quit != true) return;
+    final success = await widget.controller.quitImDeviceSession(
+      session.deviceFlag,
+    );
+    if (!mounted) return;
+    if (success) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('该设备已下线')));
+      await _load();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(widget.controller.error ?? '设备下线失败，请稍后重试')),
+      );
+    }
   }
 }
 
@@ -905,6 +1731,8 @@ class _NotificationSettingsScreenState
   bool preview = true;
   bool sound = true;
   bool vibration = true;
+  String? loadError;
+  final Set<String> savingKeys = <String>{};
   PermissionStatus? permissionStatus;
   BrowserNotificationPermission? browserPermission;
 
@@ -915,39 +1743,67 @@ class _NotificationSettingsScreenState
   }
 
   Future<void> _load() async {
-    final values = await Future.wait<bool>([
-      widget.store.readBool(
-        LocalSettingsStore.notificationEnabled,
-        fallback: true,
-      ),
-      widget.store.readBool(
-        LocalSettingsStore.notificationPreview,
-        fallback: true,
-      ),
-      widget.store.readBool(
-        LocalSettingsStore.notificationSound,
-        fallback: true,
-      ),
-      widget.store.readBool(
-        LocalSettingsStore.notificationVibration,
-        fallback: true,
-      ),
-    ]);
-    if (!mounted) return;
-    setState(() {
-      enabled = values[0];
-      preview = values[1];
-      sound = values[2];
-      vibration = values[3];
-      loaded = true;
-    });
+    try {
+      final values = await Future.wait<bool>([
+        widget.store.readBool(
+          LocalSettingsStore.notificationEnabled,
+          fallback: true,
+        ),
+        widget.store.readBool(
+          LocalSettingsStore.notificationPreview,
+          fallback: true,
+        ),
+        widget.store.readBool(
+          LocalSettingsStore.notificationSound,
+          fallback: true,
+        ),
+        widget.store.readBool(
+          LocalSettingsStore.notificationVibration,
+          fallback: true,
+        ),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        enabled = values[0];
+        preview = values[1];
+        sound = values[2];
+        vibration = values[3];
+        loadError = null;
+        loaded = true;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        loadError = '通知偏好读取失败，当前显示默认设置。';
+        loaded = true;
+      });
+    }
     await _refreshPermissionStatus();
   }
 
-  Future<void> _set(String key, bool value, void Function() update) async {
-    setState(update);
-    await widget.store.writeBool(key, value);
-    widget.controller?.refreshPushConfiguration();
+  Future<void> _set(
+    String key,
+    bool value,
+    bool previous,
+    void Function(bool value) update,
+  ) async {
+    if (savingKeys.contains(key)) return;
+    setState(() {
+      savingKeys.add(key);
+      update(value);
+    });
+    try {
+      await widget.store.writeBool(key, value);
+      widget.controller?.refreshPushConfiguration();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => update(previous));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('通知偏好保存失败，已恢复原设置')));
+    } finally {
+      if (mounted) setState(() => savingKeys.remove(key));
+    }
   }
 
   Future<void> _refreshPermissionStatus() async {
@@ -968,7 +1824,11 @@ class _NotificationSettingsScreenState
     if (kIsWeb) {
       final status = await requestBrowserNotificationPermission();
       if (mounted) setState(() => browserPermission = status);
-      if (!mounted || status == BrowserNotificationPermission.granted) return;
+      if (!mounted) return;
+      if (status == BrowserNotificationPermission.granted) {
+        widget.controller?.refreshPushConfiguration();
+        return;
+      }
       final message = status == BrowserNotificationPermission.unsupported
           ? '浏览器通知需要 HTTPS 或本机安全环境'
           : '浏览器未允许通知，请在地址栏的网站权限中开启';
@@ -985,7 +1845,7 @@ class _NotificationSettingsScreenState
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('请在系统设置中管理邻里通讯的通知权限')));
+      ).showSnackBar(const SnackBar(content: Text('请在系统设置中管理青蛙呱呱的通知权限')));
     }
   }
 
@@ -996,6 +1856,18 @@ class _NotificationSettingsScreenState
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
       children: [
         const _PageIntro('通知偏好会同步到当前推送设备；关闭总开关后，服务端不再向该设备发送离线通知。'),
+        if (loadError != null)
+          _SettingsNotice(
+            message: loadError!,
+            actionLabel: '重新读取',
+            onAction: () {
+              setState(() {
+                loaded = false;
+                loadError = null;
+              });
+              _load();
+            },
+          ),
         const SectionHeader('通知偏好'),
         SectionCard(
           children: [
@@ -1005,11 +1877,14 @@ class _NotificationSettingsScreenState
               title: '允许消息提醒',
               subtitle: '作为本机通知模块的默认总开关',
               value: enabled,
-              enabled: loaded,
+              enabled:
+                  loaded &&
+                  !savingKeys.contains(LocalSettingsStore.notificationEnabled),
               onChanged: (value) => _set(
                 LocalSettingsStore.notificationEnabled,
                 value,
-                () => enabled = value,
+                enabled,
+                (next) => enabled = next,
               ),
             ),
             _SwitchRow(
@@ -1017,33 +1892,47 @@ class _NotificationSettingsScreenState
               title: '显示消息预览',
               subtitle: '关闭后通知仅显示发送者',
               value: preview,
-              enabled: loaded && enabled,
+              enabled:
+                  loaded &&
+                  enabled &&
+                  !savingKeys.contains(LocalSettingsStore.notificationPreview),
               onChanged: (value) => _set(
                 LocalSettingsStore.notificationPreview,
                 value,
-                () => preview = value,
+                preview,
+                (next) => preview = next,
               ),
             ),
             _SwitchRow(
               icon: CupertinoIcons.speaker_2,
               title: '提示音',
               value: sound,
-              enabled: loaded && enabled,
+              enabled:
+                  loaded &&
+                  enabled &&
+                  !savingKeys.contains(LocalSettingsStore.notificationSound),
               onChanged: (value) => _set(
                 LocalSettingsStore.notificationSound,
                 value,
-                () => sound = value,
+                sound,
+                (next) => sound = next,
               ),
             ),
             _SwitchRow(
               icon: CupertinoIcons.device_phone_portrait,
               title: '振动',
               value: vibration,
-              enabled: loaded && enabled,
+              enabled:
+                  loaded &&
+                  enabled &&
+                  !savingKeys.contains(
+                    LocalSettingsStore.notificationVibration,
+                  ),
               onChanged: (value) => _set(
                 LocalSettingsStore.notificationVibration,
                 value,
-                () => vibration = value,
+                vibration,
+                (next) => vibration = next,
               ),
             ),
           ],
@@ -1055,7 +1944,7 @@ class _NotificationSettingsScreenState
               icon: CupertinoIcons.app_badge,
               title: kIsWeb ? '浏览器通知权限' : '系统通知权限',
               subtitle: kIsWeb
-                  ? '仅在网页仍打开时提醒，多标签页只显示一次'
+                  ? '允许后即使关闭网页也可接收提醒，多标签页只显示一次'
                   : '由 iOS 或 Android 系统控制最终展示权限',
               status: kIsWeb
                   ? switch (browserPermission) {
@@ -1082,7 +1971,7 @@ class _NotificationSettingsScreenState
   );
 }
 
-class PrivacyScreen extends StatelessWidget {
+class PrivacyScreen extends StatefulWidget {
   const PrivacyScreen({
     super.key,
     this.controller,
@@ -1093,64 +1982,304 @@ class PrivacyScreen extends StatelessWidget {
   final LocalSettingsStore store;
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: const GlassAppBar(title: Text('隐私与安全')),
-    body: ListView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
-      children: [
-        const _PageIntro('数据能力只按当前实现展示。敏感操作需要确认，未接入的远程策略不会提供假开关。'),
-        const SectionHeader('数据保护'),
-        SectionCard(
-          children: const [
-            _SettingsRow(
-              icon: CupertinoIcons.lock_shield,
-              title: '本地消息加密',
-              subtitle: '缓存由设备密钥加密后保存',
-              status: '已启用',
-            ),
-            _SettingsRow(
-              icon: CupertinoIcons.lock_fill,
-              title: '系统安全存储',
-              subtitle: '登录凭据由系统钥匙串保护',
-              status: '已启用',
-            ),
-          ],
-        ),
-        const SectionHeader('本机数据'),
-        SectionCard(
-          children: [
-            _SettingsRow(
-              key: const Key('privacy-clear-search-history'),
-              icon: CupertinoIcons.clock,
-              title: '清除最近搜索',
-              subtitle: '删除本机保存的搜索关键词',
-              onTap: () => _clearSearchHistory(context),
-            ),
-            _SettingsRow(
-              icon: CupertinoIcons.person_crop_circle_badge_xmark,
-              title: '黑名单',
-              subtitle: '查看已屏蔽的用户并可随时解除',
-              onTap: controller == null
-                  ? null
-                  : () => Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) =>
-                            BlockedUsersScreen(controller: controller!),
-                      ),
-                    ),
-            ),
-          ],
-        ),
-      ],
-    ),
-  );
+  State<PrivacyScreen> createState() => _PrivacyScreenState();
+}
 
-  Future<void> _clearSearchHistory(BuildContext context) async {
-    await store.clearRecentSearches();
-    if (!context.mounted) return;
-    ScaffoldMessenger.of(
+class _PrivacyScreenState extends State<PrivacyScreen> {
+  int? recentSearchCount;
+  bool recentSearchFailed = false;
+  bool clearingRecentSearches = false;
+  UserSearchCapabilities? searchCapabilities;
+  bool searchCapabilitiesLoading = false;
+  String? searchCapabilitiesError;
+  final Set<String> savingDiscoverySettings = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRecentSearchCount();
+    _loadSearchCapabilities();
+  }
+
+  Future<void> _loadSearchCapabilities() async {
+    final controller = widget.controller;
+    if (controller == null) return;
+    setState(() {
+      searchCapabilitiesLoading = true;
+      searchCapabilitiesError = null;
+    });
+    try {
+      final capabilities = await controller.repository.searchCapabilities();
+      if (!mounted) return;
+      setState(() => searchCapabilities = capabilities);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => searchCapabilitiesError = '搜索权限状态加载失败');
+    } finally {
+      if (mounted) setState(() => searchCapabilitiesLoading = false);
+    }
+  }
+
+  Future<void> _loadRecentSearchCount() async {
+    try {
+      final values = await widget.store.readRecentSearches();
+      if (!mounted) return;
+      setState(() {
+        recentSearchCount = values.length;
+        recentSearchFailed = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        recentSearchCount = null;
+        recentSearchFailed = true;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final user = widget.controller?.currentUser;
+    return Scaffold(
+      appBar: const GlassAppBar(title: Text('隐私与安全')),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+        children: [
+          const _PageIntro('管理账号的可发现方式、本机隐私数据和已屏蔽用户。敏感操作会在执行前再次确认。'),
+          if (user != null) ...[
+            const SectionHeader('找到我的方式'),
+            SectionCard(
+              key: const Key('privacy-discovery-card'),
+              children: [
+                _PrivacySwitchRow(
+                  key: const Key('privacy-search-by-handle'),
+                  icon: CupertinoIcons.at,
+                  title: '通过呱呱号找到我',
+                  subtitle:
+                      searchCapabilities?.canUpdatePrivacySettings == false
+                      ? '当前服务器版本暂不支持修改'
+                      : searchCapabilities?.allowSearchByHandle == false
+                      ? '当前平台未开放呱呱号搜索'
+                      : '其他用户输入完整呱呱号后可以找到你',
+                  value: user.allowSearchByHandle,
+                  saving: savingDiscoverySettings.contains('handle'),
+                  enabled:
+                      !searchCapabilitiesLoading &&
+                      searchCapabilitiesError == null &&
+                      savingDiscoverySettings.isEmpty &&
+                      searchCapabilities?.canUpdatePrivacySettings == true &&
+                      searchCapabilities?.allowSearchByHandle != false,
+                  onChanged: (value) =>
+                      _saveDiscoverySetting(key: 'handle', value: value),
+                ),
+                _PrivacySwitchRow(
+                  key: const Key('privacy-search-by-phone'),
+                  icon: CupertinoIcons.phone,
+                  title: '通过手机号找到我',
+                  subtitle:
+                      searchCapabilities?.canUpdatePrivacySettings == false
+                      ? '当前服务器版本暂不支持修改'
+                      : searchCapabilities?.allowSearchByPhone == false
+                      ? '当前平台未开放手机号搜索'
+                      : '搜索结果只展示公开资料，不会展示手机号',
+                  value: user.allowSearchByPhone,
+                  saving: savingDiscoverySettings.contains('phone'),
+                  enabled:
+                      !searchCapabilitiesLoading &&
+                      searchCapabilitiesError == null &&
+                      savingDiscoverySettings.isEmpty &&
+                      searchCapabilities?.canUpdatePrivacySettings == true &&
+                      searchCapabilities?.allowSearchByPhone != false,
+                  onChanged: (value) =>
+                      _saveDiscoverySetting(key: 'phone', value: value),
+                ),
+              ],
+            ),
+            if (searchCapabilitiesError != null)
+              _SettingsNotice(
+                message: '$searchCapabilitiesError，当前设置尚未修改。',
+                actionLabel: '重试',
+                onAction: _loadSearchCapabilities,
+              ),
+            const _PageIntro('关闭后，其他用户不能再通过对应信息搜索到你；青蛙呱呱不会在搜索结果中公开手机号。'),
+          ],
+          const SectionHeader('数据保护'),
+          SectionCard(
+            children: const [
+              _SettingsRow(
+                icon: CupertinoIcons.lock_shield,
+                title: '本地消息加密',
+                subtitle: '缓存由设备密钥加密后保存',
+                status: '已启用',
+              ),
+              _SettingsRow(
+                icon: CupertinoIcons.lock_fill,
+                title: '系统安全存储',
+                subtitle: '登录凭据由系统钥匙串保护',
+                status: '已启用',
+              ),
+            ],
+          ),
+          const SectionHeader('本机数据'),
+          if (recentSearchFailed)
+            _SettingsNotice(
+              message: '最近搜索记录读取失败，本机记录尚未被修改。',
+              actionLabel: '重试',
+              onAction: _loadRecentSearchCount,
+            ),
+          SectionCard(
+            children: [
+              _SettingsRow(
+                key: const Key('privacy-clear-search-history'),
+                icon: CupertinoIcons.clock,
+                title: '清除最近搜索',
+                subtitle: recentSearchCount == 0
+                    ? '本机当前没有保存搜索关键词'
+                    : '删除本机保存的搜索关键词',
+                status: switch (recentSearchCount) {
+                  _ when recentSearchFailed => '读取失败',
+                  null => '读取中',
+                  0 => '无记录',
+                  final count => '$count 条',
+                },
+                onTap: !clearingRecentSearches && (recentSearchCount ?? 0) > 0
+                    ? () => _confirmClearSearchHistory(context)
+                    : null,
+              ),
+              _SettingsRow(
+                icon: CupertinoIcons.person_crop_circle_badge_xmark,
+                title: '黑名单',
+                subtitle: '查看已屏蔽的用户并可随时解除',
+                onTap: widget.controller == null
+                    ? null
+                    : () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => BlockedUsersScreen(
+                            controller: widget.controller!,
+                          ),
+                        ),
+                      ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _saveDiscoverySetting({
+    required String key,
+    required bool value,
+  }) async {
+    final controller = widget.controller;
+    if (controller == null || savingDiscoverySettings.contains(key)) return;
+    setState(() => savingDiscoverySettings.add(key));
+    final success = await controller.updatePrivacySettings(
+      allowSearchByHandle: key == 'handle' ? value : null,
+      allowSearchByPhone: key == 'phone' ? value : null,
+    );
+    if (!mounted) return;
+    setState(() => savingDiscoverySettings.remove(key));
+    final label = key == 'handle' ? '呱呱号搜索' : '手机号搜索';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          success
+              ? (value ? '已允许通过$label找到你' : '已关闭$label')
+              : (controller.error ?? '隐私设置保存失败，请稍后重试'),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmClearSearchHistory(BuildContext context) async {
+    final confirmed = await showCupertinoModalPopup<bool>(
+      context: context,
+      builder: (sheetContext) => CupertinoActionSheet(
+        title: const Text('清除最近搜索？'),
+        message: Text('将删除本机保存的 $recentSearchCount 条搜索关键词，此操作不会影响聊天记录。'),
+        actions: [
+          CupertinoActionSheetAction(
+            key: const Key('privacy-confirm-clear-search-history'),
+            isDestructiveAction: true,
+            onPressed: () => Navigator.pop(sheetContext, true),
+            child: const Text('清除搜索记录'),
+          ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(sheetContext, false),
+          child: const Text('取消'),
+        ),
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => clearingRecentSearches = true);
+    try {
+      await widget.store.clearRecentSearches();
+      if (!context.mounted) return;
+      setState(() {
+        recentSearchCount = 0;
+        recentSearchFailed = false;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('最近搜索已从本机清除')));
+    } catch (_) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('最近搜索清除失败，请稍后重试')));
+    } finally {
+      if (mounted) setState(() => clearingRecentSearches = false);
+    }
+  }
+}
+
+class _PrivacySwitchRow extends StatelessWidget {
+  const _PrivacySwitchRow({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.value,
+    required this.enabled,
+    required this.saving,
+    required this.onChanged,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final bool value;
+  final bool enabled;
+  final bool saving;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final disabledTrack = Theme.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('最近搜索已从本机清除')));
+    ).colorScheme.onSurface.withValues(alpha: .18);
+    return _SettingsRow(
+      icon: icon,
+      title: title,
+      subtitle: subtitle,
+      trailing: SizedBox(
+        width: 52,
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: saving
+              ? const CupertinoActivityIndicator(radius: 9)
+              : CupertinoSwitch(
+                  value: value,
+                  onChanged: enabled ? onChanged : null,
+                  activeTrackColor: enabled ? null : disabledTrack,
+                  inactiveTrackColor: enabled ? null : disabledTrack,
+                ),
+        ),
+      ),
+      onTap: enabled && !saving ? () => onChanged(!value) : null,
+    );
   }
 }
 
@@ -1164,7 +2293,9 @@ class BlockedUsersScreen extends StatefulWidget {
 }
 
 class _BlockedUsersScreenState extends State<BlockedUsersScreen> {
-  List<AppUser>? users;
+  List<AppUser> users = const [];
+  bool loading = true;
+  bool failed = false;
 
   @override
   void initState() {
@@ -1173,29 +2304,50 @@ class _BlockedUsersScreenState extends State<BlockedUsersScreen> {
   }
 
   Future<void> _load() async {
+    if (mounted) {
+      setState(() {
+        loading = true;
+        failed = false;
+      });
+    }
     final loaded = await widget.controller.loadBlockedUsers();
-    if (mounted) setState(() => users = loaded);
+    if (!mounted) return;
+    setState(() {
+      loading = false;
+      failed = loaded == null;
+      users = loaded ?? const [];
+    });
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: const GlassAppBar(title: Text('黑名单')),
-    body: users == null
+    body: loading
         ? const Center(child: CupertinoActivityIndicator())
-        : users!.isEmpty
-        ? const StatePanel(
+        : failed
+        ? StatePanel(
+            icon: CupertinoIcons.exclamationmark_shield,
+            title: '黑名单暂时无法加载',
+            body: '请检查网络连接后重试。已屏蔽关系不会因此改变。',
+            actionLabel: '重新加载',
+            onAction: _load,
+          )
+        : users.isEmpty
+        ? StatePanel(
             icon: CupertinoIcons.person_crop_circle_badge_checkmark,
             title: '黑名单为空',
             body: '加入黑名单的用户将无法继续向你发起新消息。',
+            actionLabel: '刷新',
+            onAction: _load,
           )
         : RefreshIndicator(
             onRefresh: _load,
             child: ListView.separated(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
-              itemCount: users!.length,
+              itemCount: users.length,
               separatorBuilder: (_, _) => const Divider(height: 1),
               itemBuilder: (context, index) {
-                final user = users![index];
+                final user = users[index];
                 return ListTile(
                   minTileHeight: 68,
                   leading: PersonAvatar(
@@ -1203,7 +2355,7 @@ class _BlockedUsersScreenState extends State<BlockedUsersScreen> {
                     avatarUrl: user.avatarUrl,
                   ),
                   title: Text(user.name),
-                  subtitle: Text('@${user.handle}'),
+                  subtitle: Text(publicUserHandleLabel(user.handle)),
                   trailing: TextButton(
                     onPressed: () => _unblock(user),
                     child: const Text('移出'),
@@ -1236,7 +2388,7 @@ class _BlockedUsersScreenState extends State<BlockedUsersScreen> {
     final success = await widget.controller.blockUser(user, false);
     if (!mounted) return;
     if (success) {
-      setState(() => users!.removeWhere((item) => item.id == user.id));
+      setState(() => users.removeWhere((item) => item.id == user.id));
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(widget.controller.error ?? '解除失败')),
@@ -1281,6 +2433,151 @@ class GeneralSettingsScreen extends StatelessWidget {
   );
 }
 
+class ChatBackgroundSettingsScreen extends StatefulWidget {
+  const ChatBackgroundSettingsScreen({
+    super.key,
+    this.store = const LocalSettingsStore(),
+  });
+
+  final LocalSettingsStore store;
+
+  @override
+  State<ChatBackgroundSettingsScreen> createState() =>
+      _ChatBackgroundSettingsScreenState();
+}
+
+class _ChatBackgroundSettingsScreenState
+    extends State<ChatBackgroundSettingsScreen> {
+  ChatBackgroundStyle selected = ChatBackgroundStyle.followSystem;
+  bool loading = true;
+  bool saving = false;
+  String? loadError;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final value = await widget.store.readChatBackground();
+      if (!mounted) return;
+      setState(() {
+        selected = value;
+        loadError = null;
+        loading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        loadError = '聊天背景读取失败，当前使用跟随系统。';
+        loading = false;
+      });
+    }
+  }
+
+  Future<void> _select(ChatBackgroundStyle value) async {
+    if (value == selected || saving) return;
+    setState(() => saving = true);
+    try {
+      await widget.store.writeChatBackground(value);
+      if (!mounted) return;
+      setState(() {
+        selected = value;
+        loadError = null;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('聊天背景已切换为“${value.title}”')));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('聊天背景保存失败，原设置未改变')));
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
+  }
+
+  Color _previewColor(BuildContext context, ChatBackgroundStyle style) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return switch (style) {
+      ChatBackgroundStyle.followSystem =>
+        dark ? LinliColors.darkBackground : LinliColors.pinnedSurface,
+      ChatBackgroundStyle.softMint =>
+        dark ? const Color(0xFF092019) : LinliColors.brandMint,
+      ChatBackgroundStyle.cleanPaper =>
+        dark ? LinliColors.navySoft : LinliColors.surface,
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: const GlassAppBar(title: Text('聊天背景')),
+    body: ListView(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+      children: [
+        const _PageIntro('背景仅保存在本机，不会改变聊天内容，也不会同步给对方。'),
+        if (loadError != null)
+          _SettingsNotice(
+            message: loadError!,
+            actionLabel: '重新读取',
+            onAction: () {
+              setState(() {
+                loading = true;
+                loadError = null;
+              });
+              _load();
+            },
+          ),
+        const SectionHeader('背景样式'),
+        if (loading)
+          const Padding(
+            padding: EdgeInsets.all(32),
+            child: Center(child: CupertinoActivityIndicator()),
+          )
+        else
+          SectionCard(
+            children: [
+              for (final style in ChatBackgroundStyle.values)
+                ListTile(
+                  key: Key('chat-background-${style.name}'),
+                  minTileHeight: 64,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 14),
+                  leading: Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: _previewColor(context, style),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.outline,
+                      ),
+                    ),
+                  ),
+                  title: Text(style.title),
+                  subtitle: Text(style.subtitle),
+                  trailing: Icon(
+                    selected == style
+                        ? CupertinoIcons.check_mark_circled_solid
+                        : CupertinoIcons.circle,
+                    color: selected == style
+                        ? LinliColors.brandGreenDeep
+                        : Theme.of(
+                            context,
+                          ).colorScheme.onSurface.withValues(alpha: .25),
+                  ),
+                  enabled: !saving,
+                  onTap: saving ? null : () => _select(style),
+                ),
+            ],
+          ),
+      ],
+    ),
+  );
+}
+
 class StorageScreen extends StatefulWidget {
   const StorageScreen({super.key, required this.controller});
 
@@ -1291,8 +2588,10 @@ class StorageScreen extends StatefulWidget {
 }
 
 class _StorageScreenState extends State<StorageScreen> {
-  bool clearing = false;
+  bool clearingMessages = false;
+  bool clearingMedia = false;
   int? mediaCacheBytes;
+  bool mediaCacheFailed = false;
 
   @override
   void initState() {
@@ -1301,8 +2600,20 @@ class _StorageScreenState extends State<StorageScreen> {
   }
 
   Future<void> _loadMediaCache() async {
-    final bytes = await messageMediaCacheBytes();
-    if (mounted) setState(() => mediaCacheBytes = bytes);
+    try {
+      final bytes = await messageMediaCacheBytes();
+      if (!mounted) return;
+      setState(() {
+        mediaCacheBytes = bytes;
+        mediaCacheFailed = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        mediaCacheBytes = null;
+        mediaCacheFailed = true;
+      });
+    }
   }
 
   int get loadedMessageCount => widget.controller.conversations.fold(
@@ -1331,30 +2642,47 @@ class _StorageScreenState extends State<StorageScreen> {
             _SettingsRow(
               key: const Key('storage-clear-local-messages'),
               icon: CupertinoIcons.delete,
-              title: clearing ? '正在清理…' : '清除本机消息缓存',
+              title: clearingMessages ? '正在清理…' : '清除本机消息缓存',
               subtitle: '覆盖所有当前账号会话的本机缓存',
               destructive: true,
-              onTap: clearing ? null : () => _confirmClear(context),
+              onTap: clearingMessages || loadedMessageCount == 0
+                  ? null
+                  : () => _confirmClear(context),
             ),
           ],
         ),
         const SectionHeader('媒体缓存'),
+        if (mediaCacheFailed)
+          _SettingsNotice(
+            message: '媒体缓存大小读取失败，本机文件尚未被修改。',
+            actionLabel: '重试',
+            onAction: _loadMediaCache,
+          ),
         SectionCard(
           children: [
             _SettingsRow(
               icon: CupertinoIcons.photo,
               title: '已下载媒体',
               subtitle: '聊天中打开过的视频和文件临时缓存',
-              status: mediaCacheBytes == null
+              status: mediaCacheFailed
+                  ? '读取失败'
+                  : mediaCacheBytes == null
                   ? '计算中'
                   : _formatBytes(mediaCacheBytes!),
             ),
             _SettingsRow(
+              key: const Key('storage-clear-media-cache'),
               icon: CupertinoIcons.trash,
-              title: '清理媒体缓存',
-              subtitle: '不会删除云端文件和聊天消息',
+              title: clearingMedia ? '正在清理…' : '清理媒体缓存',
+              subtitle: mediaCacheBytes == 0 ? '当前没有可清理的媒体缓存' : '不会删除云端文件和聊天消息',
               destructive: true,
-              onTap: clearing ? null : _clearMediaCache,
+              onTap:
+                  clearingMedia ||
+                      mediaCacheFailed ||
+                      mediaCacheBytes == null ||
+                      mediaCacheBytes == 0
+                  ? null
+                  : () => _confirmClearMedia(context),
             ),
           ],
         ),
@@ -1385,28 +2713,75 @@ class _StorageScreenState extends State<StorageScreen> {
   );
 
   Future<void> _clear() async {
-    setState(() => clearing = true);
+    setState(() => clearingMessages = true);
+    var cleared = 0;
+    var failed = 0;
     for (final conversation in widget.controller.conversations) {
-      await widget.controller.clearLocalMessages(conversation.id);
+      try {
+        await widget.controller.clearLocalMessages(conversation.id);
+        cleared++;
+      } catch (_) {
+        failed++;
+      }
     }
     if (!mounted) return;
-    setState(() => clearing = false);
+    setState(() => clearingMessages = false);
+    final message = failed == 0
+        ? '本机消息缓存已清除'
+        : cleared == 0
+        ? '本机消息缓存清理失败，聊天记录未被修改'
+        : '已清理 $cleared 个会话，另有 $failed 个会话清理失败';
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('本机消息缓存已清除')));
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  void _confirmClearMedia(
+    BuildContext context,
+  ) => showCupertinoModalPopup<void>(
+    context: context,
+    builder: (sheetContext) => CupertinoActionSheet(
+      title: const Text('清理媒体缓存？'),
+      message: Text(
+        '将删除本机已下载的 ${_formatBytes(mediaCacheBytes ?? 0)} 媒体临时文件，不会删除云端文件和聊天消息。',
+      ),
+      actions: [
+        CupertinoActionSheetAction(
+          isDestructiveAction: true,
+          onPressed: () {
+            Navigator.pop(sheetContext);
+            _clearMediaCache();
+          },
+          child: const Text('清理媒体缓存'),
+        ),
+      ],
+      cancelButton: CupertinoActionSheetAction(
+        onPressed: () => Navigator.pop(sheetContext),
+        child: const Text('取消'),
+      ),
+    ),
+  );
+
   Future<void> _clearMediaCache() async {
-    setState(() => clearing = true);
-    await clearMessageMediaCache();
-    if (!mounted) return;
-    setState(() {
-      clearing = false;
-      mediaCacheBytes = 0;
-    });
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('媒体缓存已清理')));
+    setState(() => clearingMedia = true);
+    try {
+      await clearMessageMediaCache();
+      if (!mounted) return;
+      setState(() {
+        mediaCacheBytes = 0;
+        mediaCacheFailed = false;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('媒体缓存已清理')));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('媒体缓存清理失败，请稍后重试')));
+    } finally {
+      if (mounted) setState(() => clearingMedia = false);
+    }
   }
 
   String _formatBytes(int value) {
@@ -1435,6 +2810,7 @@ class _HelpFeedbackScreenState extends State<HelpFeedbackScreen> {
   String category = '功能建议';
   bool loaded = false;
   bool saving = false;
+  String? draftLoadError;
 
   @override
   void initState() {
@@ -1449,35 +2825,53 @@ class _HelpFeedbackScreenState extends State<HelpFeedbackScreen> {
   }
 
   Future<void> _loadDraft() async {
-    final values = await Future.wait<String>([
-      widget.store.readString(LocalSettingsStore.feedbackDraft),
-      widget.store.readString(
-        LocalSettingsStore.feedbackCategory,
-        fallback: '功能建议',
-      ),
-    ]);
-    if (!mounted) return;
-    controller.text = values[0];
-    setState(() {
-      category = values[1];
-      loaded = true;
-    });
+    try {
+      final values = await Future.wait<String>([
+        widget.store.readString(LocalSettingsStore.feedbackDraft),
+        widget.store.readString(
+          LocalSettingsStore.feedbackCategory,
+          fallback: '功能建议',
+        ),
+      ]);
+      if (!mounted) return;
+      controller.text = values[0];
+      setState(() {
+        category = values[1];
+        draftLoadError = null;
+        loaded = true;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        draftLoadError = '本机反馈草稿读取失败，你仍可以直接填写并提交。';
+        loaded = true;
+      });
+    }
   }
 
   Future<void> _saveDraft() async {
     final value = controller.text.trim();
     if (value.isEmpty) return;
     setState(() => saving = true);
-    await widget.store.writeString(LocalSettingsStore.feedbackDraft, value);
-    await widget.store.writeString(
-      LocalSettingsStore.feedbackCategory,
-      category,
-    );
-    if (!mounted) return;
-    setState(() => saving = false);
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('反馈草稿已保存在本机')));
+    try {
+      await widget.store.writeString(LocalSettingsStore.feedbackDraft, value);
+      await widget.store.writeString(
+        LocalSettingsStore.feedbackCategory,
+        category,
+      );
+      if (!mounted) return;
+      setState(() => draftLoadError = null);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('反馈草稿已保存在本机')));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('反馈草稿保存失败，填写内容仍保留在当前页面')));
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
   }
 
   Future<void> _submit() async {
@@ -1504,12 +2898,17 @@ class _HelpFeedbackScreenState extends State<HelpFeedbackScreen> {
       return;
     }
     controller.clear();
-    await widget.store.writeString(LocalSettingsStore.feedbackDraft, '');
+    var draftCleared = true;
+    try {
+      await widget.store.writeString(LocalSettingsStore.feedbackDraft, '');
+    } catch (_) {
+      draftCleared = false;
+    }
     if (!mounted) return;
     setState(() {});
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('反馈已提交')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(draftCleared ? '反馈已提交' : '反馈已提交，但本机草稿未能清除')),
+    );
   }
 
   @override
@@ -1537,6 +2936,18 @@ class _HelpFeedbackScreenState extends State<HelpFeedbackScreen> {
           ],
         ),
         const SectionHeader('提交反馈'),
+        if (draftLoadError != null)
+          _SettingsNotice(
+            message: draftLoadError!,
+            actionLabel: '重新读取',
+            onAction: () {
+              setState(() {
+                loaded = false;
+                draftLoadError = null;
+              });
+              _loadDraft();
+            },
+          ),
         const _PageIntro('反馈会通过已认证接口提交；未完成时可先保存本机草稿。'),
         DropdownButtonFormField<String>(
           key: const Key('feedback-category'),
@@ -1584,12 +2995,39 @@ class _HelpFeedbackScreenState extends State<HelpFeedbackScreen> {
   );
 }
 
-class AboutScreen extends StatelessWidget {
+class AboutScreen extends StatefulWidget {
   const AboutScreen({super.key});
 
   @override
+  State<AboutScreen> createState() => _AboutScreenState();
+}
+
+class _AboutScreenState extends State<AboutScreen> {
+  PackageInfo? packageInfo;
+
+  String get versionLabel => switch (packageInfo) {
+    final info? => '${info.version} (${info.buildNumber})',
+    _ => '读取中…',
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPackageInfo();
+  }
+
+  Future<void> _loadPackageInfo() async {
+    try {
+      final loaded = await PackageInfo.fromPlatform();
+      if (mounted) setState(() => packageInfo = loaded);
+    } catch (_) {
+      // 测试宿主或不支持的平台可能没有原生插件；正式平台会读取安装包元数据。
+    }
+  }
+
+  @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: const GlassAppBar(title: Text('关于邻里通讯')),
+    appBar: const GlassAppBar(title: Text('关于青蛙呱呱')),
     body: ListView(
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 36),
       children: [
@@ -1599,17 +3037,17 @@ class AboutScreen extends StatelessWidget {
               ClipRRect(
                 borderRadius: BorderRadius.circular(16),
                 child: Image.asset(
-                  'assets/brand/linli-im-icon.png',
+                  'assets/brand/qingwaguagua-icon.png',
                   width: 72,
                   height: 72,
-                  semanticLabel: '邻里通讯图标',
+                  semanticLabel: '青蛙呱呱图标',
                 ),
               ),
               const SizedBox(height: 12),
-              Text('邻里通讯', style: Theme.of(context).textTheme.titleLarge),
+              Text('青蛙呱呱', style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: 4),
               Text(
-                '版本 1.0.0 (1)',
+                '版本 $versionLabel',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
@@ -1621,21 +3059,12 @@ class AboutScreen extends StatelessWidget {
             _SettingsRow(
               icon: CupertinoIcons.doc_text,
               title: '用户协议',
-              onTap: () => _openLegal(
-                context,
-                title: '用户协议',
-                body:
-                    '正式上线前需由法务确认服务范围、用户行为规范、账号处置与争议解决条款。当前页面仅用于承载最终协议，不代表已完成法律审核。',
-              ),
+              onTap: () => showLegalDocument(context, LegalDocument.terms),
             ),
             _SettingsRow(
               icon: CupertinoIcons.hand_raised,
               title: '隐私政策',
-              onTap: () => _openLegal(
-                context,
-                title: '隐私政策',
-                body: '正式上线前需列明收集的数据类型、使用目的、保存期限、第三方共享、用户权利及注销流程，并由法务审核。',
-              ),
+              onTap: () => showLegalDocument(context, LegalDocument.privacy),
             ),
             _SettingsRow(
               key: const Key('open-source-licenses'),
@@ -1643,57 +3072,22 @@ class AboutScreen extends StatelessWidget {
               title: '开源软件许可',
               onTap: () => showLicensePage(
                 context: context,
-                applicationName: '邻里通讯',
-                applicationVersion: '1.0.0 (1)',
+                applicationName: '青蛙呱呱',
+                applicationVersion: versionLabel,
               ),
             ),
           ],
         ),
         const SectionHeader('服务状态'),
         SectionCard(
-          children: const [
+          children: [
             _SettingsRow(
               icon: CupertinoIcons.check_mark_circled,
               title: '客户端版本',
               subtitle: '与 pubspec.yaml 的当前发布版本一致',
-              status: '1.0.0',
+              status: packageInfo?.version ?? '读取中',
             ),
           ],
-        ),
-      ],
-    ),
-  );
-
-  void _openLegal(
-    BuildContext context, {
-    required String title,
-    required String body,
-  }) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => _LegalDocumentScreen(title: title, body: body),
-      ),
-    );
-  }
-}
-
-class _LegalDocumentScreen extends StatelessWidget {
-  const _LegalDocumentScreen({required this.title, required this.body});
-
-  final String title;
-  final String body;
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: GlassAppBar(title: Text(title)),
-    body: ListView(
-      padding: const EdgeInsets.all(24),
-      children: [
-        Text(body, style: Theme.of(context).textTheme.bodyLarge),
-        const SizedBox(height: 20),
-        Text(
-          '状态：待法务审核后替换为正式文本。',
-          style: Theme.of(context).textTheme.bodyMedium,
         ),
       ],
     ),
@@ -1733,6 +3127,10 @@ class _AccountDeletionScreenState extends State<AccountDeletionScreen> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('验证码已发送到当前绑定手机号')));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(widget.controller.error ?? '验证码发送失败，请稍后重试')),
+      );
     }
   }
 
@@ -1822,6 +3220,12 @@ class _AccountDeletionScreenState extends State<AccountDeletionScreen> {
             setState(() => busy = false);
             if (success) {
               Navigator.of(context).popUntil((route) => route.isFirst);
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(widget.controller.error ?? '账号注销失败，请稍后重试'),
+                ),
+              );
             }
           },
           child: const Text('确认永久注销'),
@@ -1938,7 +3342,7 @@ class _SettingsRow extends StatelessWidget {
     final color = destructive
         ? LinliColors.systemRed
         : dark
-        ? LinliColors.yellow
+        ? LinliColors.brandGreen
         : LinliColors.navy;
     return Semantics(
       button: onTap != null,
@@ -2011,16 +3415,23 @@ class _SwitchRow extends StatelessWidget {
   final ValueChanged<bool> onChanged;
 
   @override
-  Widget build(BuildContext context) => _SettingsRow(
-    icon: icon,
-    title: title,
-    subtitle: subtitle,
-    trailing: CupertinoSwitch(
-      value: value,
-      onChanged: enabled ? onChanged : null,
-    ),
-    onTap: enabled ? () => onChanged(!value) : null,
-  );
+  Widget build(BuildContext context) {
+    final disabledTrack = Theme.of(
+      context,
+    ).colorScheme.onSurface.withValues(alpha: .18);
+    return _SettingsRow(
+      icon: icon,
+      title: title,
+      subtitle: subtitle,
+      trailing: CupertinoSwitch(
+        value: value,
+        onChanged: enabled ? onChanged : null,
+        activeTrackColor: enabled ? null : disabledTrack,
+        inactiveTrackColor: enabled ? null : disabledTrack,
+      ),
+      onTap: enabled ? () => onChanged(!value) : null,
+    );
+  }
 }
 
 class _PageIntro extends StatelessWidget {
@@ -2030,9 +3441,52 @@ class _PageIntro extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+    padding: const EdgeInsets.only(top: 8),
     child: Text(text, style: Theme.of(context).textTheme.bodyMedium),
   );
+}
+
+class _SettingsNotice extends StatelessWidget {
+  const _SettingsNotice({
+    required this.message,
+    this.actionLabel,
+    this.onAction,
+  });
+
+  final String message;
+  final String? actionLabel;
+  final VoidCallback? onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+      decoration: BoxDecoration(
+        color: LinliColors.systemRed.withValues(alpha: dark ? .14 : .07),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: LinliColors.systemRed.withValues(alpha: dark ? .28 : .16),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            CupertinoIcons.exclamationmark_circle,
+            size: 18,
+            color: LinliColors.systemRed,
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(message, style: Theme.of(context).textTheme.bodySmall),
+          ),
+          if (actionLabel != null)
+            TextButton(onPressed: onAction, child: Text(actionLabel!)),
+        ],
+      ),
+    );
+  }
 }
 
 class _FaqRow extends StatelessWidget {
@@ -2048,7 +3502,7 @@ class _FaqRow extends StatelessWidget {
     leading: Icon(
       CupertinoIcons.question_circle,
       color: Theme.of(context).brightness == Brightness.dark
-          ? LinliColors.yellow
+          ? LinliColors.brandGreen
           : LinliColors.navy,
     ),
     title: Text(question, style: Theme.of(context).textTheme.bodyLarge),
@@ -2073,6 +3527,20 @@ String _platformName(String platform) => switch (platform.toLowerCase()) {
   'macos' => 'Mac',
   'windows' => 'Windows 设备',
   _ => '登录设备',
+};
+
+String _imDeviceName(int deviceFlag) => switch (deviceFlag) {
+  0 => 'App（Android / iOS）',
+  1 => 'Web',
+  2 => '桌面端（macOS）',
+  _ => '未知平台',
+};
+
+IconData _imDeviceIcon(int deviceFlag) => switch (deviceFlag) {
+  0 => CupertinoIcons.device_phone_portrait,
+  1 => CupertinoIcons.globe,
+  2 => CupertinoIcons.desktopcomputer,
+  _ => CupertinoIcons.device_phone_portrait,
 };
 
 String _dateText(DateTime time) =>

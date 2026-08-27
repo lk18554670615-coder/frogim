@@ -11,9 +11,29 @@ pluginManagement {
     includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
 
     repositories {
-        google()
-        mavenCentral()
-        gradlePluginPortal()
+        // Mainland mirrors come first so Android/Gradle plugin resolution does
+        // not depend on direct TLS access to dl.google.com or Maven Central.
+        maven("https://maven.aliyun.com/repository/google")
+        maven("https://maven.aliyun.com/repository/central")
+        maven("https://maven.aliyun.com/repository/gradle-plugin")
+    }
+}
+
+dependencyResolutionManagement {
+    // Flutter plugins often append google()/mavenCentral() themselves. Prefer
+    // the settings-level mirrors so those unreachable fallbacks are ignored.
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        maven("https://maven.aliyun.com/repository/google")
+        maven("https://maven.aliyun.com/repository/central")
+        maven("https://maven.aliyun.com/repository/gradle-plugin")
+        maven("https://mvn.getui.com/nexus/content/repositories/releases/")
+        // The mainland mirror is materially faster for the 45 MB profile
+        // engine artifact. The official repository remains the fallback; CI
+        // should reject non-XML POM responses before warming a shared cache.
+        maven("https://storage.flutter-io.cn/download.flutter.io")
+        maven("https://storage.googleapis.com/download.flutter.io")
+        maven("https://jitpack.io")
     }
 }
 

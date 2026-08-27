@@ -1938,7 +1938,14 @@ func (x *API) websocket(w http.ResponseWriter, r *http.Request) {
 	expiresAt := time.Now().Add(x.cfg.AccessTTL)
 	x.hub.Serve(w, r, claims.Subject, expiresAt)
 }
-func (x *API) adminStats(w http.ResponseWriter, r *http.Request) { write(w, 200, x.app.AdminStats()) }
+func (x *API) adminStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := x.app.AdminDashboard()
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	write(w, http.StatusOK, stats)
+}
 func (x *API) adminUsers(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	limit, _ := strconv.Atoi(query.Get("limit"))

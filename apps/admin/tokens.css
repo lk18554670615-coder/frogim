@@ -1,0 +1,96 @@
+/* Hallmark · genre: enterprise-workbench · macrostructure: TailAdmin shell · design-system: DESIGN.md · designed-as-app
+ * audience: operations and safety teams · use: scan, verify, act · tone: calm and operational
+ * pre-emit critique: P5 H5 E4 S5 R5 V4
+ */
+
+:root {
+  color-scheme: light;
+
+  --color-paper: oklch(1 0 0);
+  /* TailAdmin Free 的灰阶保持原值；只把原模板 brand-blue 映射为青蛙品牌绿。 */
+  --color-paper-subtle: #f9fafb;
+  --color-canvas: #f9fafb;
+  --color-ink: #101828;
+  --color-ink-secondary: #475467;
+  --color-ink-tertiary: #667085;
+  --color-rule: #e4e7ec;
+  --color-rule-strong: #d0d5dd;
+  --color-brand-logo: #24e66d;
+  --color-brand: #12b76a;
+  --color-brand-strong: #039855;
+  --color-brand-deep: #027a48;
+  --color-brand-soft: #ecfdf3;
+  --color-brand-line: #a6f4c5;
+  --color-brand-shadow: rgb(3 152 85 / 0.14);
+  --color-primary: #039855;
+  --color-primary-hover: #027a48;
+  --color-primary-ink: #ffffff;
+  --color-focus: #12b76a;
+  --color-focus-soft: rgb(18 183 106 / 0.12);
+  --color-info: #0ba5ec;
+  --color-info-soft: #f0f9ff;
+  --color-warning: #f79009;
+  --color-warning-soft: #fffaeb;
+  --color-danger: #d92d20;
+  --color-danger-soft: #fef3f2;
+  --color-success: #039855;
+  --color-success-soft: #ecfdf3;
+  --color-overlay: rgb(16 24 40 / 0.48);
+  --color-shadow: rgb(16 24 40 / 0.06);
+  --color-shadow-strong: rgb(16 24 40 / 0.14);
+
+  --font-display: Outfit, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-body: Outfit, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "SFMono-Regular", "Cascadia Code", Consolas, monospace;
+
+  --space-3xs: 0.25rem;
+  --space-2xs: 0.5rem;
+  --space-xs: 0.75rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2rem;
+  --space-xl: 3rem;
+  --space-2xl: 4.5rem;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-body: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.5rem;
+  --text-2xl: 2rem;
+
+  --radius-control: 0.5rem;
+  --radius-panel: 1rem;
+  --radius-dialog: 1rem;
+  --radius-pill: 999px;
+  --rule-hairline: 1px;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-instant: 100ms;
+  --dur-short: 160ms;
+  --dur-medium: 220ms;
+
+  /* 兼容现有组件命名，所有旧组件统一转入同一套语义令牌。 */
+  --primary: var(--color-brand);
+  --primary-strong: var(--color-primary);
+  --primary-soft: var(--color-brand-soft);
+  --bg: var(--color-paper);
+  --surface: var(--color-canvas);
+  --surface-raised: var(--color-paper-subtle);
+  --ink: var(--color-ink);
+  --muted: var(--color-ink-secondary);
+  --line: var(--color-rule);
+  --line-strong: var(--color-rule-strong);
+  --info: var(--color-info);
+  --info-soft: var(--color-info-soft);
+  --warning: var(--color-warning);
+  --warning-soft: var(--color-warning-soft);
+  --danger: var(--color-danger);
+  --danger-soft: var(--color-danger-soft);
+  --success: var(--color-success);
+  --success-soft: var(--color-success-soft);
+  --sidebar: var(--color-paper);
+}

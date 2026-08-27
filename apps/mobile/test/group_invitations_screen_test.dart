@@ -14,7 +14,10 @@ void main() {
   testWidgets('群邀请支持查看邀请人并同意加入', (tester) async {
     final controller = AppController(DemoImRepository(latency: Duration.zero));
     addTearDown(controller.dispose);
-    await tester.runAsync(() => controller.login('13800138000', '123456'));
+    await tester.runAsync(() async {
+      await controller.login('13800138000', '123456');
+      await controller.waitForInitialAuthenticatedSync();
+    });
 
     await tester.pumpWidget(
       MaterialApp(

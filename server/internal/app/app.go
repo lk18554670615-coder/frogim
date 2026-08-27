@@ -3444,6 +3444,24 @@ func (a *App) AdminStats() map[string]any {
 	}
 	return map[string]any{"users": len(a.state.Users), "bannedUsers": banned, "conversations": len(a.state.Conversations), "messages": len(a.state.MessageByID), "pendingReports": pending, "websocketConnections": a.Metrics.WSConnections.Load()}
 }
+
+// AdminDashboard 优先使用持久化层的实时聚合，内存模式仅用于开发和测试回退。
+func (a *App) AdminDashboard() (map[string]any, error) {
+	if s, ok := a.persistence.(store.AdminDashboardStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		result, err := s.AdminDashboard(ctx)
+		if err != nil {
+			return nil, err
+		}
+		result["websocketConnections"] = a.Metrics.WSConnections.Load()
+		result["generatedAt"] = time.Now().UTC()
+		return result, nil
+	}
+	result := a.AdminStats()
+	result["generatedAt"] = time.Now().UTC()
+	return result, nil
+}
 func (a *App) AdminUsers(q string) []*model.User { return a.SearchUsers(q) }
 func (a *App) AdminUsersPage(q, status, cursor string, limit int) ([]*model.User, int64, string, error) {
 	if s, ok := a.persistence.(store.AdminQueryStore); ok {

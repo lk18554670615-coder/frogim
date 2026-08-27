@@ -12,7 +12,11 @@ enum MessageContentKind {
   contact,
   location,
   chatHistory,
+  sticker,
+  momentShare,
+  liveEvent,
   system,
+  screenshotNotice,
   unsupported,
 }
 
@@ -29,6 +33,7 @@ enum ImEventType {
   friendChanged,
   groupInvitationChanged,
   announcementChanged,
+  scheduledChanged,
   typing,
   unknown,
 }
@@ -80,6 +85,58 @@ class MessageReaction {
       );
 }
 
+class ChatHistoryEntry {
+  const ChatHistoryEntry({
+    required this.sourceMessageId,
+    required this.senderId,
+    required this.summary,
+    required this.createdAt,
+    this.type = 'text',
+  });
+
+  final String sourceMessageId;
+  final String senderId;
+  final String summary;
+  final DateTime createdAt;
+  final String type;
+
+  Map<String, Object?> toJson() => {
+    'sourceMessageId': sourceMessageId,
+    'senderId': senderId,
+    'summary': summary,
+    'createdAt': createdAt.toUtc().toIso8601String(),
+    'type': type,
+  };
+
+  factory ChatHistoryEntry.fromJson(Map<String, Object?> json) {
+    final rawCreatedAt = json['createdAt'];
+    final createdAt = rawCreatedAt is String
+        ? DateTime.tryParse(rawCreatedAt)
+        : rawCreatedAt is num
+        ? DateTime.fromMillisecondsSinceEpoch(rawCreatedAt.toInt(), isUtc: true)
+        : null;
+    return ChatHistoryEntry(
+      sourceMessageId: json['sourceMessageId'] as String? ?? '',
+      senderId: json['senderId'] as String? ?? '',
+      summary: json['summary'] as String? ?? '[消息]',
+      createdAt:
+          (createdAt ?? DateTime.fromMillisecondsSinceEpoch(0, isUtc: true))
+              .toLocal(),
+      type: json['type'] as String? ?? 'text',
+    );
+  }
+}
+
+List<ChatHistoryEntry> chatHistoryEntriesFrom(Object? value) {
+  if (value is! List) return const [];
+  return value
+      .whereType<Map>()
+      .map(
+        (entry) => ChatHistoryEntry.fromJson(Map<String, Object?>.from(entry)),
+      )
+      .toList(growable: false);
+}
+
 class AppUser {
   const AppUser({
     required this.id,
@@ -88,6 +145,7 @@ class AppUser {
     required this.presence,
     this.phone,
     this.signature,
+    this.gender = 'unspecified',
     this.avatarMediaId,
     this.avatarUrl,
     this.isOnline = false,
@@ -105,6 +163,7 @@ class AppUser {
   final String presence;
   final String? phone;
   final String? signature;
+  final String gender;
   final String? avatarMediaId;
   final String? avatarUrl;
   final bool isOnline;
@@ -121,6 +180,7 @@ class AppUser {
     String? presence,
     String? phone,
     String? signature,
+    String? gender,
     String? avatarMediaId,
     String? avatarUrl,
     bool? isOnline,
@@ -137,6 +197,7 @@ class AppUser {
     presence: presence ?? this.presence,
     phone: phone ?? this.phone,
     signature: signature ?? this.signature,
+    gender: gender ?? this.gender,
     avatarMediaId: avatarMediaId ?? this.avatarMediaId,
     avatarUrl: avatarUrl ?? this.avatarUrl,
     isOnline: isOnline ?? this.isOnline,
@@ -148,6 +209,72 @@ class AppUser {
     allowSearchByHandle: allowSearchByHandle ?? this.allowSearchByHandle,
     allowSearchByPhone: allowSearchByPhone ?? this.allowSearchByPhone,
   );
+}
+
+class QrLoginTicket {
+  const QrLoginTicket({
+    required this.id,
+    required this.qrPayload,
+    required this.pollToken,
+    required this.expiresAt,
+  });
+
+  final String id;
+  final String qrPayload;
+  final String pollToken;
+  final DateTime expiresAt;
+
+  bool get expired => !DateTime.now().isBefore(expiresAt);
+}
+
+class QrLoginRequest {
+  const QrLoginRequest({
+    required this.id,
+    required this.clientPlatform,
+    required this.clientName,
+    required this.expiresAt,
+  });
+
+  final String id;
+  final String clientPlatform;
+  final String clientName;
+  final DateTime expiresAt;
+}
+
+class RobotMenu {
+  const RobotMenu({
+    required this.robotId,
+    required this.command,
+    required this.remark,
+    this.type = 'command',
+  });
+
+  final String robotId;
+  final String command;
+  final String remark;
+  final String type;
+
+  String get label => remark.trim().isEmpty ? command : remark;
+}
+
+class RobotProfile {
+  const RobotProfile({
+    required this.id,
+    required this.name,
+    required this.username,
+    required this.placeholder,
+    required this.version,
+    required this.menus,
+    this.inlineOn = false,
+  });
+
+  final String id;
+  final String name;
+  final String username;
+  final String placeholder;
+  final int version;
+  final bool inlineOn;
+  final List<RobotMenu> menus;
 }
 
 class UserDevice {
@@ -164,14 +291,51 @@ class UserDevice {
   final DateTime updatedAt;
 }
 
+class ImDeviceSession {
+  const ImDeviceSession({
+    required this.deviceFlag,
+    required this.deviceLevel,
+    required this.connectionCount,
+    required this.updatedAt,
+  });
+
+  final int deviceFlag;
+  final int deviceLevel;
+  final int connectionCount;
+  final DateTime updatedAt;
+
+  bool get isOnline => connectionCount > 0;
+}
+
 class UserSearchCapabilities {
   const UserSearchCapabilities({
     required this.allowSearchByHandle,
     required this.allowSearchByPhone,
+    this.canUpdatePrivacySettings = false,
   });
 
   final bool allowSearchByHandle;
   final bool allowSearchByPhone;
+  final bool canUpdatePrivacySettings;
+}
+
+class MessageEditRevision {
+  const MessageEditRevision({
+    required this.messageId,
+    required this.version,
+    required this.editorId,
+    required this.body,
+    required this.editedAt,
+  });
+
+  final String messageId;
+  final int version;
+  final String editorId;
+  final Map<String, Object?> body;
+  final DateTime editedAt;
+
+  String get text => body['text']?.toString() ?? '';
+  bool get isOriginal => version == 0;
 }
 
 class ChatMessage {
@@ -189,6 +353,14 @@ class ChatMessage {
     this.kind = MessageContentKind.text,
     this.mediaUrl,
     this.mediaId,
+    this.mediaWidth,
+    this.mediaHeight,
+    this.stickerId,
+    this.momentId,
+    this.event,
+    this.robotId,
+    this.eventData = const {},
+    this.chatHistoryEntries = const [],
     this.fileName,
     this.mimeType,
     this.durationSeconds,
@@ -227,6 +399,14 @@ class ChatMessage {
   final MessageContentKind kind;
   final String? mediaUrl;
   final String? mediaId;
+  final int? mediaWidth;
+  final int? mediaHeight;
+  final String? stickerId;
+  final String? momentId;
+  final String? event;
+  final String? robotId;
+  final Map<String, Object?> eventData;
+  final List<ChatHistoryEntry> chatHistoryEntries;
   final String? fileName;
   final String? mimeType;
   final int? durationSeconds;
@@ -251,14 +431,26 @@ class ChatMessage {
   final int readCount;
   final LinkPreview? linkPreview;
 
+  /// 客户端重试和服务端回执替换消息 ID 时保持不变的界面身份。
+  String get stableIdentity => clientMessageId.isEmpty ? id : clientMessageId;
+
   ChatMessage copyWith({
     String? id,
+    String? clientMessageId,
     String? text,
     MessageStatus? status,
     int? conversationSeq,
     MessageContentKind? kind,
     String? mediaUrl,
     String? mediaId,
+    int? mediaWidth,
+    int? mediaHeight,
+    String? stickerId,
+    String? momentId,
+    String? event,
+    String? robotId,
+    Map<String, Object?>? eventData,
+    List<ChatHistoryEntry>? chatHistoryEntries,
     String? fileName,
     String? mimeType,
     int? durationSeconds,
@@ -284,7 +476,7 @@ class ChatMessage {
     LinkPreview? linkPreview,
   }) => ChatMessage(
     id: id ?? this.id,
-    clientMessageId: clientMessageId,
+    clientMessageId: clientMessageId ?? this.clientMessageId,
     conversationId: conversationId,
     senderId: senderId,
     senderName: senderName,
@@ -296,6 +488,14 @@ class ChatMessage {
     kind: kind ?? this.kind,
     mediaUrl: mediaUrl ?? this.mediaUrl,
     mediaId: mediaId ?? this.mediaId,
+    mediaWidth: mediaWidth ?? this.mediaWidth,
+    mediaHeight: mediaHeight ?? this.mediaHeight,
+    stickerId: stickerId ?? this.stickerId,
+    momentId: momentId ?? this.momentId,
+    event: event ?? this.event,
+    robotId: robotId ?? this.robotId,
+    eventData: eventData ?? this.eventData,
+    chatHistoryEntries: chatHistoryEntries ?? this.chatHistoryEntries,
     fileName: fileName ?? this.fileName,
     mimeType: mimeType ?? this.mimeType,
     durationSeconds: durationSeconds ?? this.durationSeconds,
@@ -335,6 +535,16 @@ class ChatMessage {
     'kind': kind.name,
     'mediaUrl': mediaUrl,
     'mediaId': mediaId,
+    'mediaWidth': mediaWidth,
+    'mediaHeight': mediaHeight,
+    'stickerId': stickerId,
+    'momentId': momentId,
+    'event': event,
+    'robotId': robotId,
+    'eventData': eventData,
+    'chatHistoryEntries': chatHistoryEntries
+        .map((entry) => entry.toJson())
+        .toList(),
     'fileName': fileName,
     'mimeType': mimeType,
     'durationSeconds': durationSeconds,
@@ -377,6 +587,16 @@ class ChatMessage {
     ),
     mediaUrl: json['mediaUrl'] as String?,
     mediaId: json['mediaId'] as String?,
+    mediaWidth: (json['mediaWidth'] as num?)?.toInt(),
+    mediaHeight: (json['mediaHeight'] as num?)?.toInt(),
+    stickerId: json['stickerId'] as String?,
+    momentId: json['momentId'] as String?,
+    event: json['event'] as String?,
+    robotId: json['robotId'] as String?,
+    eventData: json['eventData'] is Map
+        ? Map<String, Object?>.from(json['eventData']! as Map)
+        : const {},
+    chatHistoryEntries: chatHistoryEntriesFrom(json['chatHistoryEntries']),
     fileName: json['fileName'] as String?,
     mimeType: json['mimeType'] as String?,
     durationSeconds: (json['durationSeconds'] as num?)?.toInt(),
@@ -486,6 +706,8 @@ class MediaUpload {
     required this.kind,
     this.localPath,
     this.durationSeconds,
+    this.width,
+    this.height,
   });
 
   final Uint8List bytes;
@@ -494,6 +716,19 @@ class MediaUpload {
   final MessageContentKind kind;
   final String? localPath;
   final int? durationSeconds;
+  final int? width;
+  final int? height;
+
+  MediaUpload copyWith({int? width, int? height}) => MediaUpload(
+    bytes: bytes,
+    fileName: fileName,
+    mimeType: mimeType,
+    kind: kind,
+    localPath: localPath,
+    durationSeconds: durationSeconds,
+    width: width ?? this.width,
+    height: height ?? this.height,
+  );
 }
 
 class Conversation {
@@ -503,26 +738,34 @@ class Conversation {
     required this.subtitle,
     required this.updatedAt,
     required this.kind,
+    this.channelId,
+    this.channelType = 0,
     this.avatarUrl,
     this.unread = 0,
     this.muted = false,
     this.pinned = false,
+    this.saved = false,
     this.archived = false,
     this.lastMessageSeq = 0,
     this.lastReadSeq = 0,
     this.mentionUnreadCount,
     this.members = const [],
-  });
+    this.currentUserRole,
+    int? memberCount,
+  }) : memberCount = memberCount ?? members.length;
 
   final String id;
   final String title;
   final String subtitle;
   final DateTime updatedAt;
   final ConversationKind kind;
+  final String? channelId;
+  final int channelType;
   final String? avatarUrl;
   final int unread;
   final bool muted;
   final bool pinned;
+  final bool saved;
   final bool archived;
   final int lastMessageSeq;
   final int lastReadSeq;
@@ -531,6 +774,12 @@ class Conversation {
   /// Null means the active server does not support this capability yet.
   final int? mentionUnreadCount;
   final List<AppUser> members;
+  final String? currentUserRole;
+  final int memberCount;
+  bool get isBusinessChannel => channelType > 2;
+  bool get canMentionEveryone =>
+      kind == ConversationKind.group &&
+      (currentUserRole == 'owner' || currentUserRole == 'admin');
 
   Conversation copyWith({
     String? title,
@@ -540,26 +789,36 @@ class Conversation {
     int? unread,
     bool? muted,
     bool? pinned,
+    bool? saved,
     bool? archived,
     int? lastMessageSeq,
     int? lastReadSeq,
     int? mentionUnreadCount,
     List<AppUser>? members,
+    String? currentUserRole,
+    int? memberCount,
+    String? channelId,
+    int? channelType,
   }) => Conversation(
     id: id,
     title: title ?? this.title,
     subtitle: subtitle ?? this.subtitle,
     updatedAt: updatedAt ?? this.updatedAt,
     kind: kind,
+    channelId: channelId ?? this.channelId,
+    channelType: channelType ?? this.channelType,
     avatarUrl: avatarUrl ?? this.avatarUrl,
     unread: unread ?? this.unread,
     muted: muted ?? this.muted,
     pinned: pinned ?? this.pinned,
+    saved: saved ?? this.saved,
     archived: archived ?? this.archived,
     lastMessageSeq: lastMessageSeq ?? this.lastMessageSeq,
     lastReadSeq: lastReadSeq ?? this.lastReadSeq,
     mentionUnreadCount: mentionUnreadCount ?? this.mentionUnreadCount,
     members: members ?? this.members,
+    currentUserRole: currentUserRole ?? this.currentUserRole,
+    memberCount: memberCount ?? this.memberCount,
   );
 }
 
@@ -661,6 +920,7 @@ class GroupMember {
 
   bool get isOwner => role == 'owner';
   bool get isAdmin => role == 'admin';
+  bool get isMuted => mutedUntil != null && mutedUntil!.isAfter(DateTime.now());
 }
 
 class GroupInvitation {

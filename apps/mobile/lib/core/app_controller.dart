@@ -3,11 +3,19 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import '../calls/call_controller.dart';
 import '../calls/call_repository.dart';
 import '../data/im_repository.dart';
+import '../im/business_features.dart';
+import '../im/structured_event_text.dart';
+import 'auth_validation.dart';
+import 'client_message_id.dart';
+import 'client_diagnostics.dart';
+import 'client_device.dart';
+import 'image_dimensions.dart';
 import 'models.dart';
 
 class AppController extends ChangeNotifier {
@@ -26,29 +34,53 @@ class AppController extends ChangeNotifier {
   bool initializing = true;
   bool loading = false;
   bool connected = false;
-  bool codeRequested = false;
-  String? developmentCode;
+  bool connectionAttempted = false;
+  bool connectionRetrying = false;
   String? error;
+  AuthPolicy authPolicy = const AuthPolicy();
+  bool authPolicyLoaded = false;
+  bool authPolicyAvailable = false;
+  bool authPolicyLoading = false;
+  String? authPolicyLoadError;
   AppUser? currentUser;
-  AppNotice? notice;
   List<Conversation> conversations = [];
   List<AppUser> contacts = [];
   List<FriendRequest> requests = [];
   List<GroupInvitation> groupInvitations = [];
   List<AppAnnouncement> announcements = [];
+  String? contactsLoadError;
+  String? friendRequestsLoadError;
+  String? groupInvitationsLoadError;
+  String? announcementsLoadError;
   final Map<String, List<ChatMessage>> _messages = {};
+  final Map<String, Future<void>> _messageLoadOperations = {};
+  final Map<String, Future<List<ChatMessage>>> _messageCacheLoadOperations = {};
   final Map<String, String> _drafts = {};
   final Map<String, MediaUpload> _pendingMedia = {};
   final Map<String, double> _mediaUploadProgress = {};
+  String? _pendingProfileAvatarFingerprint;
+  String? _pendingProfileAvatarMediaId;
   final Map<String, List<ScheduledMessage>> _scheduledMessages = {};
   final Map<String, String> scheduledMessageErrors = {};
   final Set<String> scheduledMessageLoading = {};
   final Map<String, int> _lastDeliveredSeq = {};
   final Map<String, int> _pendingDeliveredSeq = {};
   final Map<String, Timer> _deliveryTimers = {};
+  final Map<String, Map<String, DateTime>> _typingUsers = {};
+  final Map<String, Timer> _typingExpiryTimers = {};
+  final Map<String, Timer> _typingStopTimers = {};
+  final Map<String, DateTime> _lastTypingSent = {};
+  final Set<String> _typingAnnounced = {};
+  final Set<String> _pendingOutgoingFriendUserIds = {};
+  Timer? _conversationRefreshTimer;
+  bool _conversationRefreshRunning = false;
+  bool _conversationRefreshQueued = false;
   final Set<String> _linkPreviewAttempted = {};
   final Set<String> messageLoading = {};
   final Map<String, String> messageErrors = {};
+  final Set<String> messageHistoryLoading = {};
+  final Map<String, String> messageHistoryErrors = {};
+  final Map<String, bool> _messageHistoryHasMore = {};
   StreamSubscription<bool>? _connectionSubscription;
   StreamSubscription<ImEvent>? _eventSubscription;
   final Random _random = Random.secure();
@@ -57,12 +89,26 @@ class AppController extends ChangeNotifier {
   String? _pushDeviceId;
   String? _voipPushDeviceId;
   bool _disposed = false;
+  Future<void>? _authenticationBootstrap;
+  bool _stickyAuthenticationError = false;
 
-  bool get isDemo => repository.isDemo;
-  bool get supportsDemo => repository.supportsDemo;
-  int get notificationUnreadCount => conversations
+  bool get messagingUnavailable =>
+      authenticated && connectionAttempted && !connected;
+  int get conversationUnreadCount => conversations
       .where((conversation) => !conversation.muted)
       .fold(0, (total, conversation) => total + conversation.unread);
+  int get systemNotificationUnreadCount =>
+      announcements.where((announcement) => announcement.unread).length;
+  int get notificationUnreadCount =>
+      conversationUnreadCount + systemNotificationUnreadCount;
+  int get pendingIncomingFriendRequestCount => requests
+      .where((request) => request.status == 'pending' && !request.outgoing)
+      .length;
+  int get pendingIncomingGroupInvitationCount => groupInvitations
+      .where((invitation) => invitation.pending && !invitation.outgoing)
+      .length;
+  int get contactNotificationCount =>
+      pendingIncomingFriendRequestCount + pendingIncomingGroupInvitationCount;
   bool get hasMutedUnread => conversations.any(
     (conversation) => conversation.muted && conversation.unread > 0,
   );
@@ -75,8 +121,51 @@ class AppController extends ChangeNotifier {
   );
   String? get pendingConversationId => _pendingConversationId;
   String? get activeConversationId => _activeConversationId;
+  FriendRequest? pendingFriendRequestFor(String userId) => requests
+      .where(
+        (request) => request.user.id == userId && request.status == 'pending',
+      )
+      .firstOrNull;
+  bool awaitingFriendApprovalFor(String userId) =>
+      _pendingOutgoingFriendUserIds.contains(userId) ||
+      requests.any(
+        (request) =>
+            request.user.id == userId &&
+            request.status == 'pending' &&
+            request.outgoing,
+      );
+  String? typingLabelFor(String conversationId) {
+    final now = DateTime.now();
+    final userIds = (_typingUsers[conversationId] ?? const {}).entries
+        .where((entry) => entry.value.isAfter(now))
+        .map((entry) => entry.key)
+        .toList();
+    if (userIds.isEmpty) return null;
+    final conversation = conversations
+        .where((item) => item.id == conversationId)
+        .firstOrNull;
+    if (conversation == null || conversation.kind != ConversationKind.group) {
+      return '正在输入…';
+    }
+    final names = userIds
+        .map(
+          (userId) => conversation.members
+              .where((member) => member.id == userId)
+              .firstOrNull
+              ?.name,
+        )
+        .whereType<String>()
+        .where((name) => name.trim().isNotEmpty)
+        .toList();
+    if (names.isEmpty) return '有人正在输入…';
+    if (names.length == 1) return '${names.single} 正在输入…';
+    return '${names.take(2).join('、')} 等正在输入…';
+  }
+
   List<ChatMessage> messagesFor(String conversationId) =>
       List.unmodifiable(_messages[conversationId] ?? const []);
+  bool messageHistoryHasMore(String conversationId) =>
+      _messageHistoryHasMore[conversationId] ?? false;
   String draftFor(String conversationId) => _drafts[conversationId] ?? '';
   double? mediaUploadProgressFor(String clientMessageId) =>
       _mediaUploadProgress[clientMessageId];
@@ -84,6 +173,23 @@ class AppController extends ChangeNotifier {
       List.unmodifiable(_scheduledMessages[conversationId] ?? const []);
   int get archivedConversationCount =>
       conversations.where((conversation) => conversation.archived).length;
+  bool get supportsBusinessFeatures => repository is BusinessFeatureRepository;
+
+  void clearError({bool preserveAuthenticationFailure = false}) {
+    if (preserveAuthenticationFailure && _stickyAuthenticationError) return;
+    _stickyAuthenticationError = false;
+    if (error == null) return;
+    error = null;
+    notifyListeners();
+  }
+
+  BusinessFeatureRepository get _businessFeatures {
+    final active = repository;
+    if (active is BusinessFeatureRepository) {
+      return active as BusinessFeatureRepository;
+    }
+    throw StateError('当前模式不支持业务频道与客服功能');
+  }
 
   Future<String> loadDraft(String conversationId) async {
     final draft = await repository.readDraft(conversationId);
@@ -115,38 +221,187 @@ class AppController extends ChangeNotifier {
   Future<void> initialize() async {
     initializing = true;
     notifyListeners();
+    // Authentication policy controls registration and password-reset forms,
+    // but it must not hold the entire login screen behind the launch splash.
+    // Load it in parallel and let the login page show a compact syncing state.
+    final authPolicyFuture = _loadAuthPolicy(notify: true);
+    var restored = false;
     try {
       if (await repository.restoreSession()) {
-        authenticated = true;
-        currentUser = repository.currentUser;
-        _subscribe();
-        await _loadCore();
-        unawaited(_connectSafely());
+        final restoredUser = repository.currentUser;
+        if (restoredUser == null) {
+          throw StateError('本机会话缺少账号资料');
+        }
+        restored = true;
+        initializing = false;
+        _enterAuthenticatedShell(restoredUser, refreshProfile: true);
       }
     } catch (exception) {
       // 恢复会话后的短暂网络错误不应清除登录态。
+      _stickyAuthenticationError = true;
       error = _messageFor(exception, fallback: '已恢复账号，消息正在重连');
     } finally {
-      initializing = false;
-      notifyListeners();
+      if (!restored) {
+        initializing = false;
+        notifyListeners();
+      }
+      unawaited(authPolicyFuture);
     }
   }
 
-  Future<void> requestCode(String phone) async {
+  void _enterAuthenticatedShell(AppUser user, {bool refreshProfile = false}) {
+    _stickyAuthenticationError = false;
+    currentUser = user;
+    authenticated = true;
+    loading = true;
+    error = null;
+    _subscribe();
+    notifyListeners();
+    unawaited(_reportClientDevice());
+    unawaited(_connectSafely());
+    final bootstrap = _bootstrapAuthenticatedSession(
+      refreshProfile: refreshProfile,
+    );
+    _authenticationBootstrap = bootstrap;
+    unawaited(
+      bootstrap.whenComplete(() {
+        if (identical(_authenticationBootstrap, bootstrap)) {
+          _authenticationBootstrap = null;
+        }
+      }),
+    );
+  }
+
+  Future<void> _reportClientDevice() async {
+    try {
+      final report = await ClientDeviceReporter.collect();
+      await repository.registerClientDevice(
+        installationId: report.installationId,
+        platform: report.platform,
+        deviceName: report.deviceName,
+        deviceModel: report.deviceModel,
+        osVersion: report.osVersion,
+        appVersion: report.appVersion,
+      );
+    } catch (exception) {
+      if (kDebugMode || kProfileMode) {
+        debugPrint(
+          '[client-device] report skipped: type=${exception.runtimeType}',
+        );
+      }
+    }
+  }
+
+  Future<void> _bootstrapAuthenticatedSession({
+    required bool refreshProfile,
+  }) async {
+    final profileCheck = refreshProfile
+        ? _refreshRestoredProfile()
+        : Future<bool>.value(false);
+    Object? coreError;
+    try {
+      await _loadCore();
+    } catch (exception) {
+      coreError = exception;
+    }
+    final sessionExpired = await profileCheck;
+    if (_disposed || sessionExpired || !authenticated) return;
+    error = coreError == null
+        ? null
+        : _messageFor(coreError, fallback: '账号已登录，消息列表暂时无法同步');
+    loading = false;
+    notifyListeners();
+  }
+
+  Future<void> _expireRestoredSession() async {
+    _stickyAuthenticationError = true;
+    error = '登录状态已失效，请重新登录';
+    final connectionSubscription = _connectionSubscription;
+    final eventSubscription = _eventSubscription;
+    _connectionSubscription = null;
+    _eventSubscription = null;
+    await _clearAuthenticatedState();
+    try {
+      await Future.wait<void>([
+        if (connectionSubscription != null) connectionSubscription.cancel(),
+        if (eventSubscription != null) eventSubscription.cancel(),
+      ]);
+    } catch (exception, stackTrace) {
+      ClientDiagnostics.instance.captureError(
+        'expired_session_subscription_cleanup',
+        exception,
+        stackTrace,
+      );
+    }
+  }
+
+  Future<bool> _refreshRestoredProfile() async {
+    try {
+      currentUser = await repository.profile();
+      if (!_disposed) notifyListeners();
+      return false;
+    } catch (_) {
+      // Refresh-token rejection clears the repository identity. Distinguish it
+      // from a transient outage so a revoked session never leaves a stale,
+      // apparently authenticated shell on screen.
+      if (repository.currentUser == null) {
+        await _expireRestoredSession();
+        return true;
+      }
+      return false;
+    }
+  }
+
+  Future<void> _loadAuthPolicy({bool notify = false}) async {
+    if (authPolicyLoading) return;
+    authPolicyLoading = true;
+    if (notify) notifyListeners();
+    try {
+      authPolicy = await repository.authPolicy().timeout(
+        const Duration(seconds: 3),
+      );
+      authPolicyAvailable = true;
+      authPolicyLoadError = null;
+    } catch (_) {
+      authPolicyAvailable = false;
+      // Older production servers do not expose /v2/config/auth yet. Keep the
+      // server-enforced legacy registration/reset flow available and use the
+      // conservative built-in password limits until the optional policy can
+      // be fetched. Only an explicit policy response may disable registration.
+      authPolicy = const AuthPolicy();
+      authPolicyLoadError = '认证策略接口暂不可用，已使用兼容规则';
+    } finally {
+      authPolicyLoaded = true;
+      authPolicyLoading = false;
+      if (notify) notifyListeners();
+    }
+  }
+
+  Future<void> refreshAuthPolicy() => _loadAuthPolicy(notify: true);
+
+  /// Waits for the first authenticated data sync when a flow must open a
+  /// data-dependent destination immediately after login. The main shell does
+  /// not await this future, so ordinary sign-in remains responsive.
+  Future<void> waitForInitialAuthenticatedSync() async {
+    await _authenticationBootstrap;
+  }
+
+  Future<bool> requestCode(String phone) async {
     final normalized = phone.trim();
-    if (normalized.length < 5) {
+    if (!validAuthPhone(normalized)) {
       error = '请输入有效手机号';
       notifyListeners();
-      return;
+      return false;
     }
     loading = true;
     error = null;
     notifyListeners();
     try {
-      developmentCode = await repository.requestCode(normalized);
-      codeRequested = true;
+      await repository.requestCode(normalized);
+      return true;
     } catch (exception) {
       error = _messageFor(exception, fallback: '验证码发送失败，请稍后重试');
+      return false;
     } finally {
       loading = false;
       notifyListeners();
@@ -154,29 +409,32 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> login(String phone, String code) async {
+    if (!validAuthPhone(phone) || code.trim().isEmpty) {
+      error = '请输入有效手机号和验证码';
+      notifyListeners();
+      return;
+    }
     loading = true;
     error = null;
     notifyListeners();
+    var enteredShell = false;
     try {
-      currentUser = await repository.login(phone.trim(), code.trim());
-      authenticated = true;
-      _subscribe();
-      await _loadCore();
-      notice = repository.isDemo
-          ? const AppNotice(title: '重要提醒', message: '会议室设备维护将于今晚 22:00 进行')
-          : null;
-      unawaited(_connectSafely());
+      final user = await repository.login(phone.trim(), code.trim());
+      enteredShell = true;
+      _enterAuthenticatedShell(user);
     } catch (exception) {
       authenticated = false;
       error = _messageFor(exception, fallback: '登录失败，请检查信息后重试');
     } finally {
-      loading = false;
-      notifyListeners();
+      if (!enteredShell) {
+        loading = false;
+        notifyListeners();
+      }
     }
   }
 
   Future<void> passwordLogin(String phone, String password) async {
-    if (phone.trim().isEmpty || password.isEmpty) {
+    if (!validAuthPhone(phone) || password.isEmpty) {
       error = '请输入手机号和密码';
       notifyListeners();
       return;
@@ -184,18 +442,75 @@ class AppController extends ChangeNotifier {
     loading = true;
     error = null;
     notifyListeners();
+    var enteredShell = false;
     try {
-      currentUser = await repository.passwordLogin(phone.trim(), password);
-      authenticated = true;
-      _subscribe();
-      await _loadCore();
-      unawaited(_connectSafely());
+      final user = await repository.passwordLogin(phone.trim(), password);
+      enteredShell = true;
+      _enterAuthenticatedShell(user);
     } catch (exception) {
       authenticated = false;
       error = _messageFor(exception, fallback: '手机号或密码错误');
     } finally {
+      if (!enteredShell) {
+        loading = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<QrLoginTicket?> createQrLoginTicket({
+    required String clientName,
+  }) async {
+    loading = true;
+    error = null;
+    notifyListeners();
+    try {
+      return await repository.createQrLoginTicket(clientName: clientName);
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '登录二维码生成失败，请重试');
+      return null;
+    } finally {
       loading = false;
       notifyListeners();
+    }
+  }
+
+  Future<bool> pollQrLoginTicket(QrLoginTicket ticket) async {
+    try {
+      final user = await repository.pollQrLoginTicket(ticket);
+      if (user == null) return false;
+      _enterAuthenticatedShell(user);
+      return true;
+    } catch (exception) {
+      authenticated = false;
+      error = _messageFor(exception, fallback: '扫码登录失败，请刷新二维码重试');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<QrLoginRequest?> inspectQrLogin(String token) async {
+    error = null;
+    notifyListeners();
+    try {
+      return await repository.inspectQrLogin(token);
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '无法读取这次登录请求');
+      notifyListeners();
+      return null;
+    }
+  }
+
+  Future<bool> confirmQrLogin(String token) async {
+    error = null;
+    notifyListeners();
+    try {
+      await repository.confirmQrLogin(token);
+      return true;
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '登录确认失败，请重试');
+      notifyListeners();
+      return false;
     }
   }
 
@@ -205,42 +520,51 @@ class AppController extends ChangeNotifier {
     required String password,
     required String name,
   }) async {
-    if (phone.trim().isEmpty ||
-        code.trim().isEmpty ||
-        password.isEmpty ||
-        name.trim().isEmpty) {
+    if (authPolicyAvailable && !authPolicy.registrationEnabled) {
+      error = '当前暂未开放新账号注册';
+      notifyListeners();
+      return false;
+    }
+    if (!validAuthPhone(phone) || code.trim().isEmpty || name.trim().isEmpty) {
       error = '请完整填写注册信息';
+      notifyListeners();
+      return false;
+    }
+    final passwordError = authPolicy.passwordError(password);
+    if (passwordError != null) {
+      error = passwordError;
       notifyListeners();
       return false;
     }
     loading = true;
     error = null;
     notifyListeners();
+    var enteredShell = false;
     try {
-      currentUser = await repository.register(
+      final user = await repository.register(
         phone: phone.trim(),
         code: code.trim(),
         password: password,
         name: name.trim(),
       );
-      authenticated = true;
-      _subscribe();
-      await _loadCore();
-      unawaited(_connectSafely());
+      enteredShell = true;
+      _enterAuthenticatedShell(user);
       return true;
     } catch (exception) {
       authenticated = false;
       error = _messageFor(exception, fallback: '注册失败');
       return false;
     } finally {
-      loading = false;
-      notifyListeners();
+      if (!enteredShell) {
+        loading = false;
+        notifyListeners();
+      }
     }
   }
 
   Future<bool> requestResetCode(String phone) async {
-    if (phone.trim().isEmpty) {
-      error = '请输入手机号';
+    if (!validAuthPhone(phone)) {
+      error = '请输入有效手机号';
       notifyListeners();
       return false;
     }
@@ -264,8 +588,14 @@ class AppController extends ChangeNotifier {
     required String code,
     required String password,
   }) async {
-    if (phone.trim().isEmpty || code.trim().isEmpty || password.isEmpty) {
+    if (!validAuthPhone(phone) || code.trim().isEmpty) {
       error = '请完整填写重置信息';
+      notifyListeners();
+      return false;
+    }
+    final passwordError = authPolicy.passwordError(password);
+    if (passwordError != null) {
+      error = passwordError;
       notifyListeners();
       return false;
     }
@@ -292,6 +622,7 @@ class AppController extends ChangeNotifier {
     try {
       await repository.enterDemo();
       await login('13800138000', '123456');
+      await _authenticationBootstrap;
     } catch (exception) {
       error = _messageFor(exception, fallback: '当前构建未启用演示模式');
       notifyListeners();
@@ -300,42 +631,153 @@ class AppController extends ChangeNotifier {
 
   void _subscribe() {
     _connectionSubscription ??= repository.connectionChanges.listen((value) {
+      if (_disposed) return;
       connected = value;
-      if (value) unawaited(_flushPendingDeliveries());
+      connectionAttempted = true;
+      if (value) {
+        connectionRetrying = false;
+        unawaited(_flushPendingDeliveries());
+      }
       notifyListeners();
     });
     _eventSubscription ??= repository.events.listen(_handleEvent);
   }
 
   Future<void> _connectSafely() async {
+    final started = Stopwatch()..start();
     try {
       await repository.connect();
     } catch (_) {
       connected = false;
+      ClientDiagnostics.instance.captureOperational(
+        kind: 'connection',
+        name: 'wukong_connect',
+        duration: started.elapsed,
+      );
+    } finally {
+      if (!_disposed) {
+        connectionAttempted = true;
+        connectionRetrying = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> retryConnection() async {
+    if (!authenticated || connected || connectionRetrying) return;
+    connectionRetrying = true;
+    notifyListeners();
+    await _connectSafely();
+  }
+
+  Future<void> _loadCore() async {
+    final loadedConversations = await repository.conversations();
+    if (!authenticated) return;
+    conversations = loadedConversations;
+    _sortConversations();
+    _prewarmRecentMessageCaches();
+    final results = await Future.wait<Object>([
+      _loadOptional(
+        repository.contacts(),
+        contacts,
+        fallbackMessage: '联系人加载失败，请稍后重试',
+      ),
+      _loadOptional(
+        repository.friendRequests(),
+        requests,
+        fallbackMessage: '好友申请加载失败，请稍后重试',
+      ),
+      _loadOptional(
+        repository.groupInvitations(),
+        groupInvitations,
+        fallbackMessage: '群聊邀请加载失败，请稍后重试',
+      ),
+      _loadOptional(
+        repository.announcements(),
+        announcements,
+        fallbackMessage: '平台公告加载失败，请稍后重试',
+      ),
+    ]);
+    final contactsResult = results[0] as _OptionalLoadResult<List<AppUser>>;
+    final requestsResult =
+        results[1] as _OptionalLoadResult<List<FriendRequest>>;
+    final invitationsResult =
+        results[2] as _OptionalLoadResult<List<GroupInvitation>>;
+    final announcementsResult =
+        results[3] as _OptionalLoadResult<List<AppAnnouncement>>;
+    if (!authenticated) return;
+    contacts = contactsResult.value;
+    contactsLoadError = contactsResult.error;
+    requests = requestsResult.value;
+    friendRequestsLoadError = requestsResult.error;
+    groupInvitations = invitationsResult.value;
+    groupInvitationsLoadError = invitationsResult.error;
+    announcements = announcementsResult.value;
+    announcementsLoadError = announcementsResult.error;
+    unawaited(ClientDiagnostics.instance.flush(repository));
+  }
+
+  Future<_OptionalLoadResult<T>> _loadOptional<T>(
+    Future<T> operation,
+    T fallback, {
+    required String fallbackMessage,
+  }) async {
+    try {
+      return _OptionalLoadResult(await operation);
+    } catch (exception) {
+      return _OptionalLoadResult(
+        fallback,
+        _messageFor(exception, fallback: fallbackMessage),
+      );
+    }
+  }
+
+  Future<bool> refreshContacts() async {
+    contactsLoadError = null;
+    notifyListeners();
+    try {
+      contacts = await repository.contacts();
+      return true;
+    } catch (exception) {
+      contactsLoadError = _messageFor(exception, fallback: '联系人加载失败，请稍后重试');
+      return false;
+    } finally {
       notifyListeners();
     }
   }
 
-  Future<void> _loadCore() async {
-    conversations = await repository.conversations();
-    _sortConversations();
-    final results = await Future.wait<Object>([
-      _loadOptional(repository.contacts(), contacts),
-      _loadOptional(repository.friendRequests(), requests),
-      _loadOptional(repository.groupInvitations(), groupInvitations),
-      _loadOptional(repository.announcements(), announcements),
-    ]);
-    contacts = results[0] as List<AppUser>;
-    requests = results[1] as List<FriendRequest>;
-    groupInvitations = results[2] as List<GroupInvitation>;
-    announcements = results[3] as List<AppAnnouncement>;
+  Future<bool> refreshFriendRequests() async {
+    friendRequestsLoadError = null;
+    notifyListeners();
+    try {
+      requests = await repository.friendRequests();
+      _reconcilePendingOutgoingFriendUsers();
+      return true;
+    } catch (exception) {
+      friendRequestsLoadError = _messageFor(
+        exception,
+        fallback: '好友申请加载失败，请稍后重试',
+      );
+      return false;
+    } finally {
+      notifyListeners();
+    }
   }
 
-  Future<T> _loadOptional<T>(Future<T> operation, T fallback) async {
+  Future<bool> refreshGroupInvitations() async {
+    groupInvitationsLoadError = null;
+    notifyListeners();
     try {
-      return await operation;
-    } catch (_) {
-      return fallback;
+      groupInvitations = await repository.groupInvitations();
+      return true;
+    } catch (exception) {
+      groupInvitationsLoadError = _messageFor(
+        exception,
+        fallback: '群聊邀请加载失败，请稍后重试',
+      );
+      return false;
+    } finally {
+      notifyListeners();
     }
   }
 
@@ -354,10 +796,316 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<List<BusinessChannelSummary>> loadBusinessChannels({
+    int channelType = 0,
+    String parentId = '',
+  }) => _businessFeatures.businessChannels(
+    channelType: channelType,
+    parentId: parentId,
+  );
+
+  Future<BusinessChannelSummary> createBusinessChannel({
+    required int channelType,
+    required String name,
+    String parentId = '',
+    String description = '',
+    String postingPolicy = 'members',
+    int slowModeSeconds = 0,
+  }) => _businessFeatures.createBusinessChannel(
+    channelType: channelType,
+    name: name,
+    parentId: parentId,
+    description: description,
+    postingPolicy: postingPolicy,
+    slowModeSeconds: slowModeSeconds,
+  );
+
+  Future<BusinessChannelSummary> loadBusinessChannel(
+    String channelId,
+    int channelType,
+  ) => _businessFeatures.businessChannel(channelId, channelType);
+
+  Future<BusinessChannelSummary> updateBusinessChannel(
+    BusinessChannelSummary channel, {
+    String? name,
+    String? description,
+    String? visibility,
+    String? joinPolicy,
+    String? postingPolicy,
+    int? slowModeSeconds,
+    bool? sendBan,
+    bool? allowStranger,
+  }) => _businessFeatures.updateBusinessChannel(
+    channel.id,
+    channel.channelType,
+    name: name,
+    description: description,
+    visibility: visibility,
+    joinPolicy: joinPolicy,
+    postingPolicy: postingPolicy,
+    slowModeSeconds: slowModeSeconds,
+    sendBan: sendBan,
+    allowStranger: allowStranger,
+  );
+
+  Future<List<BusinessChannelMemberSummary>> loadBusinessChannelMembers(
+    BusinessChannelSummary channel,
+  ) =>
+      _businessFeatures.businessChannelMembers(channel.id, channel.channelType);
+
+  Future<void> addBusinessChannelMember(
+    BusinessChannelSummary channel,
+    String userId, {
+    DateTime? expiresAt,
+  }) => _businessFeatures.addBusinessChannelMember(
+    channel.id,
+    channel.channelType,
+    userId,
+    expiresAt: expiresAt,
+  );
+
+  Future<void> removeBusinessChannelMember(
+    BusinessChannelSummary channel,
+    String userId,
+  ) => _businessFeatures.removeBusinessChannelMember(
+    channel.id,
+    channel.channelType,
+    userId,
+  );
+
+  Future<void> updateBusinessChannelMember(
+    BusinessChannelSummary channel,
+    String userId, {
+    String? role,
+    DateTime? mutedUntil,
+    bool clearMute = false,
+    DateTime? expiresAt,
+    bool clearExpiry = false,
+  }) => _businessFeatures.updateBusinessChannelMember(
+    channel.id,
+    channel.channelType,
+    userId,
+    role: role,
+    mutedUntil: mutedUntil,
+    clearMute: clearMute,
+    expiresAt: expiresAt,
+    clearExpiry: clearExpiry,
+  );
+
+  Future<void> setBusinessChannelAccess(
+    BusinessChannelSummary channel,
+    String userId,
+    String accessType,
+    bool enabled, {
+    String reason = '',
+  }) => _businessFeatures.setBusinessChannelAccess(
+    channel.id,
+    channel.channelType,
+    userId,
+    accessType,
+    enabled,
+    reason: reason,
+  );
+
+  Future<List<BusinessChannelAccessSummary>> loadBusinessChannelAccess(
+    BusinessChannelSummary channel, {
+    String accessType = '',
+  }) => _businessFeatures.businessChannelAccess(
+    channel.id,
+    channel.channelType,
+    accessType: accessType,
+  );
+
+  Future<Conversation?> enterBusinessChannel(
+    BusinessChannelSummary channel, {
+    DateTime? expiresAt,
+  }) async {
+    if (!channel.subscribed) {
+      await _businessFeatures.subscribeBusinessChannel(
+        channel.id,
+        channel.channelType,
+        expiresAt: expiresAt,
+      );
+    }
+    return _refreshAndFindBusinessConversation(channel.id);
+  }
+
+  Future<void> leaveBusinessChannel(BusinessChannelSummary channel) async {
+    await _businessFeatures.unsubscribeBusinessChannel(
+      channel.id,
+      channel.channelType,
+    );
+    await refresh();
+  }
+
+  Future<Conversation?> _refreshAndFindBusinessConversation(
+    String channelId,
+  ) async {
+    await repository.syncNow();
+    conversations = await repository.conversations();
+    _sortConversations();
+    notifyListeners();
+    return conversations.where((item) => item.id == channelId).firstOrNull;
+  }
+
+  Future<List<SupportSkillGroupSummary>> loadSupportSkillGroups() =>
+      _businessFeatures.supportSkillGroups();
+
+  Future<List<SupportAgentSummary>> loadSupportAgents({
+    String skillGroupId = '',
+  }) => _businessFeatures.supportAgents(skillGroupId: skillGroupId);
+
+  Future<SupportAgentSummary> setSupportAgentStatus(String status) =>
+      _businessFeatures.setSupportAgentStatus(status);
+
+  Future<List<SupportSessionSummary>> loadSupportSessions({
+    String status = '',
+    String skillGroupId = '',
+  }) => _businessFeatures.supportSessions(
+    status: status,
+    skillGroupId: skillGroupId,
+  );
+
+  Future<(SupportSessionSummary, Conversation?)> startSupportSession({
+    required String skillGroupId,
+    String subject = '',
+  }) async {
+    final session = await _businessFeatures.createSupportSession(
+      skillGroupId: skillGroupId,
+      subject: subject,
+    );
+    final conversation = await _refreshAndFindBusinessConversation(
+      session.channelId,
+    );
+    return (session, conversation);
+  }
+
+  Future<Conversation?> enterSupportSession(SupportSessionSummary session) =>
+      _refreshAndFindBusinessConversation(session.channelId);
+
+  Future<SupportSessionSummary> claimSupportSession(String sessionId) =>
+      _businessFeatures.claimSupportSession(sessionId);
+
+  Future<SupportSessionSummary> transferSupportSession(
+    String sessionId,
+    String targetAgentId,
+  ) => _businessFeatures.transferSupportSession(sessionId, targetAgentId);
+
+  Future<SupportSessionSummary> endSupportSession(String sessionId) =>
+      _businessFeatures.endSupportSession(sessionId);
+
+  Future<SupportSessionSummary> rateSupportSession(
+    String sessionId,
+    int rating,
+    String comment,
+  ) => _businessFeatures.rateSupportSession(sessionId, rating, comment);
+
+  Future<MomentPage> loadMoments({
+    String authorId = '',
+    String cursor = '',
+    int limit = 20,
+  }) => _businessFeatures.moments(
+    authorId: authorId,
+    cursor: cursor,
+    limit: limit,
+  );
+
+  Future<MomentSummary> publishMoment({
+    required String content,
+    List<MediaUpload> uploads = const [],
+    String visibility = 'public',
+    List<String> visibleUserIds = const [],
+    Map<String, Object?> location = const {},
+    void Function(int index, double progress)? onProgress,
+  }) async {
+    if (uploads.length > 9) {
+      throw const FormatException('朋友圈最多上传 9 张图片');
+    }
+    final videos = uploads
+        .where((upload) => upload.kind == MessageContentKind.video)
+        .length;
+    if (videos > 0 && (videos != 1 || uploads.length != 1)) {
+      throw const FormatException('朋友圈视频必须单独发布');
+    }
+    if (uploads.any(
+      (upload) =>
+          upload.kind != MessageContentKind.image &&
+          upload.kind != MessageContentKind.video,
+    )) {
+      throw const FormatException('朋友圈只支持图片或单个视频');
+    }
+    final mediaIds = <String>[];
+    for (var index = 0; index < uploads.length; index++) {
+      final media = await _businessFeatures.uploadBusinessMedia(
+        uploads[index],
+        onProgress: (progress) => onProgress?.call(index, progress),
+      );
+      mediaIds.add(media.id);
+    }
+    return _businessFeatures.createMoment(
+      content: content.trim(),
+      mediaKind: uploads.isEmpty
+          ? 'none'
+          : videos == 1
+          ? 'video'
+          : 'images',
+      mediaIds: mediaIds,
+      visibility: visibility,
+      visibleUserIds: visibleUserIds,
+      location: location,
+    );
+  }
+
+  Future<MomentSummary> toggleMomentLike(MomentSummary moment) =>
+      _businessFeatures.setMomentLike(moment.id, !moment.likedByMe);
+
+  Future<MomentCommentSummary> commentMoment(
+    MomentSummary moment,
+    String content, {
+    String parentId = '',
+  }) => _businessFeatures.createMomentComment(
+    moment.id,
+    content.trim(),
+    parentId: parentId,
+  );
+
+  Future<void> removeMoment(MomentSummary moment) =>
+      _businessFeatures.deleteMoment(moment.id);
+
+  Future<void> removeMomentComment(
+    MomentSummary moment,
+    MomentCommentSummary comment,
+  ) => _businessFeatures.deleteMomentComment(moment.id, comment.id);
+
+  Future<List<MomentReminderSummary>> loadMomentReminders({int limit = 100}) =>
+      _businessFeatures.momentReminders(limit: limit);
+
+  Future<void> markMomentRemindersRead(List<int> reminderIds) =>
+      _businessFeatures.markMomentRemindersRead(reminderIds);
+
+  Future<List<StickerCategorySummary>> loadStickerCategories() =>
+      _businessFeatures.stickerCategories();
+
+  Future<List<StickerPackSummary>> loadStickerPacks({String categoryId = ''}) =>
+      _businessFeatures.stickerPacks(categoryId: categoryId);
+
+  Future<List<StickerItemSummary>> loadRecentStickers({int limit = 50}) =>
+      _businessFeatures.recentStickers(limit: limit);
+
+  Future<List<StickerItemSummary>> loadFavoriteStickers({int limit = 50}) =>
+      _businessFeatures.favoriteStickers(limit: limit);
+
+  Future<void> toggleStickerPackFavorite(StickerPackSummary pack) =>
+      _businessFeatures.setStickerPackFavorite(pack.id, !pack.favorite);
+
+  Future<void> toggleStickerFavorite(StickerItemSummary sticker) =>
+      _businessFeatures.setStickerFavorite(sticker.id, !sticker.favorite);
+
   Future<List<AppUser>> searchUsers(
     String query, {
     String by = 'handle',
   }) async {
+    error = null;
     try {
       return await repository.searchUsers(query, by: by);
     } catch (exception) {
@@ -368,6 +1116,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<UserSearchCapabilities?> loadSearchCapabilities() async {
+    error = null;
     try {
       return await repository.searchCapabilities();
     } catch (exception) {
@@ -399,26 +1148,129 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> refreshAnnouncements() async {
+    announcementsLoadError = null;
+    notifyListeners();
     try {
       announcements = await repository.announcements();
-      notifyListeners();
     } catch (exception) {
-      error = _messageFor(exception, fallback: '公告刷新失败');
+      announcementsLoadError = _messageFor(
+        exception,
+        fallback: '平台公告加载失败，请稍后重试',
+      );
+    } finally {
       notifyListeners();
     }
   }
 
-  Future<void> loadMessages(String conversationId, {bool force = false}) async {
-    if (!force && _messages.containsKey(conversationId)) return;
+  Future<void> loadMessages(String conversationId, {bool force = false}) {
+    final active = _messageLoadOperations[conversationId];
+    if (active != null) return active;
+    if (!force && _messages.containsKey(conversationId)) {
+      return Future<void>.value();
+    }
+    final operation = _loadMessages(conversationId, force: force);
+    _messageLoadOperations[conversationId] = operation;
+    return operation.whenComplete(() {
+      if (identical(_messageLoadOperations[conversationId], operation)) {
+        _messageLoadOperations.remove(conversationId);
+      }
+    });
+  }
+
+  Future<List<ChatMessage>> _readCachedMessages(String conversationId) {
+    final active = _messageCacheLoadOperations[conversationId];
+    if (active != null) return active;
+    if (repository is! CachedMessageRepository) {
+      return Future<List<ChatMessage>>.value(const []);
+    }
+    final cachedRepository = repository as CachedMessageRepository;
+    final operation = cachedRepository
+        .cachedMessages(conversationId)
+        .catchError((_) => <ChatMessage>[]);
+    _messageCacheLoadOperations[conversationId] = operation;
+    return operation.whenComplete(() {
+      if (identical(_messageCacheLoadOperations[conversationId], operation)) {
+        _messageCacheLoadOperations.remove(conversationId);
+      }
+    });
+  }
+
+  void _prewarmRecentMessageCaches() {
+    if (repository is! CachedMessageRepository || currentUser == null) return;
+    final sessionUserId = currentUser!.id;
+    final recent = conversations
+        .where((conversation) => !conversation.archived)
+        .take(5)
+        .toList(growable: false);
+    for (final conversation in recent) {
+      unawaited(_prewarmMessageCache(conversation.id, sessionUserId));
+    }
+  }
+
+  Future<void> _prewarmMessageCache(
+    String conversationId,
+    String sessionUserId,
+  ) async {
+    final cached = await _readCachedMessages(conversationId);
+    if (_disposed ||
+        !authenticated ||
+        currentUser?.id != sessionUserId ||
+        cached.isEmpty) {
+      return;
+    }
+    final existing = _messages[conversationId] ?? const <ChatMessage>[];
+    _messages[conversationId] = _mergeMessageLists(existing, cached);
+    final oldestSequence = _oldestServerSequence(_messages[conversationId]!);
+    _messageHistoryHasMore[conversationId] =
+        repository is PaginatedMessageRepository && oldestSequence > 1;
+    notifyListeners();
+  }
+
+  Future<void> _loadMessages(
+    String conversationId, {
+    required bool force,
+  }) async {
     messageLoading.add(conversationId);
     messageErrors.remove(conversationId);
     notifyListeners();
+    // Start the authoritative sync before touching encrypted local storage.
+    // Some Android keystores take noticeable time on the first decrypt after
+    // process start; serializing the network request behind that read makes a
+    // cold chat open needlessly slower. The cache can still paint first while
+    // both operations are in flight.
+    final remoteMessages = repository
+        .messages(conversationId)
+        .then<_MessageLoadResult>(
+          _MessageLoadResult.success,
+          onError: (Object error, StackTrace stackTrace) =>
+              _MessageLoadResult.failure(error, stackTrace),
+        );
+    if (!_messages.containsKey(conversationId) &&
+        repository is CachedMessageRepository) {
+      final cached = await _readCachedMessages(conversationId);
+      if (cached.isNotEmpty) {
+        _messages[conversationId] = _mergeMessageLists(const [], cached);
+        notifyListeners();
+      }
+    }
     try {
-      final messages = await repository.messages(conversationId);
-      _messages[conversationId] = messages;
+      final remoteResult = await remoteMessages;
+      if (remoteResult.error case final error?) {
+        Error.throwWithStackTrace(error, remoteResult.stackTrace!);
+      }
+      final messages = remoteResult.messages!;
+      final existing = _messages[conversationId] ?? const <ChatMessage>[];
+      final merged = force && existing.isNotEmpty
+          ? _mergeMessageLists(existing, messages)
+          : _mergeMessageLists(const [], messages);
+      _messages[conversationId] = merged;
+      final oldestSequence = _oldestServerSequence(merged);
+      _messageHistoryHasMore[conversationId] =
+          repository is PaginatedMessageRepository && oldestSequence > 1;
+      messageHistoryErrors.remove(conversationId);
       _scheduleDelivered(
         conversationId,
-        messages.fold<int>(
+        merged.fold<int>(
           0,
           (highest, message) => max(highest, message.conversationSeq),
         ),
@@ -436,6 +1288,126 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<bool> loadOlderMessages(
+    String conversationId, {
+    int limit = 50,
+  }) async {
+    if (messageHistoryLoading.contains(conversationId) ||
+        !messageHistoryHasMore(conversationId)) {
+      return false;
+    }
+    final paginated = repository;
+    if (paginated is! PaginatedMessageRepository) {
+      _messageHistoryHasMore[conversationId] = false;
+      notifyListeners();
+      return false;
+    }
+    final historyRepository = paginated as PaginatedMessageRepository;
+    final current = _messages[conversationId] ?? const <ChatMessage>[];
+    final beforeSequence = _oldestServerSequence(current);
+    if (beforeSequence <= 1) {
+      _messageHistoryHasMore[conversationId] = false;
+      notifyListeners();
+      return false;
+    }
+
+    messageHistoryLoading.add(conversationId);
+    messageHistoryErrors.remove(conversationId);
+    notifyListeners();
+    try {
+      final older = await historyRepository.olderMessages(
+        conversationId,
+        beforeSequence: beforeSequence,
+        limit: limit,
+      );
+      final merged = _mergeMessageLists(current, older);
+      final nextOldest = _oldestServerSequence(merged);
+      final advanced = nextOldest > 0 && nextOldest < beforeSequence;
+      _messages[conversationId] = merged;
+      _messageHistoryHasMore[conversationId] =
+          advanced && nextOldest > 1 && older.isNotEmpty;
+      if (advanced) {
+        _hydrateLinkPreviews(conversationId);
+        // The production repository has already committed its bounded WuKong
+        // hot cache. Persist the page-model snapshot off the scroll path so a
+        // slow local store cannot delay viewport anchoring.
+        unawaited(
+          repository.persistMessages(conversationId, merged).catchError((_) {}),
+        );
+      }
+      return advanced;
+    } catch (exception) {
+      messageHistoryErrors[conversationId] = _messageFor(
+        exception,
+        fallback: '较早的消息加载失败，请稍后重试',
+      );
+      return false;
+    } finally {
+      messageHistoryLoading.remove(conversationId);
+      notifyListeners();
+    }
+  }
+
+  int _oldestServerSequence(Iterable<ChatMessage> messages) {
+    var oldest = 0;
+    for (final message in messages) {
+      final sequence = message.conversationSeq;
+      if (sequence <= 0) continue;
+      if (oldest == 0 || sequence < oldest) oldest = sequence;
+    }
+    return oldest;
+  }
+
+  List<ChatMessage> _mergeMessageLists(
+    Iterable<ChatMessage> current,
+    Iterable<ChatMessage> incoming,
+  ) {
+    final merged = <ChatMessage>[];
+    final indexByIdentity = <String, int>{};
+
+    void upsert(ChatMessage message) {
+      final identities = <String>{
+        if (message.id.isNotEmpty) 'id:${message.id}',
+        if (message.clientMessageId.isNotEmpty)
+          'client:${message.clientMessageId}',
+      };
+      int? index;
+      for (final identity in identities) {
+        index ??= indexByIdentity[identity];
+      }
+      if (index == null) {
+        index = merged.length;
+        merged.add(message);
+      } else {
+        merged[index] = message;
+      }
+      for (final identity in identities) {
+        indexByIdentity[identity] = index;
+      }
+    }
+
+    for (final message in current) {
+      upsert(message);
+    }
+    for (final message in incoming) {
+      upsert(message);
+    }
+    merged.sort((a, b) {
+      final aSequence = a.conversationSeq;
+      final bSequence = b.conversationSeq;
+      if (aSequence > 0 && bSequence > 0) {
+        final bySequence = aSequence.compareTo(bSequence);
+        if (bySequence != 0) return bySequence;
+      } else if (aSequence > 0) {
+        return -1;
+      } else if (bSequence > 0) {
+        return 1;
+      }
+      return a.sentAt.compareTo(b.sentAt);
+    });
+    return merged;
+  }
+
   Future<void> loadScheduledMessages(
     String conversationId, {
     bool force = false,
@@ -446,8 +1418,9 @@ class AppController extends ChangeNotifier {
     notifyListeners();
     try {
       final items = await repository.scheduledMessages(conversationId);
-      items.sort((a, b) => a.scheduledAt.compareTo(b.scheduledAt));
-      _scheduledMessages[conversationId] = items;
+      final sorted = List<ScheduledMessage>.of(items)
+        ..sort((a, b) => a.scheduledAt.compareTo(b.scheduledAt));
+      _scheduledMessages[conversationId] = sorted;
     } catch (exception) {
       scheduledMessageErrors[conversationId] = _messageFor(
         exception,
@@ -517,6 +1490,53 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<bool> updateScheduledMessage(
+    ScheduledMessage message, {
+    required String text,
+    required DateTime scheduledAt,
+  }) async {
+    final normalized = text.trim();
+    if (normalized.isEmpty) {
+      scheduledMessageErrors[message.conversationId] = '定时消息内容不能为空';
+      notifyListeners();
+      return false;
+    }
+    if (!scheduledAt.isAfter(DateTime.now().add(const Duration(seconds: 20)))) {
+      scheduledMessageErrors[message.conversationId] = '定时发送时间至少晚于当前时间 20 秒';
+      notifyListeners();
+      return false;
+    }
+    try {
+      final updated = await repository.updateScheduledMessage(
+        message.id,
+        text: normalized,
+        scheduledAt: scheduledAt,
+        expiresInSeconds: message.expiresInSeconds,
+      );
+      final list = _scheduledMessages.putIfAbsent(
+        message.conversationId,
+        () => [],
+      );
+      final index = list.indexWhere((item) => item.id == message.id);
+      if (index < 0) {
+        list.add(updated);
+      } else {
+        list[index] = updated;
+      }
+      list.sort((a, b) => a.scheduledAt.compareTo(b.scheduledAt));
+      scheduledMessageErrors.remove(message.conversationId);
+      notifyListeners();
+      return true;
+    } catch (exception) {
+      scheduledMessageErrors[message.conversationId] = _messageFor(
+        exception,
+        fallback: '定时消息修改失败，请检查网络后重试',
+      );
+      notifyListeners();
+      return false;
+    }
+  }
+
   Future<bool> retryScheduledMessage(ScheduledMessage message) async {
     if (!message.canRetry) return false;
     final created = await scheduleMessage(
@@ -544,6 +1564,7 @@ class AppController extends ChangeNotifier {
     ChatMessage? replyTo,
     List<MessageMention> mentions = const [],
     int? expiresInSeconds,
+    String? robotId,
   }) async {
     final normalized = text.trim();
     if (normalized.isEmpty) return null;
@@ -563,6 +1584,7 @@ class AppController extends ChangeNotifier {
       replyToId: replyTo?.id,
       replyToText: replyTo?.text,
       mentions: mentions,
+      robotId: robotId,
       status: MessageStatus.sending,
       expiresAt: expiresInSeconds == null
           ? null
@@ -576,11 +1598,30 @@ class AppController extends ChangeNotifier {
     return _sendPending(pending);
   }
 
+  Future<ChatMessage?> sendRobotCommand(
+    String conversationId,
+    RobotMenu menu,
+  ) => sendMessage(conversationId, menu.command, robotId: menu.robotId);
+
+  Future<List<RobotProfile>> robotProfilesForConversation(
+    String conversationId,
+  ) => repository.robotProfiles(conversationId);
+
   Future<ChatMessage> sendMedia(
     String conversationId,
     MediaUpload upload, {
     ChatMessage? replyTo,
   }) async {
+    if (upload.kind == MessageContentKind.image &&
+        (upload.width == null || upload.height == null)) {
+      final dimensions = await decodeImagePixelSize(upload.bytes);
+      if (dimensions != null) {
+        upload = upload.copyWith(
+          width: dimensions.width,
+          height: dimensions.height,
+        );
+      }
+    }
     final clientId = _newClientMessageId();
     final label = switch (upload.kind) {
       MessageContentKind.image => '[图片]',
@@ -599,6 +1640,8 @@ class AppController extends ChangeNotifier {
       isMine: true,
       kind: upload.kind,
       mediaUrl: upload.localPath,
+      mediaWidth: upload.width,
+      mediaHeight: upload.height,
       fileName: upload.fileName,
       mimeType: upload.mimeType,
       durationSeconds: upload.durationSeconds,
@@ -611,6 +1654,139 @@ class AppController extends ChangeNotifier {
     final list = _messages.putIfAbsent(conversationId, () => []);
     list.add(pending);
     _updateConversation(conversationId, label);
+    await repository.persistMessages(conversationId, list);
+    notifyListeners();
+    return _sendPending(pending);
+  }
+
+  Future<ChatMessage> sendSticker(
+    String conversationId,
+    StickerItemSummary sticker,
+  ) async {
+    final clientId = _newClientMessageId();
+    final pending = ChatMessage(
+      id: 'local-$clientId',
+      clientMessageId: clientId,
+      conversationId: conversationId,
+      senderId: currentUser?.id ?? 'me',
+      senderName: currentUser?.name ?? '我',
+      text: sticker.name.isEmpty ? '[表情]' : '[表情] ${sticker.name}',
+      sentAt: DateTime.now(),
+      isMine: true,
+      kind: MessageContentKind.sticker,
+      stickerId: sticker.id,
+      mediaId: sticker.mediaId,
+      mediaUrl: sticker.url,
+      fileName: sticker.name,
+      mimeType: sticker.mime,
+      status: MessageStatus.sending,
+    );
+    final list = _messages.putIfAbsent(conversationId, () => []);
+    list.add(pending);
+    _updateConversation(conversationId, pending.text);
+    await repository.persistMessages(conversationId, list);
+    notifyListeners();
+    final sent = await _sendPending(pending);
+    if (sent.status != MessageStatus.failed) {
+      await _businessFeatures.recordStickerUse(sticker.id);
+    }
+    return sent;
+  }
+
+  Future<ChatMessage> sendMomentShare(
+    String conversationId,
+    MomentSummary moment,
+  ) async {
+    final clientId = _newClientMessageId();
+    final preview = moment.content.trim().isEmpty
+        ? '[朋友圈]'
+        : '[朋友圈] ${moment.content.trim()}';
+    final pending = ChatMessage(
+      id: 'local-$clientId',
+      clientMessageId: clientId,
+      conversationId: conversationId,
+      senderId: currentUser?.id ?? 'me',
+      senderName: currentUser?.name ?? '我',
+      text: preview,
+      sentAt: DateTime.now(),
+      isMine: true,
+      kind: MessageContentKind.momentShare,
+      momentId: moment.id,
+      mediaId: moment.media.firstOrNull?.id,
+      mediaUrl: moment.media.firstOrNull?.url,
+      mimeType: moment.media.firstOrNull?.mime,
+      status: MessageStatus.sending,
+    );
+    final list = _messages.putIfAbsent(conversationId, () => []);
+    list.add(pending);
+    _updateConversation(conversationId, preview);
+    await repository.persistMessages(conversationId, list);
+    notifyListeners();
+    return _sendPending(pending);
+  }
+
+  Future<ChatMessage> sendLiveEvent(
+    String conversationId, {
+    required String event,
+    required String label,
+    Map<String, Object?> data = const {},
+  }) async {
+    final conversation = conversations
+        .where((item) => item.id == conversationId)
+        .firstOrNull;
+    if (conversation?.channelType != 9) {
+      throw const FormatException('直播互动只能发送到直播频道');
+    }
+    const allowedEvents = {'live.like', 'live.applause', 'live.follow'};
+    if (!allowedEvents.contains(event)) {
+      throw const FormatException('不支持的直播互动事件');
+    }
+    final normalizedLabel = label.trim();
+    if (normalizedLabel.isEmpty) {
+      throw const FormatException('直播互动文案不能为空');
+    }
+    final clientId = _newClientMessageId();
+    final pending = ChatMessage(
+      id: 'local-$clientId',
+      clientMessageId: clientId,
+      conversationId: conversationId,
+      senderId: currentUser?.id ?? 'me',
+      senderName: currentUser?.name ?? '我',
+      text: normalizedLabel,
+      sentAt: DateTime.now(),
+      isMine: true,
+      kind: MessageContentKind.liveEvent,
+      event: event,
+      eventData: data,
+      status: MessageStatus.sending,
+    );
+    final list = _messages.putIfAbsent(conversationId, () => []);
+    list.add(pending);
+    _updateConversation(conversationId, normalizedLabel);
+    await repository.persistMessages(conversationId, list);
+    notifyListeners();
+    return _sendPending(pending);
+  }
+
+  Future<ChatMessage> sendScreenshotNotice(String conversationId) async {
+    final clientId = _newClientMessageId();
+    final actor = currentUser?.name.trim();
+    final text = '${actor == null || actor.isEmpty ? '当前用户' : actor} 截取了聊天界面';
+    final pending = ChatMessage(
+      id: 'local-$clientId',
+      clientMessageId: clientId,
+      conversationId: conversationId,
+      senderId: currentUser?.id ?? 'me',
+      senderName: currentUser?.name ?? '我',
+      text: text,
+      sentAt: DateTime.now(),
+      isMine: true,
+      kind: MessageContentKind.screenshotNotice,
+      status: MessageStatus.sending,
+    );
+    final list = _messages.putIfAbsent(conversationId, () => []);
+    list.add(pending);
+    _updateConversation(conversationId, '[截屏提示]');
     await repository.persistMessages(conversationId, list);
     notifyListeners();
     return _sendPending(pending);
@@ -776,6 +1952,21 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<List<MessageEditRevision>?> loadMessageEditHistory(
+    ChatMessage message,
+  ) async {
+    if (message.id.startsWith('local-') || message.editedAt == null) {
+      return const [];
+    }
+    try {
+      return await repository.messageEditHistory(message.id);
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '编辑记录加载失败，请稍后重试');
+      notifyListeners();
+      return null;
+    }
+  }
+
   Future<bool> toggleReaction(ChatMessage message, String emoji) async {
     if (message.id.startsWith('local-') ||
         message.status == MessageStatus.recalled) {
@@ -876,8 +2067,12 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<void> recallMessage(ChatMessage message) async {
-    if (!message.isMine || message.id.startsWith('local-')) return;
+  Future<bool> recallMessage(ChatMessage message) async {
+    if (!message.isMine || message.id.startsWith('local-')) {
+      error = '这条消息当前不能撤回';
+      notifyListeners();
+      return false;
+    }
     try {
       await repository.recallMessage(message.id);
       _replaceMessage(
@@ -890,37 +2085,58 @@ class AppController extends ChangeNotifier {
         _messages[message.conversationId]!,
       );
       notifyListeners();
+      return true;
     } catch (exception) {
       error = _messageFor(exception, fallback: '撤回失败，可能已超过可撤回时间');
       notifyListeners();
+      return false;
     }
   }
 
-  Future<void> deleteMessage(ChatMessage message) async {
+  Future<bool> deleteMessage(ChatMessage message) async {
     final list = _messages[message.conversationId];
-    list?.removeWhere(
-      (item) => item.clientMessageId == message.clientMessageId,
-    );
-    if (list != null) {
-      await repository.persistMessages(message.conversationId, list);
+    if (list == null) {
+      error = '本机没有找到这条消息';
+      notifyListeners();
+      return false;
     }
-    notifyListeners();
+    final updated = List<ChatMessage>.of(list)
+      ..removeWhere((item) => item.clientMessageId == message.clientMessageId);
+    try {
+      await repository.persistMessages(message.conversationId, updated);
+      _messages[message.conversationId] = updated;
+      notifyListeners();
+      return true;
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '消息删除失败，本机记录未修改');
+      notifyListeners();
+      return false;
+    }
   }
 
-  Future<void> deleteMessages(
+  Future<bool> deleteMessages(
     String conversationId,
     Set<String> clientMessageIds,
   ) async {
     final list = _messages[conversationId];
-    if (list == null) return;
-    list.removeWhere(
-      (message) => clientMessageIds.contains(message.clientMessageId),
-    );
-    for (final id in clientMessageIds) {
-      _pendingMedia.remove(id);
+    if (list == null || clientMessageIds.isEmpty) return false;
+    final updated = List<ChatMessage>.of(list)
+      ..removeWhere(
+        (message) => clientMessageIds.contains(message.clientMessageId),
+      );
+    try {
+      await repository.persistMessages(conversationId, updated);
+      _messages[conversationId] = updated;
+      for (final id in clientMessageIds) {
+        _pendingMedia.remove(id);
+      }
+      notifyListeners();
+      return true;
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '消息删除失败，本机记录未修改');
+      notifyListeners();
+      return false;
     }
-    await repository.persistMessages(conversationId, list);
-    notifyListeners();
   }
 
   Future<bool> favoriteMessage(ChatMessage message) async {
@@ -998,8 +2214,8 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> clearLocalMessages(String conversationId) async {
-    _messages[conversationId] = [];
     await repository.persistMessages(conversationId, const []);
+    _messages[conversationId] = [];
     notifyListeners();
   }
 
@@ -1061,8 +2277,49 @@ class AppController extends ChangeNotifier {
 
   void setActiveConversation(String? conversationId) {
     if (_disposed) return;
+    final previous = _activeConversationId;
+    if (previous != null && previous != conversationId) {
+      updateTyping(previous, false);
+    }
     _activeConversationId = conversationId;
     if (conversationId != null) unawaited(markRead(conversationId));
+  }
+
+  void updateTyping(String conversationId, bool typing) {
+    if (_disposed || !authenticated || conversationId.isEmpty) return;
+    _typingStopTimers.remove(conversationId)?.cancel();
+    if (!typing) {
+      _lastTypingSent.remove(conversationId);
+      if (!_typingAnnounced.remove(conversationId)) return;
+      unawaited(_sendTyping(conversationId, false));
+      return;
+    }
+    _typingStopTimers[conversationId] = Timer(
+      const Duration(seconds: 4),
+      () => updateTyping(conversationId, false),
+    );
+    final now = DateTime.now();
+    final lastSent = _lastTypingSent[conversationId];
+    if (_typingAnnounced.contains(conversationId) &&
+        lastSent != null &&
+        now.difference(lastSent) < const Duration(seconds: 3)) {
+      return;
+    }
+    _typingAnnounced.add(conversationId);
+    _lastTypingSent[conversationId] = now;
+    unawaited(_sendTyping(conversationId, true));
+  }
+
+  Future<void> _sendTyping(String conversationId, bool typing) async {
+    try {
+      await repository.setTyping(conversationId, typing);
+    } catch (_) {
+      if (typing) {
+        _typingAnnounced.remove(conversationId);
+        _lastTypingSent.remove(conversationId);
+      }
+      // Typing is an ephemeral hint and must never block message composition.
+    }
   }
 
   Future<void> registerPushDevice({
@@ -1110,6 +2367,28 @@ class AppController extends ChangeNotifier {
     _voipPushDeviceId = deviceId;
   }
 
+  Future<void> registerWebPushDevice({
+    required String deviceId,
+    required String subscription,
+    required bool notificationsEnabled,
+    required bool previewEnabled,
+    required bool soundEnabled,
+    required bool vibrationEnabled,
+  }) async {
+    if (!authenticated || subscription.trim().isEmpty) return;
+    await repository.registerDevice(
+      deviceId: deviceId,
+      platform: 'web',
+      provider: 'webpush',
+      pushToken: subscription.trim(),
+      notificationsEnabled: notificationsEnabled,
+      previewEnabled: previewEnabled,
+      soundEnabled: soundEnabled,
+      vibrationEnabled: vibrationEnabled,
+    );
+    _pushDeviceId = deviceId;
+  }
+
   void refreshPushConfiguration() => notifyListeners();
 
   void handlePushPayload(Map<String, dynamic> payload) {
@@ -1148,6 +2427,19 @@ class AppController extends ChangeNotifier {
       pinned: !conversation.pinned,
       localUpdate: (item) => item.copyWith(pinned: !item.pinned),
       fallback: '置顶状态更新失败，请稍后重试',
+    );
+  }
+
+  Future<bool> toggleConversationSaved(String id) {
+    final conversation = conversations.firstWhere(
+      (item) => item.id == id,
+      orElse: () => throw StateError('conversation not found'),
+    );
+    return _updateConversationPreferences(
+      id,
+      saved: !conversation.saved,
+      localUpdate: (item) => item.copyWith(saved: !item.saved),
+      fallback: conversation.saved ? '移出通讯录失败，请稍后重试' : '保存到通讯录失败，请稍后重试',
     );
   }
 
@@ -1197,6 +2489,7 @@ class AppController extends ChangeNotifier {
   Future<bool> _updateConversationPreferences(
     String id, {
     bool? pinned,
+    bool? saved,
     bool? notificationsMuted,
     bool? manualUnread,
     bool? archived,
@@ -1213,6 +2506,7 @@ class AppController extends ChangeNotifier {
       await repository.updateConversationPreferences(
         id,
         pinned: pinned,
+        saved: saved,
         notificationsMuted: notificationsMuted,
         manualUnread: manualUnread,
         archived: archived,
@@ -1258,8 +2552,40 @@ class AppController extends ChangeNotifier {
     try {
       await repository.acceptFriendRequest(request.id);
       _replaceFriendRequest(request, 'accepted');
-      contacts = await repository.contacts();
+      _pendingOutgoingFriendUserIds.remove(request.user.id);
+      try {
+        final conversation = await repository.createDirect(request.user);
+        _upsertConversation(conversation);
+      } catch (_) {
+        // New servers provision this conversation as part of accepting. This
+        // compatibility call keeps the same real-data behavior on older
+        // deployments where acceptance only created the friendship.
+      }
+      final contactIndex = contacts.indexWhere(
+        (contact) => contact.id == request.user.id,
+      );
+      if (contactIndex >= 0) {
+        contacts[contactIndex] = request.user;
+      } else {
+        contacts.add(request.user);
+      }
       notifyListeners();
+      try {
+        contacts = await repository.contacts();
+        notifyListeners();
+      } catch (_) {
+        // The accept mutation already succeeded. Keep the optimistic contact
+        // usable and let the realtime event refresh the authoritative list.
+      }
+      try {
+        conversations = await repository.conversations();
+        _sortConversations();
+        notifyListeners();
+      } catch (_) {
+        // The server has already accepted the request and provisioned the
+        // direct conversation. Realtime invalidation or the next refresh will
+        // reconcile a transient conversation-list failure.
+      }
       return true;
     } catch (exception) {
       error = _messageFor(exception, fallback: '接受好友申请失败');
@@ -1312,7 +2638,15 @@ class AppController extends ChangeNotifier {
         source: source,
         sourceId: sourceId,
       );
-      requests = await repository.friendRequests();
+      _pendingOutgoingFriendUserIds.add(user.id);
+      try {
+        requests = await repository.friendRequests();
+        _reconcilePendingOutgoingFriendUsers();
+      } catch (_) {
+        // Sending succeeded even if the immediate follow-up refresh did not.
+        // Keep the profile in a waiting state until the realtime refresh lands.
+        unawaited(_refreshSocial());
+      }
       notifyListeners();
       return true;
     } catch (exception) {
@@ -1403,13 +2737,13 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<List<AppUser>> loadBlockedUsers() async {
+  Future<List<AppUser>?> loadBlockedUsers() async {
     try {
       return await repository.blockedUsers();
     } catch (exception) {
       error = _messageFor(exception, fallback: '黑名单加载失败');
       notifyListeners();
-      return const [];
+      return null;
     }
   }
 
@@ -1566,6 +2900,21 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<bool> setGroupMemberMuted(
+    String conversationId,
+    AppUser user,
+    DateTime? until,
+  ) async {
+    try {
+      await repository.setGroupMemberMuted(conversationId, user.id, until);
+      return true;
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '群成员禁言设置失败');
+      notifyListeners();
+      return false;
+    }
+  }
+
   Future<bool> transferGroupOwner(String conversationId, AppUser user) async {
     try {
       await repository.transferGroupOwner(conversationId, user.id);
@@ -1664,18 +3013,67 @@ class AppController extends ChangeNotifier {
     required String name,
     required String handle,
     required String signature,
+    required String gender,
     MediaUpload? avatar,
   }) async {
+    final normalizedName = name.trim();
+    final normalizedHandle = handle.trim().toLowerCase();
+    final normalizedSignature = signature.trim();
+    if (normalizedName.isEmpty) {
+      error = '请输入昵称';
+      notifyListeners();
+      return false;
+    }
+    if (normalizedName.runes.length > 40) {
+      error = '昵称不能超过 40 个字符';
+      notifyListeners();
+      return false;
+    }
+    if (!RegExp(r'^[a-z0-9_]{4,24}$').hasMatch(normalizedHandle)) {
+      error = '呱呱号需为 4–24 位小写字母、数字或下划线';
+      notifyListeners();
+      return false;
+    }
+    if (normalizedSignature.runes.length > 160) {
+      error = '个性签名不能超过 160 个字符';
+      notifyListeners();
+      return false;
+    }
+    if (gender != 'unspecified' && gender != 'male' && gender != 'female') {
+      error = '请选择有效的性别展示方式';
+      notifyListeners();
+      return false;
+    }
+    error = null;
     try {
-      final avatarMediaId = avatar == null
-          ? null
-          : await repository.uploadAvatar(avatar);
+      String? avatarMediaId;
+      String? avatarFingerprint;
+      if (avatar == null) {
+        _pendingProfileAvatarFingerprint = null;
+        _pendingProfileAvatarMediaId = null;
+      } else {
+        avatarFingerprint = sha256.convert(avatar.bytes).toString();
+        if (_pendingProfileAvatarFingerprint != avatarFingerprint) {
+          _pendingProfileAvatarFingerprint = avatarFingerprint;
+          _pendingProfileAvatarMediaId = null;
+        }
+        avatarMediaId = _pendingProfileAvatarMediaId;
+        if (avatarMediaId == null) {
+          avatarMediaId = await repository.uploadAvatar(avatar);
+          _pendingProfileAvatarMediaId = avatarMediaId;
+        }
+      }
       currentUser = await repository.updateProfile(
-        name: name.trim(),
-        handle: handle.trim().toLowerCase(),
-        signature: signature.trim(),
+        name: normalizedName,
+        handle: normalizedHandle,
+        signature: normalizedSignature,
+        gender: gender,
         avatarMediaId: avatarMediaId,
       );
+      if (avatarFingerprint == _pendingProfileAvatarFingerprint) {
+        _pendingProfileAvatarFingerprint = null;
+        _pendingProfileAvatarMediaId = null;
+      }
       notifyListeners();
       return true;
     } catch (exception) {
@@ -1685,9 +3083,40 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<bool> requestPhoneUpdateCode(String phone) async {
+  Future<bool> updatePrivacySettings({
+    bool? allowSearchByHandle,
+    bool? allowSearchByPhone,
+  }) async {
+    if (allowSearchByHandle == null && allowSearchByPhone == null) return true;
+    error = null;
     try {
-      await repository.requestPhoneChangeCode(phone.trim());
+      currentUser = await repository.updateProfile(
+        allowSearchByHandle: allowSearchByHandle,
+        allowSearchByPhone: allowSearchByPhone,
+      );
+      notifyListeners();
+      return true;
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '隐私设置保存失败，请稍后重试');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> requestPhoneUpdateCode(String phone) async {
+    final normalized = phone.trim();
+    if (!RegExp(r'^\+?[0-9]{6,32}$').hasMatch(normalized)) {
+      error = '请输入有效手机号';
+      notifyListeners();
+      return false;
+    }
+    if (normalized == currentUser?.phone?.trim()) {
+      error = '新手机号不能与当前绑定相同';
+      notifyListeners();
+      return false;
+    }
+    try {
+      await repository.requestPhoneChangeCode(normalized);
       return true;
     } catch (exception) {
       error = _messageFor(exception, fallback: '验证码发送失败');
@@ -1697,8 +3126,15 @@ class AppController extends ChangeNotifier {
   }
 
   Future<bool> updatePhone(String phone, String code) async {
+    final normalized = phone.trim();
+    if (!RegExp(r'^\+?[0-9]{6,32}$').hasMatch(normalized) ||
+        code.trim().length < 4) {
+      error = '请输入有效手机号和验证码';
+      notifyListeners();
+      return false;
+    }
     try {
-      currentUser = await repository.updatePhone(phone.trim(), code.trim());
+      currentUser = await repository.updatePhone(normalized, code.trim());
       notifyListeners();
       return true;
     } catch (exception) {
@@ -1734,13 +3170,23 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<List<UserDevice>> loadUserDevices() async {
+  Future<List<UserDevice>?> loadUserDevices() async {
     try {
       return await repository.userDevices();
     } catch (exception) {
       error = _messageFor(exception, fallback: '登录设备加载失败');
       notifyListeners();
-      return const [];
+      return null;
+    }
+  }
+
+  Future<List<ImDeviceSession>?> loadImDeviceSessions() async {
+    try {
+      return await repository.imDeviceSessions();
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '登录会话加载失败');
+      notifyListeners();
+      return null;
     }
   }
 
@@ -1750,6 +3196,17 @@ class AppController extends ChangeNotifier {
       return true;
     } catch (exception) {
       error = _messageFor(exception, fallback: '设备退出失败');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> quitImDeviceSession(int deviceFlag) async {
+    try {
+      await repository.quitImDeviceSession(deviceFlag);
+      return true;
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '会话下线失败');
       notifyListeners();
       return false;
     }
@@ -1787,10 +3244,22 @@ class AppController extends ChangeNotifier {
   Future<void> logout() async {
     loading = true;
     notifyListeners();
-    await _connectionSubscription?.cancel();
-    await _eventSubscription?.cancel();
+    final connectionSubscription = _connectionSubscription;
+    final eventSubscription = _eventSubscription;
     _connectionSubscription = null;
     _eventSubscription = null;
+    for (final subscription in [connectionSubscription, eventSubscription]) {
+      if (subscription == null) continue;
+      try {
+        await subscription.cancel();
+      } catch (exception, stackTrace) {
+        ClientDiagnostics.instance.captureError(
+          'logout_subscription_cleanup',
+          exception,
+          stackTrace,
+        );
+      }
+    }
     for (final deviceId in [_pushDeviceId, _voipPushDeviceId]) {
       if (deviceId == null) continue;
       try {
@@ -1801,22 +3270,43 @@ class AppController extends ChangeNotifier {
     }
     _pushDeviceId = null;
     _voipPushDeviceId = null;
-    await repository.logout();
+    try {
+      await repository.logout();
+    } catch (exception, stackTrace) {
+      // Logging out is a local security boundary. Never leave the visible app
+      // authenticated merely because server revocation or secure-store cleanup
+      // failed; record the failure so it can be reconciled on the next launch.
+      ClientDiagnostics.instance.captureError(
+        'logout_repository_cleanup',
+        exception,
+        stackTrace,
+      );
+    }
     await _clearAuthenticatedState();
   }
 
   Future<void> _clearAuthenticatedState() async {
     authenticated = false;
     connected = false;
+    connectionAttempted = false;
+    connectionRetrying = false;
     currentUser = null;
     conversations = [];
     contacts = [];
     requests = [];
     groupInvitations = [];
     announcements = [];
+    contactsLoadError = null;
+    friendRequestsLoadError = null;
+    groupInvitationsLoadError = null;
+    announcementsLoadError = null;
     _messages.clear();
+    _messageLoadOperations.clear();
+    _messageCacheLoadOperations.clear();
     _pendingMedia.clear();
     _mediaUploadProgress.clear();
+    _pendingProfileAvatarFingerprint = null;
+    _pendingProfileAvatarMediaId = null;
     _scheduledMessages.clear();
     scheduledMessageErrors.clear();
     scheduledMessageLoading.clear();
@@ -1826,11 +3316,30 @@ class AppController extends ChangeNotifier {
       timer.cancel();
     }
     _deliveryTimers.clear();
+    for (final timer in _typingExpiryTimers.values) {
+      timer.cancel();
+    }
+    for (final timer in _typingStopTimers.values) {
+      timer.cancel();
+    }
+    _typingUsers.clear();
+    _typingExpiryTimers.clear();
+    _typingStopTimers.clear();
+    _lastTypingSent.clear();
+    _typingAnnounced.clear();
+    _pendingOutgoingFriendUserIds.clear();
+    _activeConversationId = null;
+    _conversationRefreshTimer?.cancel();
+    _conversationRefreshTimer = null;
+    _conversationRefreshQueued = false;
     _linkPreviewAttempted.clear();
     messageErrors.clear();
     messageLoading.clear();
+    messageHistoryErrors.clear();
+    messageHistoryLoading.clear();
+    _messageHistoryHasMore.clear();
     loading = false;
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   void _handleEvent(ImEvent event) {
@@ -1839,6 +3348,9 @@ class AppController extends ChangeNotifier {
         final raw = event.payload['message'] as Map<String, Object?>?;
         if (raw == null) return;
         final message = _messageFromEvent(raw);
+        if (!message.isMine) {
+          _clearTypingUser(message.conversationId, message.senderId);
+        }
         final list = _messages.putIfAbsent(message.conversationId, () => []);
         final index = list.indexWhere(
           (existing) =>
@@ -1869,6 +3381,21 @@ class AppController extends ChangeNotifier {
         _hydrateLinkPreview(message);
         unawaited(repository.persistMessages(message.conversationId, list));
       case ImEventType.messageChanged:
+        final raw = event.payload['message'] as Map<String, Object?>?;
+        if (raw != null) {
+          final message = _messageFromEvent(raw);
+          final list = _messages[message.conversationId];
+          final index = list?.indexWhere(
+            (existing) =>
+                existing.id == message.id ||
+                existing.clientMessageId == message.clientMessageId,
+          );
+          if (list != null && index != null && index >= 0) {
+            list[index] = message;
+            unawaited(repository.persistMessages(message.conversationId, list));
+          }
+          break;
+        }
         final conversationId = event.payload['conversationId'] as String?;
         if (conversationId != null && _messages.containsKey(conversationId)) {
           unawaited(loadMessages(conversationId, force: true));
@@ -1903,18 +3430,126 @@ class AppController extends ChangeNotifier {
           }
         }
       case ImEventType.conversationChanged:
-        unawaited(refresh());
+        _scheduleConversationRefresh();
       case ImEventType.friendChanged:
         unawaited(_refreshSocial());
+        _scheduleConversationRefresh();
       case ImEventType.groupInvitationChanged:
         unawaited(_refreshGroupInvitations());
       case ImEventType.announcementChanged:
         unawaited(refreshAnnouncements());
+      case ImEventType.scheduledChanged:
+        final scheduled = event.payload['scheduledMessage'];
+        final scheduledPayload = scheduled is Map<String, Object?>
+            ? scheduled
+            : const <String, Object?>{};
+        final conversationId =
+            scheduledPayload['conversationId'] as String? ??
+            event.payload['conversationId'] as String?;
+        if (conversationId != null && conversationId.isNotEmpty) {
+          unawaited(loadScheduledMessages(conversationId, force: true));
+        }
       case ImEventType.typing:
+        _applyTypingEvent(event.payload);
+        break;
       case ImEventType.unknown:
         break;
     }
     notifyListeners();
+  }
+
+  void _applyTypingEvent(Map<String, Object?> payload) {
+    final conversationId = payload['conversationId']?.toString() ?? '';
+    final userId = payload['userId']?.toString() ?? '';
+    if (conversationId.isEmpty || userId.isEmpty || userId == currentUser?.id) {
+      return;
+    }
+    if (payload['typing'] != true) {
+      _clearTypingUser(conversationId, userId);
+      return;
+    }
+    final users = _typingUsers.putIfAbsent(conversationId, () => {});
+    // Use a local bounded TTL so a skewed or malicious timestamp cannot leave
+    // a permanent typing state. The server's contract currently expires at 6s.
+    users[userId] = DateTime.now().add(const Duration(seconds: 6));
+    _scheduleTypingExpiry(conversationId);
+  }
+
+  void _clearTypingUser(String conversationId, String userId) {
+    final users = _typingUsers[conversationId];
+    if (users == null) return;
+    users.remove(userId);
+    if (users.isEmpty) {
+      _typingUsers.remove(conversationId);
+      _typingExpiryTimers.remove(conversationId)?.cancel();
+      return;
+    }
+    _scheduleTypingExpiry(conversationId);
+  }
+
+  void _scheduleTypingExpiry(String conversationId) {
+    _typingExpiryTimers.remove(conversationId)?.cancel();
+    final users = _typingUsers[conversationId];
+    if (users == null || users.isEmpty) return;
+    final now = DateTime.now();
+    final nextExpiry = users.values.reduce(
+      (current, value) => value.isBefore(current) ? value : current,
+    );
+    final delay = nextExpiry.isAfter(now)
+        ? nextExpiry.difference(now) + const Duration(milliseconds: 20)
+        : Duration.zero;
+    _typingExpiryTimers[conversationId] = Timer(delay, () {
+      _typingExpiryTimers.remove(conversationId);
+      final active = _typingUsers[conversationId];
+      if (active == null) return;
+      final current = DateTime.now();
+      active.removeWhere((_, expiresAt) => !expiresAt.isAfter(current));
+      if (active.isEmpty) {
+        _typingUsers.remove(conversationId);
+      } else {
+        _scheduleTypingExpiry(conversationId);
+      }
+      if (!_disposed) notifyListeners();
+    });
+  }
+
+  void _scheduleConversationRefresh() {
+    if (_disposed || !authenticated) return;
+    if (_conversationRefreshRunning) {
+      _conversationRefreshQueued = true;
+      return;
+    }
+    _conversationRefreshTimer?.cancel();
+    _conversationRefreshTimer = Timer(
+      const Duration(milliseconds: 120),
+      () => unawaited(_refreshConversationsFromEvent()),
+    );
+  }
+
+  Future<void> _refreshConversationsFromEvent() async {
+    if (_disposed || !authenticated) return;
+    if (_conversationRefreshRunning) {
+      _conversationRefreshQueued = true;
+      return;
+    }
+    _conversationRefreshTimer = null;
+    _conversationRefreshRunning = true;
+    try {
+      final refreshed = await repository.conversations();
+      if (_disposed || !authenticated) return;
+      conversations = refreshed;
+      _sortConversations();
+      notifyListeners();
+    } catch (_) {
+      // SDK conversation notifications are best-effort invalidations. A
+      // transient metadata failure must not replace the current list.
+    } finally {
+      _conversationRefreshRunning = false;
+      if (_conversationRefreshQueued && !_disposed) {
+        _conversationRefreshQueued = false;
+        _scheduleConversationRefresh();
+      }
+    }
   }
 
   void _applyReceipt(Map<String, Object?> payload, {required bool delivered}) {
@@ -1926,7 +3561,15 @@ class AppController extends ChangeNotifier {
     final readCount = (payload['readCount'] as num?)?.toInt();
     for (var i = 0; i < list.length; i++) {
       final message = list[i];
-      if (!message.isMine || message.conversationSeq > sequence) continue;
+      if (!message.isMine ||
+          message.conversationSeq <= 0 ||
+          message.conversationSeq > sequence ||
+          message.status == MessageStatus.sending ||
+          message.status == MessageStatus.failed ||
+          message.status == MessageStatus.recalled ||
+          message.status == MessageStatus.expired) {
+        continue;
+      }
       list[i] = message.copyWith(
         status: delivered && message.status == MessageStatus.read
             ? MessageStatus.read
@@ -1940,21 +3583,30 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _refreshSocial() async {
-    try {
-      contacts = await repository.contacts();
-      requests = await repository.friendRequests();
-      notifyListeners();
-    } catch (_) {}
+    await Future.wait([refreshContacts(), refreshFriendRequests()]);
+  }
+
+  void _reconcilePendingOutgoingFriendUsers() {
+    _pendingOutgoingFriendUserIds.removeWhere(
+      (userId) =>
+          contacts.any((contact) => contact.id == userId) ||
+          requests.any((request) => request.user.id == userId),
+    );
   }
 
   Future<void> _refreshGroupInvitations() async {
-    try {
-      groupInvitations = await repository.groupInvitations();
-      notifyListeners();
-    } catch (_) {}
+    await refreshGroupInvitations();
   }
 
   ChatMessage _messageFromEvent(Map<String, Object?> raw) {
+    // The WuKong gateway already maps SDK messages into the page model. Keep
+    // accepting the legacy business-event shape below until the remaining
+    // non-chat WebSocket events have moved to CMD.
+    if (raw['sentAt'] is String &&
+        raw['status'] is String &&
+        raw['kind'] is String) {
+      return ChatMessage.fromJson(raw);
+    }
     final body = raw['body'] as Map<String, Object?>? ?? const {};
     final previewRaw = raw['linkPreview'] is Map<String, Object?>
         ? raw['linkPreview']! as Map<String, Object?>
@@ -1978,7 +3630,16 @@ class AppController extends ChangeNotifier {
       'contact' => MessageContentKind.contact,
       'location' => MessageContentKind.location,
       'chat_history' => MessageContentKind.chatHistory,
-      'system' => MessageContentKind.system,
+      'sticker' || 'store_sticker' => MessageContentKind.sticker,
+      'moment' || 'moment_share' => MessageContentKind.momentShare,
+      'live' || 'live_event' => MessageContentKind.liveEvent,
+      'system' ||
+      'call' ||
+      'call_event' ||
+      'support' ||
+      'support_event' => MessageContentKind.system,
+      'screenshot' ||
+      'screenshot_notice' => MessageContentKind.screenshotNotice,
       null || 'text' =>
         replyToId == null || replyToId.isEmpty
             ? MessageContentKind.text
@@ -2003,10 +3664,38 @@ class AppController extends ChangeNotifier {
             'contact' => '[名片] ${body['name'] as String? ?? ''}'.trim(),
             'location' => '[位置] ${body['name'] as String? ?? ''}'.trim(),
             'chat_history' => _chatHistoryEventSummary(body),
+            'sticker' || 'store_sticker' =>
+              body['digest'] as String? ?? body['content'] as String? ?? '[表情]',
+            'moment' || 'moment_share' =>
+              body['content'] as String? ??
+                  body['digest'] as String? ??
+                  '[朋友圈]',
+            'live' || 'live_event' =>
+              body['digest'] as String? ??
+                  body['content'] as String? ??
+                  '[直播互动]',
+            'system' =>
+              body['digest'] as String? ??
+                  body['content'] as String? ??
+                  '[系统消息]',
+            'call' || 'call_event' => callEventDisplayText(body),
+            'support' || 'support_event' => supportEventDisplayText(body),
+            'screenshot' || 'screenshot_notice' =>
+              senderId == currentUser?.id ? '你截取了聊天界面' : '对方截取了聊天界面',
             null || 'text' => '',
             _ => '[当前版本暂不支持此消息]',
           },
       kind: kind,
+      event: body['event'] as String?,
+      robotId:
+          body['robot_id'] as String? ??
+          body['robotId'] as String? ??
+          raw['robot_id'] as String? ??
+          raw['robotId'] as String?,
+      eventData: body['data'] is Map
+          ? Map<String, Object?>.from(body['data']! as Map)
+          : const {},
+      chatHistoryEntries: chatHistoryEntriesFrom(body['entries']),
       mediaUrl: body['url'] as String? ?? body['downloadUrl'] as String?,
       mediaId: body['mediaId'] as String?,
       fileName: body['fileName'] as String?,
@@ -2219,29 +3908,88 @@ class AppController extends ChangeNotifier {
   }
 
   String _newClientMessageId() {
-    final random = _random.nextInt(1 << 32).toRadixString(16).padLeft(8, '0');
-    return '${DateTime.now().microsecondsSinceEpoch}-$random';
+    return createClientMessageId(_random);
   }
 
   String _messageFor(Object exception, {required String fallback}) {
-    final message = exception.toString();
-    if (message.isEmpty ||
-        message == 'Exception' ||
-        message.contains('ClientException') ||
+    final message = exception.toString().trim();
+    if (message.contains('TimeoutException')) {
+      return '连接服务器超时，请稍后重试';
+    }
+    if (message.contains('HandshakeException') ||
+        message.contains('CERTIFICATE_VERIFY_FAILED')) {
+      return '安全连接失败，请检查手机时间或网络';
+    }
+    if (message.contains('ClientException') ||
         message.contains('Failed to fetch') ||
         message.contains('SocketException') ||
         message.contains('XMLHttpRequest error')) {
+      return '无法连接服务器，请检查网络后重试';
+    }
+    if (message.isEmpty || message == 'Exception') {
       return fallback;
     }
-    return message
+    final normalized = message
         .replaceFirst('FormatException: ', '')
-        .replaceFirst('ImApiException: ', '');
+        .replaceFirst('ImApiException: ', '')
+        .trim();
+    final lower = normalized.toLowerCase();
+    if (lower.contains('account already exists') ||
+        lower.contains('already registered') ||
+        lower.contains('user already exists')) {
+      return '该手机号已注册，请直接登录';
+    }
+    if (lower.contains('invalid credentials') ||
+        lower.contains('incorrect password') ||
+        lower.contains('invalid password')) {
+      return '手机号、密码或验证码不正确';
+    }
+    if (lower.contains('user not found') ||
+        lower.contains('account not found')) {
+      return '账号不存在，请先注册';
+    }
+    if (lower.contains('verification code') ||
+        lower.contains('invalid code') ||
+        lower.contains('code expired')) {
+      return '验证码无效或已过期，请重新获取';
+    }
+    if (lower.contains('too many requests') || lower.contains('rate limit')) {
+      return '操作过于频繁，请稍后再试';
+    }
+    if (lower.contains('handle is already in use')) {
+      return '这个呱呱号已被使用，请换一个';
+    }
+    if (lower.contains('handle change limit reached')) {
+      return '呱呱号修改次数已用完';
+    }
+    if (lower.contains('instant messaging service') ||
+        lower.contains('im unavailable')) {
+      return '即时通讯服务暂时不可用，请稍后重试';
+    }
+    if (lower.contains('verification provider') ||
+        lower.contains('sms unavailable') ||
+        lower.contains('sms not configured')) {
+      return '短信验证码服务暂时不可用，请稍后重试';
+    }
+    if (lower.contains('group ownership') ||
+        lower.contains('transfer ownership')) {
+      return '请先转让群主或解散所管理的群聊';
+    }
+    if (RegExp(r'[\u3400-\u9fff]').hasMatch(normalized)) return normalized;
+    return fallback;
   }
 
   @override
   void dispose() {
     _disposed = true;
+    _conversationRefreshTimer?.cancel();
     for (final timer in _deliveryTimers.values) {
+      timer.cancel();
+    }
+    for (final timer in _typingExpiryTimers.values) {
+      timer.cancel();
+    }
+    for (final timer in _typingStopTimers.values) {
       timer.cancel();
     }
     _connectionSubscription?.cancel();
@@ -2250,4 +3998,24 @@ class AppController extends ChangeNotifier {
     callController?.dispose();
     super.dispose();
   }
+}
+
+class _OptionalLoadResult<T> {
+  const _OptionalLoadResult(this.value, [this.error]);
+
+  final T value;
+  final String? error;
+}
+
+class _MessageLoadResult {
+  const _MessageLoadResult.success(this.messages)
+    : error = null,
+      stackTrace = null;
+
+  const _MessageLoadResult.failure(this.error, this.stackTrace)
+    : messages = null;
+
+  final List<ChatMessage>? messages;
+  final Object? error;
+  final StackTrace? stackTrace;
 }

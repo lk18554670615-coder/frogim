@@ -7,34 +7,43 @@ import 'package:linli_im/core/models.dart';
 import 'package:linli_im/data/live_repository.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/fake_wukong_gateway.dart';
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
   test('文本发送携带结构化 mentions 且不降级为纯显示文本', () async {
-    http.Request? sentRequest;
+    final gateway = FakeWukongGateway();
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
-        if (request.url.path == '/v1/conversations/group-1/messages') {
-          sentRequest = request;
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/channels/conversations') {
           return _jsonResponse({
             'data': {
-              'message': _message(
-                id: 'message-1',
-                conversationId: 'group-1',
-                body: {
-                  'text': '@所有人 @林安 请查看公告',
-                  'mentions': ['friend-1'],
-                  'mentionAll': true,
+              'items': [
+                {
+                  'conversation': {
+                    'id': 'group-1',
+                    'type': 'group',
+                    'title': '群聊',
+                    'updatedAt': '2026-08-11T00:00:00Z',
+                  },
+                  'members': <Object?>[],
                 },
-              ),
+              ],
             },
+          });
+        }
+        if (request.url.path == '/v2/im/datasource/conversations') {
+          return _jsonResponse({
+            'data': {'items': <Object?>[]},
           });
         }
         return http.Response('{}', 404);
       }),
+      gateway: gateway,
     );
     await repository.login('13800138000', '123456');
 
@@ -55,32 +64,62 @@ void main() {
       ),
     );
 
-    final payload = jsonDecode(sentRequest!.body) as Map<String, Object?>;
-    expect(payload['type'], 'text');
-    expect(payload['body'], {
-      'text': '@所有人 @林安 请查看公告',
-      'mentions': ['friend-1'],
-      'mentionAll': true,
+    final payload = gateway.sentMessages.single.payload;
+    expect(payload['type'], 1);
+    expect(payload['content'], '@所有人 @林安 请查看公告');
+    expect(payload['mention'], {
+      'all': 1,
+      'uids': ['friend-1'],
     });
     expect(message.mentions.first.isEveryone, isTrue);
     expect(message.mentions.last.userId, 'friend-1');
     await repository.close();
   });
 
-  test('编辑和回应以服务端返回消息作为唯一成功状态', () async {
+  test('编辑、编辑记录和回应以服务端返回状态为准', () async {
     final requests = <http.Request>[];
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
         requests.add(request);
-        if (request.url.path == '/v1/messages/message-1') {
+        if (request.url.path == '/v2/messages/message-1') {
+          final requestBody = jsonDecode(request.body) as Map<String, Object?>;
           return _jsonResponse({
             'data': {
               'message': _message(
                 id: 'message-1',
-                body: {'text': '修改后的消息'},
+                body: {'text': requestBody['text']},
                 editedAt: '2026-08-01T08:30:00Z',
               ),
+            },
+          });
+        }
+        if (request.url.path == '/v2/messages/message-1/edits') {
+          return _jsonResponse({
+            'data': {
+              'items': [
+                {
+                  'messageId': 'message-1',
+                  'version': 0,
+                  'editorId': 'user-1',
+                  'body': {'text': '原始消息'},
+                  'editedAt': '2026-08-01T08:00:00Z',
+                },
+                {
+                  'messageId': 'message-1',
+                  'version': 1,
+                  'editorId': 'user-1',
+                  'body': {'text': '修改后的消息'},
+                  'editedAt': '2026-08-01T08:30:00Z',
+                },
+                {
+                  'messageId': 'message-1',
+                  'version': 2,
+                  'editorId': 'user-1',
+                  'body': {'text': '第二次修改'},
+                  'editedAt': '2026-08-01T08:31:00Z',
+                },
+              ],
             },
           });
         }
@@ -110,6 +149,7 @@ void main() {
     await repository.login('13800138000', '123456');
 
     final edited = await repository.editMessage('message-1', '修改后的消息');
+    final editedAgain = await repository.editMessage('message-1', '第二次修改');
     final added = await repository.setMessageReaction(
       'message-1',
       '👍',
@@ -120,15 +160,29 @@ void main() {
       '👍',
       active: false,
     );
+    final history = await repository.messageEditHistory('message-1');
 
     expect(requests[0].method, 'PATCH');
-    expect(jsonDecode(requests[0].body), {'text': '修改后的消息'});
+    final firstEditBody = jsonDecode(requests[0].body) as Map<String, Object?>;
+    final secondEditBody = jsonDecode(requests[1].body) as Map<String, Object?>;
+    expect(firstEditBody['text'], '修改后的消息');
+    expect(secondEditBody['text'], '第二次修改');
+    expect(firstEditBody['editId'], isNotEmpty);
+    expect(secondEditBody['editId'], isNotEmpty);
+    expect(secondEditBody['editId'], isNot(firstEditBody['editId']));
     expect(edited.editedAt, DateTime.parse('2026-08-01T08:30:00Z'));
-    expect(requests[1].method, 'PUT');
-    expect(requests[2].method, 'DELETE');
+    expect(editedAgain.text, '第二次修改');
+    expect(requests[2].method, 'PUT');
+    expect(requests[3].method, 'DELETE');
     expect(added.reactions.single.reactedByMe, isTrue);
     expect(added.reactions.single.count, 2);
     expect(removed.reactions.single.reactedByMe, isFalse);
+    expect(requests[4].method, 'GET');
+    expect(requests[4].url.path, '/v2/messages/message-1/edits');
+    expect(history.map((item) => item.version), [0, 1, 2]);
+    expect(history.first.isOriginal, isTrue);
+    expect(history.last.text, '第二次修改');
+    expect(history.last.editedAt, DateTime.parse('2026-08-01T08:31:00Z'));
     await repository.close();
   });
 
@@ -136,10 +190,11 @@ void main() {
     final paths = <String>[];
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
         paths.add('${request.method} ${request.url.path}');
-        if (request.url.path == '/v1/conversations/group-1/pinned-messages' &&
+        if (request.url.path == '/v2/messages/pins' &&
             request.method == 'GET') {
+          expect(request.url.queryParameters['conversationId'], 'group-1');
           return _jsonResponse({
             'data': {
               'items': [
@@ -153,11 +208,12 @@ void main() {
             },
           });
         }
-        if (request.url.path ==
-            '/v1/conversations/group-1/pinned-messages/pinned-1') {
+        if (request.url.path == '/v2/messages/pins/pinned-1') {
+          expect(request.url.queryParameters['conversationId'], 'group-1');
           return http.Response('', 204);
         }
-        if (request.url.path == '/v1/conversations/group-1/messages/search') {
+        if (request.url.path == '/v2/messages/search') {
+          expect(request.url.queryParameters['conversationId'], 'group-1');
           expect(request.url.queryParameters['q'], '群规');
           expect(request.url.queryParameters['limit'], '20');
           return _jsonResponse({
@@ -184,18 +240,21 @@ void main() {
     expect(pinned.single.isPinned, isTrue);
     expect(results.single.id, 'pinned-1');
     expect(paths, [
-      'GET /v1/conversations/group-1/pinned-messages',
-      'DELETE /v1/conversations/group-1/pinned-messages/pinned-1',
-      'GET /v1/conversations/group-1/messages/search',
+      'GET /v2/messages/pins',
+      'DELETE /v2/messages/pins/pinned-1',
+      'GET /v2/messages/search',
     ]);
     await repository.close();
   });
 }
 
-LiveImRepository _repository(http.Client client) => LiveImRepository(
+LiveImRepository _repository(
+  http.Client client, {
+  FakeWukongGateway? gateway,
+}) => LiveImRepository(
   client: client,
   apiBaseUrl: 'https://api.example.com',
-  wsUrl: 'wss://api.example.com/ws',
+  wukongGateway: gateway ?? FakeWukongGateway(),
 );
 
 http.Response _loginResponse() => _jsonResponse({
@@ -207,6 +266,16 @@ http.Response _loginResponse() => _jsonResponse({
       'name': '测试用户',
       'handle': 'tester',
       'phone': '13800138000',
+    },
+    'imSession': {
+      'uid': 'user-1',
+      'token': 'wk1_test',
+      'deviceFlag': 2,
+      'deviceLevel': 1,
+      'tcpUrl': 'tcp://im.example.com:5100',
+      'wsUrl': 'wss://im.example.com/ws',
+      'sdk': 'wukongimfluttersdk',
+      'issuedAt': '2026-08-11T00:00:00Z',
     },
   },
 });

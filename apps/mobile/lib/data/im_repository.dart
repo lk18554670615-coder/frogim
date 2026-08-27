@@ -1,3 +1,4 @@
+import '../core/auth_validation.dart';
 import '../core/models.dart';
 
 abstract interface class ImRepository {
@@ -7,11 +8,16 @@ abstract interface class ImRepository {
   bool get supportsDemo;
   AppUser? get currentUser;
 
+  Future<AuthPolicy> authPolicy();
   Future<bool> restoreSession();
   Future<String?> requestCode(String phone);
   Future<void> enterDemo();
   Future<AppUser> login(String phone, String code);
   Future<AppUser> passwordLogin(String phone, String password);
+  Future<QrLoginTicket> createQrLoginTicket({required String clientName});
+  Future<AppUser?> pollQrLoginTicket(QrLoginTicket ticket);
+  Future<QrLoginRequest> inspectQrLogin(String token);
+  Future<void> confirmQrLogin(String token);
   Future<AppUser> register({
     required String phone,
     required String code,
@@ -30,7 +36,10 @@ abstract interface class ImRepository {
     String? name,
     String? handle,
     String? signature,
+    String? gender,
     String? avatarMediaId,
+    bool? allowSearchByHandle,
+    bool? allowSearchByPhone,
   });
   Future<String> uploadAvatar(MediaUpload upload);
   Future<void> requestPhoneChangeCode(String phone);
@@ -38,6 +47,7 @@ abstract interface class ImRepository {
   Future<void> requestAccountDeletionCode();
   Future<void> deleteAccount(String code);
   Future<List<UserDevice>> userDevices();
+  Future<List<ImDeviceSession>> imDeviceSessions();
   Future<void> registerDevice({
     required String deviceId,
     required String platform,
@@ -48,12 +58,29 @@ abstract interface class ImRepository {
     required bool soundEnabled,
     required bool vibrationEnabled,
   });
+  Future<void> registerClientDevice({
+    required String installationId,
+    required String platform,
+    required String deviceName,
+    required String deviceModel,
+    required String osVersion,
+    required String appVersion,
+  });
   Future<void> removeUserDevice(String deviceId);
+  Future<void> quitImDeviceSession(int deviceFlag);
   Future<List<ChatMessage>> favorites();
   Future<void> submitFeedback({
     required String category,
     required String content,
     String contact,
+  });
+  Future<void> reportClientDiagnostic({
+    required String kind,
+    required String name,
+    required String fingerprint,
+    required String platform,
+    required String appVersion,
+    int? durationMs,
   });
   Future<List<AppAnnouncement>> announcements();
   Future<void> markAnnouncementRead(String announcementId);
@@ -102,6 +129,7 @@ abstract interface class ImRepository {
   );
   Future<void> markGroupAnnouncementRead(String conversationId);
   Future<List<GroupMember>> groupMembers(String conversationId);
+  Future<List<RobotProfile>> robotProfiles(String conversationId);
   Future<void> addGroupMembers(String conversationId, List<String> userIds);
   Future<void> inviteGroupMember(String conversationId, String userId);
   Future<List<GroupInvitation>> groupInvitations();
@@ -109,6 +137,11 @@ abstract interface class ImRepository {
   Future<void> joinGroupByQr(String token);
   Future<void> removeGroupMember(String conversationId, String userId);
   Future<void> setGroupRole(String conversationId, String userId, String role);
+  Future<void> setGroupMemberMuted(
+    String conversationId,
+    String userId,
+    DateTime? until,
+  );
   Future<void> transferGroupOwner(String conversationId, String userId);
   Future<void> setGroupNickname(String conversationId, String nickname);
   Future<GroupProfile> setGroupAllMuted(String conversationId, bool muted);
@@ -122,6 +155,7 @@ abstract interface class ImRepository {
     void Function(double progress)? onProgress,
   });
   Future<ChatMessage> editMessage(String messageId, String text);
+  Future<List<MessageEditRevision>> messageEditHistory(String messageId);
   Future<ChatMessage> setMessageReaction(
     String messageId,
     String emoji, {
@@ -148,9 +182,11 @@ abstract interface class ImRepository {
   Future<void> removeFavorite(ChatMessage message);
   Future<void> markRead(String conversationId, int sequence);
   Future<void> markDelivered(String conversationId, int sequence);
+  Future<void> setTyping(String conversationId, bool typing);
   Future<void> updateConversationPreferences(
     String conversationId, {
     bool? pinned,
+    bool? saved,
     bool? notificationsMuted,
     bool? manualUnread,
     bool? archived,
@@ -161,6 +197,12 @@ abstract interface class ImRepository {
     String text,
     DateTime scheduledAt, {
     String? replyToId,
+    int? expiresInSeconds,
+  });
+  Future<ScheduledMessage> updateScheduledMessage(
+    String scheduledMessageId, {
+    required String text,
+    required DateTime scheduledAt,
     int? expiresInSeconds,
   });
   Future<void> cancelScheduledMessage(String scheduledMessageId);
@@ -176,4 +218,28 @@ abstract interface class ImRepository {
   Future<void> syncNow();
   Future<void> connect();
   Future<void> close();
+}
+
+/// Optional capability for repositories backed by server-side message history.
+///
+/// The regular [ImRepository] contract stays compatible with lightweight test
+/// repositories, while production repositories can expose WuKongIM-style
+/// sequence pagination without pretending that a latest-page refresh is a full
+/// conversation history.
+abstract interface class PaginatedMessageRepository {
+  Future<List<ChatMessage>> olderMessages(
+    String conversationId, {
+    required int beforeSequence,
+    int limit = 50,
+  });
+}
+
+/// Optional capability for repositories that can return a local message page
+/// without waiting for the network.
+///
+/// Chat surfaces use this to paint the last known messages immediately, then
+/// reconcile them with [ImRepository.messages]. This mirrors mature IM clients:
+/// local history is the first frame, while remote sync remains authoritative.
+abstract interface class CachedMessageRepository {
+  Future<List<ChatMessage>> cachedMessages(String conversationId);
 }

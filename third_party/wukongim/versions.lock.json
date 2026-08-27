@@ -1,0 +1,239 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-11T00:00:00+08:00",
+  "targetPlatform": "linux/amd64",
+  "artifacts": [
+    {
+      "id": "wukongim-server-source",
+      "version": "v2.2.5-20260422",
+      "tagObject": "e3498a9dcdee908f621045eee971c5f5b960ee34",
+      "commit": "a888f89533d0e7d1b2030e06504ca97f1ad891d4",
+      "url": "https://codeload.github.com/WuKongIM/WuKongIM/tar.gz/a888f89533d0e7d1b2030e06504ca97f1ad891d4",
+      "file": "wukongim-server-a888f895.tar.gz",
+      "sha256": "a6c225123ea99130f38c4ef828f85ff6648ccfda4e9a9acba50354ddb2965306",
+      "license": "Apache-2.0",
+      "localPatch": {
+        "path": "infra/wukongim/server-patch/wukongim-v2.2.5-linli.patch",
+        "sha256": "6163ffc38a5bf4fbed2d7c94610c336708066f05df5a2bb5f49e20951f16b01a",
+        "upstreamFiles": {
+          "internal/api/channel_model.go": "0503bd72c4fb76b07c0725d7e7f606b259c146f428210d40f465195322dce357",
+          "internal/api/message.go": "a73a970ef4e8ee76c4cb4c02b805785546a51efb1e585f8134c012c4977d42e0",
+          "internal/api/user.go": "61d9fe26f751c2fa0287700d34688295b3b999795e80832ad4d6a747b50de2de",
+          "internal/eventbus/conn.go": "1818d144c4b81f2cfe2e41246fc175f36dc76424d8b319bc3a496c4c307cb58e",
+          "internal/plugin/api.go": "9411679f83900ed27de9c00cb36714c457986c88739badf77688a83331186d1e",
+          "internal/plugin/server.go": "d1f08e19683b0604fc3b6180004ecf5025cf6aad150c1178fbdff80b485af57b",
+          "internal/server/proto.go": "724a2ed6610c1c27b5dc8acc5173b03d80272ef6f048a6067923d9c7b0bea1ad",
+          "internal/user/handler/event_connect.go": "7aeee3aa179acd2f37636d9a63a22e91f986b4a1e75d27c926bd41032dd87478",
+          "internal/user/handler/event_onsend.go": "d8b8467ed099ee6eebe960b0788b55795cb25545151f75dd8aa617f34a5074cb",
+          "pkg/wkcache/message_event_cache.go": "3f63a9e5b2832de5d7aeeab66bcc4fa044d217677da3329debc4644b3d7ba79a"
+        },
+        "patchedFiles": {
+          "internal/api/channel_model.go": "008a677b5bbcc4d22bde645cc29ac5ae34f393a70de3c0dea1cc2269aa929a20",
+          "internal/api/channel_model_linli_patch_test.go": "caf755bc3731dd04bef0b93ddd5b147d3d34eb972d4119e243cb1b3e8d42fba6",
+          "internal/api/message.go": "01d571f24aab824e7f22ada77a3c6d1b1a6cdeb9398830332db9fe4a889a5f84",
+          "internal/api/user.go": "3c0f68d495d1c81fe67ef157cf867940b50829d809a3fd2492c01ff9466266d1",
+          "internal/eventbus/conn.go": "6c933dcaa0251bf046a8ef5ba3dbdd809770181cfde66e2826c21d9b104136cb",
+          "internal/eventbus/conn_linli_patch_test.go": "413625e31af2ab85af22d15f95ced885835f2aa0f886b27f3a468321c18281b3",
+          "internal/plugin/api.go": "eed0bc91fa6bf4d27678c1af659931dd72d72c63eab3edea3abd7abe247cfded",
+          "internal/plugin/runtime_log.go": "88bab34e2796c1bd0a6d6d9a6f1c550add3da92393d46edd2dd39271cbc3f201",
+          "internal/plugin/runtime_log_linli_patch_test.go": "eb1a70dbd506b10f8176436ab8aeed18313d068c83f65169ef392a51e220970a",
+          "internal/plugin/server.go": "173b976fb76c0358e9f36036ed19b9fe88e1937cfcc6984693b86866a471c64c",
+          "internal/server/proto.go": "2894ea76eedc8e2da290a3696a61192c6f2abed7f7428c195fff4d57935b104a",
+          "internal/user/handler/event_connect.go": "292b5381ebee310d1f01a50f97c3b091b3bb4689a93b1dfc6c86499ac88dd097",
+          "internal/user/handler/event_onsend.go": "5b35adc3b5f31f5e0cb1259aa1c4b7adbbfa7498c65520b5e886428a51798b48",
+          "pkg/wkcache/message_event_cache.go": "395c80cf46cbc4f0622b1be94d7ff0fa9ee1d4972dea556e48d3dbfe7960553a",
+          "pkg/wkcache/message_event_snapshot_linli_patch_test.go": "863d8e257987544694de4b0cad78c813df442ba84676daebe3b0a336b73ca351"
+        },
+        "scope": [
+          "allow exactly one structured @ separator for community-topic channel type 5 while preserving all other channel validation",
+          "make persisted stream.snapshot replace prior cached deltas before later deltas and terminal payload generation",
+          "capture bounded, redacted plugin stdout/stderr and expose it through an authenticated Manager API",
+          "remove tokens, connection AES material and message verification signatures from connection and authentication logs",
+          "replace message request bodies, token-update requests, subscriber lists and raw first-frame bytes in runtime logs with bounded non-secret metadata"
+        ],
+        "validation": [
+          "Linux unit tests for wkcache, plugin, API, eventbus and user handler packages",
+          "real container Manager API type-5 create/subscriber/whitelist probe",
+          "real container delta/snapshot/delta/close terminal snapshot probe",
+          "business admin plugin runtime log proxy without Manager token exposure",
+          "real duplicate-login log inspection and static forbidden secret-field logger scan",
+          "static source gates reject send-request serialization, token-request serialization, subscriber lists and raw protocol frame logging"
+        ]
+      }
+    },
+    {
+      "id": "wukongim-server-image-amd64",
+      "version": "v2.2.5-20260422",
+      "image": "registry.cn-shanghai.aliyuncs.com/wukongim/wukongim@sha256:df776513abdd4bb7a05c346d8ac00b2aff03ce8a74cef270a5299cebaa85fe67",
+      "platform": "linux/amd64",
+      "sourceCommit": "a888f89533d0e7d1b2030e06504ca97f1ad891d4",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "linli-wukongim-server-image-amd64",
+      "version": "v2.2.5-20260422-linli.3",
+      "image": "linli/wukongim:v2.2.5-20260422-linli.3-a888f895",
+      "platform": "linux/amd64",
+      "sourceCommit": "a888f89533d0e7d1b2030e06504ca97f1ad891d4",
+      "sourceSha256": "a6c225123ea99130f38c4ef828f85ff6648ccfda4e9a9acba50354ddb2965306",
+      "patchSha256": "6163ffc38a5bf4fbed2d7c94610c336708066f05df5a2bb5f49e20951f16b01a",
+      "dockerfile": "infra/wukongim/server-patch/Dockerfile",
+      "dockerfileSha256": "674fec468e6bb9b44a5bf2cd84e36fd34a55aa9ff848fe50043ab5031e38bbb9",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "wukongim-go-pdk-source",
+      "version": "v1.0.3",
+      "commit": "e21e26747c5224cbf28c71ad1384844fb314e3ce",
+      "url": "https://codeload.github.com/WuKongIM/go-pdk/tar.gz/e21e26747c5224cbf28c71ad1384844fb314e3ce",
+      "file": "go-pdk-e21e2674.tar.gz",
+      "sha256": "ae3f9a8374a35eae230cc36309e5a3cc44f0b3b2cd8c9faa0a6d2a86d5d54564",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "wukongim-go-proto-source",
+      "version": "v1.2.3",
+      "commit": "8d39c2d1b002976074476c1b45f8d6296493dc8e",
+      "url": "https://proxy.golang.org/github.com/%21wu%21kong%21i%21m/%21wu%21kong%21i%21m%21go%21proto/@v/v1.2.3.zip",
+      "file": "wukongim-go-proto-v1.2.3.zip",
+      "sha256": "13c491518d4d75e8ab07c984d50b9b941fe94303d7c59cdc12df437eb942d1b9",
+      "goSum": "h1:bB1pxQTPN97NyuopMVUgIwaP119WcIC6sejTGuaibuc=",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "wukongim-policy-go-builder-image",
+      "version": "go1.26.0-alpine3.23",
+      "image": "docker.io/library/golang@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5",
+      "platform": "linux/amd64",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "id": "wukongim-policy-installer-image",
+      "version": "3.23.3",
+      "image": "docker.io/library/alpine@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659",
+      "platform": "linux/amd64",
+      "license": "MIT"
+    },
+    {
+      "id": "wukongim-policy-dockerfile-frontend",
+      "version": "1.7",
+      "image": "docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "wukongim-flutter-sdk",
+      "version": "1.7.9",
+      "url": "https://pub.dev/api/archives/wukongimfluttersdk-1.7.9.tar.gz",
+      "file": "wukongimfluttersdk-1.7.9.tar.gz",
+      "sha256": "b6191a86cd1e4caacaa4652e95709310eb1493f159fee65e1dd53c2a3ff9e80a",
+      "publishedAt": "2026-04-28T08:02:36.218230Z",
+      "license": "Apache-2.0",
+      "supportedPlatforms": ["android", "ios", "macos"],
+      "localPatch": {
+        "path": "third_party/wukongim/flutter-sdk-1.7.9-patched",
+        "upstreamFiles": {
+          "lib/manager/connect_manager.dart": "b58e4f9b12944f20b8b1e3ddf070f3860bac2979206a97c6321f1771a95afce2",
+          "lib/proto/proto.dart": "e4fb0860ef3a43bc31a44405e274287496980090ae983c4b124253817b9bc6a7",
+          "lib/proto/packet.dart": "ea6d348797c9a53644aaeb8092edecdcf5456eb165ef646c99474d4c3bee9329",
+          "lib/entity/msg.dart": "7ced12c373ce58da02538faddf68a90c5e3f6ee049942576cc3051be9f35d61c",
+          "lib/wkim.dart": "b3f0fe19b87ce2c37292d17a50b1aa25cc4dcab23e7f296a728d3fdccb7a9271"
+        },
+        "patchedFiles": {
+          "lib/manager/connect_manager.dart": "b0309e9172b925e1fbd79adab4aa42c73089d72c39c1c9c8771e70036699c0b9",
+          "lib/manager/event_manager.dart": "824adf231e2c6ddef1b4cc1e883833bc491b28d8f7f252815bddc469018ea61e",
+          "lib/proto/proto.dart": "060fa3db9c175f986f856c944fedfa958ab0eff0b5db9b0b712c89e7f63c74ca",
+          "lib/proto/packet.dart": "fe79c11811b1a7414269af8d707fbec857f3b3f58c0dda735269eedce4444fc7",
+          "lib/entity/msg.dart": "10a02d8b70a33e67cb40ee7aec7101e887e030d34b22d1933e7bbf40d0da4c13",
+          "lib/wkim.dart": "1ae479b38e70c5bd1a61996e114817d114c74ecd5c304af0892f492573386ab7"
+        },
+        "scope": [
+          "invoke the existing reconnect callback exactly once on Socket onError/onDone",
+          "ignore stale transport callbacks by connection generation and keep only one delayed reconnect timer",
+          "replace the singleton socket wrapper on reconnect so the CONNECT frame is written to the newly opened socket",
+          "decode and dispatch the pinned v2.2.5 EventPacket (frame type 12; 10/11 are SUB/SUBACK)",
+          "correct SettingStream to bit 1 and decode the v4 legacy flag/no/uint64-id wire order",
+          "expose legacy stream metadata already present on message frames"
+        ],
+        "validation": [
+          "Android 15 API 35 re-CONNACK in 8.82 seconds and post-recovery SendAck reason=1",
+          "Android 15 API 35 generation guard: one cold-start connection, zero stale remote-close cycles, stable post-restart connection, and post-recovery SendAck reason=1",
+          "synthetic pinned EventPacket frame decode and dispatch test",
+          "synthetic pinned protocol-v4 stream anchor frame decode test"
+        ]
+      }
+    },
+    {
+      "id": "wukongim-js-sdk",
+      "version": "1.3.5",
+      "commit": "3c507ea3ebc08eae9d74fc1f76b150c380752008",
+      "url": "https://registry.npmjs.org/wukongimjssdk/-/wukongimjssdk-1.3.5.tgz",
+      "file": "wukongimjssdk-1.3.5.tgz",
+      "sha256": "b053c9623ac36b7ce78dfd874240ac48abaee48e20dd78d824f28881c5504cfc",
+      "npmIntegrity": "sha512-Y3RY4IdkLfCB2MCJFQlamSe5EQ6SU3PGphdoV9MJjJTSUAzZTTw5gBxmMi2jbwLRDqM+cSFaIb1vhQ+Rl0ftnQ==",
+      "license": "ISC",
+      "supportedPlatforms": ["web"]
+    },
+    {
+      "id": "wukongim-easy-flutter-sdk",
+      "version": "1.0.3",
+      "url": "https://pub.dev/api/archives/wukong_easy_sdk-1.0.3.tar.gz",
+      "file": "wukong_easy_sdk-1.0.3.tar.gz",
+      "sha256": "dfbe8672999d3c2e29e03e9d13deafef93389469e42eb95b5e8ffe55acf23e2c",
+      "license": "Apache-2.0",
+      "supportedPlatforms": ["macos"]
+    },
+    {
+      "id": "livekit-server-source",
+      "version": "v1.13.5",
+      "commit": "3b9f118327b257301083a7c4aa46076c8012918a",
+      "url": "https://codeload.github.com/livekit/livekit/tar.gz/3b9f118327b257301083a7c4aa46076c8012918a",
+      "file": "livekit-server-3b9f1183.tar.gz",
+      "sha256": "ec9be918d8e857e35a684fa6a000acecfe4e70553b9f67f28420537b6e93c24d",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "livekit-server-image-amd64",
+      "version": "v1.13.5",
+      "image": "docker.io/livekit/livekit-server@sha256:d0d1cfdbe95617647bbe91630454526c2cdd88cec83f41114b3495b444918b9a",
+      "platform": "linux/amd64",
+      "sourceCommit": "3b9f118327b257301083a7c4aa46076c8012918a",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "livekit-cli-load-source",
+      "version": "v2.18.2",
+      "commit": "6eec7324a8f7b24f62569a758878e762fed9f886",
+      "url": "https://codeload.github.com/livekit/livekit-cli/tar.gz/6eec7324a8f7b24f62569a758878e762fed9f886",
+      "file": "livekit-cli-6eec7324.tar.gz",
+      "sha256": "ca4e52ccc2899af9d76d0a11ba77c795f23406904163e3b6222209aad49d41df",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "livekit-cli-load-image-amd64",
+      "version": "v2.18.2",
+      "image": "docker.io/livekit/livekit-cli@sha256:4404f9428d7a048373661f6caf8ce099dbdcc1af47c9d046ad97cfb032b62029",
+      "platform": "linux/amd64",
+      "sourceCommit": "6eec7324a8f7b24f62569a758878e762fed9f886",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "backup-node-exporter-image-amd64",
+      "version": "v1.9.1",
+      "image": "docker.io/prom/node-exporter@sha256:863b62ff9f392b6f472e22b4b670ad1cabb66b3042502ebd4b2cd192733e1bce",
+      "platform": "linux/amd64",
+      "sourceCommit": "4e93d3f034842e0cec231a2380c11f3d0dc9ee3d",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "livekit-flutter-sdk",
+      "version": "2.7.0",
+      "commit": "8dfaf67339890b3df08778b4207f48f961f4982c",
+      "url": "https://pub.dev/api/archives/livekit_client-2.7.0.tar.gz",
+      "file": "livekit_client-2.7.0.tar.gz",
+      "sha256": "23a71bf6c94f83c0d1146c7ced8b863a5f8fe57c5e3007ea5f1b2881066b4126",
+      "publishedAt": "2026-03-24T12:30:14.570998Z",
+      "license": "Apache-2.0",
+      "supportedPlatforms": ["android", "ios", "macos", "web"]
+    }
+  ]
+}

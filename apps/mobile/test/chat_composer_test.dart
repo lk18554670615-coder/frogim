@@ -20,6 +20,20 @@ void main() {
     },
   );
 
+  test('voice duration rejects accidental taps and rounds valid clips up', () {
+    expect(voiceRecordingIsTooShort(const Duration(milliseconds: 799)), isTrue);
+    expect(
+      voiceRecordingIsTooShort(const Duration(milliseconds: 800)),
+      isFalse,
+    );
+    expect(voiceRecordingDurationSeconds(const Duration(milliseconds: 800)), 1);
+    expect(
+      voiceRecordingDurationSeconds(const Duration(milliseconds: 1200)),
+      2,
+    );
+    expect(voiceRecordingDurationSeconds(const Duration(seconds: 70)), 60);
+  });
+
   testWidgets('composer switches between keyboard and hold-to-talk', (
     tester,
   ) async {
@@ -34,6 +48,10 @@ void main() {
     expect(find.byKey(const Key('message-input')), findsNothing);
     expect(find.byKey(const Key('hold-to-talk')), findsOneWidget);
     expect(find.text('按住说话'), findsOneWidget);
+    final hold = tester.widget<GestureDetector>(
+      find.byKey(const Key('hold-to-talk')),
+    );
+    expect(hold.onLongPressCancel, isNotNull);
 
     await tester.tap(find.byKey(const Key('voice-mode-button')));
     await tester.pump();
@@ -95,6 +113,27 @@ void main() {
     expect(sends, 1);
   });
 
+  testWidgets(
+    'composer reports typing only while focused with non-empty text',
+    (tester) async {
+      final controller = TextEditingController();
+      addTearDown(controller.dispose);
+      final states = <bool>[];
+      await tester.pumpWidget(
+        _composer(controller: controller, onTypingChanged: states.add),
+      );
+
+      await tester.tap(find.byKey(const Key('message-input')));
+      await tester.enterText(find.byKey(const Key('message-input')), '正在输入');
+      await tester.pump();
+      expect(states, contains(true));
+
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pump();
+      expect(states.last, isFalse);
+    },
+  );
+
   testWidgets('composer panels remain usable on a narrow 200% text layout', (
     tester,
   ) async {
@@ -128,6 +167,7 @@ void main() {
 Widget _composer({
   required TextEditingController controller,
   VoidCallback? onSend,
+  ValueChanged<bool>? onTypingChanged,
   bool showEmoji = false,
   bool showAttachments = false,
   TextScaler textScaler = TextScaler.noScaling,
@@ -142,6 +182,7 @@ Widget _composer({
           showEmoji: showEmoji,
           showAttachments: showAttachments,
           onSend: onSend ?? () {},
+          onTypingChanged: onTypingChanged,
           onToggleAttachments: () {},
           onToggleEmoji: () {},
           onAttachment: (_) {},

@@ -7,11 +7,13 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>邻里通讯</string>
+	<string>青蛙呱呱</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>用于拍摄并发送聊天图片，以及在你主动发起或接听视频通话时显示画面。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>用于选择并发送聊天图片或视频。</string>
+	<string>用于在你主动选择时发送图片或视频，或识别相册中的二维码。</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>用于将个人二维码和聊天图片保存到系统相册。</string>
 	<key>NSMicrophoneUsageDescription</key>
@@ -25,7 +27,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>邻里通讯</string>
+	<string>青蛙呱呱</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

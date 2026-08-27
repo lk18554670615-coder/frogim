@@ -1,0 +1,11 @@
+{
+  "date": "2026-08-28",
+  "framework": "React 18 + Vite 8 + TypeScript",
+  "designSystem": "apps/admin/DESIGN.md",
+  "fontStack": "Outfit local package + PingFang SC + Microsoft YaHei fallback",
+  "palette": "TailAdmin Free gray scale with brand-blue positions mapped to Qingwa green",
+  "motion": "CSS state transitions with reduced-motion support",
+  "spacing": "4-point semantic scale",
+  "preserved": ["routes", "API calls", "RBAC", "business operations", "live-only data policy"],
+  "introduced": ["TailAdmin 290px/90px shell", "functional command search", "Qingwa brand mapping", "unified TailAdmin component proportions"]
+}

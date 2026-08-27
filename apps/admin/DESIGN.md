@@ -1,45 +1,76 @@
-# Design System
+# 青蛙呱呱管理后台设计系统
 
-## Overview
+本文件是管理后台的视觉与交互唯一标准。所有页面共享同一套令牌、导航、字体、表格、状态和动效规则；业务页面不得自行创建新的颜色或组件语言。
 
-邻里通讯控制台采用限制性配色和高信息密度产品布局。具体场景是：值班运营在明亮办公室中持续查看举报队列和系统状态，需要屏幕安静、信息明确、风险动作不含糊。
+## Genre
+
+TailAdmin 企业工作台（enterprise workbench）。本项目直接采用 TailAdmin Free React 的信息结构、组件比例、灰阶、Outfit 字体、圆角和响应式逻辑，只进行青蛙呱呱品牌替换与真实业务菜单映射，不自行创造另一套后台风格。
+
+## Macrostructure family
+
+- 应用页面：TailAdmin Workbench。桌面侧栏展开宽 290px、收起宽 90px；顶部栏固定搜索和账户状态；内容工作区最大宽 1536px。
+- 登录页面：单一聚焦表单。只保留产品标识、必要说明、字段、错误和安全边界。
+- 详情页面：主表格加抽屉或聚焦弹窗，不改变主工作区宽度。
 
 ## Theme
 
-- Light-first product interface
-- Restrained color strategy
-- Solid surfaces, subtle dividers, no decorative gradients
+- 画布、面板、文字与边框：严格沿用 TailAdmin Free 的 gray-50、white、gray-900、gray-600、gray-500、gray-200 灰阶。
+- 品牌替换：TailAdmin 原来的 brand-blue 位置统一替换为青蛙绿，包括当前菜单、主按钮、链接、焦点环和选中标签；不得额外扩大绿色面积。
+- Logo：使用 `public/qingwaguagua-mark.png` 与“青蛙呱呱”名称，不保留 TailAdmin 品牌资产。
+- 成功、警告、错误、信息仍使用独立语义色，不能因为品牌也是绿色而移除状态文字或图标。
 
-## Color Palette
-
-- Primary: `oklch(0.52 0.13 160)`，用于主要动作、当前导航和可交互焦点
-- Primary strong: `oklch(0.40 0.105 160)`，用于品牌侧栏和高对比状态
-- Background: `oklch(1 0 0)`
-- Surface: `oklch(0.975 0.006 160)`
-- Ink: `oklch(0.20 0.02 160)`
-- Muted: `oklch(0.48 0.025 160)`
-- Accent: `oklch(0.64 0.17 50)`，仅用于风险提醒与待办强调
-- Success, warning, danger and info each have filled, soft, and text variants
+所有准确色值和兼容别名见 `tokens.css`，页面 CSS 只引用命名令牌。
 
 ## Typography
 
-使用 `Inter, PingFang SC, Microsoft YaHei, system-ui, sans-serif` 单一字体栈。页面标题 24px/700，区块标题 16px/650，正文 14px/400，表格和标签 13px。数字使用等宽特性保持扫描稳定。
+- Display 与 Body：本地打包的 Outfit；中文依次回退 PingFang SC、Microsoft YaHei、system-ui。
+- 正文和导航采用 TailAdmin 的 14px / 20px 基准；表格和次要标签可使用 12–13px。
+- Mono：SF Mono / Cascadia Code，仅用于 ID、版本和技术字段。
+- 数字使用等宽数字特性，页面标题不使用全大写装饰标签。
 
-## Layout
+## Spacing
 
-桌面端使用 248px 固定侧栏和内容工作区。小于 880px 时侧栏转为抽屉，表格允许水平滚动，指标按 2 列或 1 列重排。内容宽度不做狭窄居中，数据工作台应利用可用空间。
+使用 `tokens.css` 中的 4pt 语义间距。主要页面桌面间距 24px，卡片栅格间距 24px，移动端收敛到 16px。不得在页面内临时增加随机间距。
 
 ## Components
 
-- Buttons: 8px radius, 36px height, explicit text labels
-- Inputs: 9px radius, visible focus ring, 40px default height
-- Panels: 12px radius, border only, no wide decorative shadow
-- Tables: 48px rows, sticky semantic header where useful
-- Status badges: text plus dot or icon, never color alone
-- Dialogs: only for destructive confirmation or focused editing
-- Loading: skeleton rows and metric placeholders
-- Empty states: explain why empty and provide next useful action
+- 侧栏：TailAdmin 原版 290px / 90px 白色固定导航；收起后悬停恢复完整菜单；当前项使用浅绿底和品牌绿文字。
+- 顶部栏：TailAdmin 原版结构，包含折叠按钮、430px 命令搜索、实时数据和当前管理员。
+- 按钮：40–44px 高、8px 圆角；主要动作使用品牌绿，次要动作白底灰边框。
+- 输入：40–44px 高、8px 圆角；聚焦同时显示边框和 3px 柔和焦点环。
+- 面板：TailAdmin `rounded-2xl` 对应 16px 圆角、1px gray-200 边框，默认无装饰阴影。
+- 表格：42px 表头、54px 数据行；悬停只使用轻微底色。
+- 状态：必须同时有文字和圆点或图标，禁止只靠颜色。
+- 登录：不展示口号、功能清单和无用介绍，只保留登录所需信息。
+
+## Content workbench
+
+内容页直接沿用开源 TailAdmin Free React 的成熟信息结构，并适配青蛙呱呱业务，不做模板式自由发挥：
+
+- 总览首屏使用四张 TailAdmin 指标卡，每张卡只保留服务端真实指标名、数字、变化说明、状态和一个语义图标。
+- 总览主体使用 12 列工作区：主要趋势占 8 列，构成或状态占 4 列；次级风险和审计卡片保持同一栅格。
+- 数据列表由搜索、筛选、表格、分页组成统一工作流；表格必须允许自身横向滚动，禁止压缩到文字互相遮挡。
+- 用户、群组和其他治理列表的操作列保持单行、右对齐，常用动作中性呈现，危险动作只使用红色文字或边框。
+- 表单页和设置页使用清楚的分区标题、说明与固定保存区，不使用营销文案、渐变大卡片或装饰性统计。
+- 空状态、错误、加载、弹窗和标签页必须沿用共享组件，禁止页面自行发明视觉规则。
 
 ## Motion
 
-State transitions use 160–220ms ease-out. Navigation and drawers may translate; content remains visible by default. All motion is disabled or reduced under `prefers-reduced-motion`.
+- 状态变化：160ms；抽屉：220ms；统一使用 `--ease-out`。
+- 只动画 `transform` 和 `opacity`，数据内容默认直接可见。
+- 键盘焦点立即出现，不做渐变动画。
+- `prefers-reduced-motion` 下取消空间位移并将持续时间压缩到近零。
+
+## Responsive
+
+- 1120px 以下侧栏变为带焦点管理的抽屉；桌面保持 TailAdmin 290px / 90px 行为。
+- 620px 以下页头和工具栏纵向排列，表格允许自身横向滚动，页面本身不得横向滚动。
+- 320、375、414、768px 均不得出现页面级横向溢出或两行操作按钮。
+
+## What pages MUST share
+
+产品标识、TailAdmin 侧栏结构、顶部栏、Outfit 字体、品牌绿位置、按钮语言、表格密度、焦点状态、弹窗结构和错误反馈。
+
+## What pages MAY differ on
+
+数据列、筛选器、指标数量、详情内容和风险动作；不得为单页更换主题或大面积品牌色。

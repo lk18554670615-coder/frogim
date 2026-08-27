@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:linli_im/calls/call_controller.dart';
 import 'package:linli_im/calls/call_media_engine.dart';
 import 'package:linli_im/calls/call_models.dart';
@@ -14,11 +13,82 @@ import 'package:linli_im/core/app_controller.dart';
 import 'package:linli_im/core/models.dart';
 import 'package:linli_im/data/demo_repository.dart';
 import 'package:linli_im/ui/screens/chat_screen.dart';
+import 'package:livekit_client/livekit_client.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('拨号、Offer/Answer/ICE 与控制状态形成完整闭环', () async {
+  test(
+    'Android cold-start accept restores media without presenting incoming UI again',
+    () async {
+      final fixture = _Fixture(incoming: true);
+      addTearDown(fixture.dispose);
+
+      fixture.systemCalls.emit(
+        SystemCallAction(
+          type: SystemCallActionType.accept,
+          serverCallId: fixture.repository.session.id,
+          systemCallId: 'cold-start-system-call-id',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(fixture.systemCalls.incomingCount, 0);
+      expect(fixture.repository.acceptCount, 1);
+      expect(fixture.repository.joinCount, 1);
+      expect(fixture.engine.connectCount, 1);
+      expect(fixture.controller.phase, CallPhase.connecting);
+      fixture.engine.connections.add(CallConnectionState.connected);
+      await Future<void>.delayed(Duration.zero);
+      expect(fixture.controller.phase, CallPhase.active);
+    },
+  );
+
+  test(
+    'Android process restore reconciles a still-ringing system call',
+    () async {
+      final fixture = _Fixture(incoming: true);
+      addTearDown(fixture.dispose);
+
+      fixture.systemCalls.emit(
+        SystemCallAction(
+          type: SystemCallActionType.restore,
+          serverCallId: fixture.repository.session.id,
+          systemCallId: 'restored-system-call-id',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(fixture.controller.phase, CallPhase.incoming);
+      expect(fixture.systemCalls.incomingCount, 0);
+      expect(fixture.repository.acceptCount, 0);
+      expect(fixture.repository.joinCount, 0);
+      expect(fixture.systemCalls.endedCallIds, isEmpty);
+    },
+  );
+
+  test('Android process restore clears a terminal stale system call', () async {
+    final fixture = _Fixture(incoming: true);
+    addTearDown(fixture.dispose);
+    fixture.repository.markMissed();
+
+    fixture.systemCalls.emit(
+      SystemCallAction(
+        type: SystemCallActionType.restore,
+        serverCallId: fixture.repository.session.id,
+        systemCallId: 'stale-system-call-id',
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(fixture.controller.phase, CallPhase.idle);
+    expect(
+      fixture.systemCalls.endedCallIds,
+      contains(fixture.repository.session.id),
+    );
+  });
+
+  test('主叫在对方接受后获取短期凭证并加入 LiveKit', () async {
     final fixture = _Fixture();
     addTearDown(fixture.dispose);
 
@@ -27,73 +97,205 @@ void main() {
       CallMediaType.video,
     );
     expect(fixture.controller.phase, CallPhase.outgoing);
-    expect(fixture.repository.signals.last.type, 'call.offer');
-    expect(fixture.repository.signals.last.payload['sdp'], 'local-offer');
+    expect(fixture.engine.initialized, isTrue);
+    expect(fixture.engine.connectedSession, isNull);
 
-    fixture.engine.candidates.add({
-      'candidate': 'candidate:local',
-      'sdpMid': '0',
-      'sdpMLineIndex': 0,
-    });
-    await Future<void>.delayed(Duration.zero);
-    expect(fixture.repository.signals.last.type, 'call.ice');
-
-    fixture.repository.emit('call.answer', {
-      'callId': fixture.repository.session.id,
-      'sdp': 'remote-answer',
-      'type': 'answer',
-    });
-    await Future<void>.delayed(Duration.zero);
-    expect(fixture.engine.remoteDescriptions.single.$1, 'remote-answer');
+    fixture.repository.acceptRemotely();
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    expect(fixture.repository.joinCount, 1);
+    expect(fixture.engine.connectedSession?.roomName, 'call-room');
+    expect(fixture.controller.phase, CallPhase.connecting);
 
     fixture.engine.connections.add(CallConnectionState.connected);
     await Future<void>.delayed(Duration.zero);
+    expect(fixture.controller.phase, CallPhase.active);
+    fixture.repository.acceptRemotely();
+    await Future<void>.delayed(Duration.zero);
+    expect(fixture.repository.joinCount, 1);
     expect(fixture.controller.phase, CallPhase.active);
 
     await fixture.controller.toggleMute();
     await fixture.controller.toggleCamera();
     await fixture.controller.toggleSpeaker();
+    await fixture.controller.toggleScreenShare();
     expect(fixture.engine.muted, isTrue);
     expect(fixture.engine.cameraEnabled, isFalse);
     expect(fixture.engine.speakerEnabled, isFalse);
+    expect(fixture.engine.screenShareEnabled, isTrue);
   });
 
-  test('重复来电事件幂等，接听后发送 Answer', () async {
+  test('系统通话层只接收公开呱呱号，不泄露内部账号标识', () async {
+    const internalPeer = AppUser(
+      id: 'internal-peer',
+      name: '内部联系人',
+      handle: 'll_1234567890abcdef1234',
+      presence: '',
+    );
+    final conversation = Conversation(
+      id: 'internal-handle-conversation',
+      title: '内部联系人',
+      subtitle: '',
+      updatedAt: DateTime(2026, 8, 16),
+      kind: ConversationKind.direct,
+      members: const [_Fixture.me, internalPeer],
+    );
+    final repository = _FakeCallRepository(incoming: false);
+    final systemCalls = _FakeSystemCallService();
+    final controller = CallController(
+      repository: repository,
+      currentUser: () => _Fixture.me,
+      findConversation: (_) => conversation,
+      engineFactory: _FakeEngine.new,
+      systemCallService: systemCalls,
+    );
+    addTearDown(() {
+      controller.dispose();
+      repository.dispose();
+    });
+
+    await controller.startCall(conversation, CallMediaType.audio);
+    expect(systemCalls.lastOutgoingHandle, isNull);
+  });
+
+  test('通话媒体控制失败时恢复原状态并保留可读提示', () async {
+    final fixture = _Fixture();
+    addTearDown(fixture.dispose);
+    await fixture.controller.startCall(
+      fixture.conversation,
+      CallMediaType.video,
+    );
+    fixture.repository.acceptRemotely();
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    fixture.engine.connections.add(CallConnectionState.connected);
+    await Future<void>.delayed(Duration.zero);
+
+    fixture.engine.failMuted = true;
+    await fixture.controller.toggleMute();
+    expect(fixture.controller.muted, isFalse);
+    expect(fixture.engine.muted, isFalse);
+    expect(fixture.controller.errorMessage, '麦克风状态切换失败，请重试');
+
+    fixture.engine.failMuted = false;
+    await fixture.controller.toggleMute();
+    expect(fixture.controller.muted, isTrue);
+    expect(fixture.controller.errorMessage, isNull);
+
+    fixture.engine.failSpeaker = true;
+    await fixture.controller.toggleSpeaker();
+    expect(fixture.controller.speakerEnabled, isTrue);
+    expect(fixture.engine.speakerEnabled, isTrue);
+    expect(fixture.controller.errorMessage, '扬声器切换失败，请重试');
+
+    fixture.engine.failCamera = true;
+    await fixture.controller.toggleCamera();
+    expect(fixture.controller.cameraEnabled, isTrue);
+    expect(fixture.engine.cameraEnabled, isTrue);
+    expect(fixture.controller.errorMessage, '摄像头状态切换失败，请重试');
+
+    fixture.engine.failScreenShare = true;
+    await fixture.controller.toggleScreenShare();
+    expect(fixture.controller.screenShareEnabled, isFalse);
+    expect(fixture.controller.errorMessage, '无法共享屏幕');
+
+    fixture.engine.failSwitchCamera = true;
+    await fixture.controller.switchCamera();
+    expect(fixture.controller.errorMessage, '摄像头切换失败，请重试');
+  });
+
+  testWidgets('通话中的媒体控制失败会在控制区显示反馈', (tester) async {
+    final fixture = _Fixture();
+    addTearDown(fixture.dispose);
+    await tester.runAsync(() async {
+      await fixture.controller.startCall(
+        fixture.conversation,
+        CallMediaType.video,
+      );
+      fixture.repository.acceptRemotely();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      fixture.engine.connections.add(CallConnectionState.connected);
+      await Future<void>.delayed(Duration.zero);
+      fixture.engine.failCamera = true;
+      await fixture.controller.toggleCamera();
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CallUiHost(
+          controller: fixture.controller,
+          child: const Scaffold(body: Text('消息首页')),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const Key('call-control-error')), findsOneWidget);
+    expect(find.text('摄像头状态切换失败，请重试'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.runAsync(fixture.controller.end);
+  });
+
+  test('群聊主叫只在首位成员接听后加入同一个 LiveKit 房间', () async {
+    final repository = _FakeCallRepository(incoming: false);
+    final engine = _FakeEngine();
+    final systemCalls = _FakeSystemCallService();
+    final group = Conversation(
+      id: 'group-call-conversation',
+      title: '邻里产品小组',
+      subtitle: '',
+      updatedAt: DateTime(2026, 8, 11),
+      kind: ConversationKind.group,
+      members: const [_Fixture.me, _Fixture.peer],
+    );
+    final controller = CallController(
+      repository: repository,
+      currentUser: () => _Fixture.me,
+      findConversation: (_) => group,
+      engineFactory: () => engine,
+      systemCallService: systemCalls,
+    );
+    addTearDown(() {
+      controller.dispose();
+      repository.dispose();
+    });
+
+    await controller.startCall(group, CallMediaType.video);
+    expect(controller.session?.isGroup, isTrue);
+    expect(controller.phase, CallPhase.outgoing);
+    repository.acceptRemotely();
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    expect(repository.joinCount, 1);
+    expect(engine.connectCount, 1);
+    expect(systemCalls.outgoingCount, 0);
+  });
+
+  test('重复来电事件幂等，接听后只加入一次 LiveKit', () async {
     final fixture = _Fixture(incoming: true);
     addTearDown(fixture.dispose);
     final payload = {'call': fixture.repository.sessionJson};
 
-    fixture.repository.emit('call.invite', payload);
-    fixture.repository.emit('call.invite', payload);
-    fixture.repository.emit('call.offer', {
-      'callId': fixture.repository.session.id,
-      'sdp': 'remote-offer',
-      'type': 'offer',
-    });
+    fixture.repository.emit('call.invited', payload);
+    fixture.repository.emit('call.invited', payload);
     await Future<void>.delayed(Duration.zero);
 
     expect(fixture.controller.phase, CallPhase.incoming);
     await fixture.controller.accept();
 
     expect(fixture.repository.acceptCount, 1);
-    expect(fixture.repository.signals.last.type, 'call.answer');
-    expect(fixture.repository.signals.last.payload['sdp'], 'local-answer');
+    expect(fixture.repository.joinCount, 1);
+    expect(fixture.engine.connectCount, 1);
   });
 
-  test('系统接听动作桥接到现有 CallController', () async {
+  test('系统接听动作桥接到 LiveKit CallController', () async {
     final fixture = _Fixture(incoming: true);
     addTearDown(fixture.dispose);
-    fixture.repository.emit('call.invite', {
+    fixture.repository.emit('call.invited', {
       'call': fixture.repository.sessionJson,
-    });
-    fixture.repository.emit('call.offer', {
-      'callId': fixture.repository.session.id,
-      'sdp': 'remote-offer',
-      'type': 'offer',
     });
     await Future<void>.delayed(Duration.zero);
 
     expect(fixture.systemCalls.incomingCount, 1);
+    expect(fixture.systemCalls.lastIncomingHandle, 'linyu');
     fixture.systemCalls.emit(
       SystemCallAction(
         type: SystemCallActionType.accept,
@@ -104,7 +306,7 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 20));
 
     expect(fixture.repository.acceptCount, 1);
-    expect(fixture.repository.signals.last.type, 'call.answer');
+    expect(fixture.engine.connectCount, 1);
   });
 
   test('浏览器拒绝媒体权限时保留可操作的明确失败状态', () async {
@@ -140,19 +342,22 @@ void main() {
     expect(message, '未检测到可用的麦克风，请连接设备后重试');
   });
 
-  test('ICE 失败且服务端未提供 TURN 时显示配置级诊断', () async {
+  test('LiveKit 连接失败时结束服务端通话并显示媒体诊断', () async {
     final fixture = _Fixture();
     addTearDown(fixture.dispose);
     await fixture.controller.startCall(
       fixture.conversation,
       CallMediaType.audio,
     );
+    fixture.repository.acceptRemotely();
+    await Future<void>.delayed(const Duration(milliseconds: 10));
 
     fixture.engine.connections.add(CallConnectionState.failed);
-    await Future<void>.delayed(const Duration(milliseconds: 20));
+    await Future<void>.delayed(const Duration(milliseconds: 30));
 
     expect(fixture.controller.phase, CallPhase.failed);
-    expect(fixture.controller.errorMessage, contains('TURN 中继'));
+    expect(fixture.controller.errorMessage, contains('LiveKit'));
+    expect(fixture.repository.lastHangupReason, 'media_failed');
   });
 
   testWidgets('来电全屏展示联系人并提供拒绝和接听操作', (tester) async {
@@ -171,13 +376,13 @@ void main() {
       ),
     );
 
-    fixture.repository.emit('call.invite', {
+    fixture.repository.emit('call.invited', {
       'call': fixture.repository.sessionJson,
     });
     await tester.pump();
 
     expect(find.byKey(const Key('call-screen')), findsOneWidget);
-    expect(find.text('林屿'), findsWidgets);
+    expect(find.text('林笙'), findsWidgets);
     expect(find.byKey(const Key('reject-call')), findsOneWidget);
     expect(find.byKey(const Key('accept-call')), findsOneWidget);
     expect(
@@ -188,7 +393,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 700));
   });
 
-  testWidgets('通话失败面板适配小屏深色和 200% 字体且按钮不小于 44pt', (tester) async {
+  testWidgets('通话失败面板适配小屏深色和 200% 字体', (tester) async {
     tester.view.physicalSize = const Size(320, 568);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -213,10 +418,18 @@ void main() {
       ),
     );
 
-    await expectLater(
-      fixture.controller.startCall(fixture.conversation, CallMediaType.video),
-      throwsA(isA<PlatformException>()),
-    );
+    Object? startError;
+    await tester.runAsync(() async {
+      try {
+        await fixture.controller.startCall(
+          fixture.conversation,
+          CallMediaType.video,
+        );
+      } catch (error) {
+        startError = error;
+      }
+    });
+    expect(startError, isA<PlatformException>());
     await tester.pump();
 
     expect(find.byKey(const Key('call-failure-message')), findsOneWidget);
@@ -226,16 +439,16 @@ void main() {
     expect(tester.takeException(), isNull);
 
     await tester.tap(close);
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('call-screen')), findsNothing);
   });
 
-  testWidgets('单聊显示语音视频入口，群聊不显示', (tester) async {
+  testWidgets('单聊和普通群聊都显示语音视频入口', (tester) async {
     final appController = AppController(DemoImRepository());
     addTearDown(appController.dispose);
     final direct = Conversation(
       id: 'conversation-1',
-      title: '林屿',
+      title: '林笙',
       subtitle: '',
       updatedAt: DateTime(2026, 7, 31),
       kind: ConversationKind.direct,
@@ -264,8 +477,8 @@ void main() {
       ),
     );
     await tester.pump();
-    expect(find.byKey(const Key('start-audio-call')), findsNothing);
-    expect(find.byKey(const Key('start-video-call')), findsNothing);
+    expect(find.byKey(const Key('start-audio-call')), findsOneWidget);
+    expect(find.byKey(const Key('start-video-call')), findsOneWidget);
   });
 }
 
@@ -291,13 +504,13 @@ class _Fixture {
   );
   static const peer = AppUser(
     id: 'peer',
-    name: '林屿',
+    name: '林笙',
     handle: 'linyu',
     presence: '',
   );
   final conversation = Conversation(
     id: 'conversation-1',
-    title: '林屿',
+    title: '林笙',
     subtitle: '',
     updatedAt: DateTime(2026, 7, 31),
     kind: ConversationKind.direct,
@@ -316,6 +529,10 @@ class _Fixture {
 class _FakeSystemCallService implements SystemCallService {
   final actionController = StreamController<SystemCallAction>.broadcast();
   int incomingCount = 0;
+  int outgoingCount = 0;
+  String? lastIncomingHandle;
+  String? lastOutgoingHandle;
+  final endedCallIds = <String>[];
 
   @override
   Stream<SystemCallAction> get actions => actionController.stream;
@@ -332,6 +549,7 @@ class _FakeSystemCallService implements SystemCallService {
     String? avatarUrl,
   }) async {
     incomingCount++;
+    lastIncomingHandle = callerHandle;
     return true;
   }
 
@@ -341,23 +559,21 @@ class _FakeSystemCallService implements SystemCallService {
     required String calleeName,
     String? calleeHandle,
     String? avatarUrl,
-  }) async {}
+  }) async {
+    outgoingCount++;
+    lastOutgoingHandle = calleeHandle;
+  }
+
   @override
   Future<void> setConnected(String serverCallId) async {}
   @override
   Future<void> setMuted(String serverCallId, bool muted) async {}
   @override
-  Future<void> end(String serverCallId) async {}
+  Future<void> end(String serverCallId) async => endedCallIds.add(serverCallId);
   @override
   Future<String?> voipPushToken() async => null;
   @override
   Future<void> dispose() => actionController.close();
-}
-
-class _SignalRecord {
-  const _SignalRecord(this.type, this.payload);
-  final String type;
-  final Map<String, Object?> payload;
 }
 
 class _FakeCallRepository implements CallRepository {
@@ -365,19 +581,27 @@ class _FakeCallRepository implements CallRepository {
     : session = _session(incoming: incoming);
 
   final events = StreamController<CallSignalEvent>.broadcast();
-  final List<_SignalRecord> signals = [];
   CallSession session;
   int acceptCount = 0;
+  int joinCount = 0;
+  String? lastHangupReason;
 
   Map<String, Object?> get sessionJson => {
     'id': session.id,
     'conversationId': session.conversationId,
+    'kind': session.kind,
     'callerId': session.callerId,
     'calleeId': session.calleeId,
+    'participantIds': session.participantIds,
+    'joinedUserIds': session.joinedUserIds,
+    'declinedUserIds': session.declinedUserIds,
+    'leftUserIds': session.leftUserIds,
     'mediaType': session.mediaType.name,
     'status': session.status,
     'invitedAt': session.invitedAt.toUtc().toIso8601String(),
     'expiresAt': session.expiresAt.toUtc().toIso8601String(),
+    if (session.acceptedAt != null)
+      'acceptedAt': session.acceptedAt!.toUtc().toIso8601String(),
   };
 
   @override
@@ -386,24 +610,59 @@ class _FakeCallRepository implements CallRepository {
   void emit(String type, Map<String, Object?> payload) =>
       events.add(CallSignalEvent(type: type, payload: payload));
 
+  void acceptRemotely() {
+    session = _accepted(session);
+    emit('call.accepted', {'call': sessionJson, 'callId': session.id});
+  }
+
+  void markMissed() {
+    final source = session;
+    session = CallSession(
+      id: source.id,
+      conversationId: source.conversationId,
+      kind: source.kind,
+      callerId: source.callerId,
+      calleeId: source.calleeId,
+      participantIds: source.participantIds,
+      joinedUserIds: source.joinedUserIds,
+      declinedUserIds: source.declinedUserIds,
+      leftUserIds: source.leftUserIds,
+      mediaType: source.mediaType,
+      status: 'missed',
+      invitedAt: source.invitedAt,
+      expiresAt: source.expiresAt,
+      endReason: 'timeout',
+      endedAt: DateTime.now(),
+    );
+  }
+
   @override
   Future<CallConfiguration> callConfiguration() async =>
       const CallConfiguration(
-        iceServers: [],
+        provider: 'livekit',
+        url: 'wss://livekit.example.test/rtc',
         inviteTimeout: Duration(seconds: 30),
+        tokenTtl: Duration(minutes: 5),
+        maxParticipants: 9,
+        supportsScreenShare: true,
       );
 
   @override
   Future<CallSession> inviteCall({
     required String callId,
     required String conversationId,
-    required String calleeUserId,
+    String? calleeUserId,
     required CallMediaType mediaType,
   }) async => session = CallSession(
     id: callId,
     conversationId: conversationId,
+    kind: calleeUserId == null ? 'group' : 'direct',
     callerId: 'me',
-    calleeId: calleeUserId,
+    calleeId: calleeUserId ?? '',
+    participantIds: calleeUserId == null
+        ? const ['me', 'peer']
+        : ['me', calleeUserId],
+    joinedUserIds: const ['me'],
     mediaType: mediaType,
     status: 'invited',
     invitedAt: DateTime.now(),
@@ -416,6 +675,7 @@ class _FakeCallRepository implements CallRepository {
   @override
   Future<CallSession> acceptCall(String callId) async {
     acceptCount++;
+    session = _accepted(session);
     return session;
   }
 
@@ -431,13 +691,21 @@ class _FakeCallRepository implements CallRepository {
   Future<CallSession> hangupCall(
     String callId, {
     String reason = 'completed',
-  }) async => session;
+  }) async {
+    lastHangupReason = reason;
+    return session;
+  }
 
   @override
-  Future<void> sendCallSignal(
-    String type,
-    Map<String, Object?> payload,
-  ) async => signals.add(_SignalRecord(type, payload));
+  Future<CallMediaSession> joinCall(String callId) async {
+    joinCount++;
+    return CallMediaSession(
+      url: 'wss://livekit.example.test/rtc',
+      roomName: 'call-room',
+      token: 'short-lived-token',
+      expiresAt: DateTime.now().add(const Duration(minutes: 5)),
+    );
+  }
 
   void dispose() => events.close();
 
@@ -454,6 +722,26 @@ class _FakeCallRepository implements CallRepository {
       expiresAt: now.add(const Duration(seconds: 30)),
     );
   }
+
+  static CallSession _accepted(CallSession source) => CallSession(
+    id: source.id,
+    conversationId: source.conversationId,
+    kind: source.kind,
+    callerId: source.callerId,
+    calleeId: source.calleeId,
+    participantIds: source.participantIds,
+    joinedUserIds: {
+      ...source.joinedUserIds,
+      if (source.isGroup) 'peer',
+    }.toList(),
+    declinedUserIds: source.declinedUserIds,
+    leftUserIds: source.leftUserIds,
+    mediaType: source.mediaType,
+    status: 'accepted',
+    invitedAt: source.invitedAt,
+    expiresAt: source.expiresAt,
+    acceptedAt: DateTime.now(),
+  );
 }
 
 class _FakeEngine implements CallMediaEngine {
@@ -461,20 +749,33 @@ class _FakeEngine implements CallMediaEngine {
 
   final Object? initializeError;
   final connections = StreamController<CallConnectionState>.broadcast();
-  final candidates = StreamController<Map<String, Object?>>.broadcast();
-  final remoteDescriptions = <(String, String)>[];
+  final media = StreamController<void>.broadcast();
+  bool initialized = false;
   bool muted = false;
   bool cameraEnabled = true;
   bool speakerEnabled = true;
+  bool failMuted = false;
+  bool failCamera = false;
+  bool failSpeaker = false;
+  bool failScreenShare = false;
+  bool failSwitchCamera = false;
+  @override
+  bool screenShareEnabled = false;
+  int connectCount = 0;
+  CallMediaSession? connectedSession;
 
   @override
   Stream<CallConnectionState> get connectionChanges => connections.stream;
   @override
-  Stream<Map<String, Object?>> get localCandidates => candidates.stream;
+  Stream<void> get mediaChanges => media.stream;
   @override
-  RTCVideoRenderer? get localRenderer => null;
+  VideoTrack? get localVideoTrack => null;
   @override
-  RTCVideoRenderer? get remoteRenderer => null;
+  List<CallRemoteVideo> get remoteVideos => const [];
+  @override
+  List<String> get activeSpeakerIds => const [];
+  @override
+  int get participantCount => connectedSession == null ? 1 : 2;
 
   @override
   Future<void> initialize({
@@ -482,36 +783,48 @@ class _FakeEngine implements CallMediaEngine {
     required CallMediaType mediaType,
   }) async {
     if (initializeError case final error?) throw error;
+    initialized = true;
   }
 
   @override
-  Future<Map<String, String>> createOffer() async => {
-    'sdp': 'local-offer',
-    'type': 'offer',
-  };
+  Future<void> connect(CallMediaSession session) async {
+    connectCount++;
+    connectedSession = session;
+  }
+
   @override
-  Future<Map<String, String>> createAnswer() async => {
-    'sdp': 'local-answer',
-    'type': 'answer',
-  };
+  Future<void> setMuted(bool value) async {
+    if (failMuted) throw StateError('mute control failed');
+    muted = value;
+  }
+
   @override
-  Future<void> setRemoteDescription({
-    required String sdp,
-    required String type,
-  }) async => remoteDescriptions.add((sdp, type));
+  Future<void> setCameraEnabled(bool value) async {
+    if (failCamera) throw StateError('camera control failed');
+    cameraEnabled = value;
+  }
+
   @override
-  Future<void> addRemoteCandidate(Map<String, Object?> candidate) async {}
+  Future<void> setSpeakerEnabled(bool value) async {
+    if (failSpeaker) throw StateError('speaker control failed');
+    speakerEnabled = value;
+  }
+
   @override
-  Future<void> setMuted(bool value) async => muted = value;
+  Future<void> setScreenShareEnabled(bool value) async {
+    if (failScreenShare) throw StateError('screen share control failed');
+    screenShareEnabled = value;
+    media.add(null);
+  }
+
   @override
-  Future<void> setCameraEnabled(bool value) async => cameraEnabled = value;
-  @override
-  Future<void> setSpeakerEnabled(bool value) async => speakerEnabled = value;
-  @override
-  Future<void> switchCamera() async {}
+  Future<void> switchCamera() async {
+    if (failSwitchCamera) throw StateError('switch camera failed');
+  }
+
   @override
   Future<void> dispose() async {
     await connections.close();
-    await candidates.close();
+    await media.close();
   }
 }

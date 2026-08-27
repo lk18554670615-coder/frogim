@@ -3,10 +3,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
-ARG VITE_ADMIN_API_URL=/api/v1/admin
-ARG VITE_ALLOW_DEMO=false
+ARG VITE_ADMIN_API_URL=/api/v2/admin
 ENV VITE_ADMIN_API_URL=$VITE_ADMIN_API_URL
-ENV VITE_ALLOW_DEMO=$VITE_ALLOW_DEMO
 RUN npm run build
 
 FROM nginxinc/nginx-unprivileged:1.29-alpine

@@ -7,35 +7,29 @@ import 'package:linli_im/core/models.dart';
 import 'package:linli_im/data/live_repository.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/fake_wukong_gateway.dart';
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
   test('名片消息只发送协议允许的公开资料字段', () async {
-    http.Request? messageRequest;
+    final gateway = FakeWukongGateway();
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
-        if (request.url.path == '/v1/conversations/c1/messages') {
-          messageRequest = request;
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/channels/conversations') {
+          return _conversationResponse();
+        }
+        if (request.url.path == '/v2/im/datasource/conversations') {
           return _jsonResponse({
-            'data': {
-              'message': _message(
-                id: 'contact-1',
-                type: 'contact',
-                body: const {
-                  'userId': 'friend-1',
-                  'name': '林安',
-                  'handle': 'linan',
-                  'avatarUrl': 'https://cdn.example.com/avatar.png',
-                },
-              ),
-            },
+            'data': {'items': <Object?>[]},
           });
         }
         return http.Response('{}', 404);
       }),
+      gateway: gateway,
     );
     await repository.login('13800138000', '123456');
 
@@ -57,14 +51,19 @@ void main() {
       ),
     );
 
-    final payload = jsonDecode(messageRequest!.body) as Map<String, Object?>;
-    expect(payload['type'], 'contact');
-    expect(payload['body'], {
-      'userId': 'friend-1',
-      'name': '林安',
-      'handle': 'linan',
-      'avatarUrl': 'https://cdn.example.com/avatar.png',
-    });
+    final payload = gateway.sentMessages.single.payload;
+    expect(payload['type'], 7);
+    expect(payload, containsPair('userId', 'friend-1'));
+    expect(payload, containsPair('name', '林安'));
+    expect(payload, containsPair('handle', 'linan'));
+    expect(
+      payload,
+      containsPair('avatarUrl', 'https://cdn.example.com/avatar.png'),
+    );
+    expect(
+      payload.keys.toSet(),
+      containsAll(<String>{'type', 'userId', 'name', 'handle', 'avatarUrl'}),
+    );
     expect(jsonEncode(payload), isNot(contains('phone')));
     expect(jsonEncode(payload), isNot(contains('remark')));
     expect(jsonEncode(payload), isNot(contains('tags')));
@@ -74,29 +73,21 @@ void main() {
   });
 
   test('位置消息发送真实结构并可从服务端响应还原', () async {
-    http.Request? messageRequest;
+    final gateway = FakeWukongGateway();
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
-        if (request.url.path == '/v1/conversations/c1/messages') {
-          messageRequest = request;
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/channels/conversations') {
+          return _conversationResponse();
+        }
+        if (request.url.path == '/v2/im/datasource/conversations') {
           return _jsonResponse({
-            'data': {
-              'message': _message(
-                id: 'location-1',
-                type: 'location',
-                body: const {
-                  'latitude': 31.2304,
-                  'longitude': 121.4737,
-                  'name': '人民广场',
-                  'address': '上海市黄浦区人民大道',
-                },
-              ),
-            },
+            'data': {'items': <Object?>[]},
           });
         }
         return http.Response('{}', 404);
       }),
+      gateway: gateway,
     );
     await repository.login('13800138000', '123456');
 
@@ -118,14 +109,12 @@ void main() {
       ),
     );
 
-    final payload = jsonDecode(messageRequest!.body) as Map<String, Object?>;
-    expect(payload['type'], 'location');
-    expect(payload['body'], {
-      'latitude': 31.2304,
-      'longitude': 121.4737,
-      'name': '人民广场',
-      'address': '上海市黄浦区人民大道',
-    });
+    final payload = gateway.sentMessages.single.payload;
+    expect(payload['type'], 6);
+    expect(payload, containsPair('latitude', 31.2304));
+    expect(payload, containsPair('longitude', 121.4737));
+    expect(payload, containsPair('name', '人民广场'));
+    expect(payload, containsPair('address', '上海市黄浦区人民大道'));
     expect(sent.kind, MessageContentKind.location);
     expect(sent.latitude, 31.2304);
     expect(sent.longitude, 121.4737);
@@ -137,9 +126,9 @@ void main() {
     final requestedPaths = <String>[];
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
         requestedPaths.add('${request.method} ${request.url.path}');
-        if (request.url.path == '/v1/announcements') {
+        if (request.url.path == '/v2/announcements') {
           return _jsonResponse({
             'data': {
               'items': [
@@ -163,7 +152,7 @@ void main() {
             },
           });
         }
-        if (request.url.path == '/v1/announcements/pinned/read') {
+        if (request.url.path == '/v2/announcements/pinned/read') {
           return http.Response('', 204);
         }
         return http.Response('{}', 404);
@@ -177,8 +166,8 @@ void main() {
     expect(announcements.first.id, 'pinned');
     expect(announcements.first.unread, isTrue);
     expect(requestedPaths, [
-      'GET /v1/announcements',
-      'POST /v1/announcements/pinned/read',
+      'GET /v2/announcements',
+      'POST /v2/announcements/pinned/read',
     ]);
     await repository.close();
   });
@@ -186,8 +175,8 @@ void main() {
   test('会话列表使用服务端成员资料恢复单聊标题和头像', () async {
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
-        if (request.url.path == '/v1/conversations') {
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/channels/conversations') {
           return _jsonResponse({
             'data': {
               'items': [
@@ -199,7 +188,7 @@ void main() {
                     'updatedAt': '2026-07-31T12:00:00Z',
                     'lastMessageSeq': 1,
                   },
-                  'membership': {'lastReadSeq': 1},
+                  'membership': {'lastReadSeq': 1, 'role': 'admin'},
                   'mentionUnreadCount': 2,
                   'members': [
                     {'userId': 'user-1', 'name': '测试用户', 'handle': 'tester'},
@@ -225,6 +214,8 @@ void main() {
     expect(conversations.single.title, '林安');
     expect(conversations.single.avatarUrl, 'https://cdn.example.com/linan.png');
     expect(conversations.single.mentionUnreadCount, 2);
+    expect(conversations.single.currentUserRole, 'admin');
+    expect(conversations.single.canMentionEveryone, isFalse);
     expect(conversations.single.members, hasLength(2));
     await repository.close();
   });
@@ -233,8 +224,8 @@ void main() {
     http.Request? forwardRequest;
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
-        if (request.url.path == '/v1/conversations/target/forward') {
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/messages/forward') {
           forwardRequest = request;
           return _jsonResponse({
             'data': {
@@ -268,6 +259,7 @@ void main() {
 
     final payload = jsonDecode(forwardRequest!.body) as Map<String, Object?>;
     expect(payload, {
+      'targetConversationId': 'target',
       'sourceMessageIds': ['image-1'],
       'mode': 'separate',
       'clientBatchId': 'batch-1',
@@ -280,8 +272,8 @@ void main() {
   test('合并转发恢复为可读聊天记录而不是空白消息', () async {
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
-        if (request.url.path == '/v1/conversations/target/forward') {
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/messages/forward') {
           return _jsonResponse({
             'data': {
               'duplicate': false,
@@ -317,28 +309,48 @@ void main() {
     expect(forwarded.single.kind, MessageContentKind.chatHistory);
     expect(forwarded.single.text, contains('第一条消息'));
     expect(forwarded.single.text, contains('[图片]'));
+    expect(forwarded.single.chatHistoryEntries, hasLength(2));
+    expect(forwarded.single.chatHistoryEntries.map((entry) => entry.summary), [
+      '第一条消息',
+      '[图片]',
+    ]);
     await repository.close();
   });
 
   test('视频消息保持独立类型并保留受保护下载地址', () async {
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
-        if (request.url.path == '/v1/conversations/c1/messages') {
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/channels/conversations') {
+          return _conversationResponse();
+        }
+        if (request.url.path == '/v2/im/datasource/conversations') {
+          return _jsonResponse({
+            'data': {'items': <Object?>[]},
+          });
+        }
+        if (request.url.path == '/v2/im/datasource/messages') {
           return _jsonResponse({
             'data': {
-              'items': [
-                _message(
-                  id: 'video-1',
-                  type: 'video',
-                  body: const {
+              'messages': [
+                {
+                  'message_idstr': 'video-1',
+                  'message_seq': 1,
+                  'client_msg_no': 'client-video-1',
+                  'client_seq': 1,
+                  'from_uid': 'friend-1',
+                  'channel_id': 'friend-1',
+                  'channel_type': 1,
+                  'timestamp': 1786406400,
+                  'payload': {
+                    'type': 5,
                     'mediaId': 'media-video-1',
                     'mime': 'video/mp4',
                     'fileName': 'clip.mp4',
                     'duration': 12,
-                    'downloadUrl': 'https://cdn.example.com/signed-video',
+                    'url': 'https://cdn.example.com/signed-video',
                   },
-                ),
+                },
               ],
             },
           });
@@ -361,9 +373,9 @@ void main() {
     final requests = <http.Request>[];
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
         requests.add(request);
-        if (request.url.path == '/v1/users/me/blocks') {
+        if (request.url.path == '/v2/contacts/blocks') {
           return _jsonResponse({
             'data': {
               'items': [
@@ -392,9 +404,9 @@ void main() {
 
     expect(blocked.single.id, 'blocked-1');
     expect(requests.map((request) => '${request.method} ${request.url.path}'), [
-      'POST /v1/groups/join/qr',
-      'GET /v1/users/me/blocks',
-      'POST /v1/devices',
+      'POST /v2/channels/groups/join/qr',
+      'GET /v2/contacts/blocks',
+      'POST /v2/users/me/devices',
     ]);
     expect(
       jsonDecode(requests.last.body),
@@ -404,11 +416,36 @@ void main() {
     await repository.close();
   });
 
+  test('黑名单服务端失败必须上抛而不能伪装成空名单', () async {
+    final repository = _repository(
+      MockClient((request) async {
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/contacts/blocks') {
+          return _jsonResponse({
+            'error': {'code': 'INTERNAL', 'message': 'internal server error'},
+          }, 500);
+        }
+        return http.Response('{}', 404);
+      }),
+    );
+    await repository.login('13800138000', '123456');
+
+    await expectLater(
+      repository.blockedUsers(),
+      throwsA(
+        isA<ImApiException>()
+            .having((error) => error.statusCode, 'statusCode', 500)
+            .having((error) => error.code, 'code', 'INTERNAL'),
+      ),
+    );
+    await repository.close();
+  });
+
   test('好友拒绝撤回备注删除和拉黑使用完整服务端状态接口', () async {
     final requests = <http.Request>[];
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
         requests.add(request);
         return request.method == 'DELETE'
             ? http.Response('', 204)
@@ -428,11 +465,11 @@ void main() {
     await repository.blockUser('friend-2', true);
 
     expect(requests.map((request) => '${request.method} ${request.url.path}'), [
-      'POST /v1/friend-requests/request-in/reject',
-      'POST /v1/friend-requests/request-out/cancel',
-      'PATCH /v1/friends/friend-1',
-      'DELETE /v1/friends/friend-1',
-      'PUT /v1/users/friend-2/block',
+      'POST /v2/contacts/requests/request-in/reject',
+      'POST /v2/contacts/requests/request-out/cancel',
+      'PATCH /v2/contacts/friends/friend-1',
+      'DELETE /v2/contacts/friends/friend-1',
+      'PUT /v2/contacts/blocks/friend-2',
     ]);
     expect(jsonDecode(requests[2].body), {
       'remark': '楼上邻居',
@@ -446,9 +483,9 @@ void main() {
     final requests = <String>[];
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
         requests.add('${request.method} ${request.url.path}');
-        if (request.url.path == '/v1/group-invites') {
+        if (request.url.path == '/v2/channels/group-invitations') {
           return _jsonResponse({
             'data': {
               'items': [
@@ -487,8 +524,8 @@ void main() {
     expect(invitations.single.inviter.name, '林安');
     expect(invitations.single.pending, isTrue);
     expect(requests, [
-      'GET /v1/group-invites',
-      'POST /v1/group-invites/ginv-1/accept',
+      'GET /v2/channels/group-invitations',
+      'POST /v2/channels/group-invitations/ginv-1/accept',
     ]);
     await repository.close();
   });
@@ -496,8 +533,8 @@ void main() {
   test('群资料与成员角色字段从真实接口完整解析', () async {
     final repository = _repository(
       MockClient((request) async {
-        if (request.url.path == '/v1/auth/login') return _loginResponse();
-        if (request.url.path == '/v1/groups/group-1') {
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/channels/groups/group-1') {
           return _jsonResponse({
             'data': {
               'conversationId': 'group-1',
@@ -511,7 +548,7 @@ void main() {
             },
           });
         }
-        if (request.url.path == '/v1/groups/group-1/members') {
+        if (request.url.path == '/v2/channels/groups/group-1/members') {
           return _jsonResponse({
             'data': {
               'items': [
@@ -535,7 +572,7 @@ void main() {
             },
           });
         }
-        if (request.url.path == '/v1/friends') {
+        if (request.url.path == '/v2/contacts/friends') {
           return _jsonResponse({
             'data': {'items': <Object?>[]},
           });
@@ -557,12 +594,30 @@ void main() {
     expect(members.last.mutedUntil, isNotNull);
     await repository.close();
   });
+
+  test('只有群主和管理员可以使用 @所有人', () {
+    Conversation groupWithRole(String role) => Conversation(
+      id: 'group-role-$role',
+      title: '权限测试群',
+      subtitle: '',
+      updatedAt: DateTime(2026, 8, 28),
+      kind: ConversationKind.group,
+      currentUserRole: role,
+    );
+
+    expect(groupWithRole('owner').canMentionEveryone, isTrue);
+    expect(groupWithRole('admin').canMentionEveryone, isTrue);
+    expect(groupWithRole('member').canMentionEveryone, isFalse);
+  });
 }
 
-LiveImRepository _repository(http.Client client) => LiveImRepository(
+LiveImRepository _repository(
+  http.Client client, {
+  FakeWukongGateway? gateway,
+}) => LiveImRepository(
   client: client,
   apiBaseUrl: 'https://api.example.com',
-  wsUrl: 'wss://api.example.com/ws',
+  wukongGateway: gateway ?? FakeWukongGateway(),
 );
 
 http.Response _loginResponse() => _jsonResponse({
@@ -575,6 +630,35 @@ http.Response _loginResponse() => _jsonResponse({
       'handle': 'tester',
       'phone': '13800138000',
     },
+    'imSession': {
+      'uid': 'user-1',
+      'token': 'wk1_test',
+      'deviceFlag': 2,
+      'deviceLevel': 1,
+      'tcpUrl': 'tcp://im.example.com:5100',
+      'wsUrl': 'wss://im.example.com/ws',
+      'sdk': 'wukongimfluttersdk',
+      'issuedAt': '2026-08-11T00:00:00Z',
+    },
+  },
+});
+
+http.Response _conversationResponse() => _jsonResponse({
+  'data': {
+    'items': [
+      {
+        'conversation': {
+          'id': 'c1',
+          'type': 'direct',
+          'title': '林安',
+          'updatedAt': '2026-08-11T00:00:00Z',
+        },
+        'members': [
+          {'id': 'user-1', 'name': '测试用户'},
+          {'id': 'friend-1', 'name': '林安'},
+        ],
+      },
+    ],
   },
 });
 

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import '../core/auth_validation.dart';
 import '../core/models.dart';
 import 'im_repository.dart';
 import 'secure_local_store.dart';
@@ -15,6 +16,7 @@ class DemoImRepository implements ImRepository {
   final _connection = StreamController<bool>.broadcast();
   final _events = StreamController<ImEvent>.broadcast();
   final Map<String, List<ChatMessage>> _cachedMessages = {};
+  final Map<String, List<MessageEditRevision>> _messageEditRevisions = {};
   final Map<String, List<ScheduledMessage>> _scheduledMessages = {};
   final Map<String, GroupProfile> _groupProfiles = {};
   final Map<String, List<GroupMember>> _groupMemberState = {};
@@ -47,7 +49,7 @@ class DemoImRepository implements ImRepository {
         id: 'u7',
         name: '初晴',
         handle: 'chuqing',
-        presence: '通过邻里号搜索添加',
+        presence: '通过呱呱号搜索添加',
       ),
       note: '想和你交流产品设计',
     ),
@@ -129,6 +131,9 @@ class DemoImRepository implements ImRepository {
   Stream<ImEvent> get events => _events.stream;
 
   @override
+  Future<AuthPolicy> authPolicy() async => const AuthPolicy();
+
+  @override
   Future<void> enterDemo() async {}
 
   @override
@@ -137,14 +142,14 @@ class DemoImRepository implements ImRepository {
   @override
   Future<String?> requestCode(String phone) async {
     await Future<void>.delayed(latency);
-    if (phone.trim().length < 5) throw const FormatException('请输入有效手机号');
+    if (!validAuthPhone(phone)) throw const FormatException('请输入有效手机号');
     return '123456';
   }
 
   @override
   Future<AppUser> login(String phone, String code) async {
     await Future<void>.delayed(latency);
-    if (phone.length < 5 || code != '123456') {
+    if (!validAuthPhone(phone) || code != '123456') {
       throw const FormatException('请输入有效手机号和验证码');
     }
     return _profile;
@@ -153,11 +158,27 @@ class DemoImRepository implements ImRepository {
   @override
   Future<AppUser> passwordLogin(String phone, String password) async {
     await Future<void>.delayed(latency);
-    if (phone.trim().isEmpty || password != 'StrongPass123!') {
+    if (!validAuthPhone(phone) || password != 'StrongPass123!') {
       throw const FormatException('手机号或密码错误');
     }
     return _profile;
   }
+
+  @override
+  Future<QrLoginTicket> createQrLoginTicket({required String clientName}) =>
+      throw UnsupportedError('测试仓库不提供扫码登录票据');
+
+  @override
+  Future<AppUser?> pollQrLoginTicket(QrLoginTicket ticket) =>
+      throw UnsupportedError('测试仓库不提供扫码登录票据');
+
+  @override
+  Future<QrLoginRequest> inspectQrLogin(String token) =>
+      throw UnsupportedError('测试仓库不提供扫码登录票据');
+
+  @override
+  Future<void> confirmQrLogin(String token) =>
+      throw UnsupportedError('测试仓库不提供扫码登录票据');
 
   @override
   Future<AppUser> register({
@@ -166,7 +187,10 @@ class DemoImRepository implements ImRepository {
     required String password,
     required String name,
   }) async {
-    if (code != '123456' || password.length < 8 || name.trim().isEmpty) {
+    if (!validAuthPhone(phone) ||
+        code != '123456' ||
+        const AuthPolicy().passwordError(password) != null ||
+        name.trim().isEmpty) {
       throw const FormatException('注册信息无效');
     }
     _profile = _profile.copyWith(name: name.trim(), phone: phone.trim());
@@ -184,7 +208,9 @@ class DemoImRepository implements ImRepository {
     required String code,
     required String password,
   }) async {
-    if (code != '123456' || password.length < 8) {
+    if (!validAuthPhone(phone) ||
+        code != '123456' ||
+        const AuthPolicy().passwordError(password) != null) {
       throw const FormatException('重置密码信息无效');
     }
   }
@@ -197,7 +223,10 @@ class DemoImRepository implements ImRepository {
     String? name,
     String? handle,
     String? signature,
+    String? gender,
     String? avatarMediaId,
+    bool? allowSearchByHandle,
+    bool? allowSearchByPhone,
   }) async {
     await Future<void>.delayed(latency);
     _profile = _profile.copyWith(
@@ -205,7 +234,10 @@ class DemoImRepository implements ImRepository {
       handle: handle,
       signature: signature,
       presence: signature,
+      gender: gender,
       avatarMediaId: avatarMediaId,
+      allowSearchByHandle: allowSearchByHandle,
+      allowSearchByPhone: allowSearchByPhone,
     );
     return _profile;
   }
@@ -250,6 +282,16 @@ class DemoImRepository implements ImRepository {
   ];
 
   @override
+  Future<List<ImDeviceSession>> imDeviceSessions() async => [
+    ImDeviceSession(
+      deviceFlag: 1,
+      deviceLevel: 1,
+      connectionCount: 1,
+      updatedAt: DateTime.now(),
+    ),
+  ];
+
+  @override
   Future<void> registerDevice({
     required String deviceId,
     required String platform,
@@ -262,7 +304,20 @@ class DemoImRepository implements ImRepository {
   }) async {}
 
   @override
+  Future<void> registerClientDevice({
+    required String installationId,
+    required String platform,
+    required String deviceName,
+    required String deviceModel,
+    required String osVersion,
+    required String appVersion,
+  }) async {}
+
+  @override
   Future<void> removeUserDevice(String deviceId) async {}
+
+  @override
+  Future<void> quitImDeviceSession(int deviceFlag) async {}
 
   @override
   Future<List<ChatMessage>> favorites() async {
@@ -286,6 +341,16 @@ class DemoImRepository implements ImRepository {
       'contact': contact,
     });
   }
+
+  @override
+  Future<void> reportClientDiagnostic({
+    required String kind,
+    required String name,
+    required String fingerprint,
+    required String platform,
+    required String appVersion,
+    int? durationMs,
+  }) async {}
 
   @override
   Future<List<AppAnnouncement>> announcements() async {
@@ -353,6 +418,7 @@ class DemoImRepository implements ImRepository {
       const UserSearchCapabilities(
         allowSearchByHandle: true,
         allowSearchByPhone: false,
+        canUpdatePrivacySettings: true,
       );
 
   @override
@@ -457,6 +523,7 @@ class DemoImRepository implements ImRepository {
       subtitle: '群聊已创建',
       updatedAt: DateTime.now(),
       kind: ConversationKind.group,
+      currentUserRole: 'owner',
       members: members,
     );
     _conversations.insert(0, conversation);
@@ -502,7 +569,7 @@ class DemoImRepository implements ImRepository {
           ? old.avatarUrl
           : avatarMediaId.isEmpty
           ? null
-          : '/v1/media/$avatarMediaId',
+          : '/v2/media/$avatarMediaId',
       announcement: old.announcement,
       announcementVersion: old.announcementVersion,
       announcementReadAt: old.announcementReadAt,
@@ -588,6 +655,10 @@ class DemoImRepository implements ImRepository {
   }
 
   @override
+  Future<List<RobotProfile>> robotProfiles(String conversationId) async =>
+      const [];
+
+  @override
   Future<void> addGroupMembers(
     String conversationId,
     List<String> userIds,
@@ -661,10 +732,31 @@ class DemoImRepository implements ImRepository {
         user: old.user,
         role: role,
         joinedAt: old.joinedAt,
+        mutedUntil: old.mutedUntil,
         groupNickname: old.groupNickname,
       );
       _groupMemberState[conversationId] = members;
     }
+  }
+
+  @override
+  Future<void> setGroupMemberMuted(
+    String conversationId,
+    String userId,
+    DateTime? until,
+  ) async {
+    final members = await groupMembers(conversationId);
+    final index = members.indexWhere((member) => member.user.id == userId);
+    if (index < 0) return;
+    final old = members[index];
+    members[index] = GroupMember(
+      user: old.user,
+      role: old.role,
+      joinedAt: old.joinedAt,
+      mutedUntil: until,
+      groupNickname: old.groupNickname,
+    );
+    _groupMemberState[conversationId] = members;
   }
 
   @override
@@ -813,9 +905,40 @@ class DemoImRepository implements ImRepository {
     await Future<void>.delayed(latency);
     final found = _findMessage(messageId);
     if (found == null) throw StateError('message not found');
-    final edited = found.$2.copyWith(text: text, editedAt: DateTime.now());
+    final now = DateTime.now();
+    final revisions = _messageEditRevisions.putIfAbsent(
+      messageId,
+      () => [
+        MessageEditRevision(
+          messageId: messageId,
+          version: 0,
+          editorId: found.$2.senderId,
+          body: {'text': found.$2.text},
+          editedAt: found.$2.sentAt,
+        ),
+      ],
+    );
+    revisions.add(
+      MessageEditRevision(
+        messageId: messageId,
+        version: revisions.length,
+        editorId: found.$2.senderId,
+        body: {'text': text},
+        editedAt: now,
+      ),
+    );
+    final edited = found.$2.copyWith(text: text, editedAt: now);
     found.$1[found.$3] = edited;
     return edited;
+  }
+
+  @override
+  Future<List<MessageEditRevision>> messageEditHistory(String messageId) async {
+    await Future<void>.delayed(latency);
+    if (_findMessage(messageId) == null) throw StateError('message not found');
+    return List.unmodifiable(
+      _messageEditRevisions[messageId] ?? const <MessageEditRevision>[],
+    );
   }
 
   @override
@@ -937,6 +1060,17 @@ class DemoImRepository implements ImRepository {
           isMine: true,
           conversationSeq: DateTime.now().millisecondsSinceEpoch,
           status: MessageStatus.sent,
+          kind: MessageContentKind.chatHistory,
+          chatHistoryEntries: [
+            for (final source in sources)
+              ChatHistoryEntry(
+                sourceMessageId: source.id,
+                senderId: source.senderId,
+                summary: source.text,
+                createdAt: source.sentAt,
+                type: source.kind.name,
+              ),
+          ],
         ),
       ];
     }
@@ -1029,9 +1163,15 @@ class DemoImRepository implements ImRepository {
   }
 
   @override
+  Future<void> setTyping(String conversationId, bool typing) async {
+    await Future<void>.delayed(latency);
+  }
+
+  @override
   Future<void> updateConversationPreferences(
     String conversationId, {
     bool? pinned,
+    bool? saved,
     bool? notificationsMuted,
     bool? manualUnread,
     bool? archived,
@@ -1044,6 +1184,7 @@ class DemoImRepository implements ImRepository {
     final current = _conversations[index];
     _conversations[index] = current.copyWith(
       pinned: pinned,
+      saved: saved,
       muted: notificationsMuted,
       archived: archived,
       unread: manualUnread == true
@@ -1082,6 +1223,38 @@ class DemoImRepository implements ImRepository {
     );
     _scheduledMessages.putIfAbsent(conversationId, () => []).add(item);
     return item;
+  }
+
+  @override
+  Future<ScheduledMessage> updateScheduledMessage(
+    String scheduledMessageId, {
+    required String text,
+    required DateTime scheduledAt,
+    int? expiresInSeconds,
+  }) async {
+    await Future<void>.delayed(latency);
+    if (scheduledAt.isBefore(DateTime.now())) {
+      throw const FormatException('发送时间必须晚于当前时间');
+    }
+    for (final entry in _scheduledMessages.entries) {
+      final index = entry.value.indexWhere(
+        (item) => item.id == scheduledMessageId,
+      );
+      if (index < 0) continue;
+      final current = entry.value[index];
+      final updated = ScheduledMessage(
+        id: current.id,
+        conversationId: current.conversationId,
+        text: text,
+        scheduledAt: scheduledAt,
+        status: current.status,
+        expiresInSeconds: expiresInSeconds ?? current.expiresInSeconds,
+        errorMessage: current.errorMessage,
+      );
+      entry.value[index] = updated;
+      return updated;
+    }
+    throw StateError('scheduled message not found');
   }
 
   @override
@@ -1151,9 +1324,11 @@ class DemoImRepository implements ImRepository {
         updatedAt: now.subtract(const Duration(minutes: 8)),
         kind: ConversationKind.group,
         pinned: true,
+        saved: true,
         unread: 3,
         mentionUnreadCount: 2,
         lastMessageSeq: 9,
+        currentUserRole: 'owner',
         members: people.take(4).toList(),
       ),
       Conversation(
@@ -1175,6 +1350,7 @@ class DemoImRepository implements ImRepository {
         kind: ConversationKind.group,
         avatarUrl: 'assets/avatars/li-xiang.png',
         mentionUnreadCount: 0,
+        currentUserRole: 'owner',
         members: [people[5], people[1], people[0]],
       ),
       Conversation(
@@ -1186,6 +1362,7 @@ class DemoImRepository implements ImRepository {
         avatarUrl: 'assets/avatars/weekend-coffee.png',
         muted: true,
         mentionUnreadCount: 0,
+        currentUserRole: 'owner',
         members: people.skip(1).toList(),
       ),
       Conversation(

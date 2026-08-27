@@ -1,4 +1,4 @@
-# 邻里通讯最低支持 iOS 13，与 Flutter 工程和个推 SDK 保持一致。
+# 青蛙呱呱最低支持 iOS 13，与 Flutter 工程和个推 SDK 保持一致。
 platform :ios, '13.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
