@@ -23,25 +23,50 @@ void main() {
       'registrationEnabled': false,
       'passwordMinLength': 12,
       'passwordMaxBytes': 72,
+      'messageRecallMinutes': 5,
     });
 
     expect(policy.registrationEnabled, isFalse);
     expect(policy.passwordMinLength, 12);
     expect(policy.passwordMaxBytes, 72);
+    expect(policy.messageRecallMinutes, 5);
+    expect(policy.messageMutationWindow, const Duration(minutes: 5));
 
     final constrained = AuthPolicy.fromJson({
       'registrationEnabled': 'false',
       'passwordMinLength': 99,
       'passwordMaxBytes': 120,
+      'messageRecallMinutes': 9999,
     });
     expect(constrained.registrationEnabled, isTrue);
     expect(constrained.passwordMinLength, 16);
     expect(constrained.passwordMaxBytes, 72);
+    expect(constrained.messageRecallMinutes, 1440);
 
     final fallback = AuthPolicy.fromJson(const {});
     expect(fallback.registrationEnabled, isTrue);
     expect(fallback.passwordMinLength, 8);
     expect(fallback.passwordMaxBytes, 72);
+    expect(fallback.messageRecallMinutes, 2);
+  });
+
+  test('controller 在动态编辑时限后隐藏编辑能力并返回明确提示', () async {
+    final controller = AppController(DemoImRepository(latency: Duration.zero))
+      ..authPolicy = const AuthPolicy(messageRecallMinutes: 1);
+    addTearDown(controller.dispose);
+    final expired = ChatMessage(
+      id: 'message-expired-edit',
+      conversationId: 'conversation-1',
+      senderId: 'me',
+      senderName: '我',
+      text: '旧消息',
+      sentAt: DateTime.now().subtract(const Duration(minutes: 2)),
+      isMine: true,
+    );
+
+    expect(controller.isMessageEditable(expired), isFalse);
+    expect(await controller.editMessage(expired, '不应提交'), isFalse);
+    expect(controller.error, '消息已超过 1 分钟编辑时限');
   });
 
   test('LiveRepository 以未登录 GET 请求解析 /v2/config/auth', () async {
@@ -56,6 +81,7 @@ void main() {
               'registrationEnabled': false,
               'passwordMinLength': 14,
               'passwordMaxBytes': 72,
+              'messageRecallMinutes': 7,
             },
           }),
           200,
@@ -73,6 +99,7 @@ void main() {
     expect(policy.registrationEnabled, isFalse);
     expect(policy.passwordMinLength, 14);
     expect(policy.passwordMaxBytes, 72);
+    expect(policy.messageRecallMinutes, 7);
   });
 
   test('LiveRepository 不将缺失的认证策略静默降级为默认真实配置', () async {

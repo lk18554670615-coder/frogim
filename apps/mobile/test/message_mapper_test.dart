@@ -19,6 +19,10 @@ void main() {
       isMine: true,
       kind: MessageContentKind.reply,
       replyToId: 'server-1',
+      replyToText: '原消息',
+      replyToSeq: 42,
+      replyToSenderId: 'usr_b',
+      replyToSenderName: 'Bob',
       mentions: const [
         MessageMention(userId: 'usr_b', name: 'Bob'),
         MessageMention(userId: 'all', name: '所有人'),
@@ -36,7 +40,34 @@ void main() {
       wukongObjectMap(outgoing.payload['reply'])['message_id'],
       'server-1',
     );
+    expect(wukongObjectMap(outgoing.payload['reply']), {
+      'message_id': 'server-1',
+      'message_seq': 42,
+      'from_uid': 'usr_b',
+      'from_name': 'Bob',
+      'content': '原消息',
+    });
     expect(wukongObjectMap(outgoing.payload['mention'])['all'], 1);
+
+    final restored = mapper.toChatMessage(
+      WukongMessage(
+        messageId: 'message-reply',
+        messageSeq: 43,
+        clientMsgNo: 'client-1',
+        clientSeq: 1,
+        fromUid: 'usr_a',
+        channel: const WukongChannel(id: 'group_1', type: 2),
+        timestamp: DateTime.utc(2026, 8, 11),
+        payload: outgoing.payload,
+        state: WukongMessageState.sent,
+      ),
+      currentUserId: 'usr_a',
+      conversationId: 'conversation-1',
+    );
+    expect(restored.replyToSeq, 42);
+    expect(restored.replyToSenderId, 'usr_b');
+    expect(restored.replyToSenderName, 'Bob');
+    expect(ChatMessage.fromJson(restored.toJson()).replyToText, '原消息');
   });
 
   test(

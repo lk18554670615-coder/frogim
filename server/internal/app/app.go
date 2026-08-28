@@ -1005,9 +1005,10 @@ func (a *App) validPassword(password string) bool {
 }
 
 type PublicAuthPolicy struct {
-	RegistrationEnabled bool `json:"registrationEnabled"`
-	PasswordMinLength   int  `json:"passwordMinLength"`
-	PasswordMaxBytes    int  `json:"passwordMaxBytes"`
+	RegistrationEnabled  bool `json:"registrationEnabled"`
+	PasswordMinLength    int  `json:"passwordMinLength"`
+	PasswordMaxBytes     int  `json:"passwordMaxBytes"`
+	MessageRecallMinutes int  `json:"messageRecallMinutes"`
 }
 
 func (a *App) AuthPolicy() PublicAuthPolicy {
@@ -1031,9 +1032,10 @@ func (a *App) AuthPolicy() PublicAuthPolicy {
 		minimum = 16
 	}
 	return PublicAuthPolicy{
-		RegistrationEnabled: registrationEnabled,
-		PasswordMinLength:   minimum,
-		PasswordMaxBytes:    72,
+		RegistrationEnabled:  registrationEnabled,
+		PasswordMinLength:    minimum,
+		PasswordMaxBytes:     72,
+		MessageRecallMinutes: a.settingInt("messageRecallMinutes", 2),
 	}
 }
 

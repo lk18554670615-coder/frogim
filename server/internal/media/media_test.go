@@ -34,6 +34,9 @@ func TestPrepareValidatesBeforeStorage(t *testing.T) {
 	if _, err = s.Prepare(context.Background(), "u", "image/png", "x.png", 10); err != ErrUnavailable {
 		t.Fatalf("storage err=%v", err)
 	}
+	if _, err = s.Prepare(context.Background(), "u", "text/plain", "notes.txt", 10); err != ErrUnavailable {
+		t.Fatalf("text storage err=%v", err)
+	}
 }
 
 func TestSignerSelectionUsesAndroidDevelopmentEndpointOnlyForAndroid(t *testing.T) {
@@ -79,5 +82,18 @@ func TestVerifyObjectContentChecksHashSizeAndMagic(t *testing.T) {
 	htmlSum := sha256.Sum256(html)
 	if _, err = verifyObjectContent(bytes.NewReader(html), "application/octet-stream", int64(len(html)), hex.EncodeToString(htmlSum[:])); err != ErrInvalid {
 		t.Fatalf("active octet-stream content err=%v", err)
+	}
+	if _, err = verifyObjectContent(bytes.NewReader(html), "text/plain", int64(len(html)), hex.EncodeToString(htmlSum[:])); err != ErrInvalid {
+		t.Fatalf("active text content err=%v", err)
+	}
+	plain := []byte("single chat text attachment\n")
+	plainSum := sha256.Sum256(plain)
+	if _, err = verifyObjectContent(bytes.NewReader(plain), "text/plain", int64(len(plain)), hex.EncodeToString(plainSum[:])); err != nil {
+		t.Fatalf("plain text attachment err=%v", err)
+	}
+	zipFile := append([]byte{'P', 'K', 3, 4}, bytes.Repeat([]byte{0}, 64)...)
+	zipSum := sha256.Sum256(zipFile)
+	if _, err = verifyObjectContent(bytes.NewReader(zipFile), "application/vnd.openxmlformats-officedocument.wordprocessingml.document", int64(len(zipFile)), hex.EncodeToString(zipSum[:])); err != nil {
+		t.Fatalf("office zip attachment err=%v", err)
 	}
 }

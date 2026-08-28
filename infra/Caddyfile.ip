@@ -57,6 +57,7 @@
 
 	handle_path /legal/* {
 		root * /srv/legal
+		header Content-Type "text/html; charset=utf-8"
 		file_server
 	}
 

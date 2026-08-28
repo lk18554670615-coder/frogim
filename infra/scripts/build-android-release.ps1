@@ -96,6 +96,13 @@ if ([int]$authPolicyResponse.StatusCode -ne 200 -or
     throw "Authentication contract is incompatible with this client: $origin/v2/config/auth"
 }
 
+function Get-WebResponseText($response) {
+    if ($response.Content -is [byte[]]) {
+        return [Text.Encoding]::UTF8.GetString($response.Content)
+    }
+    return [string]$response.Content
+}
+
 function Assert-ProductionLegalDocument([string]$url, [string]$label) {
     try {
         $response = Invoke-WebRequest -UseBasicParsing -Method Get -Uri $url -MaximumRedirection 3 -TimeoutSec 15
@@ -107,7 +114,7 @@ function Assert-ProductionLegalDocument([string]$url, [string]$label) {
         throw "Required release endpoint returned HTTP $($response.StatusCode): $url"
     }
 
-    $content = [string]$response.Content
+    $content = Get-WebResponseText $response
     if ([string]::IsNullOrWhiteSpace($content) -or $content.Length -lt 500) {
         throw "$label is empty or too short for production: $url"
     }

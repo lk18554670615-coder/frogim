@@ -5,11 +5,13 @@ class AuthPolicy {
     this.registrationEnabled = true,
     this.passwordMinLength = 8,
     this.passwordMaxBytes = 72,
+    this.messageRecallMinutes = 2,
   });
 
   final bool registrationEnabled;
   final int passwordMinLength;
   final int passwordMaxBytes;
+  final int messageRecallMinutes;
 
   factory AuthPolicy.fromJson(Map<String, Object?> json) {
     final minimum = ((json['passwordMinLength'] as num?)?.toInt() ?? 8)
@@ -18,14 +20,20 @@ class AuthPolicy {
     final maximum = ((json['passwordMaxBytes'] as num?)?.toInt() ?? 72)
         .clamp(minimum, 72)
         .toInt();
+    final recallMinutes = ((json['messageRecallMinutes'] as num?)?.toInt() ?? 2)
+        .clamp(1, 1440)
+        .toInt();
     return AuthPolicy(
       registrationEnabled: json['registrationEnabled'] is bool
           ? json['registrationEnabled']! as bool
           : true,
       passwordMinLength: minimum,
       passwordMaxBytes: maximum,
+      messageRecallMinutes: recallMinutes,
     );
   }
+
+  Duration get messageMutationWindow => Duration(minutes: messageRecallMinutes);
 
   String get passwordHelperText =>
       '至少 $passwordMinLength 个字符，最多 $passwordMaxBytes 字节';

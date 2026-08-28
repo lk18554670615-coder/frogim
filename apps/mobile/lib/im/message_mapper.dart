@@ -25,9 +25,10 @@ class MessageMapper {
     if (message.replyToId case final replyId?) {
       payload['reply'] = <String, Object?>{
         'message_id': replyId,
-        'message_seq': 0,
-        'from_uid': '',
-        'from_name': '',
+        'message_seq': message.replyToSeq,
+        'from_uid': message.replyToSenderId ?? '',
+        'from_name': message.replyToSenderName ?? '',
+        'content': ?message.replyToText,
       };
     }
     if (message.mentions.isNotEmpty) {
@@ -115,6 +116,9 @@ class MessageMapper {
       durationSeconds: (payload['duration'] as num?)?.toInt(),
       replyToId: reply['message_id'] as String?,
       replyToText: reply['content'] as String?,
+      replyToSeq: (reply['message_seq'] as num?)?.toInt() ?? 0,
+      replyToSenderId: reply['from_uid'] as String?,
+      replyToSenderName: reply['from_name'] as String?,
       contactUserId: payload['userId'] as String?,
       contactName: payload['name'] as String?,
       contactHandle: payload['handle'] as String?,

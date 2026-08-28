@@ -800,6 +800,9 @@ void main() {
       kind: MessageContentKind.reply,
       replyToId: 'origin-1',
       replyToText: '原始消息',
+      replyToSeq: 7,
+      replyToSenderId: 'user-2',
+      replyToSenderName: 'Friend',
     );
 
     final sent = await repository.send(pending);
@@ -808,6 +811,18 @@ void main() {
     expect(
       (gateway.sentMessages.single.payload['reply'] as Map)['message_id'],
       'origin-1',
+    );
+    expect(
+      gateway.sentMessages.single.payload['reply'],
+      containsPair('message_seq', 7),
+    );
+    expect(
+      gateway.sentMessages.single.payload['reply'],
+      containsPair('from_uid', 'user-2'),
+    );
+    expect(
+      gateway.sentMessages.single.payload['reply'],
+      containsPair('from_name', 'Friend'),
     );
     expect(sent.replyToId, 'origin-1');
     expect(sent.replyToText, '原始消息');
@@ -1227,6 +1242,113 @@ void main() {
     expect(message.text, 'WuKong 收到');
     expect(message.conversationSeq, 9);
     expect(message.isMine, isFalse);
+    await repository.close();
+  });
+
+  test('WuKong 热重连后按本地序号补齐全部离线消息', () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final gateway = FakeWukongGateway();
+    var conversationSyncs = 0;
+    final messageSyncRequests = <Map<String, Object?>>[];
+    final client = MockClient((request) async {
+      if (request.url.path == '/v2/auth/login') return _loginResponse();
+      if (request.url.path == '/v2/channels/conversations') {
+        return _conversationResponse();
+      }
+      if (request.url.path == '/v2/im/datasource/conversations') {
+        conversationSyncs++;
+        if (conversationSyncs == 1) {
+          return _jsonResponse({
+            'data': {'items': <Object?>[]},
+          });
+        }
+        final body = jsonDecode(request.body) as Map<String, Object?>;
+        expect(body['lastMsgSeqs'], 'user-2:1:1');
+        expect(body['msgCount'], 200);
+        return _jsonResponse({
+          'data': {
+            'items': [
+              {
+                'channel_id': 'user-2',
+                'channel_type': 1,
+                'last_msg_seq': 2,
+                'recents': <Object?>[],
+              },
+            ],
+          },
+        });
+      }
+      if (request.url.path == '/v2/im/datasource/messages') {
+        final body = Map<String, Object?>.from(
+          jsonDecode(request.body) as Map<String, dynamic>,
+        );
+        messageSyncRequests.add(body);
+        return _jsonResponse({
+          'data': {
+            'start_message_seq': 2,
+            'end_message_seq': 2,
+            'more': 0,
+            'messages': [
+              _syncedMessage(
+                id: 'offline-2',
+                sequence: 2,
+                content: '离线消息二',
+                fromUid: 'user-2',
+              ),
+            ],
+          },
+        });
+      }
+      return http.Response('{}', 404);
+    });
+    final repository = _repository(client, gateway: gateway);
+    await repository.login('13800138000', '123456');
+    await repository.conversations();
+    await repository.connect();
+
+    final received = repository.events
+        .where((event) => event.type == ImEventType.messageCreated)
+        .take(2)
+        .toList();
+    gateway.setConnectionState(WukongConnectionState.networkUnavailable);
+    gateway.setConnectionState(WukongConnectionState.connected);
+    gateway.setConnectionState(WukongConnectionState.syncing);
+    gateway.emit(
+      WukongGatewayEvent(
+        kind: WukongGatewayEventKind.received,
+        channel: const WukongChannel(id: 'user-2', type: 1),
+        message: WukongMessage(
+          messageId: 'offline-1',
+          messageSeq: 1,
+          clientMsgNo: 'client-offline-1',
+          clientSeq: 1,
+          fromUid: 'user-2',
+          channel: const WukongChannel(id: 'user-2', type: 1),
+          timestamp: DateTime.utc(2026, 8, 11, 0, 0, 1),
+          payload: const {'type': 1, 'content': '离线消息一'},
+          state: WukongMessageState.sent,
+          reasonCode: 1,
+        ),
+      ),
+    );
+    gateway.setConnectionState(WukongConnectionState.connected);
+
+    final events = await received.timeout(const Duration(seconds: 2));
+    expect(
+      events
+          .map(
+            (event) => ChatMessage.fromJson(
+              event.payload['message']! as Map<String, Object?>,
+            ).text,
+          )
+          .toList(),
+      ['离线消息一', '离线消息二'],
+    );
+    expect(messageSyncRequests, hasLength(1));
+    expect(messageSyncRequests.single['startMessageSeq'], 2);
+    expect(messageSyncRequests.single['pullMode'], 1);
+    final cached = await repository.cachedMessages('c1');
+    expect(cached.map((message) => message.conversationSeq), [1, 2]);
     await repository.close();
   });
 
@@ -1751,12 +1873,13 @@ Map<String, Object?> _syncedMessage({
   required int sequence,
   required String content,
   String? replyToId,
+  String fromUid = 'user-1',
 }) => {
   'message_idstr': id,
   'message_seq': sequence,
   'client_msg_no': 'client-$id',
   'client_seq': sequence,
-  'from_uid': 'user-1',
+  'from_uid': fromUid,
   'channel_id': 'user-2',
   'channel_type': 1,
   'timestamp': 1786406400 + sequence,

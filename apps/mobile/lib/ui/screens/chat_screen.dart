@@ -1687,6 +1687,8 @@ class _ChatScreenState extends State<ChatScreen> {
       'm4v' => 'video/x-m4v',
       'pdf' => 'application/pdf',
       'txt' => 'text/plain',
+      'csv' => 'text/csv',
+      'rtf' => 'application/rtf',
       'zip' => 'application/zip',
       'doc' => 'application/msword',
       'docx' =>
@@ -1694,6 +1696,9 @@ class _ChatScreenState extends State<ChatScreen> {
       'xls' => 'application/vnd.ms-excel',
       'xlsx' =>
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'ppt' => 'application/vnd.ms-powerpoint',
+      'pptx' =>
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
       _ =>
         imageFallback
             ? 'image/jpeg'
@@ -1751,11 +1756,12 @@ class _ChatScreenState extends State<ChatScreen> {
       });
 
   Future<void> _showMessageActions(ChatMessage message, Offset anchor) async {
+    final mutationWindow = widget.controller.authPolicy.messageMutationWindow;
     final canRecall =
         message.isMine &&
         message.status != MessageStatus.sending &&
         message.status != MessageStatus.failed &&
-        DateTime.now().difference(message.sentAt) <= const Duration(minutes: 2);
+        DateTime.now().difference(message.sentAt) <= mutationWindow;
     unawaited(HapticFeedback.mediumImpact());
     final action = await showGeneralDialog<_MessageMenuAction>(
       context: context,
@@ -1768,6 +1774,7 @@ class _ChatScreenState extends State<ChatScreen> {
         message: message,
         anchor: anchor,
         canRecall: canRecall,
+        canEdit: widget.controller.isMessageEditable(message),
         canPin:
             widget.conversation.kind == ConversationKind.group &&
             !widget.conversation.isBusinessChannel &&
@@ -2124,6 +2131,7 @@ class _MessageContextMenu extends StatelessWidget {
     required this.message,
     required this.anchor,
     required this.canRecall,
+    required this.canEdit,
     required this.canPin,
     required this.onSelected,
   });
@@ -2131,6 +2139,7 @@ class _MessageContextMenu extends StatelessWidget {
   final ChatMessage message;
   final Offset anchor;
   final bool canRecall;
+  final bool canEdit;
   final bool canPin;
   final ValueChanged<_MessageMenuAction> onSelected;
 
@@ -2146,11 +2155,6 @@ class _MessageContextMenu extends StatelessWidget {
     final canCopy =
         message.kind == MessageContentKind.text ||
         message.kind == MessageContentKind.reply;
-    final canEdit =
-        message.isMine &&
-        !message.id.startsWith('local-') &&
-        message.status != MessageStatus.recalled &&
-        canCopy;
     final canViewEditHistory =
         message.editedAt != null && !message.id.startsWith('local-');
     final primary = <_ContextActionSpec>[

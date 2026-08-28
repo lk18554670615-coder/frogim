@@ -73,7 +73,7 @@ func TestAuthPolicyUsesCharacterMinimumAndBcryptByteMaximum(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy := a.AuthPolicy()
-	if policy.RegistrationEnabled || policy.PasswordMinLength != 12 || policy.PasswordMaxBytes != 72 {
+	if policy.RegistrationEnabled || policy.PasswordMinLength != 12 || policy.PasswordMaxBytes != 72 || policy.MessageRecallMinutes != 2 {
 		t.Fatalf("policy=%+v", policy)
 	}
 	if a.validPassword("十一位密码abc123") {

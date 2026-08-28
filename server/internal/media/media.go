@@ -108,13 +108,47 @@ func (s *Service) signerFor(ctx context.Context) *minio.Client {
 }
 func token() string { var b [12]byte; _, _ = rand.Read(b[:]); return hex.EncodeToString(b[:]) }
 func allowed(mime string) bool {
+	mime = strings.ToLower(strings.TrimSpace(strings.SplitN(mime, ";", 2)[0]))
 	for _, prefix := range []string{"image/", "audio/", "video/"} {
 		if strings.HasPrefix(mime, prefix) {
 			return true
 		}
 	}
-	return mime == "application/pdf" || mime == "application/octet-stream"
+	_, ok := allowedDocumentMIMEs[mime]
+	return ok
 }
+
+var allowedDocumentMIMEs = map[string]struct{}{
+	"application/pdf":               {},
+	"application/octet-stream":      {},
+	"text/plain":                    {},
+	"text/csv":                      {},
+	"application/rtf":               {},
+	"application/zip":               {},
+	"application/x-zip-compressed":  {},
+	"application/msword":            {},
+	"application/vnd.ms-excel":      {},
+	"application/vnd.ms-powerpoint": {},
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document":   {},
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":         {},
+	"application/vnd.openxmlformats-officedocument.presentationml.presentation": {},
+}
+
+var zipDocumentMIMEs = map[string]struct{}{
+	"application/zip":              {},
+	"application/x-zip-compressed": {},
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document":   {},
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":         {},
+	"application/vnd.openxmlformats-officedocument.presentationml.presentation": {},
+}
+
+var opaqueDocumentMIMEs = map[string]struct{}{
+	"application/msword":            {},
+	"application/vnd.ms-excel":      {},
+	"application/vnd.ms-powerpoint": {},
+	"application/rtf":               {},
+}
+
 func (s *Service) ensure(ctx context.Context) error {
 	if s.client == nil {
 		return ErrUnavailable
@@ -254,6 +288,12 @@ func mimeMatchesContent(declared string, prefix []byte) bool {
 		return strings.HasPrefix(detected, "video/") || (declared == "video/ogg" && detected == "application/ogg")
 	case declared == "application/pdf":
 		return detected == "application/pdf"
+	case declared == "text/plain" || declared == "text/csv":
+		return detected == "text/plain"
+	case func() bool { _, ok := zipDocumentMIMEs[declared]; return ok }():
+		return detected == "application/zip" || detected == "application/x-zip-compressed"
+	case func() bool { _, ok := opaqueDocumentMIMEs[declared]; return ok }():
+		return detected == "application/octet-stream" || detected == "text/plain"
 	case declared == "application/octet-stream":
 		return detected != "text/html" && detected != "text/xml"
 	default:

@@ -1440,7 +1440,8 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    final controller = AppController(DemoImRepository(latency: Duration.zero))
+      ..authPolicy = const AuthPolicy(messageRecallMinutes: 1440);
     await tester.runAsync(controller.loginAsDemo);
     addTearDown(controller.dispose);
     final group = controller.conversations.first;

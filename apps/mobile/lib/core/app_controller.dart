@@ -1583,6 +1583,9 @@ class AppController extends ChangeNotifier {
           : MessageContentKind.reply,
       replyToId: replyTo?.id,
       replyToText: replyTo?.text,
+      replyToSeq: replyTo?.conversationSeq ?? 0,
+      replyToSenderId: replyTo?.senderId,
+      replyToSenderName: replyTo?.senderName,
       mentions: mentions,
       robotId: robotId,
       status: MessageStatus.sending,
@@ -1647,6 +1650,9 @@ class AppController extends ChangeNotifier {
       durationSeconds: upload.durationSeconds,
       replyToId: replyTo?.id,
       replyToText: replyTo?.text,
+      replyToSeq: replyTo?.conversationSeq ?? 0,
+      replyToSenderId: replyTo?.senderId,
+      replyToSenderName: replyTo?.senderName,
       status: MessageStatus.sending,
     );
     _pendingMedia[clientId] = upload;
@@ -1815,6 +1821,9 @@ class AppController extends ChangeNotifier {
       contactAvatarUrl: contact.avatarUrl,
       replyToId: replyTo?.id,
       replyToText: replyTo?.text,
+      replyToSeq: replyTo?.conversationSeq ?? 0,
+      replyToSenderId: replyTo?.senderId,
+      replyToSenderName: replyTo?.senderName,
       status: MessageStatus.sending,
     );
     final list = _messages.putIfAbsent(conversationId, () => []);
@@ -1855,6 +1864,9 @@ class AppController extends ChangeNotifier {
       locationAddress: address?.trim(),
       replyToId: replyTo?.id,
       replyToText: replyTo?.text,
+      replyToSeq: replyTo?.conversationSeq ?? 0,
+      replyToSenderId: replyTo?.senderId,
+      replyToSenderName: replyTo?.senderName,
       status: MessageStatus.sending,
     );
     final list = _messages.putIfAbsent(conversationId, () => []);
@@ -1928,6 +1940,11 @@ class AppController extends ChangeNotifier {
 
   Future<bool> editMessage(ChatMessage message, String text) async {
     final normalized = text.trim();
+    if (_isMessageEditWindowExpired(message)) {
+      error = '消息已超过 ${authPolicy.messageRecallMinutes} 分钟编辑时限';
+      notifyListeners();
+      return false;
+    }
     if (normalized.isEmpty ||
         !message.isMine ||
         message.id.startsWith('local-') ||
@@ -1951,6 +1968,19 @@ class AppController extends ChangeNotifier {
       return false;
     }
   }
+
+  bool isMessageEditable(ChatMessage message) =>
+      message.isMine &&
+      !message.id.startsWith('local-') &&
+      message.status != MessageStatus.recalled &&
+      message.status != MessageStatus.expired &&
+      (message.kind == MessageContentKind.text ||
+          message.kind == MessageContentKind.reply) &&
+      !_isMessageEditWindowExpired(message);
+
+  bool _isMessageEditWindowExpired(ChatMessage message) =>
+      DateTime.now().difference(message.sentAt) >
+      authPolicy.messageMutationWindow;
 
   Future<List<MessageEditRevision>?> loadMessageEditHistory(
     ChatMessage message,

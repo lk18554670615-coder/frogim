@@ -10,6 +10,13 @@ const _editorToolbarText = TextStyle(
   color: Colors.white,
   fontSize: 15,
   fontWeight: FontWeight.w600,
+  fontFamily: 'NotoSansSC',
+  fontFamilyFallback: [
+    'PingFang SC',
+    'Microsoft YaHei',
+    'Noto Sans CJK SC',
+    'system-ui',
+  ],
 );
 const _editorProgressIndicator = ProgressIndicatorConfigs(
   widgets: ProgressIndicatorWidgets(

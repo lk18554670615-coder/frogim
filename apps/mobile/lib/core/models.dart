@@ -366,6 +366,9 @@ class ChatMessage {
     this.durationSeconds,
     this.replyToId,
     this.replyToText,
+    this.replyToSeq = 0,
+    this.replyToSenderId,
+    this.replyToSenderName,
     this.contactUserId,
     this.contactName,
     this.contactHandle,
@@ -412,6 +415,9 @@ class ChatMessage {
   final int? durationSeconds;
   final String? replyToId;
   final String? replyToText;
+  final int replyToSeq;
+  final String? replyToSenderId;
+  final String? replyToSenderName;
   final String? contactUserId;
   final String? contactName;
   final String? contactHandle;
@@ -456,6 +462,9 @@ class ChatMessage {
     int? durationSeconds,
     String? replyToId,
     String? replyToText,
+    int? replyToSeq,
+    String? replyToSenderId,
+    String? replyToSenderName,
     String? contactUserId,
     String? contactName,
     String? contactHandle,
@@ -501,6 +510,9 @@ class ChatMessage {
     durationSeconds: durationSeconds ?? this.durationSeconds,
     replyToId: replyToId ?? this.replyToId,
     replyToText: replyToText ?? this.replyToText,
+    replyToSeq: replyToSeq ?? this.replyToSeq,
+    replyToSenderId: replyToSenderId ?? this.replyToSenderId,
+    replyToSenderName: replyToSenderName ?? this.replyToSenderName,
     contactUserId: contactUserId ?? this.contactUserId,
     contactName: contactName ?? this.contactName,
     contactHandle: contactHandle ?? this.contactHandle,
@@ -550,6 +562,9 @@ class ChatMessage {
     'durationSeconds': durationSeconds,
     'replyToId': replyToId,
     'replyToText': replyToText,
+    'replyToSeq': replyToSeq,
+    'replyToSenderId': replyToSenderId,
+    'replyToSenderName': replyToSenderName,
     'contactUserId': contactUserId,
     'contactName': contactName,
     'contactHandle': contactHandle,
@@ -602,6 +617,9 @@ class ChatMessage {
     durationSeconds: (json['durationSeconds'] as num?)?.toInt(),
     replyToId: json['replyToId'] as String?,
     replyToText: json['replyToText'] as String?,
+    replyToSeq: (json['replyToSeq'] as num?)?.toInt() ?? 0,
+    replyToSenderId: json['replyToSenderId'] as String?,
+    replyToSenderName: json['replyToSenderName'] as String?,
     contactUserId: json['contactUserId'] as String?,
     contactName: json['contactName'] as String?,
     contactHandle: json['contactHandle'] as String?,

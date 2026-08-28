@@ -23,6 +23,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 const _surfaceKey = Key('visual-regression-surface');
 final _audioPlayerEventChannels = <EventChannel>[];
+Directory? _testStorageDirectory;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -30,6 +31,9 @@ void main() {
   late final GoldenFileComparator originalGoldenComparator;
 
   setUpAll(() async {
+    _testStorageDirectory = Directory.systemTemp.createTempSync(
+      'linli_visual_regression_',
+    );
     originalGoldenComparator = goldenFileComparator;
     if (originalGoldenComparator case final LocalFileComparator comparator) {
       goldenFileComparator = _TolerantLocalFileComparator(
@@ -84,6 +88,18 @@ void main() {
         return null;
       },
     );
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('plugins.flutter.io/path_provider'),
+      (call) async => switch (call.method) {
+        'getTemporaryDirectory' ||
+        'getApplicationSupportDirectory' ||
+        'getApplicationDocumentsDirectory' ||
+        'getApplicationCacheDirectory' ||
+        'getExternalStorageDirectory' ||
+        'getDownloadsDirectory' => _testStorageDirectory!.path,
+        _ => null,
+      },
+    );
     messenger.setMockStreamHandler(
       const EventChannel('xyz.luan/audioplayers.global/events'),
       MockStreamHandler.inline(onListen: (_, _) {}),
@@ -106,6 +122,10 @@ void main() {
       const MethodChannel('xyz.luan/audioplayers'),
       null,
     );
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('plugins.flutter.io/path_provider'),
+      null,
+    );
     for (final channel in _audioPlayerEventChannels) {
       messenger.setMockStreamHandler(channel, null);
     }
@@ -113,6 +133,10 @@ void main() {
       const EventChannel('xyz.luan/audioplayers.global/events'),
       null,
     );
+    final storageDirectory = _testStorageDirectory;
+    if (storageDirectory != null && storageDirectory.existsSync()) {
+      storageDirectory.deleteSync(recursive: true);
+    }
   });
 
   setUp(() {
@@ -263,6 +287,10 @@ void main() {
       find.byKey(_surfaceKey),
       matchesGoldenFile('goldens/windows/mobile-moments-brand.png'),
     );
+    // flutter_cache_manager schedules a one-shot cleanup after the first
+    // path-provider lookup. Advance the fake clock so the visual test does not
+    // leave a framework timer behind.
+    await tester.pump(const Duration(seconds: 11));
   }, skip: !Platform.isWindows);
 
   testWidgets('mobile moments error visual baseline', (tester) async {

@@ -113,6 +113,10 @@ class LiveImRepository
   int _mutationSequence = 0;
   bool _closed = false;
   Future<bool>? _refreshInFlight;
+  Timer? _reconnectReconciliationTimer;
+  bool _wukongHasConnected = false;
+  bool _reconnectReconciliationNeeded = false;
+  int _reconnectReconciliationAttempts = 0;
 
   @override
   bool get isDemo => false;
@@ -875,10 +879,31 @@ class LiveImRepository
   void _bindWukongGateway() {
     _wukongConnectionSubscription ??= _wukong.connectionStates.listen((state) {
       if (_closed) return;
-      _connection.add(
-        state == WukongConnectionState.connected ||
-            state == WukongConnectionState.syncing,
-      );
+      final available =
+          state == WukongConnectionState.connected ||
+          state == WukongConnectionState.syncing;
+      _connection.add(available);
+      switch (state) {
+        case WukongConnectionState.connected:
+          if (_wukongHasConnected && _reconnectReconciliationNeeded) {
+            _scheduleReconnectReconciliation();
+          }
+          _wukongHasConnected = true;
+        case WukongConnectionState.disconnected ||
+            WukongConnectionState.networkUnavailable ||
+            WukongConnectionState.kicked:
+          _reconnectReconciliationTimer?.cancel();
+          _reconnectReconciliationTimer = null;
+          if (_wukongHasConnected) {
+            _reconnectReconciliationNeeded = true;
+          }
+        case WukongConnectionState.connecting || WukongConnectionState.syncing:
+          // A successful TCP connection is reported before the SDK's own
+          // conversation sync. Wait for its final connected state so our
+          // defensive gap scan cannot race the SDK database transaction.
+          _reconnectReconciliationTimer?.cancel();
+          _reconnectReconciliationTimer = null;
+      }
     });
     _wukongEventSubscription ??= _wukong.events.listen((event) {
       _wukongEventSerial = _wukongEventSerial
@@ -890,6 +915,150 @@ class LiveImRepository
     _wukongSendSubscription ??= _wukong.sendResults.listen(
       (result) => unawaited(_handleWukongSendResult(result)),
     );
+  }
+
+  void _scheduleReconnectReconciliation() {
+    _reconnectReconciliationTimer?.cancel();
+    _reconnectReconciliationTimer = Timer(
+      const Duration(milliseconds: 250),
+      () {
+        _reconnectReconciliationTimer = null;
+        if (_closed ||
+            !_reconnectReconciliationNeeded ||
+            _wukong.connectionState != WukongConnectionState.connected) {
+          return;
+        }
+        _wukongEventSerial = _wukongEventSerial.then(
+          (_) => _runReconnectReconciliation(),
+        );
+      },
+    );
+  }
+
+  Future<void> _runReconnectReconciliation() async {
+    if (_closed ||
+        !_reconnectReconciliationNeeded ||
+        _wukong.connectionState != WukongConnectionState.connected) {
+      return;
+    }
+    try {
+      await _reconcileMessagesAfterReconnect();
+      _reconnectReconciliationNeeded = false;
+      _reconnectReconciliationAttempts = 0;
+    } catch (error) {
+      _reconnectReconciliationAttempts++;
+      if (kDebugMode || kProfileMode) {
+        debugPrint(
+          '[wukong] reconnect reconciliation failed: '
+          'attempt=$_reconnectReconciliationAttempts '
+          'type=${error.runtimeType}',
+        );
+      }
+      if (_reconnectReconciliationAttempts < 3 &&
+          !_closed &&
+          _wukong.connectionState == WukongConnectionState.connected) {
+        _scheduleReconnectReconciliation();
+      }
+    }
+  }
+
+  Future<void> _reconcileMessagesAfterReconnect() async {
+    final uid = _userId;
+    if (uid == null) return;
+    if (_conversationChannels.isEmpty) {
+      await conversations();
+    }
+    final channels = <String, WukongChannel>{
+      for (final channel in _conversationChannels.values) channel.key: channel,
+    };
+    if (channels.isEmpty) return;
+
+    final localSequences = <String, int>{};
+    final syncKeys = <String>[];
+    for (final channel in channels.values) {
+      final cached = await _conversationCache.readMessages(uid, channel);
+      final sequence = cached.fold<int>(
+        0,
+        (current, message) => max(current, message.messageSeq),
+      );
+      localSequences[channel.key] = sequence;
+      syncKeys.add('${channel.id}:${channel.type}:$sequence');
+    }
+
+    final changed = await _business.syncConversations(
+      version: 0,
+      lastMsgSeqs: syncKeys.join('|'),
+      messageCount: 200,
+    );
+    var restoredAny = false;
+    for (final item in changed) {
+      final channel = WukongChannel(
+        id: (item['channel_id'] ?? item['channelId'] ?? '').toString(),
+        type:
+            (item['channel_type'] as num?)?.toInt() ??
+            (item['channelType'] as num?)?.toInt() ??
+            0,
+      );
+      if (channel.id.isEmpty || channel.type <= 0) continue;
+      var localSequence = localSequences[channel.key] ?? 0;
+      final remoteSequence =
+          (item['last_msg_seq'] as num?)?.toInt() ??
+          (item['lastMsgSeq'] as num?)?.toInt() ??
+          0;
+      if (remoteSequence <= localSequence) continue;
+
+      var pages = 0;
+      while (localSequence < remoteSequence && pages < 5) {
+        pages++;
+        final response = await _business.syncMessages(
+          channel: channel,
+          startMessageSeq: localSequence + 1,
+          endMessageSeq: 0,
+          limit: 200,
+          pullMode: 1,
+        );
+        final messages =
+            (response['messages'] as List<Object?>? ?? const [])
+                .whereType<Map>()
+                .map(
+                  (raw) => WukongMessage.fromSyncJson({
+                    ...wukongObjectMap(raw),
+                    'channel_id': channel.id,
+                    'channel_type': channel.type,
+                  }),
+                )
+                .where(
+                  (message) =>
+                      message.messageSeq > localSequence &&
+                      message.messageSeq <= remoteSequence,
+                )
+                .toList()
+              ..sort(
+                (left, right) => left.messageSeq.compareTo(right.messageSeq),
+              );
+        if (messages.isEmpty) break;
+        for (final message in messages) {
+          await _handleWukongEvent(
+            WukongGatewayEvent(
+              kind: WukongGatewayEventKind.received,
+              message: message,
+              channel: channel,
+            ),
+          );
+          localSequence = max(localSequence, message.messageSeq);
+          restoredAny = true;
+        }
+        if ((response['more'] as num?)?.toInt() != 1) break;
+      }
+    }
+    if (restoredAny && !_closed) {
+      _events.add(
+        const ImEvent(
+          type: ImEventType.conversationChanged,
+          payload: <String, Object?>{},
+        ),
+      );
+    }
   }
 
   _PendingWukongSend? _findWukongSend(WukongSendResult result) {
@@ -951,6 +1120,9 @@ class LiveImRepository
           clientMessageId: pending.appClientMessageId,
           replyToId: pending.source.replyToId,
           replyToText: pending.source.replyToText,
+          replyToSeq: pending.source.replyToSeq,
+          replyToSenderId: pending.source.replyToSenderId,
+          replyToSenderName: pending.source.replyToSenderName,
           mentions: pending.source.mentions,
           expiresAt: pending.source.expiresAt,
         );
@@ -1015,6 +1187,9 @@ class LiveImRepository
             clientMessageId: source.clientMessageId,
             replyToId: source.replyToId,
             replyToText: source.replyToText,
+            replyToSeq: source.replyToSeq,
+            replyToSenderId: source.replyToSenderId,
+            replyToSenderName: source.replyToSenderName,
             mentions: source.mentions,
             expiresAt: source.expiresAt,
           );
@@ -2750,6 +2925,9 @@ class LiveImRepository
       durationSeconds: (body['duration'] as num?)?.toInt(),
       replyToId: replyToId?.isEmpty == true ? null : replyToId,
       replyToText: body['replyToText'] as String?,
+      replyToSeq: (body['replyToSeq'] as num?)?.toInt() ?? 0,
+      replyToSenderId: body['replyToSenderId'] as String?,
+      replyToSenderName: body['replyToSenderName'] as String?,
       contactUserId: body['userId'] as String?,
       contactName: body['name'] as String?,
       contactHandle: body['handle'] as String?,
@@ -3085,6 +3263,9 @@ class LiveImRepository
       durationSeconds: upload.durationSeconds,
       replyToId: pending.replyToId,
       replyToText: pending.replyToText,
+      replyToSeq: pending.replyToSeq,
+      replyToSenderId: pending.replyToSenderId,
+      replyToSenderName: pending.replyToSenderName,
     );
     final base = _messageMapper.toOutgoing(wireMessage, channel: channel);
     final outgoing = WukongOutgoingMessage(
@@ -3110,6 +3291,9 @@ class LiveImRepository
         durationSeconds: upload.durationSeconds,
         replyToId: pending.replyToId,
         replyToText: pending.replyToText,
+        replyToSeq: pending.replyToSeq,
+        replyToSenderId: pending.replyToSenderId,
+        replyToSenderName: pending.replyToSenderName,
       ),
     );
   }
@@ -3351,6 +3535,11 @@ class LiveImRepository
     _earlyWukongSendResults.clear();
     _seenWukongMessageEvents.clear();
     _pendingWukongMessageEvents.clear();
+    _reconnectReconciliationTimer?.cancel();
+    _reconnectReconciliationTimer = null;
+    _wukongHasConnected = false;
+    _reconnectReconciliationNeeded = false;
+    _reconnectReconciliationAttempts = 0;
     await _store.remove('session');
   }
 
@@ -3368,6 +3557,8 @@ class LiveImRepository
   @override
   Future<void> close() async {
     _closed = true;
+    _reconnectReconciliationTimer?.cancel();
+    _reconnectReconciliationTimer = null;
     await _disconnect();
     await _wukongConnectionSubscription?.cancel();
     await _wukongEventSubscription?.cancel();
