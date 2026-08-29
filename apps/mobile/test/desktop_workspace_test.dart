@@ -179,6 +179,10 @@ void main() {
     expect(find.byKey(const Key('desktop-tools-workspace')), findsOneWidget);
     expect(find.text('全局搜索'), findsOneWidget);
     expect(find.text('创建群聊'), findsOneWidget);
+    expect(find.text('朋友圈'), findsOneWidget);
+    expect(find.text('表情商店'), findsOneWidget);
+    expect(find.text('社区与频道'), findsNothing);
+    expect(find.text('在线客服'), findsNothing);
 
     await tester.tap(find.byKey(const Key('desktop-nav-profile')));
     await _pumpUi(tester);

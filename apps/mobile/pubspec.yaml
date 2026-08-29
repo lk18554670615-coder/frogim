@@ -93,6 +93,11 @@ dependency_overrides:
   # edge; protocol, database and public SDK APIs remain the official release.
   wukongimfluttersdk:
     path: ../../third_party/wukongim/flutter-sdk-1.7.9-patched
+  # Keep the LiveKit-audited 1.4.0 ABI while forcing Android 14+ to request
+  # full-display MediaProjection. This avoids selecting a stale CallKit task
+  # from the single-app sharing picker.
+  flutter_webrtc:
+    path: ../../third_party/flutter_webrtc-1.4.0-full-display
   # WuKong Flutter SDK -> encrypt 5.x still declares pointycastle 3.x, while
   # LiveKit 2.7.0 -> dart_jsonwebtoken requires 4.x. Encrypt's used AES API is
   # source-compatible; compile and encrypted-handshake probes guard this pin.

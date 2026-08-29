@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/cupertino.dart';
@@ -33,6 +34,9 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
   List<GroupMember> members = const [];
   bool loading = true;
   bool busy = false;
+  Timer? _externalRefreshTimer;
+  String? _conversationFingerprint;
+  bool _closingUnavailableGroup = false;
 
   GroupMember? get me => members
       .where((member) => member.user.id == widget.controller.currentUser?.id)
@@ -43,20 +47,61 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
   bool get isAdmin => me?.isAdmin == true;
   bool get canEdit => isOwner || isAdmin;
 
+  Conversation? get liveConversation => widget.controller.conversations
+      .where((item) => item.id == widget.conversation.id)
+      .firstOrNull;
+
   Conversation get currentConversation =>
-      widget.controller.conversations
-          .where((item) => item.id == widget.conversation.id)
-          .firstOrNull ??
-      widget.conversation;
+      liveConversation ?? widget.conversation;
 
   @override
   void initState() {
     super.initState();
+    _conversationFingerprint = _fingerprint(currentConversation);
+    widget.controller.addListener(_handleControllerChange);
     _load();
   }
 
-  Future<void> _load() async {
-    setState(() => loading = true);
+  @override
+  void dispose() {
+    _externalRefreshTimer?.cancel();
+    widget.controller.removeListener(_handleControllerChange);
+    super.dispose();
+  }
+
+  String _fingerprint(Conversation conversation) => [
+    conversation.title,
+    conversation.avatarUrl ?? '',
+    conversation.memberCount,
+    conversation.currentUserRole ?? '',
+    conversation.saved,
+    conversation.pinned,
+    conversation.muted,
+  ].join('|');
+
+  void _handleControllerChange() {
+    if (!mounted) return;
+    final latest = liveConversation;
+    if (latest == null) {
+      if (_closingUnavailableGroup) return;
+      _closingUnavailableGroup = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        Navigator.of(context).popUntil((route) => route.isFirst);
+      });
+      return;
+    }
+    final fingerprint = _fingerprint(latest);
+    if (fingerprint == _conversationFingerprint) return;
+    _conversationFingerprint = fingerprint;
+    _externalRefreshTimer?.cancel();
+    _externalRefreshTimer = Timer(const Duration(milliseconds: 160), () {
+      if (mounted) _load(showLoading: false);
+    });
+  }
+
+  Future<void> _load({bool showLoading = true}) async {
+    if (showLoading) setState(() => loading = true);
     final results = await Future.wait<Object?>([
       widget.controller.loadGroupProfile(widget.conversation.id),
       widget.controller.loadGroupMembers(widget.conversation.id),
@@ -90,197 +135,199 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
       );
     }
     final value = profile!;
-    final conversation = currentConversation;
     return AnimatedBuilder(
       animation: widget.controller,
-      builder: (context, _) => Scaffold(
-        appBar: const GlassAppBar(title: Text('群聊资料')),
-        body: ListView(
-          key: const Key('group-management-list'),
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
-          children: [
-            _GroupHeader(
-              profile: value,
-              memberCount: members.length,
-              canEdit: canEdit,
-              busy: busy,
-              onAvatarTap: canEdit && !busy ? _pickAvatar : null,
-            ),
-            const SectionHeader('群聊'),
-            SectionCard(
-              children: [
-                SettingTile(
-                  key: const Key('group-save-to-contacts'),
-                  icon: CupertinoIcons.book,
-                  title: '保存到通讯录',
-                  subtitle: conversation.saved
-                      ? '可在通讯录的群聊中快速找到'
-                      : '保存后可在通讯录中快速找到',
-                  trailing: CupertinoSwitch(
-                    value: conversation.saved,
-                    onChanged: busy ? null : (_) => _toggleSaved(),
-                  ),
-                ),
-                SettingTile(
-                  key: const Key('group-members-entry'),
-                  icon: CupertinoIcons.person_2,
-                  title: '群成员',
-                  subtitle: '${members.length} 位成员',
-                  onTap: () async {
-                    await Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => GroupMembersManagementScreen(
-                          controller: widget.controller,
-                          conversationId: widget.conversation.id,
-                          profile: value,
-                          initialMembers: members,
-                        ),
-                      ),
-                    );
-                    await _load();
-                  },
-                ),
-                SettingTile(
-                  key: const Key('group-announcement-entry'),
-                  icon: CupertinoIcons.doc_text,
-                  title: '群公告',
-                  subtitle: value.announcement.isEmpty
-                      ? '暂无公告'
-                      : value.announcement,
-                  trailing: value.announcementUnread
-                      ? const _UnreadDot()
-                      : const Icon(CupertinoIcons.chevron_forward, size: 16),
-                  onTap: () async {
-                    await Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => GroupAnnouncementScreen(
-                          controller: widget.controller,
-                          profile: value,
-                          canEdit: canEdit,
-                        ),
-                      ),
-                    );
-                    await _load();
-                  },
-                ),
-                SettingTile(
-                  icon: CupertinoIcons.pencil,
-                  title: '群聊名称',
-                  subtitle: value.name,
-                  onTap: canEdit && !busy ? _editName : null,
-                ),
-                SettingTile(
-                  icon: CupertinoIcons.person_crop_circle,
-                  title: '我在本群的昵称',
-                  subtitle: me?.groupNickname.isNotEmpty == true
-                      ? me!.groupNickname
-                      : '未设置',
-                  onTap: busy ? null : _editNickname,
-                ),
-                if (value.joinPolicy == 'qr')
-                  SettingTile(
-                    key: const Key('group-qr-entry'),
-                    icon: CupertinoIcons.qrcode,
-                    title: '群二维码',
-                    subtitle: value.qrExpiresAt == null
-                        ? '生成可加入本群的二维码'
-                        : '二维码 24 小时内有效',
-                    onTap: busy ? null : _openGroupQr,
-                  ),
-              ],
-            ),
-            const SectionHeader('消息设置'),
-            SectionCard(
-              children: [
-                SettingTile(
-                  icon: CupertinoIcons.pin,
-                  title: '置顶聊天',
-                  trailing: CupertinoSwitch(
-                    value: conversation.pinned,
-                    onChanged: busy ? null : (_) => _togglePinned(),
-                  ),
-                ),
-                SettingTile(
-                  icon: CupertinoIcons.bell_slash,
-                  title: '消息免打扰',
-                  trailing: CupertinoSwitch(
-                    value: conversation.muted,
-                    onChanged: busy ? null : (_) => _toggleMuted(),
-                  ),
-                ),
-              ],
-            ),
-            if (isOwner) ...[
-              const SectionHeader('群主管理'),
+      builder: (context, _) {
+        final conversation = currentConversation;
+        return Scaffold(
+          appBar: const GlassAppBar(title: Text('群聊资料')),
+          body: ListView(
+            key: const Key('group-management-list'),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
+            children: [
+              _GroupHeader(
+                profile: value,
+                memberCount: members.length,
+                canEdit: canEdit,
+                busy: busy,
+                onAvatarTap: canEdit && !busy ? _pickAvatar : null,
+              ),
+              const SectionHeader('群聊'),
               SectionCard(
                 children: [
                   SettingTile(
-                    key: const Key('group-join-policy'),
-                    icon: CupertinoIcons.person_badge_plus,
-                    title: '入群方式',
-                    subtitle: groupJoinPolicyLabel(value.joinPolicy),
-                    onTap: busy ? null : _changeJoinPolicy,
-                  ),
-                  SettingTile(
-                    icon: CupertinoIcons.person_2_square_stack,
-                    title: '允许同群成员添加好友',
-                    subtitle: value.allowMemberAddFriend
-                        ? '成员可从群资料发起好友申请'
-                        : '群成员资料页不会提供添加入口',
+                    key: const Key('group-save-to-contacts'),
+                    icon: CupertinoIcons.book,
+                    title: '保存到通讯录',
+                    subtitle: conversation.saved
+                        ? '可在通讯录的群聊中快速找到'
+                        : '保存后可在通讯录中快速找到',
                     trailing: CupertinoSwitch(
-                      value: value.allowMemberAddFriend,
-                      onChanged: busy ? null : _setMemberFriendPermission,
+                      value: conversation.saved,
+                      onChanged: busy ? null : (_) => _toggleSaved(),
                     ),
                   ),
                   SettingTile(
-                    icon: CupertinoIcons.speaker_slash,
-                    title: '全员禁言',
-                    subtitle: value.allMuted ? '仅群主和管理员可发言' : '所有成员可发言',
+                    key: const Key('group-members-entry'),
+                    icon: CupertinoIcons.person_2,
+                    title: '群成员',
+                    subtitle: '${members.length} 位成员',
+                    onTap: () async {
+                      await Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => GroupMembersManagementScreen(
+                            controller: widget.controller,
+                            conversationId: widget.conversation.id,
+                            profile: value,
+                            initialMembers: members,
+                          ),
+                        ),
+                      );
+                      await _load();
+                    },
+                  ),
+                  SettingTile(
+                    key: const Key('group-announcement-entry'),
+                    icon: CupertinoIcons.doc_text,
+                    title: '群公告',
+                    subtitle: value.announcement.isEmpty
+                        ? '暂无公告'
+                        : value.announcement,
+                    trailing: value.announcementUnread
+                        ? const _UnreadDot()
+                        : const Icon(CupertinoIcons.chevron_forward, size: 16),
+                    onTap: () async {
+                      await Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => GroupAnnouncementScreen(
+                            controller: widget.controller,
+                            profile: value,
+                            canEdit: canEdit,
+                          ),
+                        ),
+                      );
+                      await _load();
+                    },
+                  ),
+                  SettingTile(
+                    icon: CupertinoIcons.pencil,
+                    title: '群聊名称',
+                    subtitle: value.name,
+                    onTap: canEdit && !busy ? _editName : null,
+                  ),
+                  SettingTile(
+                    icon: CupertinoIcons.person_crop_circle,
+                    title: '我在本群的昵称',
+                    subtitle: me?.groupNickname.isNotEmpty == true
+                        ? me!.groupNickname
+                        : '未设置',
+                    onTap: busy ? null : _editNickname,
+                  ),
+                  if (value.joinPolicy == 'qr')
+                    SettingTile(
+                      key: const Key('group-qr-entry'),
+                      icon: CupertinoIcons.qrcode,
+                      title: '群二维码',
+                      subtitle: value.qrExpiresAt == null
+                          ? '生成可加入本群的二维码'
+                          : '二维码 24 小时内有效',
+                      onTap: busy ? null : _openGroupQr,
+                    ),
+                ],
+              ),
+              const SectionHeader('消息设置'),
+              SectionCard(
+                children: [
+                  SettingTile(
+                    icon: CupertinoIcons.pin,
+                    title: '置顶聊天',
                     trailing: CupertinoSwitch(
-                      value: value.allMuted,
-                      onChanged: busy ? null : _setAllMuted,
+                      value: conversation.pinned,
+                      onChanged: busy ? null : (_) => _togglePinned(),
+                    ),
+                  ),
+                  SettingTile(
+                    icon: CupertinoIcons.bell_slash,
+                    title: '消息免打扰',
+                    trailing: CupertinoSwitch(
+                      value: conversation.muted,
+                      onChanged: busy ? null : (_) => _toggleMuted(),
                     ),
                   ),
                 ],
               ),
-            ],
-            const SectionHeader('安全'),
-            SectionCard(
-              children: [
-                SettingTile(
-                  icon: CupertinoIcons.exclamationmark_triangle,
-                  title: '举报群聊',
-                  subtitle: '提交群聊信息给平台审核',
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => ReportScreen(
-                        controller: widget.controller,
-                        target: value.name,
-                        targetId: value.conversationId,
-                        targetType: 'conversation',
+              if (isOwner) ...[
+                const SectionHeader('群主管理'),
+                SectionCard(
+                  children: [
+                    SettingTile(
+                      key: const Key('group-join-policy'),
+                      icon: CupertinoIcons.person_badge_plus,
+                      title: '入群方式',
+                      subtitle: groupJoinPolicyLabel(value.joinPolicy),
+                      onTap: busy ? null : _changeJoinPolicy,
+                    ),
+                    SettingTile(
+                      icon: CupertinoIcons.person_2_square_stack,
+                      title: '允许同群成员添加好友',
+                      subtitle: value.allowMemberAddFriend
+                          ? '成员可从群资料发起好友申请'
+                          : '群成员资料页不会提供添加入口',
+                      trailing: CupertinoSwitch(
+                        value: value.allowMemberAddFriend,
+                        onChanged: busy ? null : _setMemberFriendPermission,
+                      ),
+                    ),
+                    SettingTile(
+                      icon: CupertinoIcons.speaker_slash,
+                      title: '全员禁言',
+                      subtitle: value.allMuted ? '仅群主和管理员可发言' : '所有成员可发言',
+                      trailing: CupertinoSwitch(
+                        value: value.allMuted,
+                        onChanged: busy ? null : _setAllMuted,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+              const SectionHeader('安全'),
+              SectionCard(
+                children: [
+                  SettingTile(
+                    icon: CupertinoIcons.exclamationmark_triangle,
+                    title: '举报群聊',
+                    subtitle: '提交群聊信息给平台审核',
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => ReportScreen(
+                          controller: widget.controller,
+                          target: value.name,
+                          targetId: value.conversationId,
+                          targetType: 'group',
+                        ),
                       ),
                     ),
                   ),
-                ),
-                SettingTile(
-                  key: Key(isOwner ? 'disband-group' : 'leave-group'),
-                  icon: isOwner
-                      ? CupertinoIcons.delete_solid
-                      : CupertinoIcons.square_arrow_right,
-                  title: isOwner ? '解散群聊' : '退出群聊',
-                  subtitle: isOwner ? '所有成员将被移出，消息停止同步' : '退出后无法查看后续消息',
-                  destructive: true,
-                  onTap: busy
-                      ? null
-                      : isOwner
-                      ? _disband
-                      : _leave,
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
+                  SettingTile(
+                    key: Key(isOwner ? 'disband-group' : 'leave-group'),
+                    icon: isOwner
+                        ? CupertinoIcons.delete_solid
+                        : CupertinoIcons.square_arrow_right,
+                    title: isOwner ? '解散群聊' : '退出群聊',
+                    subtitle: isOwner ? '所有成员将被移出，消息停止同步' : '退出后无法查看后续消息',
+                    destructive: true,
+                    onTap: busy
+                        ? null
+                        : isOwner
+                        ? _disband
+                        : _leave,
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -847,6 +894,8 @@ class _GroupMembersManagementScreenState
   late List<GroupMember> members = widget.initialMembers;
   bool loading = false;
   String query = '';
+  Timer? _externalRefreshTimer;
+  String? _conversationFingerprint;
 
   GroupMember? get me => members
       .where((member) => member.user.id == widget.controller.currentUser?.id)
@@ -864,6 +913,45 @@ class _GroupMembersManagementScreenState
       ];
       return values.any((value) => value.toLowerCase().contains(normalized));
     }).toList();
+  }
+
+  Conversation? get liveConversation => widget.controller.conversations
+      .where((item) => item.id == widget.conversationId)
+      .firstOrNull;
+
+  @override
+  void initState() {
+    super.initState();
+    _conversationFingerprint = _fingerprint(liveConversation);
+    widget.controller.addListener(_handleControllerChange);
+  }
+
+  @override
+  void dispose() {
+    _externalRefreshTimer?.cancel();
+    widget.controller.removeListener(_handleControllerChange);
+    super.dispose();
+  }
+
+  String _fingerprint(Conversation? conversation) => conversation == null
+      ? 'removed'
+      : [
+          conversation.memberCount,
+          conversation.currentUserRole ?? '',
+          conversation.title,
+          conversation.avatarUrl ?? '',
+        ].join('|');
+
+  void _handleControllerChange() {
+    if (!mounted) return;
+    final fingerprint = _fingerprint(liveConversation);
+    if (fingerprint == _conversationFingerprint) return;
+    _conversationFingerprint = fingerprint;
+    if (fingerprint == 'removed') return;
+    _externalRefreshTimer?.cancel();
+    _externalRefreshTimer = Timer(const Duration(milliseconds: 160), () {
+      if (mounted) _reload();
+    });
   }
 
   Future<void> _reload() async {

@@ -85,6 +85,7 @@ class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
   late final ClientUpgradeService upgradeService;
   Timer? _launchReleaseTimer;
   bool _launchVisible = true;
+  bool _lastAuthenticated = false;
   ThemeMode themeMode = ThemeMode.system;
   ClientUpgradeDecision? upgradeDecision;
   String? promptedUpgradeKey;
@@ -113,7 +114,16 @@ class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
   }
 
   void _refreshRoot() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    final sessionEnded = _lastAuthenticated && !controller.authenticated;
+    _lastAuthenticated = controller.authenticated;
+    setState(() {});
+    if (sessionEnded) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        navigatorKey.currentState?.popUntil((route) => route.isFirst);
+      });
+    }
   }
 
   @override

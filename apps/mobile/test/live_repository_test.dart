@@ -271,6 +271,37 @@ void main() {
     await repository.close();
   });
 
+  test('登录设备兼容 WuKong Manager 返回的纳秒更新时间', () async {
+    final client = MockClient((request) async {
+      if (request.url.path == '/v2/auth/login') return _loginResponse();
+      if (request.url.path == '/v2/users/me/im-devices') {
+        return http.Response(
+          jsonEncode({
+            'items': [
+              {
+                'deviceFlag': 0,
+                'deviceLevel': 1,
+                'connectionCount': 1,
+                'updatedAt': 1770000000123456789,
+              },
+            ],
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }
+      return http.Response('{}', 404);
+    });
+    final repository = _repository(client);
+    await repository.login('13800138000', '123456');
+
+    final sessions = await repository.imDeviceSessions();
+
+    expect(sessions, hasLength(1));
+    expect(sessions.single.updatedAt.millisecondsSinceEpoch, 1770000000123);
+    await repository.close();
+  });
+
   test('机器人菜单只读取会话接口返回的真实配置', () async {
     final client = MockClient((request) async {
       if (request.url.path == '/v2/auth/login') {
@@ -723,6 +754,9 @@ void main() {
     });
     final repository = _repository(client);
     await repository.login('13800138000', '123456');
+    final expired = repository.events.firstWhere(
+      (event) => event.type == ImEventType.sessionExpired,
+    );
 
     await expectLater(
       repository.conversations(),
@@ -731,6 +765,9 @@ void main() {
 
     expect(refreshCount, 1);
     expect(protectedCount, 1);
+    await expectLater(expired, completes);
+    expect(repository.currentUser, isNull);
+    expect(await repository.restoreSession(), isFalse);
     await repository.close();
   });
 
@@ -827,6 +864,7 @@ void main() {
     expect(sent.replyToId, 'origin-1');
     expect(sent.replyToText, '原始消息');
     expect(history.last.replyToId, 'origin-1');
+    expect(history.last.kind, MessageContentKind.reply);
     expect(history.last.replyToText, '原始消息');
     await repository.close();
   });

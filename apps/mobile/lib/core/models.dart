@@ -23,6 +23,7 @@ enum MessageContentKind {
 enum ConversationKind { direct, group }
 
 enum ImEventType {
+  sessionExpired,
   messageCreated,
   messageChanged,
   messageRecalled,
@@ -798,6 +799,25 @@ class Conversation {
   bool get canMentionEveryone =>
       kind == ConversationKind.group &&
       (currentUserRole == 'owner' || currentUserRole == 'admin');
+
+  /// Resolves the other participant in a direct conversation without relying
+  /// on the server-provided member ordering. The direct channel id is the most
+  /// authoritative peer identifier; older payloads can still fall back to
+  /// excluding the authenticated user from the member list.
+  AppUser? directPeerFor(String? currentUserId) {
+    if (kind != ConversationKind.direct) return null;
+    final explicitPeerId = channelId?.trim() ?? '';
+    if (explicitPeerId.isNotEmpty) {
+      for (final member in members) {
+        if (member.id == explicitPeerId) return member;
+      }
+    }
+    final ownId = currentUserId?.trim() ?? '';
+    for (final member in members) {
+      if (ownId.isEmpty || member.id != ownId) return member;
+    }
+    return null;
+  }
 
   Conversation copyWith({
     String? title,

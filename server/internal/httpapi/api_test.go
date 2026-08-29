@@ -560,7 +560,7 @@ func TestUserCanListAndQuitOwnWukongPlatformSession(t *testing.T) {
 			if r.URL.Query().Get("uid") != "usr_alice" {
 				t.Fatalf("device uid=%q", r.URL.Query().Get("uid"))
 			}
-			_, _ = w.Write([]byte(`{"data":[{"uid":"usr_alice","device_flag":1,"device_level":1,"conn_count":2,"updated_at":1770000000,"token":"must-not-leak"}],"total":1}`))
+			_, _ = w.Write([]byte(`{"data":[{"uid":"usr_alice","device_flag":1,"device_level":1,"conn_count":2,"updated_at":1770000000123456789,"token":"must-not-leak"}],"total":1}`))
 		case "/user/device_quit":
 			if err := json.NewDecoder(r.Body).Decode(&quitBody); err != nil {
 				t.Fatal(err)
@@ -590,7 +590,7 @@ func TestUserCanListAndQuitOwnWukongPlatformSession(t *testing.T) {
 	res := authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/users/me/im-devices", token, "")
 	body, _ := io.ReadAll(res.Body)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || !strings.Contains(string(body), `"deviceFlag":1`) || !strings.Contains(string(body), `"connectionCount":2`) || strings.Contains(string(body), "must-not-leak") || strings.Contains(string(body), `"token"`) {
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(body), `"deviceFlag":1`) || !strings.Contains(string(body), `"connectionCount":2`) || !strings.Contains(string(body), `"updatedAt":1770000000`) || strings.Contains(string(body), "must-not-leak") || strings.Contains(string(body), `"token"`) {
 		t.Fatalf("device sessions status=%d body=%s", res.StatusCode, body)
 	}
 

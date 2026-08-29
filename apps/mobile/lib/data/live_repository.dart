@@ -657,14 +657,24 @@ class LiveImRepository
     final data = await _get('/v2/users/me/im-devices');
     return (data['items'] as List<Object?>? ?? const []).map((raw) {
       final item = raw! as Map<String, Object?>;
-      final seconds = (item['updatedAt'] as num?)?.toInt() ?? 0;
       return ImDeviceSession(
         deviceFlag: (item['deviceFlag'] as num?)?.toInt() ?? 0,
         deviceLevel: (item['deviceLevel'] as num?)?.toInt() ?? 0,
         connectionCount: (item['connectionCount'] as num?)?.toInt() ?? 0,
-        updatedAt: DateTime.fromMillisecondsSinceEpoch(seconds * 1000),
+        updatedAt: _managerDeviceUpdatedAt(item['updatedAt']),
       );
     }).toList();
+  }
+
+  DateTime _managerDeviceUpdatedAt(Object? value) {
+    final timestamp = (value as num?)?.toInt() ?? 0;
+    final milliseconds = switch (timestamp) {
+      > 100000000000000000 => timestamp ~/ 1000000,
+      > 100000000000000 => timestamp ~/ 1000,
+      > 100000000000 => timestamp,
+      _ => timestamp * 1000,
+    };
+    return DateTime.fromMillisecondsSinceEpoch(milliseconds);
   }
 
   @override
@@ -808,6 +818,18 @@ class LiveImRepository
       _imSession = _parseImSession(data['imSession']) ?? _imSession;
       await _persistSession();
       return _token != null;
+    } on ImApiException catch (error) {
+      if (error.statusCode == 401 || error.statusCode == 403) {
+        final hadSession = _token != null || _refreshToken != null;
+        await _disconnect();
+        await _clearSession();
+        if (hadSession && !_events.isClosed) {
+          _events.add(
+            const ImEvent(type: ImEventType.sessionExpired, payload: {}),
+          );
+        }
+      }
+      return false;
     } catch (_) {
       return false;
     }
@@ -1603,25 +1625,14 @@ class LiveImRepository
             id:
                 conversation.channelId ??
                 (explicitType == 1
-                    ? conversation.members
-                              .where((member) => member.id != _userId)
-                              .firstOrNull
-                              ?.id ??
-                          conversation.members.firstOrNull?.id ??
-                          ''
+                    ? conversation.directPeerFor(_userId)?.id ?? ''
                     : conversation.id),
             type: explicitType,
           )
         : conversation.kind == ConversationKind.group
         ? WukongChannel(id: conversation.id, type: 2)
         : WukongChannel(
-            id:
-                conversation.members
-                    .where((member) => member.id != _userId)
-                    .firstOrNull
-                    ?.id ??
-                conversation.members.firstOrNull?.id ??
-                '',
+            id: conversation.directPeerFor(_userId)?.id ?? '',
             type: 1,
           );
     if (channel.id.isEmpty) return;
@@ -2844,13 +2855,21 @@ class LiveImRepository
 
   ChatMessage _message(Map<String, Object?> item, String conversationId) {
     final body = item['body'] as Map<String, Object?>? ?? const {};
+    final reply = body['reply'] is Map
+        ? wukongObjectMap(body['reply'])
+        : item['reply'] is Map
+        ? wukongObjectMap(item['reply'])
+        : const <String, Object?>{};
     final kindName =
         item['type'] as String? ??
         item['messageType'] as String? ??
         body['type'] as String? ??
         item['contentType'] as String?;
     final replyToId =
-        item['replyToId'] as String? ?? body['replyToId'] as String?;
+        item['replyToId'] as String? ??
+        body['replyToId'] as String? ??
+        reply['message_id'] as String? ??
+        reply['messageId'] as String?;
     final kind = switch (kindName) {
       'image' => MessageContentKind.image,
       'voice' || 'audio' => MessageContentKind.voice,
@@ -2924,10 +2943,21 @@ class LiveImRepository
       mimeType: body['mime'] as String? ?? body['mimeType'] as String?,
       durationSeconds: (body['duration'] as num?)?.toInt(),
       replyToId: replyToId?.isEmpty == true ? null : replyToId,
-      replyToText: body['replyToText'] as String?,
-      replyToSeq: (body['replyToSeq'] as num?)?.toInt() ?? 0,
-      replyToSenderId: body['replyToSenderId'] as String?,
-      replyToSenderName: body['replyToSenderName'] as String?,
+      replyToText:
+          body['replyToText'] as String? ?? reply['content'] as String?,
+      replyToSeq:
+          (body['replyToSeq'] as num?)?.toInt() ??
+          (reply['message_seq'] as num?)?.toInt() ??
+          (reply['messageSeq'] as num?)?.toInt() ??
+          0,
+      replyToSenderId:
+          body['replyToSenderId'] as String? ??
+          reply['from_uid'] as String? ??
+          reply['fromUid'] as String?,
+      replyToSenderName:
+          body['replyToSenderName'] as String? ??
+          reply['from_name'] as String? ??
+          reply['fromName'] as String?,
       contactUserId: body['userId'] as String?,
       contactName: body['name'] as String?,
       contactHandle: body['handle'] as String?,

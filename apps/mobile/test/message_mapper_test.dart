@@ -65,6 +65,8 @@ void main() {
       conversationId: 'conversation-1',
     );
     expect(restored.replyToSeq, 42);
+    expect(restored.kind, MessageContentKind.reply);
+    expect(restored.replyToText, '原消息');
     expect(restored.replyToSenderId, 'usr_b');
     expect(restored.replyToSenderName, 'Bob');
     expect(ChatMessage.fromJson(restored.toJson()).replyToText, '原消息');

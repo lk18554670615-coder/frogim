@@ -16,8 +16,10 @@ import 'package:linli_im/main.dart';
 import 'package:linli_im/ui/screens/chat_screen.dart';
 import 'package:linli_im/ui/screens/group_management_screens.dart';
 import 'package:linli_im/ui/screens/home_screen.dart';
+import 'package:linli_im/ui/screens/moments_screen.dart';
 import 'package:linli_im/ui/screens/relationship_screens.dart';
 import 'package:linli_im/ui/screens/settings_screens.dart';
+import 'package:linli_im/ui/screens/sticker_store_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -131,6 +133,35 @@ void main() {
 
     repository.completeCore();
     await tester.pump();
+  });
+
+  testWidgets('运行中凭据失效时清空子页导航栈并回到登录页', (tester) async {
+    final repository = _RuntimeExpiredSessionRepository();
+
+    await tester.pumpWidget(LinliApp(repository: repository));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 700));
+    await tester.enterText(find.byType(TextFormField).first, '13800138000');
+    await tester.enterText(find.byKey(const Key('code-field')), '123456');
+    await tester.tap(find.byKey(const Key('policy-consent-checkbox')));
+    await tester.tap(find.byKey(const Key('login-button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(find.byKey(const Key('home-tab-3')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('profile-settings')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.byType(SettingsScreen), findsOneWidget);
+
+    repository.expire();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(find.text('登录青蛙呱呱'), findsOneWidget);
+    expect(find.text('登录状态已失效，请重新登录'), findsOneWidget);
+    expect(find.byType(SettingsScreen), findsNothing);
   });
 
   testWidgets('真实登录表单进入消息首页且不展示演示入口', (tester) async {
@@ -499,6 +530,201 @@ void main() {
     );
   });
 
+  testWidgets('群举报使用服务端接受的 group 类型', (tester) async {
+    tester.view.physicalSize = const Size(375, 812);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final repository = ReportCaptureRepository();
+    final controller = AppController(repository);
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+    final group = controller.conversations.firstWhere(
+      (conversation) => conversation.kind == ConversationKind.group,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: ChatInfoScreen(
+          controller: controller,
+          conversation: group,
+          onSearch: () {},
+          onClearLocal: () async {},
+          onBlock: () async {},
+          onScheduledMessages: () {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('举报会话'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.ensureVisible(find.text('举报会话'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('举报会话'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('其他'));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(FilledButton, '提交举报'));
+    await tester.pumpAndSettle();
+
+    expect(repository.lastTargetType, 'group');
+    expect(repository.lastTargetId, group.id);
+    expect(find.text('举报已提交，我们会尽快审核'), findsOneWidget);
+  });
+
+  testWidgets('举报失败时留在页面并显示失败提示', (tester) async {
+    final repository = ReportCaptureRepository(fail: true);
+    final controller = AppController(repository);
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: ReportScreen(
+          controller: controller,
+          target: '测试群',
+          targetId: 'group-test',
+          targetType: 'group',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('其他'));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(FilledButton, '提交举报'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.textContaining('举报 测试群'), findsOneWidget);
+    expect(repository.lastTargetType, 'group');
+    expect(find.byType(SnackBar), findsOneWidget);
+    final snackBar = tester.widget<SnackBar>(find.byType(SnackBar));
+    expect((snackBar.content as Text).data, contains('举报提交失败'));
+  });
+
+  testWidgets('群资料更新后聊天页实时刷新且解散后自动返回', (tester) async {
+    const recordChannel = MethodChannel('com.llfbandit.record/messages');
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      recordChannel,
+      (_) async => null,
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        recordChannel,
+        null,
+      ),
+    );
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+    final group = controller.conversations.firstWhere(
+      (conversation) => conversation.kind == ConversationKind.group,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: FilledButton(
+              key: const Key('open-live-group-chat'),
+              onPressed: () => Navigator.of(context).push(
+                chatScreenRoute(
+                  context,
+                  controller: controller,
+                  conversation: group,
+                ),
+              ),
+              child: const Text('打开测试群'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byKey(const Key('open-live-group-chat')));
+    await tester.pumpAndSettle();
+
+    await tester.runAsync(
+      () => controller.updateGroupProfile(group.id, name: '实时更新群名'),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('实时更新群名'), findsOneWidget);
+
+    await tester.runAsync(() => controller.disbandGroup(group.id, '测试解散'));
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatScreen), findsNothing);
+    expect(find.byKey(const Key('open-live-group-chat')), findsOneWidget);
+  });
+
+  testWidgets('三个长昵称的群成员使用三列友好布局', (tester) async {
+    tester.view.physicalSize = const Size(375, 812);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+    final members = <AppUser>[
+      const AppUser(
+        id: 'layout-a',
+        name: 'AndroidTestA0828',
+        handle: '',
+        presence: '',
+      ),
+      const AppUser(
+        id: 'layout-b',
+        name: 'AndroidTestB0828',
+        handle: '',
+        presence: '',
+      ),
+      const AppUser(
+        id: 'layout-c',
+        name: 'AndroidTestC0828',
+        handle: '',
+        presence: '',
+      ),
+    ];
+    final conversation = Conversation(
+      id: 'layout-group',
+      title: '布局测试群',
+      subtitle: '',
+      updatedAt: DateTime(2026, 8, 29),
+      kind: ConversationKind.group,
+      memberCount: members.length,
+      members: members,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: ChatInfoScreen(
+          controller: controller,
+          conversation: conversation,
+          onSearch: () {},
+          onClearLocal: () async {},
+          onBlock: () async {},
+          onScheduledMessages: () {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    for (final member in members) {
+      expect(
+        tester
+            .getSize(find.byKey(ValueKey('chat-info-member-${member.id}')))
+            .width,
+        greaterThan(95),
+      );
+    }
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('宽屏使用会话与聊天双栏而不是放大手机页面', (tester) async {
     tester.view.physicalSize = const Size(1280, 900);
     tester.view.devicePixelRatio = 1;
@@ -745,6 +971,24 @@ void main() {
         find.byKey(ValueKey('top-level-content-${entry.$2}')),
         findsOneWidget,
       );
+      if (entry.$1 == 2) {
+        expect(find.text('朋友圈'), findsOneWidget);
+        expect(find.text('表情商店'), findsOneWidget);
+        expect(find.text('社区与频道'), findsNothing);
+        expect(find.text('在线客服'), findsNothing);
+
+        await tester.tap(find.text('朋友圈'));
+        await tester.pumpAndSettle();
+        expect(find.byType(MomentsScreen), findsOneWidget);
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('表情商店'));
+        await tester.pumpAndSettle();
+        expect(find.byType(StickerStoreScreen), findsOneWidget);
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+      }
     }
 
     expect(find.byKey(const Key('profile-favorites')), findsOneWidget);
@@ -1005,6 +1249,141 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('已选择 1 条'), findsOneWidget);
     expect(find.text('删除'), findsOneWidget);
+  });
+
+  testWidgets('群成员提醒插入后光标稳定停在昵称末尾', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+    final group = controller.conversations.firstWhere(
+      (conversation) => conversation.kind == ConversationKind.group,
+    );
+    final member = group.members.firstWhere(
+      (user) => user.id != controller.currentUser?.id,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: ChatScreen(controller: controller, conversation: group),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('mention-member-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('mention-member-${member.id}')));
+    await tester.pumpAndSettle();
+
+    final input = tester.widget<TextField>(
+      find.byKey(const Key('message-input')),
+    );
+    expect(input.controller!.text, '@${member.name} ');
+    expect(input.controller!.selection.isCollapsed, isTrue);
+    expect(
+      input.controller!.selection.baseOffset,
+      input.controller!.text.length,
+    );
+  });
+
+  testWidgets('聊天内容搜索结果会返回会话并定位目标消息', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+    final group = controller.conversations.firstWhere(
+      (conversation) => conversation.kind == ConversationKind.group,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: ChatScreen(controller: controller, conversation: group),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final target = controller
+        .messagesFor(group.id)
+        .firstWhere((message) => message.text.contains('动效稿'));
+    await tester.tap(find.byKey(const Key('chat-more-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('查找聊天内容'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('conversation-message-search')),
+      '动效稿',
+    );
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('message-search-result-${target.id}')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('chat-info-list')), findsNothing);
+    expect(find.byKey(const Key('message-list')), findsOneWidget);
+    expect(find.text(target.text), findsOneWidget);
+  });
+
+  test('搜索结果与缓存 ID 表示不同时使用已加载消息定位', () async {
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    await controller.loginAsDemo();
+    addTearDown(controller.dispose);
+    final group = controller.conversations.firstWhere(
+      (conversation) => conversation.kind == ConversationKind.group,
+    );
+    await controller.loadMessages(group.id);
+    final cached = controller.messagesFor(group.id).first;
+    final searchResult = ChatMessage(
+      id: 'search-${cached.id}',
+      clientMessageId: cached.clientMessageId,
+      conversationId: cached.conversationId,
+      senderId: cached.senderId,
+      senderName: cached.senderName,
+      text: cached.text,
+      sentAt: cached.sentAt,
+      isMine: cached.isMine,
+    );
+
+    final canonical = await controller.revealSearchResult(searchResult);
+
+    expect(canonical.id, cached.id);
+    expect(controller.messagesFor(group.id), contains(same(cached)));
+  });
+
+  test('媒体发送因连接中断失败后会在重连时自动恢复一次', () async {
+    final repository = ReconnectingMediaRepository();
+    final controller = AppController(repository);
+    await controller.loginAsDemo();
+    addTearDown(controller.dispose);
+    await controller.loadMessages('c-linyu');
+
+    final first = await controller.sendMedia(
+      'c-linyu',
+      MediaUpload(
+        bytes: Uint8List.fromList([1, 2, 3, 4]),
+        fileName: 'network-retry.bin',
+        mimeType: 'application/octet-stream',
+        kind: MessageContentKind.file,
+      ),
+    );
+    expect(first.status, MessageStatus.failed);
+    expect(repository.sendAttempts, 1);
+
+    repository.restoreConnection();
+    for (
+      var attempt = 0;
+      attempt < 20 && repository.sendAttempts < 2;
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(repository.sendAttempts, 2);
+    expect(controller.messagesFor('c-linyu').last.status, MessageStatus.sent);
   });
 
   testWidgets('图片消息保持原比例并支持全屏缩放预览', (tester) async {
@@ -1407,6 +1786,107 @@ void main() {
     expect(find.text('群聊资料'), findsNothing);
   });
 
+  testWidgets('单聊成员自己在前时头像资料与黑名单仍指向真实对方', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = AppController(DemoImRepository(latency: Duration.zero));
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+    final original = controller.conversations.firstWhere(
+      (conversation) => conversation.kind == ConversationKind.direct,
+    );
+    final me = controller.currentUser!;
+    final peer = original.members
+        .where((member) => member.id != me.id)
+        .firstOrNull!;
+    final direct = original.copyWith(
+      channelId: peer.id,
+      title: peer.name,
+      members: [me, peer],
+    );
+
+    expect(direct.directPeerFor(me.id)?.id, peer.id);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: ChatScreen(controller: controller, conversation: direct),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('chat-peer-avatar-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('个人资料'), findsOneWidget);
+    expect(find.text(peer.name), findsWidgets);
+    expect(find.text(me.name), findsNothing);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('chat-more-button')));
+    await tester.pumpAndSettle();
+    expect(find.text(peer.name), findsOneWidget);
+    expect(find.text(me.name), findsNothing);
+
+    await tester.tap(find.byKey(const Key('chat-info-contact-profile')));
+    await tester.pumpAndSettle();
+    expect(find.text('个人资料'), findsOneWidget);
+    expect(find.text(peer.name), findsWidgets);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('加入黑名单'),
+      300,
+      scrollable: find.descendant(
+        of: find.byKey(const Key('chat-info-list')),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    await tester.tap(find.text('加入黑名单'));
+    await tester.pumpAndSettle();
+    expect(find.text('将 ${peer.name} 加入黑名单？'), findsOneWidget);
+    expect(find.text('将 ${me.name} 加入黑名单？'), findsNothing);
+  });
+
+  testWidgets('单聊消息发送者名称为空时头像使用成员名称且可以打开资料', (tester) async {
+    var opened = false;
+    final message = ChatMessage(
+      id: 'message-avatar-test',
+      clientMessageId: 'message-avatar-client',
+      conversationId: 'direct-avatar',
+      senderId: 'peer-1',
+      senderName: '',
+      text: '头像兜底测试',
+      sentAt: DateTime(2026, 8, 28, 10),
+      isMine: false,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: Scaffold(
+          body: MessageBubble(
+            message: message,
+            senderName: '林安',
+            onAvatarTap: () => opened = true,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('林'), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp('查看林安资料')), findsOneWidget);
+    await tester.tap(
+      find.byKey(const Key('message-avatar-message-avatar-client')),
+    );
+    await tester.pump();
+    expect(opened, isTrue);
+  });
+
   testWidgets('消息上下文菜单支持深色与 200% 字体', (tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
@@ -1596,6 +2076,26 @@ class _ExpiredRestoredSessionRepository extends DemoImRepository {
 
   void completeCore() {
     if (!_core.isCompleted) _core.complete(const <Conversation>[]);
+  }
+}
+
+class _RuntimeExpiredSessionRepository extends DemoImRepository {
+  _RuntimeExpiredSessionRepository() : super(latency: Duration.zero);
+
+  final StreamController<ImEvent> _runtimeEvents =
+      StreamController<ImEvent>.broadcast();
+
+  @override
+  Stream<ImEvent> get events => _runtimeEvents.stream;
+
+  void expire() => _runtimeEvents.add(
+    const ImEvent(type: ImEventType.sessionExpired, payload: {}),
+  );
+
+  @override
+  Future<void> close() async {
+    await _runtimeEvents.close();
+    await super.close();
   }
 }
 
@@ -1795,6 +2295,54 @@ class ControlledMediaRepository extends DemoImRepository {
   );
 }
 
+class ReconnectingMediaRepository extends DemoImRepository {
+  ReconnectingMediaRepository() : super(latency: Duration.zero);
+
+  final StreamController<bool> _connection = StreamController<bool>.broadcast();
+  int sendAttempts = 0;
+
+  @override
+  Stream<bool> get connectionChanges => _connection.stream;
+
+  @override
+  Future<void> connect() async => _connection.add(true);
+
+  @override
+  Future<void> persistMessages(
+    String conversationId,
+    List<ChatMessage> messages,
+  ) async {}
+
+  @override
+  Future<ChatMessage> sendMedia(
+    ChatMessage message,
+    MediaUpload upload, {
+    void Function(double progress)? onProgress,
+  }) async {
+    sendAttempts++;
+    if (sendAttempts == 1) {
+      _connection.add(false);
+      await Future<void>.delayed(Duration.zero);
+      throw const SocketException('Software caused connection abort');
+    }
+    onProgress?.call(1);
+    return message.copyWith(
+      id: 'auto-retried-media',
+      mediaId: 'media-auto-retry',
+      mediaUrl: 'https://cdn.example.com/media-auto-retry',
+      status: MessageStatus.sent,
+    );
+  }
+
+  void restoreConnection() => _connection.add(true);
+
+  @override
+  Future<void> close() async {
+    await _connection.close();
+    await super.close();
+  }
+}
+
 class NoMentionRepository extends DemoImRepository {
   NoMentionRepository() : super(latency: Duration.zero);
 
@@ -1843,4 +2391,24 @@ class ChatHistoryRepository extends DemoImRepository {
       ],
     ),
   ];
+}
+
+class ReportCaptureRepository extends DemoImRepository {
+  ReportCaptureRepository({this.fail = false}) : super(latency: Duration.zero);
+
+  final bool fail;
+  String? lastTargetType;
+  String? lastTargetId;
+
+  @override
+  Future<void> report({
+    required String targetType,
+    required String targetId,
+    required String reason,
+    String details = '',
+  }) async {
+    lastTargetType = targetType;
+    lastTargetId = targetId;
+    if (fail) throw StateError('forced report failure');
+  }
 }

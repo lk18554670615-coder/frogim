@@ -1177,13 +1177,17 @@ class _ChangePhoneScreenState extends State<ChangePhoneScreen> {
     if (busy || !requested) return;
     setState(() => submitted = true);
     if (!(formKey.currentState?.validate() ?? false)) return;
+    final confirmedPhone = newPhone;
     setState(() => busy = true);
     final success = await widget.controller.updatePhone(
-      newPhone,
+      confirmedPhone,
       codeController.text,
     );
     if (!mounted) return;
-    setState(() => busy = false);
+    setState(() {
+      busy = false;
+      if (success) submitted = false;
+    });
     if (!success) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(widget.controller.error ?? '手机号换绑失败，请稍后重试')),
@@ -1196,7 +1200,7 @@ class _ChangePhoneScreenState extends State<ChangePhoneScreen> {
       barrierDismissible: false,
       builder: (dialogContext) => CupertinoAlertDialog(
         title: const Text('手机号已换绑'),
-        content: Text('新的登录手机号为 ${_maskedPhone(newPhone)}。以后请使用新手机号登录。'),
+        content: Text('新的登录手机号为 ${_maskedPhone(confirmedPhone)}。以后请使用新手机号登录。'),
         actions: [
           CupertinoDialogAction(
             key: const Key('phone-change-done'),
@@ -3303,7 +3307,17 @@ class _ReportScreenState extends State<ReportScreen> {
                         reason: reason!,
                       ) ??
                       true;
-                  if (!context.mounted || !success) return;
+                  if (!context.mounted) return;
+                  if (!success) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          widget.controller?.error ?? '举报提交失败，请稍后重试',
+                        ),
+                      ),
+                    );
+                    return;
+                  }
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('举报已提交，我们会尽快审核')),
                   );

@@ -499,6 +499,7 @@ void main() {
 
     expect(find.text('手机号已换绑'), findsOneWidget);
     expect(find.text('新的登录手机号为 139****9000。以后请使用新手机号登录。'), findsOneWidget);
+    expect(find.text('新手机号不能与当前绑定相同'), findsNothing);
     await tester.tap(find.byKey(const Key('phone-change-done')));
     await _settle(tester);
     expect(controller.currentUser?.phone, '13900139000');

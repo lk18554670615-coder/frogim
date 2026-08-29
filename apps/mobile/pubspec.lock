@@ -503,10 +503,9 @@ packages:
   flutter_webrtc:
     dependency: "direct main"
     description:
-      name: flutter_webrtc
-      sha256: "8b220dc006c4891266735e516f7679bd08b7caaf7c36b1a93fb9357cec555f92"
-      url: "https://pub.dev"
-    source: hosted
+      path: "../../third_party/flutter_webrtc-1.4.0-full-display"
+      relative: true
+    source: path
     version: "1.4.0"
   gal:
     dependency: "direct main"

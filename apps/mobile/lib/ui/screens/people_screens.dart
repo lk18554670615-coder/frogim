@@ -1192,7 +1192,9 @@ class ContactDetailsScreen extends StatefulWidget {
 class _ContactDetailsScreenState extends State<ContactDetailsScreen> {
   @override
   Widget build(BuildContext context) {
-    final peer = widget.conversation.members.firstOrNull;
+    final peer = widget.conversation.directPeerFor(
+      widget.controller.currentUser?.id,
+    );
     if (peer == null) {
       return const Scaffold(
         appBar: GlassAppBar(title: Text('联系人资料')),

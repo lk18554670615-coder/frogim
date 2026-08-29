@@ -18,9 +18,7 @@ class SystemNotificationTile extends StatelessWidget {
     animation: controller,
     builder: (context, _) {
       final dark = Theme.of(context).brightness == Brightness.dark;
-      final latest = controller.announcements.isEmpty
-          ? null
-          : controller.announcements.first;
+      final latest = _notificationPreview(controller.announcements);
       final error = controller.announcementsLoadError;
       final unread = controller.systemNotificationUnreadCount;
       final subtitle = error != null ? '通知暂时无法同步' : latest?.title ?? '暂无新通知';
@@ -167,6 +165,17 @@ class SystemNotificationTile extends StatelessWidget {
       );
     },
   );
+}
+
+AppAnnouncement? _notificationPreview(List<AppAnnouncement> announcements) {
+  if (announcements.isEmpty) return null;
+  final unread = announcements.where((item) => item.unread).toList();
+  final candidates = unread.isEmpty ? announcements : unread;
+  return candidates.reduce((current, item) {
+    final currentAt = current.publishedAt ?? DateTime(1970);
+    final itemAt = item.publishedAt ?? DateTime(1970);
+    return itemAt.isAfter(currentAt) ? item : current;
+  });
 }
 
 class SystemNotificationsScreen extends StatelessWidget {

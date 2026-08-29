@@ -62,10 +62,13 @@ class MessageMapper {
   }) {
     final payload = message.payload;
     final type = message.contentType;
-    final kind = _kind(type);
     final reply = payload['reply'] is Map
         ? wukongObjectMap(payload['reply'])
         : const <String, Object?>{};
+    final mappedKind = _kind(type);
+    final kind = mappedKind == MessageContentKind.text && reply.isNotEmpty
+        ? MessageContentKind.reply
+        : mappedKind;
     final mention = payload['mention'] is Map
         ? wukongObjectMap(payload['mention'])
         : const <String, Object?>{};

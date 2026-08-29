@@ -58,6 +58,9 @@ class AppController extends ChangeNotifier {
   final Map<String, String> _drafts = {};
   final Map<String, MediaUpload> _pendingMedia = {};
   final Map<String, double> _mediaUploadProgress = {};
+  final Set<String> _sendingMediaMessageIds = {};
+  final Set<String> _mediaAwaitingReconnect = {};
+  final Set<String> _mediaAutomaticallyRetried = {};
   String? _pendingProfileAvatarFingerprint;
   String? _pendingProfileAvatarMediaId;
   final Map<String, List<ScheduledMessage>> _scheduledMessages = {};
@@ -637,6 +640,9 @@ class AppController extends ChangeNotifier {
       if (value) {
         connectionRetrying = false;
         unawaited(_flushPendingDeliveries());
+        unawaited(_resumeMediaAfterReconnect());
+      } else if (_sendingMediaMessageIds.isNotEmpty) {
+        _mediaAwaitingReconnect.addAll(_sendingMediaMessageIds);
       }
       notifyListeners();
     });
@@ -1879,6 +1885,14 @@ class AppController extends ChangeNotifier {
 
   Future<ChatMessage> _sendPending(ChatMessage pending) async {
     final list = _messages[pending.conversationId]!;
+    final isMediaMessage =
+        pending.kind == MessageContentKind.image ||
+        pending.kind == MessageContentKind.file ||
+        pending.kind == MessageContentKind.video ||
+        pending.kind == MessageContentKind.voice;
+    if (isMediaMessage) {
+      _sendingMediaMessageIds.add(pending.clientMessageId);
+    }
     try {
       var upload = _pendingMedia[pending.clientMessageId];
       if (upload == null &&
@@ -1916,17 +1930,80 @@ class AppController extends ChangeNotifier {
       _replaceMessage(pending.conversationId, pending.clientMessageId, sent);
       _pendingMedia.remove(pending.clientMessageId);
       _mediaUploadProgress.remove(pending.clientMessageId);
+      _sendingMediaMessageIds.remove(pending.clientMessageId);
+      _mediaAwaitingReconnect.remove(pending.clientMessageId);
+      _mediaAutomaticallyRetried.remove(pending.clientMessageId);
       await repository.persistMessages(pending.conversationId, list);
       notifyListeners();
       _hydrateLinkPreview(sent);
       return sent;
-    } catch (_) {
+    } catch (exception) {
+      _sendingMediaMessageIds.remove(pending.clientMessageId);
+      if (isMediaMessage &&
+          (!connected ||
+              _mediaAwaitingReconnect.contains(pending.clientMessageId) ||
+              _isTransientMediaFailure(exception))) {
+        _mediaAwaitingReconnect.add(pending.clientMessageId);
+      }
       _mediaUploadProgress.remove(pending.clientMessageId);
       final failed = pending.copyWith(status: MessageStatus.failed);
       _replaceMessage(pending.conversationId, pending.clientMessageId, failed);
       await repository.persistMessages(pending.conversationId, list);
       notifyListeners();
+      if (connected &&
+          _mediaAwaitingReconnect.contains(pending.clientMessageId)) {
+        unawaited(_resumeMediaAfterReconnect());
+      }
       return failed;
+    }
+  }
+
+  bool _isTransientMediaFailure(Object exception) {
+    if (exception is SocketException ||
+        exception is TimeoutException ||
+        exception is HttpException) {
+      return true;
+    }
+    final message = exception.toString().toLowerCase();
+    return message.contains('socket') ||
+        message.contains('connection abort') ||
+        message.contains('connection closed') ||
+        message.contains('network is unreachable') ||
+        message.contains('software caused connection abort');
+  }
+
+  Future<void> _resumeMediaAfterReconnect() async {
+    if (!connected || _mediaAwaitingReconnect.isEmpty) return;
+    for (final clientMessageId in _mediaAwaitingReconnect.toList()) {
+      if (!connected) return;
+      if (_mediaAutomaticallyRetried.contains(clientMessageId)) {
+        _mediaAwaitingReconnect.remove(clientMessageId);
+        continue;
+      }
+      ChatMessage? failed;
+      for (final messages in _messages.values) {
+        failed = messages
+            .where((message) => message.clientMessageId == clientMessageId)
+            .firstOrNull;
+        if (failed != null) break;
+      }
+      if (failed == null) {
+        _mediaAwaitingReconnect.remove(clientMessageId);
+        continue;
+      }
+      // A reconnect event can arrive just before the original send future
+      // reports its failure. Leave it queued; the catch path invokes us again.
+      if (failed.status == MessageStatus.sending) continue;
+      if (failed.status != MessageStatus.failed) {
+        _mediaAwaitingReconnect.remove(clientMessageId);
+        continue;
+      }
+      _mediaAutomaticallyRetried.add(clientMessageId);
+      _mediaAwaitingReconnect.remove(clientMessageId);
+      final sending = failed.copyWith(status: MessageStatus.sending);
+      _replaceMessage(failed.conversationId, failed.clientMessageId, sending);
+      notifyListeners();
+      await _sendPending(sending);
     }
   }
 
@@ -2095,6 +2172,31 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       return local.toList()..sort((a, b) => b.sentAt.compareTo(a.sentAt));
     }
+  }
+
+  Future<ChatMessage> revealSearchResult(ChatMessage message) async {
+    final current = _messages[message.conversationId] ?? const <ChatMessage>[];
+    for (final item in current) {
+      if (item.id == message.id ||
+          (message.clientMessageId.isNotEmpty &&
+              item.clientMessageId == message.clientMessageId)) {
+        // Search and recent-conversation synchronization can expose different
+        // server ID representations for the same client message. The widget
+        // tree is keyed by the already loaded canonical message, so return it
+        // to the caller instead of trying to locate the search DTO's ID.
+        return item;
+      }
+    }
+    final merged = _mergeMessageLists(current, [message]);
+    _messages[message.conversationId] = merged;
+    notifyListeners();
+    try {
+      await repository.persistMessages(message.conversationId, merged);
+    } catch (_) {
+      // The authoritative search result stays visible in memory even if the
+      // encrypted page snapshot cannot be updated at this moment.
+    }
+    return message;
   }
 
   Future<bool> recallMessage(ChatMessage message) async {
@@ -3335,6 +3437,9 @@ class AppController extends ChangeNotifier {
     _messageCacheLoadOperations.clear();
     _pendingMedia.clear();
     _mediaUploadProgress.clear();
+    _sendingMediaMessageIds.clear();
+    _mediaAwaitingReconnect.clear();
+    _mediaAutomaticallyRetried.clear();
     _pendingProfileAvatarFingerprint = null;
     _pendingProfileAvatarMediaId = null;
     _scheduledMessages.clear();
@@ -3374,6 +3479,9 @@ class AppController extends ChangeNotifier {
 
   void _handleEvent(ImEvent event) {
     switch (event.type) {
+      case ImEventType.sessionExpired:
+        unawaited(_expireRestoredSession());
+        break;
       case ImEventType.messageCreated:
         final raw = event.payload['message'] as Map<String, Object?>?;
         if (raw == null) return;

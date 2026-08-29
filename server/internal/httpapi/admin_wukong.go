@@ -105,7 +105,7 @@ func (x *API) userIMDevices(w http.ResponseWriter, r *http.Request) {
 		}
 		sessions = append(sessions, userIMDeviceSession{
 			DeviceFlag: int(flag), DeviceLevel: int(managerInt64(item["device_level"])),
-			ConnectionCount: int(managerInt64(item["conn_count"])), UpdatedAt: managerInt64(item["updated_at"]),
+			ConnectionCount: int(managerInt64(item["conn_count"])), UpdatedAt: managerUnixSeconds(item["updated_at"]),
 		})
 	}
 	write(w, http.StatusOK, map[string]any{"items": sessions})
@@ -145,6 +145,20 @@ func managerInt64(value any) int64 {
 		return parsed
 	default:
 		return 0
+	}
+}
+
+func managerUnixSeconds(value any) int64 {
+	timestamp := managerInt64(value)
+	switch {
+	case timestamp > 100_000_000_000_000_000:
+		return timestamp / int64(time.Second)
+	case timestamp > 100_000_000_000_000:
+		return timestamp / int64(time.Microsecond)
+	case timestamp > 100_000_000_000:
+		return timestamp / int64(time.Millisecond)
+	default:
+		return timestamp
 	}
 }
 

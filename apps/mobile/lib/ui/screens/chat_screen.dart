@@ -88,21 +88,31 @@ class ChatScreen extends StatefulWidget {
   const ChatScreen({
     super.key,
     required this.controller,
-    required this.conversation,
+    required Conversation conversation,
     this.initialMessageId,
     this.showDesktopDetails = false,
     this.onToggleDesktopDetails,
     this.settingsStore = const LocalSettingsStore(),
     this.chatBackgroundOverride,
-  });
+  }) : _initialConversation = conversation;
 
   final AppController controller;
-  final Conversation conversation;
+  final Conversation _initialConversation;
   final String? initialMessageId;
   final bool showDesktopDetails;
   final VoidCallback? onToggleDesktopDetails;
   final LocalSettingsStore settingsStore;
   final ChatBackgroundStyle? chatBackgroundOverride;
+
+  Conversation get conversation =>
+      controller.conversations
+          .where((item) => item.id == _initialConversation.id)
+          .firstOrNull ??
+      _initialConversation;
+
+  bool get conversationAvailable => controller.conversations.any(
+    (item) => item.id == _initialConversation.id,
+  );
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -121,6 +131,7 @@ class _ChatScreenState extends State<ChatScreen> {
   ChatMessage? replyingTo;
   Timer? _draftTimer;
   Timer? _initialScrollTimer;
+  Timer? _messageHighlightTimer;
   bool _draftReady = false;
   bool _loadingSendCapability = false;
   bool _sendCapabilityFailed = false;
@@ -131,14 +142,18 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _previousActiveConversationId;
   bool _loadingOlderFromScroll = false;
   String? _sendRestriction;
+  String? _highlightedMessageId;
   List<RobotProfile> _robotProfiles = const [];
   bool _robotMenusLoading = false;
   bool _showRobotMenus = false;
   late final StreamSubscription<DateTime> _screenshotEvents;
   DateTime? _lastScreenshotNotice;
   ChatBackgroundStyle _chatBackground = ChatBackgroundStyle.followSystem;
+  Conversation? _observedConversation;
+  bool _closingUnavailableGroup = false;
 
-  AppUser? get peer => widget.conversation.members.firstOrNull;
+  AppUser? get peer =>
+      widget.conversation.directPeerFor(widget.controller.currentUser?.id);
   String? get conversationAvatarUrl =>
       widget.conversation.avatarUrl ??
       (widget.conversation.kind == ConversationKind.group
@@ -155,6 +170,8 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    _observedConversation = widget.conversation;
+    widget.controller.addListener(_handleConversationChanged);
     scrollController.addListener(_handleMessageScroll);
     HardwareKeyboard.instance.addHandler(_handleChatHardwareKey);
     _screenshotEvents = ScreenshotDetection.instance.events.listen(
@@ -345,11 +362,13 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    widget.controller.removeListener(_handleConversationChanged);
     HardwareKeyboard.instance.removeHandler(_handleChatHardwareKey);
     unawaited(_screenshotEvents.cancel());
     unawaited(ScreenshotDetection.instance.stop());
     _draftTimer?.cancel();
     _initialScrollTimer?.cancel();
+    _messageHighlightTimer?.cancel();
     if (_draftReady) {
       final conversationId = widget.conversation.id;
       final draft = textController.text;
@@ -373,6 +392,34 @@ class _ChatScreenState extends State<ChatScreen> {
     scrollController.removeListener(_handleMessageScroll);
     scrollController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_handleConversationChanged);
+      widget.controller.addListener(_handleConversationChanged);
+    }
+    _observedConversation = widget.conversation;
+  }
+
+  void _handleConversationChanged() {
+    if (!mounted) return;
+    if (!widget.conversationAvailable &&
+        widget._initialConversation.kind == ConversationKind.group) {
+      if (_closingUnavailableGroup) return;
+      _closingUnavailableGroup = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        Navigator.of(context).popUntil((route) => route.isFirst);
+      });
+      return;
+    }
+    final latest = widget.conversation;
+    if (identical(latest, _observedConversation)) return;
+    _observedConversation = latest;
+    setState(() {});
   }
 
   void _handleScreenshot(DateTime occurredAt) {
@@ -405,6 +452,42 @@ class _ChatScreenState extends State<ChatScreen> {
     return false;
   }
 
+  Future<void> _openUserProfile(AppUser user) => Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => FriendProfileScreen(
+        controller: widget.controller,
+        user: user,
+        requestSource: 'conversation',
+        requestSourceId: widget.conversation.id,
+      ),
+    ),
+  );
+
+  Widget _buildConversationAvatar() {
+    final avatar = PersonAvatar(
+      name: widget.conversation.title,
+      size: 34,
+      avatarUrl: conversationAvatarUrl,
+      online:
+          widget.conversation.kind == ConversationKind.direct &&
+          (peer?.isOnline ?? false),
+    );
+    final target = peer;
+    if (widget.conversation.kind != ConversationKind.direct || target == null) {
+      return avatar;
+    }
+    return Semantics(
+      button: true,
+      label: '查看${target.name}资料',
+      child: InkResponse(
+        key: const Key('chat-peer-avatar-button'),
+        radius: 24,
+        onTap: () => unawaited(_openUserProfile(target)),
+        child: avatar,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => CallbackShortcuts(
     bindings: {
@@ -430,14 +513,7 @@ class _ChatScreenState extends State<ChatScreen> {
             centerTitle: false,
             title: Row(
               children: [
-                PersonAvatar(
-                  name: widget.conversation.title,
-                  size: 34,
-                  avatarUrl: conversationAvatarUrl,
-                  online:
-                      widget.conversation.kind == ConversationKind.direct &&
-                      (peer?.isOnline ?? false),
-                ),
+                _buildConversationAvatar(),
                 const SizedBox(width: 9),
                 Expanded(
                   child: Column(
@@ -818,46 +894,69 @@ class _ChatScreenState extends State<ChatScreen> {
             final sender = widget.conversation.members
                 .where((user) => user.id == message.senderId)
                 .firstOrNull;
+            final displaySender =
+                sender ??
+                (widget.conversation.kind == ConversationKind.direct
+                    ? peer
+                    : null);
+            final displaySenderName =
+                displaySender?.name.trim().isNotEmpty == true
+                ? displaySender!.name
+                : message.senderName;
             final stableMessageId = message.stableIdentity;
             final messageKey = message.id == widget.initialMessageId
                 ? initialMessageKey
                 : _messageKeys.putIfAbsent(stableMessageId, GlobalKey.new);
             if (message.id.isNotEmpty) _messageKeys[message.id] = messageKey;
-            return Column(
+            return AnimatedContainer(
               key: messageKey,
-              children: [
-                if (showTime) _TimeDivider(date: message.sentAt),
-                MessageBubble(
-                  message: message,
-                  controller: widget.controller,
-                  avatarUrl:
-                      sender?.avatarUrl ??
-                      (widget.conversation.kind == ConversationKind.direct
-                          ? peer?.avatarUrl
-                          : null),
-                  showSender:
-                      widget.conversation.kind == ConversationKind.group,
-                  showGroupReceipt:
-                      widget.conversation.kind == ConversationKind.group &&
-                      message.id == latestMineId,
-                  onRetry:
-                      _effectiveSendRestriction == null &&
-                          !_loadingSendCapability
-                      ? () => widget.controller.retryMessage(message)
-                      : null,
-                  selectionMode: selecting,
-                  selected: selectedMessageIds.contains(
-                    message.clientMessageId,
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              decoration: BoxDecoration(
+                color: _highlightedMessageId == message.id
+                    ? LinliColors.brandGreen.withValues(alpha: .16)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Column(
+                children: [
+                  if (showTime) _TimeDivider(date: message.sentAt),
+                  MessageBubble(
+                    message: message,
+                    controller: widget.controller,
+                    senderName: displaySenderName,
+                    avatarUrl:
+                        displaySender?.avatarUrl ??
+                        (widget.conversation.kind == ConversationKind.direct
+                            ? peer?.avatarUrl
+                            : null),
+                    onAvatarTap: displaySender == null
+                        ? null
+                        : () => unawaited(_openUserProfile(displaySender)),
+                    showSender:
+                        widget.conversation.kind == ConversationKind.group,
+                    showGroupReceipt:
+                        widget.conversation.kind == ConversationKind.group &&
+                        message.id == latestMineId,
+                    onRetry:
+                        _effectiveSendRestriction == null &&
+                            !_loadingSendCapability
+                        ? () => widget.controller.retryMessage(message)
+                        : null,
+                    selectionMode: selecting,
+                    selected: selectedMessageIds.contains(
+                      message.clientMessageId,
+                    ),
+                    onSelect: () => _toggleSelection(message),
+                    onLongPress: selecting
+                        ? (_) => _toggleSelection(message)
+                        : (position) => _showMessageActions(message, position),
+                    onReactionTap: (emoji) =>
+                        widget.controller.toggleReaction(message, emoji),
+                    onAddReaction: () => _showReactionPicker(message),
                   ),
-                  onSelect: () => _toggleSelection(message),
-                  onLongPress: selecting
-                      ? (_) => _toggleSelection(message)
-                      : (position) => _showMessageActions(message, position),
-                  onReactionTap: (emoji) =>
-                      widget.controller.toggleReaction(message, emoji),
-                  onAddReaction: () => _showReactionPicker(message),
-                ),
-              ],
+                ],
+              ),
             );
           },
         ),
@@ -1183,9 +1282,13 @@ class _ChatScreenState extends State<ChatScreen> {
         ? selection.start
         : textController.text.length;
     final end = selection.isValid ? selection.end : textController.text.length;
-    textController.text = textController.text.replaceRange(start, end, token);
-    textController.selection = TextSelection.collapsed(
-      offset: start + token.length,
+    final updated = textController.text.replaceRange(start, end, token);
+    // Update text and selection atomically. Assigning `.text` first briefly
+    // resets the selection to -1; Android IMEs can then restore the old cursor
+    // inside the inserted nickname when the mention sheet closes.
+    textController.value = TextEditingValue(
+      text: updated,
+      selection: TextSelection.collapsed(offset: start + token.length),
     );
     setState(() {
       _pendingMentions[mention.userId] = mention;
@@ -1288,14 +1391,47 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Future<void> _scrollToMessage(String messageId) async {
+  Future<void> _scrollToMessage(
+    String messageId, {
+    ChatMessage? searchResult,
+  }) async {
+    // Programmatic navigation is an explicit request to leave the newest
+    // message. Stop the startup end-pinning first; otherwise its metrics
+    // listener observes this scroll and immediately jumps back to the bottom.
+    _initialPinCancelled = true;
+    _initialScrollTimer?.cancel();
+    _messageScrollReady = true;
+    var targetMessageId = messageId;
+    if (searchResult != null) {
+      final canonical = await widget.controller.revealSearchResult(
+        searchResult,
+      );
+      targetMessageId = canonical.id;
+      if (!mounted) return;
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+    }
     final duration = nexaMotionDuration(context);
-    var target = _messageKeys[messageId]?.currentContext;
+    var target = _messageKeys[targetMessageId]?.currentContext;
     if (target == null) {
       await widget.controller.loadMessages(widget.conversation.id, force: true);
       if (!mounted) return;
       await WidgetsBinding.instance.endOfFrame;
-      target = _messageKeys[messageId]?.currentContext;
+      target = _messageKeys[targetMessageId]?.currentContext;
+    }
+    if (target == null && scrollController.hasClients) {
+      final messages = widget.controller.messagesFor(widget.conversation.id);
+      final index = messages.indexWhere(
+        (message) => message.id == targetMessageId,
+      );
+      if (index >= 0 && messages.length > 1) {
+        final fraction = index / (messages.length - 1);
+        scrollController.jumpTo(
+          scrollController.position.maxScrollExtent * fraction,
+        );
+        await WidgetsBinding.instance.endOfFrame;
+        target = _messageKeys[targetMessageId]?.currentContext;
+      }
     }
     if (target == null) {
       _showError('该消息不在当前已加载范围内');
@@ -1308,6 +1444,14 @@ class _ChatScreenState extends State<ChatScreen> {
       duration: duration,
       curve: Curves.easeOutCubic,
     );
+    if (!mounted) return;
+    _messageHighlightTimer?.cancel();
+    setState(() => _highlightedMessageId = targetMessageId);
+    _messageHighlightTimer = Timer(const Duration(seconds: 2), () {
+      if (mounted && _highlightedMessageId == targetMessageId) {
+        setState(() => _highlightedMessageId = null);
+      }
+    });
   }
 
   Future<void> _pickAttachment(String label) async {
@@ -1971,20 +2115,32 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  void _showMessageSearch() {
-    showModalBottomSheet<void>(
+  Future<void> _showMessageSearch() async {
+    final selected = await showModalBottomSheet<ChatMessage>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
       builder: (sheetContext) => _MessageSearchSheet(
         controller: widget.controller,
         conversationId: widget.conversation.id,
-        onSelected: (message) {
-          Navigator.pop(sheetContext);
-          _scrollToMessage(message.id);
-        },
+        onSelected: (message) => Navigator.pop(sheetContext, message),
       ),
     );
+    if (!mounted || selected == null) return;
+    // On phones the search sheet is opened above ChatInfoScreen. Close that
+    // route as well so the message list is actually visible; desktop details
+    // are embedded in this route and therefore remain open.
+    if (ModalRoute.of(context)?.isCurrent == false) {
+      Navigator.of(context).pop();
+      // The message list lives on the route underneath ChatInfoScreen. Wait
+      // until the Material route has finished uncovering it; attempting
+      // ensureVisible while that route is still offstage can leave Android a
+      // few rows away from the requested result on long, uneven chat lists.
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+    }
+    await _scrollToMessage(selected.id, searchResult: selected);
   }
 
   Future<void> _chooseForwardMode(List<ChatMessage> messages) async {
@@ -2658,10 +2814,21 @@ class ChatInfoScreen extends StatelessWidget {
   final VoidCallback onScheduledMessages;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: controller,
+    builder: (context, _) {
+      final current = controller.conversations
+          .where((item) => item.id == conversation.id)
+          .firstOrNull;
+      return _buildContent(context, current ?? conversation);
+    },
+  );
+
+  Widget _buildContent(BuildContext context, Conversation conversation) {
     final multiUser = conversation.kind == ConversationKind.group;
     final business = conversation.isBusinessChannel;
     final group = multiUser && !business;
+    final directPeer = conversation.directPeerFor(controller.currentUser?.id);
     return Scaffold(
       appBar: const GlassAppBar(title: Text('聊天信息')),
       body: ListView(
@@ -2686,9 +2853,21 @@ class ChatInfoScreen extends StatelessWidget {
                         fallbackAvatar: conversation.avatarUrl,
                       )
                     : _DirectContactSummary(
-                        user: conversation.members.firstOrNull,
+                        user: directPeer,
                         fallbackName: conversation.title,
                         fallbackAvatar: conversation.avatarUrl,
+                        onTap: directPeer == null
+                            ? null
+                            : () => Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => FriendProfileScreen(
+                                    controller: controller,
+                                    user: directPeer,
+                                    requestSource: 'conversation',
+                                    requestSourceId: conversation.id,
+                                  ),
+                                ),
+                              ),
                       ),
               ),
             ],
@@ -2769,8 +2948,12 @@ class ChatInfoScreen extends StatelessWidget {
                     builder: (_) => ReportScreen(
                       controller: controller,
                       target: conversation.title,
-                      targetId: conversation.id,
-                      targetType: 'conversation',
+                      targetId: group
+                          ? conversation.id
+                          : directPeer?.id ??
+                                conversation.channelId ??
+                                conversation.id,
+                      targetType: group ? 'group' : 'user',
                     ),
                   ),
                 ),
@@ -2849,53 +3032,67 @@ class _DirectContactSummary extends StatelessWidget {
     required this.user,
     required this.fallbackName,
     this.fallbackAvatar,
+    this.onTap,
   });
 
   final AppUser? user;
   final String fallbackName;
   final String? fallbackAvatar;
+  final VoidCallback? onTap;
 
   @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      PersonAvatar(
-        name: user?.name ?? fallbackName,
-        size: 60,
-        avatarUrl: user?.avatarUrl ?? fallbackAvatar,
-        online: user?.isOnline ?? false,
-      ),
-      const SizedBox(width: 14),
-      Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+  Widget build(BuildContext context) {
+    final displayName = user?.name ?? fallbackName;
+    return Semantics(
+      button: onTap != null,
+      label: onTap == null ? null : '查看$displayName资料',
+      child: InkWell(
+        key: const Key('chat-info-contact-profile'),
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Row(
           children: [
-            Text(
-              user?.name ?? fallbackName,
-              style: Theme.of(context).textTheme.titleLarge,
+            PersonAvatar(
+              name: displayName,
+              size: 60,
+              avatarUrl: user?.avatarUrl ?? fallbackAvatar,
+              online: user?.isOnline ?? false,
             ),
-            const SizedBox(height: 4),
-            Text(
-              '呱呱号：${publicUserHandleLabel(user?.handle, fallback: '尚未设置')}',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            if ((user?.signature ?? user?.presence ?? '')
-                .trim()
-                .isNotEmpty) ...[
-              const SizedBox(height: 4),
-              Text(
-                (user?.signature ?? user?.presence)!,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(
-                  context,
-                ).textTheme.bodySmall?.copyWith(color: LinliColors.preview),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    displayName,
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '呱呱号：${publicUserHandleLabel(user?.handle, fallback: '尚未设置')}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  if ((user?.signature ?? user?.presence ?? '')
+                      .trim()
+                      .isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      (user?.signature ?? user?.presence)!,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: LinliColors.preview,
+                      ),
+                    ),
+                  ],
+                ],
               ),
-            ],
+            ),
           ],
         ),
       ),
-    ],
-  );
+    );
+  }
 }
 
 class _AsyncToggle extends StatefulWidget {
@@ -2910,6 +3107,14 @@ class _AsyncToggle extends StatefulWidget {
 class _AsyncToggleState extends State<_AsyncToggle> {
   late bool value = widget.initialValue;
   bool busy = false;
+
+  @override
+  void didUpdateWidget(covariant _AsyncToggle oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!busy && oldWidget.initialValue != widget.initialValue) {
+      value = widget.initialValue;
+    }
+  }
 
   @override
   Widget build(BuildContext context) => CupertinoSwitch(
@@ -2958,13 +3163,18 @@ class _ChatMemberMatrix extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final scale = MediaQuery.textScalerOf(context).scale(1);
-        final columns = scale >= 1.6 ? 3 : 5;
+        final minimumCellWidth = 96.0 * math.min(scale, 1.3);
+        final fittingColumns = (constraints.maxWidth / minimumCellWidth)
+            .floor()
+            .clamp(2, scale >= 1.6 ? 3 : 5);
+        final columns = math.max(1, math.min(people.length, fittingColumns));
         final width = constraints.maxWidth / columns;
         return Wrap(
           runSpacing: 14,
           children: [
             for (final user in people)
               SizedBox(
+                key: ValueKey('chat-info-member-${user.id}'),
                 width: width,
                 child: Semantics(
                   label: '${user.name}，聊天成员',
@@ -3038,7 +3248,9 @@ class MessageBubble extends StatelessWidget {
     super.key,
     required this.message,
     this.controller,
+    this.senderName,
     this.avatarUrl,
+    this.onAvatarTap,
     this.showSender = false,
     this.showGroupReceipt = false,
     this.onRetry,
@@ -3052,7 +3264,9 @@ class MessageBubble extends StatelessWidget {
 
   final ChatMessage message;
   final AppController? controller;
+  final String? senderName;
   final String? avatarUrl;
+  final VoidCallback? onAvatarTap;
   final bool showSender;
   final bool showGroupReceipt;
   final VoidCallback? onRetry;
@@ -3065,6 +3279,11 @@ class MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final resolvedSenderName = senderName?.trim().isNotEmpty == true
+        ? senderName!.trim()
+        : message.senderName.trim().isNotEmpty
+        ? message.senderName.trim()
+        : '对方';
     if (message.status == MessageStatus.recalled ||
         message.status == MessageStatus.expired ||
         message.kind == MessageContentKind.system ||
@@ -3094,7 +3313,7 @@ class MessageBubble extends StatelessWidget {
               borderRadius: BorderRadius.circular(999),
             ),
             child: Text(
-              '${message.isMine ? '我' : message.senderName} ${message.text}',
+              '${message.isMine ? '我' : resolvedSenderName} ${message.text}',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.labelMedium?.copyWith(
                 color: LinliColors.navy,
@@ -3113,7 +3332,8 @@ class MessageBubble extends StatelessWidget {
     }
 
     return Semantics(
-      label: '${mine ? '我' : message.senderName}：${message.text}',
+      label: '${mine ? '我' : resolvedSenderName}：${message.text}',
+      explicitChildNodes: true,
       onLongPress: onLongPress == null ? null : openFromCenter,
       customSemanticsActions: onLongPress == null
           ? null
@@ -3151,10 +3371,21 @@ class MessageBubble extends StatelessWidget {
                 const SizedBox(width: 4),
               ],
               if (!mine) ...[
-                PersonAvatar(
-                  name: message.senderName,
-                  size: 34,
-                  avatarUrl: avatarUrl,
+                Semantics(
+                  button: onAvatarTap != null,
+                  label: onAvatarTap == null
+                      ? '$resolvedSenderName头像'
+                      : '查看$resolvedSenderName资料',
+                  child: InkResponse(
+                    key: Key('message-avatar-${message.clientMessageId}'),
+                    radius: 22,
+                    onTap: selectionMode ? onSelect : onAvatarTap,
+                    child: PersonAvatar(
+                      name: resolvedSenderName,
+                      size: 34,
+                      avatarUrl: avatarUrl,
+                    ),
+                  ),
                 ),
                 const SizedBox(width: 8),
               ],
@@ -3175,7 +3406,7 @@ class MessageBubble extends StatelessWidget {
                         Padding(
                           padding: const EdgeInsets.only(left: 4, bottom: 3),
                           child: Text(
-                            message.senderName,
+                            resolvedSenderName,
                             style: Theme.of(context).textTheme.labelSmall,
                           ),
                         ),

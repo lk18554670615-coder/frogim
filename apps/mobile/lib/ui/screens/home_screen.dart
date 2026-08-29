@@ -10,7 +10,6 @@ import '../../core/models.dart';
 import '../../core/user_identity.dart';
 import '../widgets/linli_widgets.dart';
 import 'announcement_screens.dart';
-import 'business_channel_screens.dart';
 import 'chat_screen.dart';
 import 'moments_screen.dart';
 import 'people_screens.dart';
@@ -690,20 +689,6 @@ class _DesktopToolsWorkspace extends StatelessWidget {
           subtitle: '浏览、收藏和管理聊天表情',
           onTap: () =>
               _push(context, StickerStoreScreen(controller: controller)),
-        ),
-        _DesktopAction(
-          icon: CupertinoIcons.globe,
-          title: '社区与频道',
-          subtitle: '社区、话题、资讯和直播互动',
-          onTap: () =>
-              _push(context, BusinessChannelHubScreen(controller: controller)),
-        ),
-        _DesktopAction(
-          icon: CupertinoIcons.chat_bubble_2_fill,
-          title: '在线客服',
-          subtitle: '咨询、排队与客服工作台',
-          onTap: () =>
-              _push(context, SupportCenterScreen(controller: controller)),
         ),
         _DesktopAction(
           icon: CupertinoIcons.person_badge_plus,
@@ -1971,6 +1956,7 @@ class ConversationTile extends StatelessWidget {
     final dark = Theme.of(context).brightness == Brightness.dark;
     final draft = controller.draftFor(conversation.id);
     final subtitle = draft.isEmpty ? conversation.subtitle : '[草稿] $draft';
+    final directPeer = conversation.directPeerFor(controller.currentUser?.id);
     return Slidable(
       key: ValueKey('conversation-slidable-${conversation.id}'),
       endActionPane: ActionPane(
@@ -2072,11 +2058,10 @@ class ConversationTile extends StatelessWidget {
                       name: conversation.title,
                       size: 48,
                       avatarUrl:
-                          conversation.avatarUrl ??
-                          conversation.members.firstOrNull?.avatarUrl,
+                          conversation.avatarUrl ?? directPeer?.avatarUrl,
                       online:
                           conversation.kind == ConversationKind.direct &&
-                          (conversation.members.firstOrNull?.isOnline ?? false),
+                          (directPeer?.isOnline ?? false),
                     ),
                   ),
                   Expanded(
@@ -2887,27 +2872,6 @@ class DiscoverTab extends StatelessWidget {
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute(
                   builder: (_) => StickerStoreScreen(controller: controller),
-                ),
-              ),
-            ),
-            SettingTile(
-              icon: CupertinoIcons.globe,
-              title: '社区与频道',
-              subtitle: '社区、话题、资讯与直播',
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) =>
-                      BusinessChannelHubScreen(controller: controller),
-                ),
-              ),
-            ),
-            SettingTile(
-              icon: CupertinoIcons.chat_bubble_2_fill,
-              title: '在线客服',
-              subtitle: '联系人工客服或进入工作台',
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => SupportCenterScreen(controller: controller),
                 ),
               ),
             ),

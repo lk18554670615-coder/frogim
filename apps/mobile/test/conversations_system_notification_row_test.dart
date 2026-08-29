@@ -92,6 +92,53 @@ void main() {
     expect(find.text('平台公告和服务提醒会显示在这里。'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('会话首行优先展示最新未读而不是较早的置顶通知', (tester) async {
+    final now = DateTime.now();
+    final controller = await _pumpConversations(
+      tester,
+      announcements: [
+        AppAnnouncement(
+          id: 'older-pinned',
+          title: '较早置顶通知',
+          content: '置顶通知仍应在通知列表顶部。',
+          status: 'published',
+          pinned: true,
+          publishedAt: now.subtract(const Duration(minutes: 10)),
+        ),
+        AppAnnouncement(
+          id: 'latest-unread',
+          title: '最新未读通知',
+          content: '会话首行应预览这一条。',
+          status: 'published',
+          pinned: false,
+          publishedAt: now,
+        ),
+      ],
+    );
+    addTearDown(controller.dispose);
+
+    final entry = find.byKey(const Key('system-notifications-entry'));
+    expect(
+      find.descendant(of: entry, matching: find.text('最新未读通知')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: entry, matching: find.text('较早置顶通知')),
+      findsNothing,
+    );
+    expect(
+      find.bySemanticsLabel(RegExp(r'系统通知.*2 条未读.*最新未读通知')),
+      findsOneWidget,
+    );
+
+    await tester.tap(entry);
+    await tester.pumpAndSettle();
+    final rows = find.byType(InkWell);
+    expect(find.text('较早置顶通知'), findsOneWidget);
+    expect(find.text('最新未读通知'), findsOneWidget);
+    expect(rows, findsWidgets);
+  });
 }
 
 Future<AppController> _pumpConversations(
