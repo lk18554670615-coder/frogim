@@ -68,6 +68,10 @@ jobs:
       - name: Resolve Flutter dependencies
         run: flutter pub get
 
+      - name: Refresh pinned WebRTC CocoaPod
+        run: pod update WebRTC-SDK
+        working-directory: apps/mobile/ios
+
       - name: Analyze Flutter code
         run: flutter analyze
 
@@ -193,6 +197,10 @@ jobs:
 
       - name: Resolve Flutter dependencies
         run: flutter pub get
+
+      - name: Refresh pinned WebRTC CocoaPod
+        run: pod update WebRTC-SDK
+        working-directory: apps/mobile/ios
 
       - name: Build signed IPA
         run: |
