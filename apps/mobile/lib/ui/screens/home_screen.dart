@@ -16,7 +16,6 @@ import 'people_screens.dart';
 import 'qr_tools_screen.dart';
 import 'settings_screens.dart';
 import 'settings_preferences.dart';
-import 'sticker_store_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -682,13 +681,6 @@ class _DesktopToolsWorkspace extends StatelessWidget {
           title: '朋友圈',
           subtitle: '发布动态并查看好友互动',
           onTap: () => _push(context, MomentsScreen(controller: controller)),
-        ),
-        _DesktopAction(
-          icon: CupertinoIcons.smiley_fill,
-          title: '表情商店',
-          subtitle: '浏览、收藏和管理聊天表情',
-          onTap: () =>
-              _push(context, StickerStoreScreen(controller: controller)),
         ),
         _DesktopAction(
           icon: CupertinoIcons.person_badge_plus,
@@ -2862,16 +2854,6 @@ class DiscoverTab extends StatelessWidget {
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute(
                   builder: (_) => MomentsScreen(controller: controller),
-                ),
-              ),
-            ),
-            SettingTile(
-              icon: CupertinoIcons.smiley_fill,
-              title: '表情商店',
-              subtitle: '浏览、收藏和管理聊天表情',
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => StickerStoreScreen(controller: controller),
                 ),
               ),
             ),

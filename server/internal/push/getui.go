@@ -107,17 +107,38 @@ func (g *Getui) sendCID(ctx context.Context, item store.OutboxItem, device store
 	if device.SoundEnabled {
 		iosAPS["sound"] = "default"
 	}
+	pushMessage := map[string]any{"transmission": string(payload)}
+	// Android notification events must use Getui's notification template on
+	// the online Getui channel. A transmission is data-only and therefore does
+	// not create a system notification unless the client does so itself. Calls
+	// remain data messages so the client can invoke the native calling UI.
+	if strings.EqualFold(device.Platform, "android") && item.EventType != "call.invited" {
+		channelLevel := 2
+		if device.SoundEnabled && device.VibrationEnabled {
+			channelLevel = 4
+		} else if device.SoundEnabled {
+			channelLevel = 3
+		}
+		pushMessage = map[string]any{
+			"notification": map[string]any{
+				"title": title, "body": summary,
+				"channel_id": "messages", "channel_name": "消息通知", "channel_level": channelLevel,
+				"click_type": "payload", "payload": string(payload),
+			},
+		}
+	}
 	body := map[string]any{
-		"request_id": requestID,
-		"settings":   map[string]any{"ttl": 72 * 60 * 60 * 1000},
-		"audience":   map[string]any{"cid": []string{device.PushToken}},
-		"push_message": map[string]any{
-			"transmission": string(payload),
-		},
+		"request_id":   requestID,
+		"settings":     map[string]any{"ttl": 72 * 60 * 60 * 1000},
+		"audience":     map[string]any{"cid": []string{device.PushToken}},
+		"push_message": pushMessage,
 		"push_channel": map[string]any{
 			"android": map[string]any{
 				"ups": map[string]any{
-					"notification": map[string]any{"title": title, "body": summary, "click_type": "payload", "payload": string(payload)},
+					// Vendor channels accept startapp/intent/url actions, but not
+					// Getui's online-channel payload action. The app synchronizes
+					// authoritative state as soon as it resumes.
+					"notification": map[string]any{"title": title, "body": summary, "click_type": "startapp"},
 				},
 			},
 			"ios": map[string]any{

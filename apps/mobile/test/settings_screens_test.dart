@@ -40,11 +40,24 @@ void main() {
     expect(find.text('存储空间'), findsOneWidget);
     expect(find.text('帮助与反馈'), findsOneWidget);
     expect(find.text('关于青蛙呱呱'), findsOneWidget);
+    expect(find.text('版本、用户协议与隐私政策'), findsOneWidget);
+    expect(find.textContaining('开源许可'), findsNothing);
 
     await tester.tap(find.byKey(const Key('settings-notifications')));
     await _settle(tester);
     expect(find.text('通知偏好'), findsOneWidget);
     expect(find.text('系统通知权限'), findsOneWidget);
+  });
+
+  testWidgets('关于页面隐藏开源软件许可入口', (tester) async {
+    await _pump(tester, const AboutScreen());
+
+    expect(find.text('用户协议'), findsOneWidget);
+    expect(find.text('隐私政策'), findsOneWidget);
+    expect(find.text('开源软件许可'), findsNothing);
+    expect(find.byKey(const Key('open-source-licenses')), findsNothing);
+    expect(find.text('服务状态'), findsNothing);
+    expect(find.text('客户端版本'), findsNothing);
   });
 
   testWidgets('退出登录说明与本机缓存清理行为一致', (tester) async {

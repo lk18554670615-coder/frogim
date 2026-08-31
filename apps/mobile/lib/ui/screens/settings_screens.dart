@@ -144,7 +144,7 @@ class SettingsScreen extends StatelessWidget {
               key: const Key('settings-about'),
               icon: CupertinoIcons.info_circle,
               title: '关于青蛙呱呱',
-              subtitle: '版本、协议与开源许可',
+              subtitle: '版本、用户协议与隐私政策',
               onTap: () => _push(context, const AboutScreen()),
             ),
           ],
@@ -3057,7 +3057,7 @@ class _AboutScreenState extends State<AboutScreen> {
             ],
           ),
         ),
-        const SectionHeader('法律与许可'),
+        const SectionHeader('法律信息'),
         SectionCard(
           children: [
             _SettingsRow(
@@ -3069,27 +3069,6 @@ class _AboutScreenState extends State<AboutScreen> {
               icon: CupertinoIcons.hand_raised,
               title: '隐私政策',
               onTap: () => showLegalDocument(context, LegalDocument.privacy),
-            ),
-            _SettingsRow(
-              key: const Key('open-source-licenses'),
-              icon: CupertinoIcons.chevron_left_slash_chevron_right,
-              title: '开源软件许可',
-              onTap: () => showLicensePage(
-                context: context,
-                applicationName: '青蛙呱呱',
-                applicationVersion: versionLabel,
-              ),
-            ),
-          ],
-        ),
-        const SectionHeader('服务状态'),
-        SectionCard(
-          children: [
-            _SettingsRow(
-              icon: CupertinoIcons.check_mark_circled,
-              title: '客户端版本',
-              subtitle: '与 pubspec.yaml 的当前发布版本一致',
-              status: packageInfo?.version ?? '读取中',
             ),
           ],
         ),

@@ -160,6 +160,8 @@ services:
     expose:
       - "8080"
     networks:
+      # Direct push providers (for example Getui) require outbound HTTPS.
+      - edge
       - app
       - data
     depends_on:

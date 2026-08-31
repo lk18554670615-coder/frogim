@@ -19,7 +19,6 @@ import 'package:linli_im/ui/screens/home_screen.dart';
 import 'package:linli_im/ui/screens/moments_screen.dart';
 import 'package:linli_im/ui/screens/relationship_screens.dart';
 import 'package:linli_im/ui/screens/settings_screens.dart';
-import 'package:linli_im/ui/screens/sticker_store_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -973,19 +972,13 @@ void main() {
       );
       if (entry.$1 == 2) {
         expect(find.text('朋友圈'), findsOneWidget);
-        expect(find.text('表情商店'), findsOneWidget);
+        expect(find.text('表情商店'), findsNothing);
         expect(find.text('社区与频道'), findsNothing);
         expect(find.text('在线客服'), findsNothing);
 
         await tester.tap(find.text('朋友圈'));
         await tester.pumpAndSettle();
         expect(find.byType(MomentsScreen), findsOneWidget);
-        await tester.pageBack();
-        await tester.pumpAndSettle();
-
-        await tester.tap(find.text('表情商店'));
-        await tester.pumpAndSettle();
-        expect(find.byType(StickerStoreScreen), findsOneWidget);
         await tester.pageBack();
         await tester.pumpAndSettle();
       }

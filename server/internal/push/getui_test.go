@@ -80,11 +80,11 @@ func TestGetuiOfflineChannelsUseSafeEventSummaryAndRoutingPayload(t *testing.T) 
 	}))
 	defer server.Close()
 	provider := &Getui{AppID: "app", AppKey: "key", MasterSecret: "master-secret", BaseURL: server.URL + "/v2", Client: server.Client()}
-	item := store.OutboxItem{ID: 21, EventType: "message.created", Payload: map[string]any{"message": map[string]any{"id": "msg-1", "conversationId": "conv-1", "type": "image", "body": map[string]any{"caption": "private caption must never enter notification"}}}, Devices: []store.Device{{ID: "d1", Provider: "getui", PushToken: "cid", NotificationsEnabled: true, PreviewEnabled: true, SoundEnabled: true, VibrationEnabled: true}}}
+	item := store.OutboxItem{ID: 21, EventType: "message.created", Payload: map[string]any{"message": map[string]any{"id": "msg-1", "conversationId": "conv-1", "type": "image", "body": map[string]any{"caption": "private caption must never enter notification"}}}, Devices: []store.Device{{ID: "d1", Platform: "android", Provider: "getui", PushToken: "cid", NotificationsEnabled: true, PreviewEnabled: true, SoundEnabled: true, VibrationEnabled: true}}}
 	if err := provider.Send(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	assertGetuiChannels(t, pushed, "青蛙呱呱", "你收到一张图片", "conv-1", "msg-1")
+	assertGetuiAndroidNotificationChannels(t, pushed, "青蛙呱呱", "你收到一张图片", "conv-1", "msg-1")
 	raw, _ := json.Marshal(pushed)
 	if strings.Contains(string(raw), "private caption") {
 		t.Fatalf("private message text leaked into push body: %s", raw)
@@ -144,7 +144,7 @@ func assertGetuiChannels(t *testing.T, body map[string]any, title, summary, conv
 	}
 	channels := body["push_channel"].(map[string]any)
 	android := channels["android"].(map[string]any)["ups"].(map[string]any)["notification"].(map[string]any)
-	if android["title"] != title || android["body"] != summary || android["click_type"] != "payload" || android["payload"] != transmission {
+	if android["title"] != title || android["body"] != summary || android["click_type"] != "startapp" || android["payload"] != nil {
 		t.Fatalf("android=%v", android)
 	}
 	ios := channels["ios"].(map[string]any)
@@ -152,6 +152,57 @@ func assertGetuiChannels(t *testing.T, body map[string]any, title, summary, conv
 	alert := aps["alert"].(map[string]any)
 	if ios["type"] != "notify" || ios["auto_badge"] != "+1" || ios["payload"] != transmission || alert["title"] != title || alert["body"] != summary || aps["sound"] != "default" || aps["content-available"].(float64) != 0 {
 		t.Fatalf("ios=%v", ios)
+	}
+}
+
+func assertGetuiAndroidNotificationChannels(t *testing.T, body map[string]any, title, summary, conversationID, messageID string) {
+	t.Helper()
+	pushMessage := body["push_message"].(map[string]any)
+	if pushMessage["transmission"] != nil {
+		t.Fatalf("android online channel must use a notification: %v", pushMessage)
+	}
+	notification := pushMessage["notification"].(map[string]any)
+	if notification["title"] != title || notification["body"] != summary || notification["click_type"] != "payload" || notification["channel_id"] != "messages" || notification["channel_name"] != "消息通知" || notification["channel_level"] != float64(4) {
+		t.Fatalf("android online notification=%v", notification)
+	}
+	var navigation map[string]any
+	if err := json.Unmarshal([]byte(notification["payload"].(string)), &navigation); err != nil {
+		t.Fatalf("android notification payload: %v", err)
+	}
+	if navigation["conversationId"] != conversationID || navigation["messageId"] != messageID || navigation["badge"] != "+1" || navigation["unread"].(float64) != 1 {
+		t.Fatalf("navigation=%v", navigation)
+	}
+	channels := body["push_channel"].(map[string]any)
+	android := channels["android"].(map[string]any)["ups"].(map[string]any)["notification"].(map[string]any)
+	if android["title"] != title || android["body"] != summary || android["click_type"] != "startapp" || android["payload"] != nil {
+		t.Fatalf("android vendor notification=%v", android)
+	}
+}
+
+func TestGetuiKeepsAndroidCallInviteAsTransmission(t *testing.T) {
+	var pushed map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/auth") {
+			writeGetui(w, 0, map[string]any{"token": "token", "expire_time": time.Now().Add(time.Hour).UnixMilli()})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/push/single/cid") {
+			if err := json.NewDecoder(r.Body).Decode(&pushed); err != nil {
+				t.Fatal(err)
+			}
+			writeGetui(w, 0, map[string]any{})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	provider := &Getui{AppID: "app", AppKey: "key", MasterSecret: "master-secret", BaseURL: server.URL + "/v2", Client: server.Client()}
+	item := store.OutboxItem{ID: 22, EventType: "call.invited", Payload: map[string]any{"callId": "call-1", "conversationId": "conv-1", "mediaType": "video"}, Devices: []store.Device{{ID: "d1", Platform: "android", Provider: "getui", PushToken: "cid", NotificationsEnabled: true, PreviewEnabled: true, SoundEnabled: true, VibrationEnabled: true}}}
+	if err := provider.Send(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if pushed["push_message"].(map[string]any)["transmission"] == nil {
+		t.Fatalf("android call invite must remain a transmission: %v", pushed["push_message"])
 	}
 }
 
