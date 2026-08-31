@@ -41,7 +41,7 @@ env:
 jobs:
   compile:
     name: Compile iOS without signing
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     defaults:
       run:
@@ -108,7 +108,7 @@ jobs:
     name: Build signed IPA
     if: github.event_name == 'workflow_dispatch' && inputs.build_signed_ipa == true
     needs: compile
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     defaults:
       run:

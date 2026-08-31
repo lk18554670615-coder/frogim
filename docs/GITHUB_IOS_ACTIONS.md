@@ -1,7 +1,7 @@
 # GitHub Actions iOS 构建
 
 仓库工作流位于 `.github/workflows/ios-build.yml`，使用 GitHub 托管的
-`macos-15` Runner 和 `apps/mobile/.fvmrc` 固定的 Flutter 版本。
+`macos-26` Runner（提供 Xcode 26 SDK）和 `apps/mobile/.fvmrc` 固定的 Flutter 版本。
 
 ## 自动编译检查
 
