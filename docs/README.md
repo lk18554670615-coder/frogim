@@ -21,6 +21,7 @@
 | [LOGGING.md](LOGGING.md) | 容器日志、中文服务对照、轮转与事故归档 | 运维、研发、安全 |
 | [CLUSTERING.md](CLUSTERING.md) | 当前单节点声明与未来集群前置条件 | 架构、后端、运维 |
 | [WUKONGIM_PERFORMANCE_GATE.md](WUKONGIM_PERFORMANCE_GATE.md) | 10k 连接、1k msg/s 与 ACK 延迟压测门禁 | 后端、SRE、测试 |
+| [GITHUB_IOS_ACTIONS.md](GITHUB_IOS_ACTIONS.md) | GitHub Actions iOS 编译、签名 Secrets 与 IPA 产物 | iOS 开发、发布负责人 |
 
 ## 产品与环境资料
 

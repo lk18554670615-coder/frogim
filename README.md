@@ -55,6 +55,12 @@ docker compose -f infra/compose.yaml -f infra/compose.wukong.yaml config -q
 
 完整测试范围与真实 PostgreSQL 测试方法见[测试指南](docs/TESTING.md)。
 
+## iOS 自动构建
+
+iOS 应用使用 Bundle ID `com.fd.kuailiao`。GitHub Actions 在 `main` 分支相关代码变化时自动完成 Flutter 静态分析、完整测试和无签名 iOS Release 编译；在 Actions 页面手动运行 `iOS Build` 并启用“使用仓库 Secrets 构建签名 IPA”，可生成 App Store 签名产物。
+
+证书、描述文件和密码只允许保存在 GitHub 加密 Secrets 中，不得提交到仓库。工作流入口、所需 Secrets、产物下载和签名方式见 [GitHub Actions iOS 构建](docs/GITHUB_IOS_ACTIONS.md)。
+
 ## 生产部署
 
 生产定义默认拒绝弱密钥、示例域名、开发验证码和 `noop`/`log` 推送。Web/API 只有 Caddy 暴露 80/443；LiveKit 按配置暴露 7881/TCP 与 7882–7889/UDP。API、后台、数据库、缓存、对象存储和监控均位于内部网络。
@@ -84,6 +90,7 @@ make production-deploy
 - [发布清单](docs/RELEASE_CHECKLIST.md)
 - [兼容标识](docs/COMPATIBILITY.md)
 - [功能矩阵](docs/IM_FEATURE_MATRIX.md)
+- [GitHub Actions iOS 构建](docs/GITHUB_IOS_ACTIONS.md)
 
 ## 维护原则
 

@@ -36,9 +36,11 @@ fvm flutter run -d emulator-5554 \
 该覆盖只用于本地 Android Studio 模拟器。生产环境必须配置真实公网 `IM_WUKONG_TCP_URL`，不得追加此 Compose 文件。
 
 个推本地参数放在已忽略的 `dart_defines.local.json`，运行时追加
-`--dart-define-from-file=dart_defines.local.json`。发布构建必须同时提供
+`--dart-define-from-file=dart_defines.local.json`。需要启用个推的发布构建必须同时提供
 `GETUI_ENABLED=true`、`GETUI_APP_ID`、`GETUI_APP_KEY` 和
-`GETUI_APP_SECRET`；`MasterSecret` 只允许配置在服务端环境变量中。
+`GETUI_APP_SECRET`；三项客户端参数未完整配置时，GitHub iOS 签名构建会保持
+`GETUI_ENABLED=false`，IPA 仍可生成，但不具备个推离线推送能力。`MasterSecret`
+只允许配置在服务端环境变量中。
 
 开发后端验证码由部署环境配置。任何环境启用 Demo 都会直接启动失败；`staging` 和 `production` 还必须配置服务地址，`production` 强制要求 HTTPS。WuKong TCP/WSS 和 LiveKit 地址只接受鉴权后的 `ImSession`/通话接口下发，不允许由客户端构建参数覆盖。真实请求失败时会如实显示错误，不会伪装成成功结果。
 
@@ -92,6 +94,17 @@ bash infra/scripts/publish-client-version.sh android 1.0.0 1.0.0 \
 
 密钥文件和密码不得提交到仓库；商店发布前应将上传密钥纳入组织级密码库和离线备份。
 
+## iOS 签名构建
+
+iOS 当前 Bundle ID 为 `com.fd.kuailiao`，Release/Profile 使用 App Store 手动分发签名。Windows 不直接构建 IPA，统一通过仓库的 GitHub Actions `iOS Build` 工作流在 `macos-26` / Xcode 26 Runner 上构建：
+
+- 推送 `main` 中的 Flutter、iOS 或工作流变化时，自动执行静态分析、完整测试和无签名 Release 编译。
+- 在 GitHub Actions 页面手动运行工作流，并启用“使用仓库 Secrets 构建签名 IPA”，构建成功后下载 `ios-signed-<run_number>` Artifact。
+- Apple Distribution P12、密码、描述文件、ExportOptions 和临时 Keychain 密码必须使用 GitHub 加密 Secrets；不得写入 Git、构建参数或日志。
+- App Store 描述文件生成的 IPA 用于 App Store Connect/TestFlight；如需直接安装到指定设备，必须改用包含设备 UDID 的 Ad Hoc 描述文件。
+
+完整配置与操作步骤见 [GitHub Actions iOS 构建](../../docs/GITHUB_IOS_ACTIONS.md)。
+
 ## 分层
 
 - `lib/core`：环境配置、模型、主题与应用状态机。
@@ -114,4 +127,4 @@ flutter widget-preview start
 
 正式四端构建统一入口见 [Flutter 四端构建入口](../../docs/FLUTTER_BUILD_AUTOMATION.md)。
 
-测试覆盖登录退出、四端会话/消息映射、并发 401 单飞续签、WuKong 连接状态、引用消息、媒体上传顺序、图片编辑、小视频、群聊/群通话页面和深浅主题。Windows/Skia 像素基线另覆盖移动登录、会话、群聊、桌面双栏和图片编辑器；基线使用固定消息时间与显式字体加载，只有确认设计变更后才使用 `fvm flutter test test/visual_regression_test.dart --update-goldens` 更新。当前全量共 232 项测试。生产范围与外部验收门槛见 `PRODUCT_SCOPE.md`。
+测试覆盖登录退出、四端会话/消息映射、并发 401 单飞续签、WuKong 连接状态、引用消息、媒体上传顺序、图片编辑、小视频、群聊/群通话页面和深浅主题。Windows/Skia 像素基线另覆盖移动登录、会话、群聊、桌面双栏和图片编辑器；基线使用固定消息时间与显式字体加载，只有确认设计变更后才使用 `fvm flutter test test/visual_regression_test.dart --update-goldens` 更新。当前 GitHub Actions 完整任务结果为 376 项通过、21 项按环境跳过。生产范围与外部验收门槛见 `PRODUCT_SCOPE.md`。
