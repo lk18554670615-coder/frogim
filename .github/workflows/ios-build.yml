@@ -122,6 +122,7 @@ jobs:
       GETUI_APP_ID: ${{ secrets.GETUI_APP_ID }}
       GETUI_APP_KEY: ${{ secrets.GETUI_APP_KEY }}
       GETUI_APP_SECRET: ${{ secrets.GETUI_APP_SECRET }}
+      GETUI_ENABLED: ${{ secrets.GETUI_APP_ID != '' && secrets.GETUI_APP_KEY != '' && secrets.GETUI_APP_SECRET != '' && 'true' || 'false' }}
 
     steps:
       - name: Check out repository
@@ -144,9 +145,6 @@ jobs:
             IOS_PROVISIONING_PROFILE_BASE64
             IOS_EXPORT_OPTIONS_PLIST_BASE64
             IOS_KEYCHAIN_PASSWORD
-            GETUI_APP_ID
-            GETUI_APP_KEY
-            GETUI_APP_SECRET
           )
           for name in "${required[@]}"; do
             if [[ -z "${!name:-}" ]]; then
@@ -210,7 +208,7 @@ jobs:
             --dart-define=APP_ENV=production \
             --dart-define=API_BASE_URL=https://18.163.165.233 \
             --dart-define=ENABLE_DEMO=false \
-            --dart-define=GETUI_ENABLED=true \
+            --dart-define=GETUI_ENABLED="${GETUI_ENABLED}" \
             --dart-define=GETUI_APP_ID="${GETUI_APP_ID}" \
             --dart-define=GETUI_APP_KEY="${GETUI_APP_KEY}" \
             --dart-define=GETUI_APP_SECRET="${GETUI_APP_SECRET}" \

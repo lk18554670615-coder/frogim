@@ -30,12 +30,12 @@ iPhone，也不能提交 App Store。
 | --- | --- |
 | `IOS_CERTIFICATE_P12_BASE64` | Apple Distribution `.p12` 的 Base64 文本 |
 | `IOS_CERTIFICATE_PASSWORD` | `.p12` 密码 |
-| `IOS_PROVISIONING_PROFILE_BASE64` | 匹配 `com.qingwaguagua.imapp` 的 `.mobileprovision` Base64 文本 |
+| `IOS_PROVISIONING_PROFILE_BASE64` | 匹配 `com.fd.kuailiao` 的 `.mobileprovision` Base64 文本 |
 | `IOS_EXPORT_OPTIONS_PLIST_BASE64` | 对应发布方式的 `ExportOptions.plist` Base64 文本 |
 | `IOS_KEYCHAIN_PASSWORD` | 临时 CI Keychain 使用的随机高强度密码 |
-| `GETUI_APP_ID` | 个推客户端 App ID |
-| `GETUI_APP_KEY` | 个推客户端 App Key |
-| `GETUI_APP_SECRET` | 个推客户端 App Secret；不是服务端 MasterSecret |
+| `GETUI_APP_ID` | 可选，个推客户端 App ID；三项均配置后才启用个推 |
+| `GETUI_APP_KEY` | 可选，个推客户端 App Key |
+| `GETUI_APP_SECRET` | 可选，个推客户端 App Secret；不是服务端 MasterSecret |
 
 Apple 证书、描述文件和私钥材料不得提交到 Git。Windows PowerShell 可使用：
 
