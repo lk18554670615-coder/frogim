@@ -106,7 +106,9 @@ jobs:
 
   signed-ipa:
     name: Build signed IPA
-    if: github.event_name == 'workflow_dispatch' && inputs.build_signed_ipa == true
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.build_signed_ipa == true)
     needs: compile
     runs-on: macos-26
     timeout-minutes: 60
