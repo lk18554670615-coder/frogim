@@ -230,12 +230,12 @@ func TestProductionCombinedPushRequiresCompleteAPNSVoIPConfiguration(t *testing.
 	}
 	c.APNSVoIPKeyID = "KEYID12345"
 	c.APNSVoIPTeamID = "TEAMID1234"
-	c.APNSVoIPBundleID = "com.qingwaguagua.imapp"
+	c.APNSVoIPBundleID = "com.fd.kuailiao"
 	c.APNSVoIPKeyFile = "/run/secrets/apns_auth_key.p8"
 	if err := c.Validate(); err != nil {
 		t.Fatalf("complete combined push config: %v", err)
 	}
-	c.APNSVoIPBundleID = "com.qingwaguagua.imapp.voip"
+	c.APNSVoIPBundleID = "com.fd.kuailiao.voip"
 	if err := c.Validate(); err == nil {
 		t.Fatal("bundle id must not include .voip suffix")
 	}

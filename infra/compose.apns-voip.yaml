@@ -4,7 +4,7 @@ services:
     environment:
       IM_APNS_VOIP_KEY_ID: ${IM_APNS_VOIP_KEY_ID:?set IM_APNS_VOIP_KEY_ID}
       IM_APNS_VOIP_TEAM_ID: ${IM_APNS_VOIP_TEAM_ID:?set IM_APNS_VOIP_TEAM_ID}
-      IM_APNS_VOIP_BUNDLE_ID: ${IM_APNS_VOIP_BUNDLE_ID:-com.qingwaguagua.imapp}
+      IM_APNS_VOIP_BUNDLE_ID: ${IM_APNS_VOIP_BUNDLE_ID:-com.fd.kuailiao}
       IM_APNS_VOIP_PRIVATE_KEY_FILE: /run/secrets/apns-auth-key.p8
       IM_APNS_VOIP_SANDBOX: ${IM_APNS_VOIP_SANDBOX:-false}
     volumes:

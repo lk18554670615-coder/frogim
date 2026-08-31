@@ -32,7 +32,7 @@ import flutter_callkit_incoming
       return
     }
     let channel = FlutterMethodChannel(
-      name: "com.qingwaguagua.imapp/screenshot",
+      name: "com.fd.kuailiao/screenshot",
       binaryMessenger: registrar.messenger()
     )
     screenshotChannel = channel

@@ -1,4 +1,4 @@
-package com.qingwaguagua.imapp
+package com.fd.kuailiao
 
 import android.app.NotificationChannel
 import android.app.NotificationManager

@@ -6,7 +6,7 @@ Flutter 客户端已经达到“首发代码候选版”状态。2026-08-13增�
 
 当前仓库仍不能直接宣称“商店正式版已发布”。当前Android包已使用独立4096位RSA发布密钥和目标服务器地址构建，APK v2/v3签名验证通过，不再是Debug证书；但密钥归属/异地备份、法务页面、iOS/macOS签名、生产推送/短信/对象存储凭据及实体真机验收仍属于发布方必须完成的外部条件。
 
-当前应用版本为 `1.0.0+1`，产品名为“青蛙呱呱”；iOS Bundle ID 为 `com.fd.kuailiao`，Android applicationId 为 `com.qingwaguagua.imapp`。发布前需要由产品/商店账号所有者确认这些身份信息不会再修改。
+当前应用版本为 `1.0.0+1`，产品名为“青蛙呱呱”；iOS Bundle ID 与 Android applicationId 均为 `com.fd.kuailiao`。发布前需要由产品/商店账号所有者确认这些身份信息不会再修改。
 
 ## 本轮已修复的正式版本问题
 

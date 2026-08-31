@@ -1,4 +1,4 @@
-package com.qingwaguagua.imapp
+package com.fd.kuailiao
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest

@@ -1,4 +1,4 @@
-package com.qingwaguagua.imapp
+package com.fd.kuailiao
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals

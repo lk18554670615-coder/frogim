@@ -17,7 +17,7 @@ class ScreenshotDetection {
   }
 
   static final ScreenshotDetection instance = ScreenshotDetection._();
-  static const _channel = MethodChannel('com.qingwaguagua.imapp/screenshot');
+  static const _channel = MethodChannel('com.fd.kuailiao/screenshot');
 
   final _events = StreamController<DateTime>.broadcast();
   bool _started = false;

@@ -29,7 +29,7 @@ func TestAPNSVoIPSendsHTTP2PrivacySafeCallPayloadAndCachesJWT(t *testing.T) {
 		if r.ProtoMajor != 2 {
 			t.Fatalf("APNs request protocol=%s", r.Proto)
 		}
-		if r.Header.Get("apns-push-type") != "voip" || r.Header.Get("apns-topic") != "com.qingwaguagua.imapp.voip" || r.Header.Get("apns-expiration") != "0" || r.Header.Get("apns-priority") != "10" {
+		if r.Header.Get("apns-push-type") != "voip" || r.Header.Get("apns-topic") != "com.fd.kuailiao.voip" || r.Header.Get("apns-expiration") != "0" || r.Header.Get("apns-priority") != "10" {
 			t.Fatalf("invalid APNs headers: %v", r.Header)
 		}
 		if !strings.HasPrefix(r.URL.Path, "/3/device/") || len(r.Header.Get("apns-id")) != 36 {
@@ -67,7 +67,7 @@ func TestAPNSVoIPSendsHTTP2PrivacySafeCallPayloadAndCachesJWT(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 
-	provider, err := NewAPNSVoIP("KEYID12345", "TEAMID1234", "com.qingwaguagua.imapp", true, keyPEM)
+	provider, err := NewAPNSVoIP("KEYID12345", "TEAMID1234", "com.fd.kuailiao", true, keyPEM)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestAPNSVoIPInvalidatesGoneTokenWithoutLeakingIt(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"reason": "Unregistered", "timestamp": 1_700_000_000_000})
 	}))
 	defer server.Close()
-	provider, err := NewAPNSVoIP("KEYID12345", "TEAMID1234", "com.qingwaguagua.imapp", false, keyPEM)
+	provider, err := NewAPNSVoIP("KEYID12345", "TEAMID1234", "com.fd.kuailiao", false, keyPEM)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestAPNSVoIPClassifiesTemporaryFailureForRetry(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"reason": "Shutdown"})
 	}))
 	defer server.Close()
-	provider, _ := NewAPNSVoIP("KEYID12345", "TEAMID1234", "com.qingwaguagua.imapp", false, keyPEM)
+	provider, _ := NewAPNSVoIP("KEYID12345", "TEAMID1234", "com.fd.kuailiao", false, keyPEM)
 	provider.BaseURL, provider.Client = server.URL, server.Client()
 	item := testCallOutbox()
 	item.Devices = []store.Device{{ID: "ios", Provider: "apns_voip", PushToken: strings.Repeat("d", 64)}}
@@ -135,11 +135,11 @@ func TestAPNSVoIPClassifiesTemporaryFailureForRetry(t *testing.T) {
 }
 
 func TestAPNSVoIPRejectsInvalidKeyAndMalformedToken(t *testing.T) {
-	if _, err := NewAPNSVoIP("KEYID12345", "TEAMID1234", "com.qingwaguagua.imapp", false, []byte("not-a-key")); err == nil {
+	if _, err := NewAPNSVoIP("KEYID12345", "TEAMID1234", "com.fd.kuailiao", false, []byte("not-a-key")); err == nil {
 		t.Fatal("invalid .p8 key must fail closed")
 	}
 	keyPEM, _ := testAPNSKey(t)
-	provider, _ := NewAPNSVoIP("KEYID12345", "TEAMID1234", "com.qingwaguagua.imapp", false, keyPEM)
+	provider, _ := NewAPNSVoIP("KEYID12345", "TEAMID1234", "com.fd.kuailiao", false, keyPEM)
 	item := testCallOutbox()
 	item.Devices = []store.Device{{ID: "bad", Provider: "apns_voip", PushToken: "not-a-device-token"}}
 	err := provider.Send(context.Background(), item)

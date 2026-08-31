@@ -94,9 +94,13 @@ bash infra/scripts/publish-client-version.sh android 1.0.0 1.0.0 \
 
 密钥文件和密码不得提交到仓库；商店发布前应将上传密钥纳入组织级密码库和离线备份。
 
+## Android 与 iOS 应用标识
+
+Android `applicationId` 与 iOS Bundle ID 统一为 `com.fd.kuailiao`。修改该值会被系统和应用商店视为另一款应用，旧包名客户端不能原地升级到新包名。
+
 ## iOS 签名构建
 
-iOS 当前 Bundle ID 为 `com.fd.kuailiao`，Release/Profile 使用 App Store 手动分发签名。Windows 不直接构建 IPA，统一通过仓库的 GitHub Actions `iOS Build` 工作流在 `macos-26` / Xcode 26 Runner 上构建：
+iOS Release/Profile 使用 App Store 手动分发签名。Windows 不直接构建 IPA，统一通过仓库的 GitHub Actions `iOS Build` 工作流在 `macos-26` / Xcode 26 Runner 上构建：
 
 - 推送 `main` 中的 Flutter、iOS 或工作流变化时，自动执行静态分析、完整测试和无签名 Release 编译。
 - 在 GitHub Actions 页面手动运行工作流，并启用“使用仓库 Secrets 构建签名 IPA”，构建成功后下载 `ios-signed-<run_number>` Artifact。

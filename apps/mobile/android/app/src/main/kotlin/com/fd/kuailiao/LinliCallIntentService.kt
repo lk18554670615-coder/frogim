@@ -1,4 +1,4 @@
-package com.qingwaguagua.imapp
+package com.fd.kuailiao
 
 import android.content.Context
 import android.content.Intent

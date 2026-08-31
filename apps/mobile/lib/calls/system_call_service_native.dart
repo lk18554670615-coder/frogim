@@ -19,7 +19,7 @@ import 'system_call_service_contract.dart';
 
 const _pendingActionsKey = 'calls.pending_system_actions.v1';
 const _permissionPromptedKey = 'calls.system_permission_prompted.v1';
-const _systemCallChannel = MethodChannel('com.qingwaguagua.imapp/system_calls');
+const _systemCallChannel = MethodChannel('com.fd.kuailiao/system_calls');
 
 SystemCallService createSystemCallService() => NativeSystemCallService();
 
