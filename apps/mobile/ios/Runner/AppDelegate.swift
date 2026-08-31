@@ -26,7 +26,11 @@ import flutter_callkit_incoming
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-    let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "LinliScreenshotDetection")
+    guard let registrar = engineBridge.pluginRegistry.registrar(
+      forPlugin: "LinliScreenshotDetection"
+    ) else {
+      return
+    }
     let channel = FlutterMethodChannel(
       name: "com.qingwaguagua.imapp/screenshot",
       binaryMessenger: registrar.messenger()
