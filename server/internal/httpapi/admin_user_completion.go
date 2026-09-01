@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/linli/im/server/internal/app"
 	"github.com/linli/im/server/internal/model"
 )
 
@@ -28,6 +29,47 @@ func (x *API) createAdminUser(w http.ResponseWriter, r *http.Request) {
 	}
 	x.signAvatarURL(user)
 	write(w, http.StatusCreated, map[string]any{"item": user})
+}
+
+func (x *API) createAdminUsersBatch(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Items     []app.AdminUserBatchInput `json:"items"`
+		Reason    string                    `json:"reason"`
+		Confirmed bool                      `json:"confirmed"`
+	}
+	if decode(r, &payload) != nil || !confirmedReason(payload.Confirmed, payload.Reason) {
+		writeError(w, http.StatusBadRequest, "CONFIRMATION_REQUIRED", "confirmed and reason are required")
+		return
+	}
+	if len(payload.Items) == 0 || len(payload.Items) > 100 {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "items must contain between 1 and 100 users")
+		return
+	}
+	batchID, items, err := x.app.CreateAdminUsersBatch(r.Context(), uid(r), payload.Items, payload.Reason)
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	succeeded := 0
+	for index := range items {
+		if items[index].Status == "created" {
+			succeeded++
+			x.signAvatarURL(items[index].User)
+		}
+	}
+	failed := len(items) - succeeded
+	result := "success"
+	if succeeded == 0 {
+		result = "failed"
+	} else if failed > 0 {
+		result = "partial"
+	}
+	x.app.RecordAdminAudit(uid(r), "user.batch_created", "user_batch", batchID, result, x.clientIP(r), map[string]any{
+		"reason": strings.TrimSpace(payload.Reason), "total": len(items), "succeeded": succeeded, "failed": failed,
+	})
+	write(w, http.StatusOK, map[string]any{
+		"batchId": batchID, "total": len(items), "succeeded": succeeded, "failed": failed, "items": items,
+	})
 }
 
 func (x *API) adminUserFriendMessages(w http.ResponseWriter, r *http.Request) {

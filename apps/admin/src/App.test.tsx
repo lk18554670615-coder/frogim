@@ -34,6 +34,10 @@ async function liveFixture(input: RequestInfo | URL, init?: RequestInit) {
   if (url.includes('/users/u_10291/devices')) return response({ items: [{ userId: 'u_10291', installationId: 'install_android_1', platform: 'android', deviceName: 'Pixel 9', deviceModel: 'tokay', osVersion: 'Android 16', appVersion: '1.0.0', firstSeenAt: '2026-08-15T08:00:00Z', lastSeenAt: '2026-08-16T08:00:00Z' }], pushRegistrations: [{ id: 'device_android_1', userId: 'u_10291', platform: 'android', provider: 'fcm', notificationsEnabled: true, previewEnabled: false, soundEnabled: true, vibrationEnabled: true, updatedAt: '2026-08-16T08:00:00Z' }] });
   if (url.includes('/users/u_10291/system-message') && method === 'POST') return response({ targetUid: 'u_10291', senderUid: 'u_notice', conversationId: 'conv_notice_1', messageId: 1001, clientMsgNo: 'admin-notice-1' }, 201);
   if (url.includes('/users/u_10291')) return response({ user: { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia', signature: '在青蛙呱呱保持联系', gender: 'female', handleChangeCount: 1, online: true, onlineConnections: 2, createdAt: '2026-08-01T08:00:00Z' }, deviceCount: 2, friendCount: 18, groupCount: 4, handleChangesUsed: 1, handleChangesRemaining: 1 });
+  if (url.endsWith('/users/batch') && method === 'POST') {
+    const body = JSON.parse(String(init?.body)) as { items: Array<{ clientRow: number; phone: string; name: string; gender: string }> };
+    return response({ batchId: 'batch_fixture', total: body.items.length, succeeded: body.items.length, failed: 0, items: body.items.map((item) => ({ clientRow: item.clientRow, status: 'created', user: { id: `u_batch_${item.clientRow}`, name: item.name, phone: item.phone, handle: `gg_batch_${item.clientRow}`, gender: item.gender, status: 'active', createdAt: '2026-09-01T08:00:00Z' } })) });
+  }
   if (url.endsWith('/users') && method === 'POST') return response({ item: { id: 'u_created', name: '新建账号', phone: '13900139000', handle: 'gg_created', gender: 'female', status: 'active', createdAt: '2026-08-17T08:00:00Z' } }, 201);
   if (url.includes('/users')) {
     const query = new URL(url, 'http://localhost').searchParams.get('q') ?? '';
@@ -593,6 +597,31 @@ describe('青蛙呱呱管理后台', () => {
     await user.type(screen.getByLabelText('操作原因'), '工单 ADMIN-1');
     await user.click(screen.getByRole('button', { name: '创建管理员' }));
     await waitFor(() => expect(createdBody).toEqual({ username: 'readonly', email: 'readonly@example.com', displayName: '只读值班', roleId: 'support', password: 'Password123!', reason: '工单 ADMIN-1', confirmed: true }));
+  });
+
+  it('批量导入 CSV 只提交预检有效行并展示逐行结果', async () => {
+    window.history.replaceState({}, '', '/users/new'); render(<App />);
+    await userEvent.click(await screen.findByRole('tab', { name: '批量导入' }));
+    const csv = '\uFEFF手机号,昵称,性别,初始密码\n13800138001,批量用户一,女,StrongPass123!\n12800138002,错误号码,男,StrongPass123!\n13800001001,已有用户,女,StrongPass123!\n13900138003,批量用户二,未设置,AnotherPass123!';
+    await userEvent.upload(screen.getByLabelText('选择批量用户文件'), new File([csv], 'users.csv', { type: 'text/csv' }));
+    expect(await screen.findByText('可导入 2 行')).toBeInTheDocument();
+    expect(screen.getByText('预检失败 2 行')).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText('操作理由'), '运营工单 BATCH-UI');
+    await userEvent.click(screen.getByRole('button', { name: '确认批量新增' }));
+    const dialog = await screen.findByRole('dialog', { name: '确认批量新增用户' });
+    await userEvent.click(within(dialog).getByRole('button', { name: '确认创建用户' }));
+    expect(await screen.findByText('批量新增完成：成功 2 个，失败 2 个')).toBeInTheDocument();
+    expect(screen.getByText('创建成功 2 行')).toBeInTheDocument();
+    expect(screen.getByText('最终失败 2 行')).toBeInTheDocument();
+    const write = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith('/users/batch') && init?.method === 'POST');
+    const body = JSON.parse(String(write?.[1]?.body));
+    expect(body.reason).toBe('运营工单 BATCH-UI');
+    expect(body.confirmed).toBe(true);
+    expect(body.items).toEqual([
+      expect.objectContaining({ clientRow: 2, phone: '13800138001', name: '批量用户一', password: 'StrongPass123!', gender: 'female' }),
+      expect.objectContaining({ clientRow: 5, phone: '13900138003', name: '批量用户二', password: 'AnotherPass123!', gender: 'unspecified' }),
+    ]);
+    expect(screen.getAllByText('已清除').length).toBe(4);
   });
 
   it('本人修改账号并清空联系邮箱后立即退出旧会话', async () => {

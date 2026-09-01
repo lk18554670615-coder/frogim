@@ -252,6 +252,31 @@ describe('live API adapter', () => {
     expect(bodies).toContainEqual({ reason: '违规内容', confirmed: true });
   });
 
+  it('批量新增用户保留逐行结果并只提交一次确认理由', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => ({
+      ok: true, status: 200, headers: new Headers(), json: async () => ({
+        batchId: 'batch_1', total: 2, succeeded: 1, failed: 1,
+        items: [
+          { clientRow: 2, status: 'created', user: { id: 'u_batch', name: '批量用户', phone: '13800138001', handle: 'gg_batch', gender: 'female' } },
+          { clientRow: 3, status: 'failed', code: 'PHONE_ALREADY_EXISTS', message: '手机号已存在' },
+        ],
+      }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const items = [
+      { clientRow: 2, phone: '13800138001', name: '批量用户', password: 'StrongPass123!', gender: 'female' as const },
+      { clientRow: 3, phone: '13800138002', name: '重复用户', password: 'AnotherPass123!', gender: 'male' as const },
+    ];
+    const result = await getApi('token').createUsersBatch(items, '运营工单 BATCH-1');
+    expect(result).toEqual(expect.objectContaining({ batchId: 'batch_1', total: 2, succeeded: 1, failed: 1 }));
+    expect(result.items).toEqual([
+      expect.objectContaining({ clientRow: 2, status: 'created', user: expect.objectContaining({ id: 'u_batch' }) }),
+      expect.objectContaining({ clientRow: 3, status: 'failed', code: 'PHONE_ALREADY_EXISTS', message: '手机号已存在' }),
+    ]);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/users/batch');
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ items, reason: '运营工单 BATCH-1', confirmed: true });
+  });
+
   it('新历史接口未上线时从真实审计记录读取发布快照', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).includes('/client-versions/android/history')) return { ok: false, status: 404, headers: new Headers(), json: async () => ({ error: { code: 'NOT_FOUND', message: '接口未上线' } }) };

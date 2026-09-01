@@ -14,6 +14,8 @@ import type {
   AdminGroupMessagePage,
   AdminGroupMessageRecord,
   AdminUserBlockRecord,
+  AdminUserBatchInput,
+  AdminUserBatchResult,
   AdminUserDeviceRecord,
   AdminUserDevices,
   AdminUserRelationRecord,
@@ -942,6 +944,16 @@ function liveApi(token: string): AdminApi {
     async getDashboard() { return adaptDashboard(await request('/dashboard', token)); },
     async getUsers(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/users?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptUser, page, pageSize); },
     async createUser(input, reason) { return adaptUser(unwrapItem(await request('/users', token, { method: 'POST', body: JSON.stringify({ ...input, reason, confirmed: true }) }))); },
+    async createUsersBatch(items: AdminUserBatchInput[], reason: string): Promise<AdminUserBatchResult> {
+      const raw = object(await request('/users/batch', token, { method: 'POST', body: JSON.stringify({ items, reason, confirmed: true }) }));
+      return {
+        batchId: string(raw.batchId), total: number(raw.total), succeeded: number(raw.succeeded), failed: number(raw.failed),
+        items: list(raw.items).map((value) => {
+          const item = object(value); const user = item.user ? adaptUser(item.user) : undefined;
+          return { clientRow: number(item.clientRow), status: string(item.status) === 'created' ? 'created' : 'failed', user, code: string(item.code) || undefined, message: string(item.message) || undefined };
+        }),
+      };
+    },
     async getUserOverview(id) { return adaptUserOverview(await request(`/users/${encodeURIComponent(id)}`, token)); },
     async getUserFriends(id) { return unwrapItems(await request(`/users/${encodeURIComponent(id)}/friends`, token)).items.map(adaptAdminUserRelation); },
     async getUserBlockedUsers(id) { return unwrapItems(await request(`/users/${encodeURIComponent(id)}/blocks`, token)).items.map(adaptAdminUserBlock); },

@@ -401,6 +401,7 @@ func (x *API) routes() {
 	x.mux.Handle("GET /v2/admin/dashboard", x.requireAdmin(http.HandlerFunc(x.adminStats)))
 	x.mux.Handle("GET /v2/admin/users", x.requireAdmin(http.HandlerFunc(x.adminUsers)))
 	x.mux.Handle("POST /v2/admin/users", x.requireAdmin(http.HandlerFunc(x.createAdminUser)))
+	x.mux.Handle("POST /v2/admin/users/batch", x.requireAdmin(http.HandlerFunc(x.createAdminUsersBatch)))
 	x.mux.Handle("GET /v2/admin/users/{id}", x.requireAdmin(http.HandlerFunc(x.adminUserOverview)))
 	x.mux.Handle("GET /v2/admin/users/{id}/friends", x.requireAdmin(http.HandlerFunc(x.adminUserFriends)))
 	x.mux.Handle("GET /v2/admin/users/{id}/blocks", x.requireAdmin(http.HandlerFunc(x.adminUserBlocks)))

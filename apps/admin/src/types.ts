@@ -93,6 +93,30 @@ export interface UserRecord {
   latestDevice?: ClientDeviceSummary;
 }
 
+export interface AdminUserBatchInput {
+  clientRow: number;
+  phone: string;
+  name: string;
+  password: string;
+  gender: UserRecord['gender'];
+}
+
+export interface AdminUserBatchItemResult {
+  clientRow: number;
+  status: 'created' | 'failed';
+  user?: UserRecord;
+  code?: string;
+  message?: string;
+}
+
+export interface AdminUserBatchResult {
+  batchId: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+  items: AdminUserBatchItemResult[];
+}
+
 export interface ClientDeviceSummary {
   installationId: string;
   platform: ClientPlatform;
@@ -826,6 +850,7 @@ export interface AdminApi {
   getDashboard(): Promise<DashboardData>;
   getUsers(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<UserRecord>>;
   createUser(input: { phone: string; name: string; password: string; gender: UserRecord['gender'] }, reason: string): Promise<UserRecord>;
+  createUsersBatch(items: AdminUserBatchInput[], reason: string): Promise<AdminUserBatchResult>;
   getUserOverview(id: string): Promise<UserOverview>;
   getUserFriends(id: string): Promise<AdminUserRelationRecord[]>;
   getUserBlockedUsers(id: string): Promise<AdminUserBlockRecord[]>;

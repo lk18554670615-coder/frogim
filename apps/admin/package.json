@@ -18,7 +18,9 @@
   },
   "dependencies": {
     "@fontsource/outfit": "5.3.0",
+    "exceljs": "4.4.0",
     "lucide-react": "0.468.0",
+    "papaparse": "5.7.0",
     "react": "18.2.0",
     "react-dom": "18.2.0"
   },
@@ -26,6 +28,7 @@
     "@testing-library/jest-dom": "^7.0.0",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
+    "@types/papaparse": "5.3.16",
     "@types/react": "18.2.79",
     "@types/react-dom": "18.2.25",
     "@vitejs/plugin-react": "^6.0.5",
@@ -33,5 +36,10 @@
     "typescript": "5.9.3",
     "vite": "^8.2.0",
     "vitest": "^4.1.10"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "11.1.1"
+    }
   }
 }

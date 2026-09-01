@@ -1,20 +1,21 @@
 import { Component, ErrorInfo, FormEvent, ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Activity, AlertTriangle, Bell, BookOpenCheck, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Eye, EyeOff,
-  CircleUserRound, Database, FileClock, Flag, Group, HardDrive, HeartPulse, LayoutDashboard, LockKeyhole,
+  Activity, AlertTriangle, Bell, BookOpenCheck, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Eye, EyeOff,
+  CircleUserRound, Database, FileClock, FileSpreadsheet, Flag, Group, HardDrive, HeartPulse, LayoutDashboard, LockKeyhole,
   LogIn, LogOut, Menu, MessageSquareText, MoreHorizontal, PhoneCall, Plus, RefreshCcw, Save, Search,
-  Server, Settings, ShieldAlert, ShieldCheck, Trash2, Users, Wifi, X,
+  Server, Settings, ShieldAlert, ShieldCheck, Trash2, Upload, Users, Wifi, X,
 } from 'lucide-react';
 import { ApiError, getApi, loginAdmin } from './api';
 import type {
-  AdminApi, AdministratorRecord, AdministratorRoleRecord, AdminClientDeviceRecord, AdminDirectMessageRecord, AdminGroupBlacklistRecord, AdminGroupMessageRecord, AdminSession, AdminSettings, AdminUserBlockRecord, AdminUserDeviceRecord, AdminUserRelationRecord, AnnouncementInput, AnnouncementRecord, AuditLog, CallRecord, ClientPlatform, ClientVersionPolicy, ClientVersionReleaseRecord, DashboardData, GroupMemberRecord, GroupOverview, GroupRecord,
+  AdminApi, AdministratorRecord, AdministratorRoleRecord, AdminClientDeviceRecord, AdminDirectMessageRecord, AdminGroupBlacklistRecord, AdminGroupMessageRecord, AdminSession, AdminSettings, AdminUserBatchItemResult, AdminUserBatchResult, AdminUserBlockRecord, AdminUserDeviceRecord, AdminUserRelationRecord, AnnouncementInput, AnnouncementRecord, AuditLog, CallRecord, ClientPlatform, ClientVersionPolicy, ClientVersionReleaseRecord, DashboardData, GroupMemberRecord, GroupOverview, GroupRecord,
   FeedbackRecord, FriendshipRecord, HealthService, MediaRecord, MessageRecord, MomentModerationRecord, OnlineRecord, OperationsStatus, PageResult, ReportRecord, ReportResolutionAction, SensitiveWord, StatusTone, StickerPackModerationRecord, UserRecord,
   StickerCategoryInput, StickerCategoryOperationsRecord, StickerItemInput, StickerPackInput,
   LiveKitMetrics, LiveKitParticipant, LiveKitRoom, WukongChannel, WukongConnection, WukongDevice, WukongNode, WukongPlugin, WukongPluginEvent, WukongPluginLogEntry, WukongRobotMenu, WukongRobotProfile, WukongStoredMessage, WukongSystemUser,
   BusinessChannelInput, BusinessChannelMemberRecord, BusinessChannelRecord, BusinessChannelAccessRecord,
   SupportAgentRecord, SupportSessionRecord, SupportSkillRecord, UserOverview,
 } from './types';
+import { downloadUserImportResult, downloadUserImportTemplate, markExistingUserPhones, parseUserImportFile, type UserImportPreviewRow } from './user_batch_import';
 
 type Permission = 'users.write' | 'groups.write' | 'reports.write' | 'rules.write' | 'announcements.write' | 'settings.write' | 'versions.write' | 'content.write' | 'channels.write' | 'operations.write' | 'support.write';
 type Notice = { id: number; tone: 'success' | 'danger'; message: string };
@@ -782,7 +783,7 @@ function MediaPicker({ value, onChange, label }: { value: string; onChange: (val
   </div>;
 }
 
-function CreateUserPage() {
+function SingleUserCreateForm() {
   const { api, notify, can } = useApi();
   const [phone, setPhone] = useState(''); const [name, setName] = useState(''); const [gender, setGender] = useState<UserRecord['gender']>('unspecified');
   const [password, setPassword] = useState(''); const [reason, setReason] = useState(''); const [saving, setSaving] = useState(false); const [error, setError] = useState('');
@@ -794,13 +795,73 @@ function CreateUserPage() {
       notify(`用户 ${created.nickname} 已创建`); window.history.pushState({}, '', `/users?q=${encodeURIComponent(phone)}`); window.dispatchEvent(new PopStateEvent('popstate'));
     } catch (cause) { setError(errorMessage(cause)); } finally { setSaving(false); }
   };
-  return <><PageHeader title="新增用户" description="由后台直接创建中国大陆手机号账号，不受公开注册开关和短信验证码影响。" /><form className="settings-section create-user-card" onSubmit={(event) => void submit(event)}>
+  return <form className="settings-section create-user-card" onSubmit={(event) => void submit(event)}>
     <div className="settings-title"><CircleUserRound size={20} /><div><h2>账号资料</h2><p>手机号国家码固定为 +86；初始密码遵循当前服务端动态密码策略。</p></div></div>
     <div className="form-grid"><label className="field-label">手机号<div className="phone-input"><span>+86</span><input aria-label="中国大陆手机号" inputMode="numeric" autoComplete="tel-national" value={phone} maxLength={11} onChange={(event) => setPhone(event.target.value.replace(/\D/g, '').slice(0, 11))} placeholder="13800138000" required /></div>{phone && !validPhone && <small className="field-error">请输入有效的 11 位中国大陆手机号</small>}</label><label className="field-label">昵称<input value={name} maxLength={40} onChange={(event) => setName(event.target.value)} placeholder="填写用户昵称" required /></label><label className="field-label">性别<select value={gender} onChange={(event) => setGender(event.target.value as UserRecord['gender'])}><option value="unspecified">未设置</option><option value="male">男</option><option value="female">女</option></select></label><label className="field-label">初始密码<input type="password" autoComplete="new-password" minLength={8} maxLength={72} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 位，以服务端策略为准" required /></label></div>
     <label className="field-label">操作理由<textarea value={reason} maxLength={500} onChange={(event) => setReason(event.target.value)} placeholder="填写工单编号、业务需求或创建依据" required /></label>
     {error && <div className="inline-notice danger" role="alert"><AlertTriangle size={15} />{error}</div>}{!can('users.write') && <div className="inline-notice warning" role="status"><AlertTriangle size={15} />当前角色没有创建用户权限</div>}
     <button className="button primary" type="submit" disabled={!valid || saving}><Plus size={17} />{saving ? '正在创建…' : '创建用户'}</button>
-  </form></>;
+  </form>;
+}
+
+function BatchUserCreatePanel() {
+  const { api, mode, notify, can } = useApi();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const settings = useResource(() => api.getSettings(), [api, mode]);
+  const [fileName, setFileName] = useState(''); const [rows, setRows] = useState<UserImportPreviewRow[]>([]);
+  const [parsing, setParsing] = useState(false); const [error, setError] = useState(''); const [reason, setReason] = useState('');
+  const [confirming, setConfirming] = useState(false); const [result, setResult] = useState<AdminUserBatchResult>();
+  const validRows = rows.filter((row) => row.valid); const localFailures = rows.length - validRows.length;
+  const resultByRow = useMemo(() => new Map(result?.items.map((item) => [item.clientRow, item]) ?? []), [result]);
+  useUnsavedChanges(rows.some((row) => Boolean(row.password)) && !result, '批量导入文件中仍有尚未提交的初始密码');
+  const chooseFile = async (file?: File) => {
+    if (!file) return;
+    setParsing(true); setError(''); setRows([]); setResult(undefined); setFileName(file.name);
+    try {
+      if (settings.error) throw new Error('当前密码策略加载失败，请刷新后重试');
+      const parsed = await parseUserImportFile(file, settings.data?.passwordMinLength ?? 8);
+      setRows(await markExistingUserPhones(parsed, async (phone) => (await api.getUsers(phone, '', 1, 100, '')).items));
+    }
+    catch (cause) { setFileName(''); setError(errorMessage(cause)); }
+    finally { setParsing(false); if (inputRef.current) inputRef.current.value = ''; }
+  };
+  const submit = async () => {
+    if (!validRows.length || !reason.trim()) throw new Error('请先修正文件并填写操作理由');
+    const response = await api.createUsersBatch(validRows.map(({ clientRow, phone, name, password, gender }) => ({ clientRow, phone, name, password, gender })), reason.trim());
+    const serverResults = new Map(response.items.map((item) => [item.clientRow, item]));
+    const combined = rows.map<AdminUserBatchItemResult>((row) => serverResults.get(row.clientRow) ?? {
+      clientRow: row.clientRow, status: 'failed', code: row.validationCode, message: row.validationMessage,
+    });
+    const succeeded = combined.filter((item) => item.status === 'created').length;
+    setResult({ ...response, total: rows.length, succeeded, failed: rows.length - succeeded, items: combined });
+    setRows((current) => current.map((row) => ({ ...row, password: '' })));
+    notify(`批量新增完成：成功 ${succeeded} 个，失败 ${rows.length - succeeded} 个`, succeeded ? 'success' : 'danger');
+  };
+  const reset = () => { setFileName(''); setRows([]); setResult(undefined); setReason(''); setError(''); };
+  return <>
+    <section className="settings-section batch-user-import">
+      <div className="settings-title"><FileSpreadsheet size={20} /><div><h2>批量导入用户</h2><p>支持 XLSX 和 UTF-8 CSV，每次最多 100 行；已有手机号不会被覆盖。</p></div></div>
+      <div className="batch-template-actions"><span>先使用标准模板整理用户资料：</span><button type="button" className="button secondary compact" onClick={() => void downloadUserImportTemplate('xlsx')}><Download size={15} />下载 XLSX 模板</button><button type="button" className="button secondary compact" onClick={() => void downloadUserImportTemplate('csv')}><Download size={15} />下载 CSV 模板</button></div>
+      <div className={`batch-dropzone ${parsing ? 'is-loading' : ''}`} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') inputRef.current?.click(); }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void chooseFile(event.dataTransfer.files[0]); }} onClick={() => inputRef.current?.click()}>
+        <Upload size={24} /><strong>{parsing ? '正在解析并核验文件…' : fileName || '选择或拖入导入文件'}</strong><span>仅支持 .xlsx / .csv，文件不超过 2 MB</span><input ref={inputRef} type="file" accept=".xlsx,.csv" aria-label="选择批量用户文件" disabled={parsing || settings.loading} onChange={(event) => void chooseFile(event.target.files?.[0])} />
+      </div>
+      {settings.loading && <div className="inline-notice" role="status"><RefreshCcw className="spin" size={15} />正在加载当前密码策略…</div>}
+      {settings.error && <div className="inline-notice danger" role="alert"><AlertTriangle size={15} />当前密码策略加载失败，暂不能导入。<button type="button" className="button secondary compact" onClick={() => void settings.reload()}>重试</button></div>}
+      {error && <div className="inline-notice danger" role="alert"><AlertTriangle size={15} />{error}</div>}
+      {rows.length > 0 && <>
+        <div className="batch-import-summary"><strong>共 {rows.length} 行</strong><span className="success-text">可导入 {validRows.length} 行</span><span className={localFailures ? 'danger-text' : ''}>预检失败 {localFailures} 行</span>{result && <><span className="success-text">创建成功 {result.succeeded} 行</span><span className={result.failed ? 'danger-text' : ''}>最终失败 {result.failed} 行</span></>}</div>
+        <div className="table-wrap batch-import-table"><table><thead><tr><th>原始行</th><th>手机号</th><th>昵称</th><th>性别</th><th>初始密码</th><th>状态</th></tr></thead><tbody>{rows.map((row) => { const item = resultByRow.get(row.clientRow); const created = item?.status === 'created'; const failedMessage = item?.message ?? row.validationMessage; return <tr key={row.clientRow}><td>{row.clientRow}</td><td className="mono">{row.phone || '—'}</td><td>{row.name || '—'}</td><td>{row.gender === 'male' ? '男' : row.gender === 'female' ? '女' : '未设置'}</td><td>{row.password ? '已填写' : '已清除'}</td><td>{created ? <Badge value="active" label={`创建成功 · ${item.user?.id ?? ''}`} /> : failedMessage ? <><Badge value="banned" label={result ? '创建失败' : '预检失败'} /><small>{failedMessage}</small></> : <Badge value="neutral" label="等待提交" />}</td></tr>; })}</tbody></table></div>
+        <div className="batch-import-footer"><label className="field-label">操作理由<textarea value={reason} maxLength={500} disabled={Boolean(result)} onChange={(event) => setReason(event.target.value)} placeholder="填写工单编号、业务需求或批量开户依据" required /></label><div className="row-actions"><button type="button" className="button secondary" onClick={reset}>{result ? '导入另一批' : '清除文件'}</button>{result && <button type="button" className="button secondary" onClick={() => void downloadUserImportResult(rows, result.items)}><Download size={16} />下载结果</button>}<button type="button" className="button primary" disabled={Boolean(result) || !validRows.length || !reason.trim() || !can('users.write')} onClick={() => setConfirming(true)}><Users size={16} />确认批量新增</button></div></div>
+      </>}
+      {!can('users.write') && <div className="inline-notice warning" role="status"><AlertTriangle size={15} />当前角色没有创建用户权限</div>}
+    </section>
+    <ConfirmDialog open={confirming} title="确认批量新增用户" detail={`文件共 ${rows.length} 行，本次将提交 ${validRows.length} 行；预检失败的 ${localFailures} 行不会提交。已有手机号会保留原资料并返回失败。`} confirmLabel="确认创建用户" confirmDisabled={!validRows.length || !reason.trim()} onClose={() => setConfirming(false)} onConfirm={submit}><div className="inline-notice warning"><AlertTriangle size={15} />创建成功的账号不会因其他行失败而回滚，操作会逐项写入审计日志。</div><label className="field-label">操作理由<textarea value={reason} maxLength={500} onChange={(event) => setReason(event.target.value)} required /></label></ConfirmDialog>
+  </>;
+}
+
+function CreateUserPage() {
+  const [mode, setMode] = useState<'single' | 'batch'>('single');
+  return <><PageHeader title="新增用户" description="由后台直接创建中国大陆手机号账号，不受公开注册开关和短信验证码影响。" /><div className="tabs create-user-tabs" role="tablist"><button type="button" role="tab" aria-selected={mode === 'single'} className={mode === 'single' ? 'active' : ''} onClick={() => setMode('single')}>单个新增</button><button type="button" role="tab" aria-selected={mode === 'batch'} className={mode === 'batch' ? 'active' : ''} onClick={() => setMode('batch')}>批量导入</button></div>{mode === 'single' ? <SingleUserCreateForm /> : <BatchUserCreatePanel />}</>;
 }
 
 function UserDeviceSummary({ user }: { user: UserRecord }) {
