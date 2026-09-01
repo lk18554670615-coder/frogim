@@ -2078,7 +2078,7 @@ func (a *App) CreateGroup(owner, name string, members []string) (*model.Conversa
 	now := time.Now()
 	c := &model.Conversation{ID: id("conv"), Type: "group", Title: name, CreatedAt: now, UpdatedAt: now}
 	a.state.Conversations[c.ID] = c
-	a.state.Members[c.ID] = map[string]*model.ConversationMember{owner: {ConversationID: c.ID, UserID: owner, Role: "owner", JoinedAt: now}}
+	a.state.Members[c.ID] = map[string]*model.ConversationMember{owner: {ConversationID: c.ID, UserID: owner, Role: "owner", Saved: true, JoinedAt: now}}
 	for _, uid := range members {
 		if uid != owner && a.state.Users[uid] != nil {
 			a.state.Members[c.ID][uid] = &model.ConversationMember{ConversationID: c.ID, UserID: uid, Role: "member", JoinedAt: now}

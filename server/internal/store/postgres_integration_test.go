@@ -2796,6 +2796,16 @@ func TestPostgresGroupManagementPermissionsInvitesQRAndAudit(t *testing.T) {
 	if err != nil || c.Title != "Initial" {
 		t.Fatalf("create=%+v err=%v", c, err)
 	}
+	var ownerSaved, invitedMemberSaved bool
+	if err = p.pool.QueryRow(ctx, `SELECT saved FROM im_members WHERE conversation_id=$1 AND user_id=$2`, cid, users[0]).Scan(&ownerSaved); err != nil {
+		t.Fatal(err)
+	}
+	if err = p.pool.QueryRow(ctx, `SELECT saved FROM im_members WHERE conversation_id=$1 AND user_id=$2`, cid, users[1]).Scan(&invitedMemberSaved); err != nil {
+		t.Fatal(err)
+	}
+	if !ownerSaved || invitedMemberSaved {
+		t.Fatalf("new group saved state owner=%v invitedMember=%v", ownerSaved, invitedMemberSaved)
+	}
 	g, err := p.GetGroupProfile(ctx, users[1], cid)
 	if err != nil || g.OwnerID != users[0] {
 		t.Fatalf("profile=%+v err=%v", g, err)

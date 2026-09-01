@@ -415,6 +415,34 @@ func TestGroupMentionMetadataIsPassedToWukongTransport(t *testing.T) {
 	}
 }
 
+func TestGroupCreatorIsSavedByDefault(t *testing.T) {
+	a, err := New(context.Background(), teststore.Memory{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.SeedDemo(); err != nil {
+		t.Fatal(err)
+	}
+	group, err := a.CreateGroup("usr_alice", "saved group", []string{"usr_bob"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ownerConversations := a.Conversations("usr_alice")
+	memberConversations := a.Conversations("usr_bob")
+	if len(ownerConversations) != 1 || len(memberConversations) != 1 {
+		t.Fatalf("owner conversations=%d member conversations=%d", len(ownerConversations), len(memberConversations))
+	}
+	ownerMembership := ownerConversations[0]["membership"].(*model.ConversationMember)
+	memberMembership := memberConversations[0]["membership"].(*model.ConversationMember)
+	if ownerMembership.ConversationID != group.ID || !ownerMembership.Saved {
+		t.Fatalf("creator membership=%+v", ownerMembership)
+	}
+	if memberMembership.ConversationID != group.ID || memberMembership.Saved {
+		t.Fatalf("invited member membership=%+v", memberMembership)
+	}
+}
+
 func TestAdminModerateGroupMemberAppliesRoleMuteAndRemovalWithoutChangingOwner(t *testing.T) {
 	a, err := New(context.Background(), teststore.Memory{})
 	if err != nil {

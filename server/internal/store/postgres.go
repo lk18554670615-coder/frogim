@@ -3093,7 +3093,7 @@ func (p *Postgres) CreateGroupRecord(ctx context.Context, cid, owner, name strin
 		return nil, err
 	}
 	all := append([]string{owner}, members...)
-	if _, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,joined_at) SELECT $1,id,CASE WHEN id=$2 THEN 'owner' ELSE 'member' END,$3 FROM im_users WHERE id=ANY($4::text[]) ON CONFLICT DO NOTHING`, cid, owner, at, all); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,saved,joined_at) SELECT $1,id,CASE WHEN id=$2 THEN 'owner' ELSE 'member' END,id=$2,$3 FROM im_users WHERE id=ANY($4::text[]) ON CONFLICT DO NOTHING`, cid, owner, at, all); err != nil {
 		return nil, err
 	}
 	raw, _ := json.Marshal(map[string]any{"conversation": c})

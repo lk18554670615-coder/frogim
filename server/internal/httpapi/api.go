@@ -2217,7 +2217,19 @@ func (x *API) createGroup(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
-	write(w, 201, v)
+	write(w, 201, struct {
+		*model.Conversation
+		Membership *model.ConversationMember `json:"membership"`
+	}{
+		Conversation: v,
+		Membership: &model.ConversationMember{
+			ConversationID: v.ID,
+			UserID:         uid(r),
+			Role:           "owner",
+			Saved:          true,
+			JoinedAt:       v.CreatedAt,
+		},
+	})
 }
 func (x *API) groupProfile(w http.ResponseWriter, r *http.Request) {
 	g, err := x.app.GroupProfile(uid(r), r.PathValue("id"))

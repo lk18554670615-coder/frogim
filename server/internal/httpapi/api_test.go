@@ -2865,10 +2865,13 @@ func TestGroupManagementHTTPContractPostgres(t *testing.T) {
 	ownerToken, memberToken, inviteeToken := loginToken(t, ts.URL, phones[0]), loginToken(t, ts.URL, phones[1]), loginToken(t, ts.URL, phones[2])
 
 	res := authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/channels/groups", ownerToken, fmt.Sprintf(`{"name":"API Group","memberIds":[%q]}`, users[1].ID))
-	var group model.Conversation
+	var group struct {
+		model.Conversation
+		Membership model.ConversationMember `json:"membership"`
+	}
 	_ = json.NewDecoder(res.Body).Decode(&group)
 	res.Body.Close()
-	if res.StatusCode != http.StatusCreated || group.ID == "" {
+	if res.StatusCode != http.StatusCreated || group.ID == "" || group.Membership.UserID != users[0].ID || group.Membership.Role != "owner" || !group.Membership.Saved {
 		t.Fatalf("create group status=%d group=%+v", res.StatusCode, group)
 	}
 	avatarID := "api_group_avatar_" + suffix
@@ -3619,10 +3622,13 @@ func TestMessageCollaborationRequiresCanonicalStore(t *testing.T) {
 	defer ts.Close()
 	alice, bob := loginToken(t, ts.URL, "13800000001"), loginToken(t, ts.URL, "13800000002")
 	res := authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/channels/groups", alice, `{"name":"Collaboration","memberIds":["usr_bob"]}`)
-	var group model.Conversation
+	var group struct {
+		model.Conversation
+		Membership model.ConversationMember `json:"membership"`
+	}
 	_ = json.NewDecoder(res.Body).Decode(&group)
 	res.Body.Close()
-	if res.StatusCode != http.StatusCreated || group.ID == "" {
+	if res.StatusCode != http.StatusCreated || group.ID == "" || group.Membership.UserID != "usr_alice" || group.Membership.Role != "owner" || !group.Membership.Saved {
 		t.Fatalf("create group status=%d group=%+v", res.StatusCode, group)
 	}
 	res = authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/channels/conversations/"+group.ID+"/typing", bob, `{"typing":true}`)
