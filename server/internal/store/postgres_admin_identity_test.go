@@ -14,14 +14,16 @@ import (
 )
 
 func TestAdminIdentitySchemaIsVersioned(t *testing.T) {
-	if schemaVersion != 56 {
-		t.Fatalf("device-type session migration must be schema version 56, got %d", schemaVersion)
+	if schemaVersion != 57 {
+		t.Fatalf("administrator username migration must be schema version 57, got %d", schemaVersion)
 	}
 	for _, statement := range []string{
 		"CREATE TABLE IF NOT EXISTS im_admin_accounts",
 		"CREATE TABLE IF NOT EXISTS im_admin_roles",
 		"CREATE TABLE IF NOT EXISTS im_admin_role_permissions",
+		"im_admin_accounts_username_unique_idx",
 		"im_admin_accounts_email_unique_idx",
+		"im_admin_accounts_username_check",
 		"('platform_admin','平台管理员'",
 		"('support','只读支持'",
 		"ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS banned",
@@ -96,26 +98,32 @@ func TestPostgresAdminBootstrapRolesAndProtections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = repository.BootstrapAdmin(ctx, AdminAccountCreate{ID: "bad_email", Email: "not-an-email", PasswordHash: string(hash), RoleID: "platform_admin", At: time.Now().UTC()}); err == nil {
+	if _, err = repository.BootstrapAdmin(ctx, AdminAccountCreate{ID: "bad_username", Username: "Bad Username", PasswordHash: string(hash), RoleID: "platform_admin", At: time.Now().UTC()}); err == nil {
+		t.Fatal("bootstrap accepted an invalid administrator username")
+	}
+	if _, err = repository.BootstrapAdmin(ctx, AdminAccountCreate{ID: "bad_email", Username: "bad_email", Email: "not-an-email", PasswordHash: string(hash), RoleID: "platform_admin", At: time.Now().UTC()}); err == nil {
 		t.Fatal("bootstrap accepted an invalid administrator email")
 	}
 	at := time.Now().UTC().Truncate(time.Second)
-	created, err := repository.BootstrapAdmin(ctx, AdminAccountCreate{ID: "admin_root", Email: "Root@Example.com", DisplayName: "Root Admin", PasswordHash: string(hash), RoleID: "platform_admin", At: at})
+	created, err := repository.BootstrapAdmin(ctx, AdminAccountCreate{ID: "admin_root", Username: "Root", Email: "Root@Example.com", DisplayName: "Root Admin", PasswordHash: string(hash), RoleID: "platform_admin", At: at})
 	if err != nil || !created {
 		t.Fatalf("bootstrap created=%v err=%v", created, err)
 	}
-	created, err = repository.BootstrapAdmin(ctx, AdminAccountCreate{ID: "admin_replacement", Email: "replacement@example.com", PasswordHash: string(hash), RoleID: "support", At: at})
+	created, err = repository.BootstrapAdmin(ctx, AdminAccountCreate{ID: "admin_replacement", Username: "replacement", Email: "replacement@example.com", PasswordHash: string(hash), RoleID: "support", At: at})
 	if err != nil || created {
 		t.Fatalf("second bootstrap created=%v err=%v", created, err)
 	}
-	root, err := repository.AdminAccountByEmail(ctx, "ROOT@example.com")
-	if err != nil || root.ID != "admin_root" || root.Email != "root@example.com" || root.AuthVersion != 1 {
+	root, err := repository.AdminAccountByUsername(ctx, "ROOT")
+	if err != nil || root.ID != "admin_root" || root.Username != "root" || root.Email != "root@example.com" || root.AuthVersion != 1 {
 		t.Fatalf("root=%+v err=%v", root, err)
 	}
-	if _, err = repository.CreateAdminAccount(ctx, AdminAccountCreate{ID: "admin_duplicate", Email: "ROOT@EXAMPLE.COM", DisplayName: "Duplicate", PasswordHash: string(hash), RoleID: "support", CreatedBy: root.ID, At: at}); !errors.Is(err, ErrConflict) {
-		t.Fatalf("case-insensitive duplicate err=%v", err)
+	if _, err = repository.CreateAdminAccount(ctx, AdminAccountCreate{ID: "admin_duplicate", Username: "ROOT", Email: "other@example.com", DisplayName: "Duplicate", PasswordHash: string(hash), RoleID: "support", CreatedBy: root.ID, At: at}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("case-insensitive duplicate username err=%v", err)
 	}
-	if _, err = repository.CreateAdminAccount(ctx, AdminAccountCreate{ID: "admin_missing_role", Email: "missing-role@example.com", DisplayName: "Missing Role", PasswordHash: string(hash), RoleID: "missing_role", CreatedBy: root.ID, At: at}); !errors.Is(err, ErrNotFound) {
+	if _, err = repository.CreateAdminAccount(ctx, AdminAccountCreate{ID: "admin_duplicate_email", Username: "other", Email: "ROOT@EXAMPLE.COM", DisplayName: "Duplicate Email", PasswordHash: string(hash), RoleID: "support", CreatedBy: root.ID, At: at}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("case-insensitive duplicate email err=%v", err)
+	}
+	if _, err = repository.CreateAdminAccount(ctx, AdminAccountCreate{ID: "admin_missing_role", Username: "missing_role", Email: "missing-role@example.com", DisplayName: "Missing Role", PasswordHash: string(hash), RoleID: "missing_role", CreatedBy: root.ID, At: at}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing role err=%v", err)
 	}
 
@@ -126,7 +134,7 @@ func TestPostgresAdminBootstrapRolesAndProtections(t *testing.T) {
 	if _, err = repository.UpdateAdminRole(ctx, AdminRoleUpdate{ID: "support", Name: "Changed", ActorID: root.ID, At: at}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("built-in role update err=%v", err)
 	}
-	customAdmin, err := repository.CreateAdminAccount(ctx, AdminAccountCreate{ID: "admin_custom", Email: "custom@example.com", DisplayName: "Custom Admin", PasswordHash: string(hash), RoleID: custom.ID, CreatedBy: root.ID, At: at})
+	customAdmin, err := repository.CreateAdminAccount(ctx, AdminAccountCreate{ID: "admin_custom", Username: "custom", Email: "custom@example.com", DisplayName: "Custom Admin", PasswordHash: string(hash), RoleID: custom.ID, CreatedBy: root.ID, At: at})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,10 +149,15 @@ func TestPostgresAdminBootstrapRolesAndProtections(t *testing.T) {
 	if err != nil || len(customAdmin.Permissions) != 2 {
 		t.Fatalf("realtime custom permissions=%+v err=%v", customAdmin, err)
 	}
-	updatedEmail, updatedName := "custom-updated@example.com", "Updated Custom Admin"
-	customAdmin, err = repository.UpdateAdminAccount(ctx, AdminAccountUpdate{ID: customAdmin.ID, ActorID: root.ID, Email: &updatedEmail, DisplayName: &updatedName, At: at.Add(time.Second)})
-	if err != nil || customAdmin.Email != updatedEmail || customAdmin.DisplayName != updatedName || customAdmin.AuthVersion != 2 {
+	updatedUsername, updatedEmail, updatedName := "custom_updated", "custom-updated@example.com", "Updated Custom Admin"
+	customAdmin, err = repository.UpdateAdminAccount(ctx, AdminAccountUpdate{ID: customAdmin.ID, ActorID: root.ID, Username: &updatedUsername, Email: &updatedEmail, DisplayName: &updatedName, At: at.Add(time.Second)})
+	if err != nil || customAdmin.Username != updatedUsername || customAdmin.Email != updatedEmail || customAdmin.DisplayName != updatedName || customAdmin.AuthVersion != 2 {
 		t.Fatalf("updated administrator=%+v err=%v", customAdmin, err)
+	}
+	emptyEmail := ""
+	customAdmin, err = repository.UpdateAdminAccount(ctx, AdminAccountUpdate{ID: customAdmin.ID, ActorID: root.ID, Email: &emptyEmail, At: at.Add(2 * time.Second)})
+	if err != nil || customAdmin.Email != "" || customAdmin.AuthVersion != 3 {
+		t.Fatalf("cleared administrator email=%+v err=%v", customAdmin, err)
 	}
 	statusDisabled := "disabled"
 	if _, err = repository.UpdateAdminAccount(ctx, AdminAccountUpdate{ID: root.ID, ActorID: root.ID, Status: &statusDisabled, At: at}); !errors.Is(err, ErrForbidden) {
@@ -154,7 +167,7 @@ func TestPostgresAdminBootstrapRolesAndProtections(t *testing.T) {
 	if _, err = repository.UpdateAdminAccount(ctx, AdminAccountUpdate{ID: root.ID, ActorID: "another_admin", RoleID: &customRoleID, At: at}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("last platform administrator downgrade err=%v", err)
 	}
-	secondPlatform, err := repository.CreateAdminAccount(ctx, AdminAccountCreate{ID: "admin_platform_2", Email: "platform2@example.com", DisplayName: "Second Platform", PasswordHash: string(hash), RoleID: "platform_admin", CreatedBy: root.ID, At: at})
+	secondPlatform, err := repository.CreateAdminAccount(ctx, AdminAccountCreate{ID: "admin_platform_2", Username: "platform_2", Email: "platform2@example.com", DisplayName: "Second Platform", PasswordHash: string(hash), RoleID: "platform_admin", CreatedBy: root.ID, At: at})
 	if err != nil {
 		t.Fatal(err)
 	}

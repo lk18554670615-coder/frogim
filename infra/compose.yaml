@@ -49,7 +49,8 @@ services:
       IM_DATABASE_URL: postgres://${POSTGRES_USER:-nexachat}:${POSTGRES_PASSWORD:-nexachat}@postgres:5432/${POSTGRES_DB:-nexachat}?sslmode=disable
       IM_REDIS_URL: redis://:${REDIS_PASSWORD:-local-redis-password}@redis:6379/0
       IM_JWT_SECRET: ${IM_JWT_SECRET:-local-development-jwt-secret-change-me}
-      IM_ADMIN_EMAIL: ${IM_ADMIN_EMAIL:-admin@nexachat.local}
+      IM_ADMIN_USERNAME: ${IM_ADMIN_USERNAME:-admin}
+      IM_ADMIN_CONTACT_EMAIL: ${IM_ADMIN_CONTACT_EMAIL:-}
       IM_ADMIN_PASSWORD_HASH: ${IM_ADMIN_PASSWORD_HASH:-$$2a$$12$$rAyv6obDffJSqZ1aaqOCR.ER2UXp8ZPsEl2bJCTovnsJJrFshtxNW}
       IM_DEV_MODE: ${IM_DEV_MODE:-true}
       # 真实数据是默认路径；演示账号只能由开发者显式设置 IM_SEED_DEMO=true 后创建。

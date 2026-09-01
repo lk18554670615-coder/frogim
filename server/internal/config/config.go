@@ -15,53 +15,53 @@ import (
 )
 
 type Config struct {
-	Addr, JWTSecret, DatabaseURL, RedisURL, PushProvider             string
-	Environment                                                      string
-	PushWebhookURL, PushWebhookToken                                 string
-	WebPushPublicKey, WebPushPrivateKey, WebPushSubject              string
-	GetuiAppID, GetuiAppKey, GetuiMasterSecret                       string
-	APNSVoIPKeyID, APNSVoIPTeamID, APNSVoIPBundleID, APNSVoIPKeyFile string
-	APNSVoIPSandbox                                                  bool
-	OTPWebhookURL, OTPWebhookToken                                   string
-	AdminEmail, AdminPasswordHash, AdminID, AdminRole                string
-	S3Endpoint, S3PublicEndpoint, S3AndroidPublicEndpoint            string
-	S3AccessKey, S3SecretKey, S3Bucket                               string
-	S3Region                                                         string
-	DevOTPCode                                                       string
-	AllowedOrigins                                                   []string
-	S3Secure, S3PublicSecure                                         bool
-	DevMode                                                          bool
-	SeedDemo                                                         bool
-	TrustProxy                                                       bool
-	DevAllowContainerBind                                            bool
-	DevIPTestOnly                                                    bool
-	DBMaxConns, DBMinConns                                           int
-	WukongInternalRateLimitPerMinute                                 int
-	PushWorkers, PushBatchSize                                       int
-	MediaMaxBytes                                                    int64
-	AccessTTL, RefreshTTL                                            time.Duration
-	CallInviteTTL                                                    time.Duration
-	LiveKitTokenTTL                                                  time.Duration
-	DBMaxConnLifetime, DBMaxConnIdleTime, DBHealthCheckPeriod        time.Duration
-	DBStatementTimeout                                               time.Duration
-	RuntimeCleanupInterval, OutboxRetention                          time.Duration
-	HTTPLogSuccessSampleRate                                         float64
-	WukongEnabled                                                    bool
-	WukongAPIURL, WukongManagerURL, WukongManagerToken               string
-	WukongTokenSecret, WukongPolicySecret, WukongGRPCAddr            string
-	WukongTCPURL, WukongWSURL                                        string
-	WukongPluginDir, WukongPluginTrustedKeys, WukongPluginAllowlist  string
-	WukongPluginMaxBytes                                             int64
-	LiveKitEnabled                                                   bool
-	LiveKitURL, LiveKitAPIURL, LiveKitAPIKey, LiveKitAPISecret       string
-	PrometheusURL                                                    string
+	Addr, JWTSecret, DatabaseURL, RedisURL, PushProvider                    string
+	Environment                                                             string
+	PushWebhookURL, PushWebhookToken                                        string
+	WebPushPublicKey, WebPushPrivateKey, WebPushSubject                     string
+	GetuiAppID, GetuiAppKey, GetuiMasterSecret                              string
+	APNSVoIPKeyID, APNSVoIPTeamID, APNSVoIPBundleID, APNSVoIPKeyFile        string
+	APNSVoIPSandbox                                                         bool
+	OTPWebhookURL, OTPWebhookToken                                          string
+	AdminUsername, AdminContactEmail, AdminPasswordHash, AdminID, AdminRole string
+	S3Endpoint, S3PublicEndpoint, S3AndroidPublicEndpoint                   string
+	S3AccessKey, S3SecretKey, S3Bucket                                      string
+	S3Region                                                                string
+	DevOTPCode                                                              string
+	AllowedOrigins                                                          []string
+	S3Secure, S3PublicSecure                                                bool
+	DevMode                                                                 bool
+	SeedDemo                                                                bool
+	TrustProxy                                                              bool
+	DevAllowContainerBind                                                   bool
+	DevIPTestOnly                                                           bool
+	DBMaxConns, DBMinConns                                                  int
+	WukongInternalRateLimitPerMinute                                        int
+	PushWorkers, PushBatchSize                                              int
+	MediaMaxBytes                                                           int64
+	AccessTTL, RefreshTTL                                                   time.Duration
+	CallInviteTTL                                                           time.Duration
+	LiveKitTokenTTL                                                         time.Duration
+	DBMaxConnLifetime, DBMaxConnIdleTime, DBHealthCheckPeriod               time.Duration
+	DBStatementTimeout                                                      time.Duration
+	RuntimeCleanupInterval, OutboxRetention                                 time.Duration
+	HTTPLogSuccessSampleRate                                                float64
+	WukongEnabled                                                           bool
+	WukongAPIURL, WukongManagerURL, WukongManagerToken                      string
+	WukongTokenSecret, WukongPolicySecret, WukongGRPCAddr                   string
+	WukongTCPURL, WukongWSURL                                               string
+	WukongPluginDir, WukongPluginTrustedKeys, WukongPluginAllowlist         string
+	WukongPluginMaxBytes                                                    int64
+	LiveKitEnabled                                                          bool
+	LiveKitURL, LiveKitAPIURL, LiveKitAPIKey, LiveKitAPISecret              string
+	PrometheusURL                                                           string
 }
 
 func Load() Config {
 	return Config{
 		Addr: value("IM_ADDR", ":8080"), Environment: environment(), JWTSecret: os.Getenv("IM_JWT_SECRET"),
 		DatabaseURL: os.Getenv("IM_DATABASE_URL"), RedisURL: os.Getenv("IM_REDIS_URL"),
-		AdminEmail: os.Getenv("IM_ADMIN_EMAIL"), AdminPasswordHash: os.Getenv("IM_ADMIN_PASSWORD_HASH"), AdminID: value("IM_ADMIN_ID", "platform-admin"), AdminRole: value("IM_ADMIN_ROLE", "platform_admin"),
+		AdminUsername: os.Getenv("IM_ADMIN_USERNAME"), AdminContactEmail: os.Getenv("IM_ADMIN_CONTACT_EMAIL"), AdminPasswordHash: os.Getenv("IM_ADMIN_PASSWORD_HASH"), AdminID: value("IM_ADMIN_ID", "platform-admin"), AdminRole: value("IM_ADMIN_ROLE", "platform_admin"),
 		PushProvider:   value("IM_PUSH_PROVIDER", "noop"),
 		PushWebhookURL: os.Getenv("IM_PUSH_WEBHOOK_URL"), PushWebhookToken: os.Getenv("IM_PUSH_WEBHOOK_TOKEN"),
 		WebPushPublicKey: os.Getenv("IM_WEB_PUSH_PUBLIC_KEY"), WebPushPrivateKey: os.Getenv("IM_WEB_PUSH_PRIVATE_KEY"), WebPushSubject: os.Getenv("IM_WEB_PUSH_SUBJECT"),

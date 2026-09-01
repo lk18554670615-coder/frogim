@@ -1982,7 +1982,7 @@ func postgresAdminTestToken(t *testing.T, repository *store.Postgres, secret str
 		t.Fatal(err)
 	}
 	account, err := repository.CreateAdminAccount(ctx, store.AdminAccountCreate{
-		ID: "test-admin", Email: "test-admin@example.invalid", DisplayName: "Postgres Test Admin",
+		ID: "test-admin", Username: "test-admin", Email: "test-admin@example.invalid", DisplayName: "Postgres Test Admin",
 		PasswordHash: string(hash), RoleID: "platform_admin", CreatedBy: "test", At: time.Now().UTC(),
 	})
 	if errors.Is(err, store.ErrConflict) {
@@ -2058,7 +2058,7 @@ func TestRefreshRotationLogoutAndAdminRBAC(t *testing.T) {
 	}
 	_ = res.Body.Close()
 
-	adminRaw, _ := json.Marshal(map[string]string{"email": "admin@example.com", "password": "correct horse battery staple"})
+	adminRaw, _ := json.Marshal(map[string]string{"username": "admin", "password": "correct horse battery staple"})
 	res, _ = http.Post(ts.URL+"/v2/admin/auth/login", "application/json", bytes.NewReader(adminRaw))
 	var admin struct{ AccessToken string }
 	_ = json.NewDecoder(res.Body).Decode(&admin)

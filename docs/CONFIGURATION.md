@@ -49,7 +49,8 @@
 | `IM_OUTBOX_RETENTION` | 推送与任务 outbox 保留时间 | 默认 `168h`；WuKongIM 负责消息和会话同步 |
 | `IM_HTTP_LOG_SUCCESS_SAMPLE_RATE` | 成功请求日志采样率 | 默认 0.01；慢请求与错误始终记录 |
 | `IM_WUKONG_INTERNAL_RATE_LIMIT_PER_MINUTE` | WuKongIM 内部 DataSource/策略接口每来源 IP 的独立分钟配额 | 默认 120000，允许 60000–600000；与公网 300 次/分钟配额隔离，正式 1000 消息/秒门槛不得低于 60000 |
-| `IM_ADMIN_ID` / `IM_ADMIN_EMAIL` | 首个管理员 ID 与邮箱 | 仅在管理员表为空时使用 |
+| `IM_ADMIN_ID` / `IM_ADMIN_USERNAME` | 首个管理员 ID 与登录账号 | 仅在管理员表为空时使用；账号必须符合 3–32 位小写账号规则 |
+| `IM_ADMIN_CONTACT_EMAIL` | 首个管理员联系邮箱 | 可选，不参与登录 |
 | `IM_ADMIN_PASSWORD_HASH` | 首个管理员 bcrypt 哈希 | 禁止保存明文；初始化完成后不参与认证 |
 | `IM_ADMIN_ROLE` | 首个管理员角色 | 默认 `platform_admin`，仅空表初始化使用 |
 | `WUKONG_IMAGE` | 生产 WuKongIM 镜像 | 必须是已发布到受控仓库的 `repository@sha256:<64位摘要>`；生产 Compose 不现场构建或接受标签 |

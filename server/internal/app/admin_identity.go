@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/mail"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -25,8 +26,21 @@ func (a *App) adminIdentities() (store.AdminIdentityStore, error) {
 	return s, nil
 }
 
-func normalizeAdminEmail(value string) (string, error) {
+var adminUsernamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{1,30}[a-z0-9]$`)
+
+func normalizeAdminUsername(value string) (string, error) {
+	username := strings.ToLower(strings.TrimSpace(value))
+	if !adminUsernamePattern.MatchString(username) {
+		return "", ErrInvalid
+	}
+	return username, nil
+}
+
+func normalizeAdminContactEmail(value string) (string, error) {
 	email := strings.ToLower(strings.TrimSpace(value))
+	if email == "" {
+		return "", nil
+	}
 	address, err := mail.ParseAddress(email)
 	if err != nil || address.Address != email || len(email) > 254 {
 		return "", ErrInvalid
@@ -59,16 +73,16 @@ func normalizeAdminPermissions(values []string) ([]string, error) {
 	return permissions, nil
 }
 
-func (a *App) AuthenticateAdmin(ctx context.Context, email, password string) (*store.AdminAccount, error) {
+func (a *App) AuthenticateAdmin(ctx context.Context, username, password string) (*store.AdminAccount, error) {
 	s, err := a.adminIdentities()
 	if err != nil {
 		return nil, err
 	}
-	normalized, err := normalizeAdminEmail(email)
+	normalized, err := normalizeAdminUsername(username)
 	if err != nil || password == "" {
 		return nil, ErrForbidden
 	}
-	account, err := s.AdminAccountByEmail(ctx, normalized)
+	account, err := s.AdminAccountByUsername(ctx, normalized)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, ErrForbidden
@@ -105,12 +119,16 @@ func (a *App) AdminAccounts(ctx context.Context, query, status, cursor string, l
 	return s.ListAdminAccounts(ctx, query, status, cursor, limit)
 }
 
-func (a *App) CreateAdminAccount(ctx context.Context, actorID, email, displayName, roleID, password string) (*store.AdminAccount, error) {
+func (a *App) CreateAdminAccount(ctx context.Context, actorID, username string, email *string, displayName, roleID, password string) (*store.AdminAccount, error) {
 	s, err := a.adminIdentities()
 	if err != nil {
 		return nil, err
 	}
-	email, err = normalizeAdminEmail(email)
+	username, err = normalizeAdminUsername(username)
+	contactEmail := ""
+	if err == nil && email != nil {
+		contactEmail, err = normalizeAdminContactEmail(*email)
+	}
 	displayName, roleID = strings.TrimSpace(displayName), strings.TrimSpace(roleID)
 	if err != nil || displayName == "" || len(displayName) > 80 || roleID == "" || validateAdminPassword(password) != nil {
 		return nil, ErrInvalid
@@ -119,16 +137,23 @@ func (a *App) CreateAdminAccount(ctx context.Context, actorID, email, displayNam
 	if err != nil {
 		return nil, err
 	}
-	return s.CreateAdminAccount(ctx, store.AdminAccountCreate{ID: id("admin"), Email: email, DisplayName: displayName, PasswordHash: string(hash), RoleID: roleID, CreatedBy: actorID, At: time.Now().UTC()})
+	return s.CreateAdminAccount(ctx, store.AdminAccountCreate{ID: id("admin"), Username: username, Email: contactEmail, DisplayName: displayName, PasswordHash: string(hash), RoleID: roleID, CreatedBy: actorID, At: time.Now().UTC()})
 }
 
-func (a *App) UpdateAdminAccount(ctx context.Context, actorID, accountID string, email, displayName, roleID, status *string) (*store.AdminAccount, error) {
+func (a *App) UpdateAdminAccount(ctx context.Context, actorID, accountID string, username, email, displayName, roleID, status *string) (*store.AdminAccount, error) {
 	s, err := a.adminIdentities()
 	if err != nil {
 		return nil, err
 	}
+	if username != nil {
+		normalized, normalizeErr := normalizeAdminUsername(*username)
+		if normalizeErr != nil {
+			return nil, ErrInvalid
+		}
+		username = &normalized
+	}
 	if email != nil {
-		normalized, normalizeErr := normalizeAdminEmail(*email)
+		normalized, normalizeErr := normalizeAdminContactEmail(*email)
 		if normalizeErr != nil {
 			return nil, ErrInvalid
 		}
@@ -151,7 +176,7 @@ func (a *App) UpdateAdminAccount(ctx context.Context, actorID, accountID string,
 	if status != nil && *status != "active" && *status != "disabled" {
 		return nil, ErrInvalid
 	}
-	return s.UpdateAdminAccount(ctx, store.AdminAccountUpdate{ID: accountID, ActorID: actorID, Email: email, DisplayName: displayName, RoleID: roleID, Status: status, At: time.Now().UTC()})
+	return s.UpdateAdminAccount(ctx, store.AdminAccountUpdate{ID: accountID, ActorID: actorID, Username: username, Email: email, DisplayName: displayName, RoleID: roleID, Status: status, At: time.Now().UTC()})
 }
 
 func (a *App) ResetAdminPassword(ctx context.Context, accountID, password string) error {

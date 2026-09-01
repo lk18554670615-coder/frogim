@@ -60,7 +60,8 @@ jwt_secret="$(random_alnum 64)"
 admin_password="$(random_alnum 22)"
 minio_password="$(random_alnum 36)"
 dev_otp="$(shuf -i 100000-999999 -n 1)"
-admin_email="admin@nexachat.local"
+admin_username="admin"
+admin_contact_email=""
 
 admin_hash="$(printf '%s\n' "$admin_password" | docker run --rm -i httpd:2.4-alpine htpasswd -niBC 12 admin | cut -d: -f2 | tr -d '\r\n')"
 if [[ "$admin_hash" != '$2'* ]]; then
@@ -114,7 +115,8 @@ IM_REFRESH_TTL=720h
 IM_DEV_OTP_CODE=$dev_otp
 
 # ===== 管理后台 =====
-IM_ADMIN_EMAIL=$admin_email
+IM_ADMIN_USERNAME=$admin_username
+IM_ADMIN_CONTACT_EMAIL=$admin_contact_email
 IM_ADMIN_PASSWORD_HASH='$admin_hash'
 
 # ===== 私有对象存储与上传 =====
@@ -142,7 +144,7 @@ EOF
 cat > "$CREDENTIAL_FILE" <<EOF
 青蛙呱呱初始凭据（首次登录后请修改，并继续将本文件保留为 root 600 权限）
 管理后台：https://$SERVER_IP
-管理员邮箱：$admin_email
+管理员账号：$admin_username
 管理员密码：$admin_password
 App 测试登录验证码：$dev_otp
 集中配置：$CONFIG_FILE

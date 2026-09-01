@@ -656,7 +656,7 @@ status="$(request POST /v2/feedback "$token_b" '{"category":"product","content":
 expect_status 201 "$status"
 
 step="管理端登录、数据列表、处置、公告与审计"
-status="$(request POST /v2/admin/auth/login '' "$(jq -nc --arg email "${IM_ADMIN_EMAIL:-admin@nexachat.local}" --arg password "${IM_ADMIN_PASSWORD:-local-development-admin-password}" '{email:$email,password:$password}')")"
+status="$(request POST /v2/admin/auth/login '' "$(jq -nc --arg username "${IM_ADMIN_USERNAME:-admin}" --arg password "${IM_ADMIN_PASSWORD:-local-development-admin-password}" '{username:$username,password:$password}')")"
 expect_status 200 "$status"
 admin_token="$(json_value '.accessToken')"
 for admin_path in \

@@ -241,6 +241,23 @@ func TestAdminUserCompletionSchemaIsVersioned(t *testing.T) {
 	}
 }
 
+func TestAdministratorUsernameSchemaIsVersioned(t *testing.T) {
+	if schemaVersion < 57 {
+		t.Fatalf("administrator usernames require schema version 57 or newer, got %d", schemaVersion)
+	}
+	for _, fragment := range []string{
+		"ALTER TABLE im_admin_accounts ADD COLUMN IF NOT EXISTS username text",
+		"ALTER TABLE im_admin_accounts ALTER COLUMN email DROP NOT NULL",
+		"im_admin_accounts_username_check",
+		"im_admin_accounts_username_unique_idx",
+		"WHERE email IS NOT NULL AND btrim(email)<>''",
+	} {
+		if !strings.Contains(normalizedSchema, fragment) {
+			t.Fatalf("administrator username schema is missing %q", fragment)
+		}
+	}
+}
+
 func TestTemporaryBusinessMembershipSchemaIsVersioned(t *testing.T) {
 	if schemaVersion < 39 {
 		t.Fatalf("temporary business membership requires schema version 39 or newer, got %d", schemaVersion)

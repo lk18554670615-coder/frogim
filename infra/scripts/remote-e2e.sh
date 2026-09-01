@@ -97,7 +97,7 @@ admin_password="$(sed -n 's/^ADMIN_PASSWORD=//p' "$CREDENTIAL_FILE")"
 if [[ -z "$admin_password" ]]; then
   admin_password="$(sed -n 's/^管理员密码：//p' "$CREDENTIAL_FILE")"
 fi
-admin_body="{\"email\":\"$IM_ADMIN_EMAIL\",\"password\":\"$admin_password\"}"
+admin_body="$(jq -nc --arg username "$IM_ADMIN_USERNAME" --arg password "$admin_password" '{username:$username,password:$password}')"
 admin="$(json_post "$base/v2/admin/auth/login" "" "$admin_body")"
 admin_token="$(jq -er '.accessToken' <<<"$admin")"
 curl --fail --silent --show-error "$base/api/v2/admin/dashboard" -H "authorization: Bearer $admin_token" | jq -e 'type == "object"' >/dev/null

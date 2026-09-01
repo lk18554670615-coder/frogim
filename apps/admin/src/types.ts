@@ -5,7 +5,8 @@ export type StatusTone = 'success' | 'warning' | 'danger' | 'info' | 'neutral';
 export interface AdminSession {
   token: string;
   id: string;
-  email: string;
+  username: string;
+  email?: string;
   displayName: string;
   roleId: string;
   roleName: string;
@@ -15,7 +16,8 @@ export interface AdminSession {
 
 export interface AdministratorRecord {
   id: string;
-  email: string;
+  username: string;
+  email?: string;
   displayName: string;
   roleId: string;
   roleName: string;
@@ -814,8 +816,8 @@ export interface AdminApi {
   getCurrentAdmin(): Promise<Omit<AdminSession, 'token' | 'expiresAt'>>;
   changeCurrentAdminPassword(currentPassword: string, newPassword: string): Promise<void>;
   getAdministrators(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<AdministratorRecord>>;
-  createAdministrator(input: { email: string; displayName: string; roleId: string; password: string }, reason: string): Promise<AdministratorRecord>;
-  updateAdministrator(id: string, input: Partial<Pick<AdministratorRecord, 'email' | 'displayName' | 'roleId' | 'status'>>, reason: string): Promise<AdministratorRecord>;
+  createAdministrator(input: { username: string; email?: string; displayName: string; roleId: string; password: string }, reason: string): Promise<AdministratorRecord>;
+  updateAdministrator(id: string, input: Partial<Pick<AdministratorRecord, 'username' | 'displayName' | 'roleId' | 'status'>> & { email?: string | null }, reason: string): Promise<AdministratorRecord>;
   resetAdministratorPassword(id: string, password: string, reason: string): Promise<void>;
   getAdministratorRoles(): Promise<AdministratorRoleRecord[]>;
   createAdministratorRole(input: Pick<AdministratorRoleRecord, 'name' | 'description' | 'permissions'>, reason: string): Promise<AdministratorRoleRecord>;

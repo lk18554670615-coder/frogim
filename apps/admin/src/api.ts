@@ -94,7 +94,7 @@ const list = (value: unknown) => Array.isArray(value) ? value : [];
 const chineseTextPattern = /[\u3400-\u9fff]/;
 const apiErrorMessages: Record<string, string> = {
   UNAUTHENTICATED: '登录状态已失效，请重新登录',
-  INVALID_CREDENTIALS: '邮箱或密码不正确',
+  INVALID_CREDENTIALS: '账号或密码不正确',
   FORBIDDEN: '当前账号没有执行此操作的权限',
   NOT_FOUND: '目标记录不存在或已被删除',
   CONFLICT: '数据状态已发生变化，请刷新后重试',
@@ -884,7 +884,7 @@ function adaptAdminGroupBlacklist(value: unknown): AdminGroupBlacklistRecord {
 function adaptAdministrator(value: unknown): AdministratorRecord {
   const raw = object(value);
   return {
-    id: string(raw.id), email: string(raw.email), displayName: string(raw.displayName),
+    id: string(raw.id), username: string(raw.username), email: string(raw.email) || undefined, displayName: string(raw.displayName),
     roleId: string(raw.roleId), roleName: string(raw.roleName), status: raw.status === 'disabled' ? 'disabled' : 'active',
     permissions: list(raw.permissions).map((item) => string(item)).filter(Boolean),
     lastLoginAt: string(raw.lastLoginAt) || undefined, passwordUpdatedAt: string(raw.passwordUpdatedAt),
@@ -904,7 +904,7 @@ function adaptAdministratorRole(value: unknown): AdministratorRoleRecord {
 function adaptAdminIdentity(value: unknown): Omit<AdminSession, 'token' | 'expiresAt'> {
   const raw = object(object(value).data ?? value);
   return {
-    id: string(raw.id), email: string(raw.email), displayName: string(raw.displayName),
+    id: string(raw.id), username: string(raw.username), email: string(raw.email) || undefined, displayName: string(raw.displayName),
     roleId: string(raw.roleId), roleName: string(raw.roleName, string(raw.roleId)),
     permissions: list(raw.permissions).map((item) => string(item)).filter(Boolean),
   };
@@ -1063,16 +1063,16 @@ export function getApi(token = ''): AdminApi {
   return liveApi(token);
 }
 
-export async function loginAdmin(email: string, password: string): Promise<AdminSession> {
+export async function loginAdmin(username: string, password: string): Promise<AdminSession> {
   let response: unknown;
   try {
     response = await request('/auth/login', '', {
       method: 'POST',
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ username, password }),
     }, false);
   } catch (cause) {
     if (cause instanceof ApiError && cause.status === 401) {
-      throw new ApiError('邮箱或密码不正确', 401, 'INVALID_CREDENTIALS', cause.requestId);
+      throw new ApiError('账号或密码不正确', 401, 'INVALID_CREDENTIALS', cause.requestId);
     }
     throw cause;
   }
@@ -1081,6 +1081,6 @@ export async function loginAdmin(email: string, password: string): Promise<Admin
   const token = string(raw.accessToken, string(raw.token));
   if (!token) throw new ApiError('登录响应缺少访问令牌', 502, 'INVALID_AUTH_RESPONSE');
   const identity = adaptAdminIdentity(raw);
-  if (!identity.id || !identity.roleId) throw new ApiError('登录响应缺少管理员身份', 502, 'INVALID_AUTH_RESPONSE');
+  if (!identity.id || !identity.username || !identity.roleId) throw new ApiError('登录响应缺少管理员身份', 502, 'INVALID_AUTH_RESPONSE');
   return { token, ...identity, expiresAt: Date.now() + Math.max(60, number(raw.expiresIn, 900)) * 1000 };
 }

@@ -160,7 +160,8 @@ type PasswordAuthStore interface {
 }
 type AdminAccount struct {
 	ID                string     `json:"id"`
-	Email             string     `json:"email"`
+	Username          string     `json:"username"`
+	Email             string     `json:"email,omitempty"`
 	DisplayName       string     `json:"displayName"`
 	PasswordHash      string     `json:"-"`
 	RoleID            string     `json:"roleId"`
@@ -187,14 +188,14 @@ type AdminRole struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
 type AdminAccountCreate struct {
-	ID, Email, DisplayName, PasswordHash, RoleID, CreatedBy string
-	At                                                      time.Time
+	ID, Username, Email, DisplayName, PasswordHash, RoleID, CreatedBy string
+	At                                                                time.Time
 }
 type AdminAccountUpdate struct {
-	ID, ActorID                string
-	Email, DisplayName, RoleID *string
-	Status                     *string
-	At                         time.Time
+	ID, ActorID                          string
+	Username, Email, DisplayName, RoleID *string
+	Status                               *string
+	At                                   time.Time
 }
 type AdminRoleCreate struct {
 	ID, Name, Description, CreatedBy string
@@ -207,7 +208,7 @@ type AdminRoleUpdate struct {
 	At                             time.Time
 }
 type AdminIdentityStore interface {
-	AdminAccountByEmail(context.Context, string) (*AdminAccount, error)
+	AdminAccountByUsername(context.Context, string) (*AdminAccount, error)
 	AdminAccountByID(context.Context, string) (*AdminAccount, error)
 	ListAdminAccounts(context.Context, string, string, string, int) ([]*AdminAccount, int64, string, error)
 	CreateAdminAccount(context.Context, AdminAccountCreate) (*AdminAccount, error)
@@ -476,9 +477,9 @@ func (p *WithRedis) PasswordCredentials(ctx context.Context, phone string) (*mod
 	}
 	return nil, "", ErrUnsupported
 }
-func (p *WithRedis) AdminAccountByEmail(ctx context.Context, email string) (*AdminAccount, error) {
+func (p *WithRedis) AdminAccountByUsername(ctx context.Context, username string) (*AdminAccount, error) {
 	if s, ok := p.base.(AdminIdentityStore); ok {
-		return s.AdminAccountByEmail(ctx, email)
+		return s.AdminAccountByUsername(ctx, username)
 	}
 	return nil, ErrUnsupported
 }

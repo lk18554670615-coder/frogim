@@ -38,7 +38,7 @@ func main() {
 		os.Exit(1)
 	}
 	seededAdmin, err := pg.BootstrapAdmin(ctx, store.AdminAccountCreate{
-		ID: cfg.AdminID, Email: cfg.AdminEmail, DisplayName: cfg.AdminID,
+		ID: cfg.AdminID, Username: cfg.AdminUsername, Email: cfg.AdminContactEmail, DisplayName: cfg.AdminID,
 		PasswordHash: cfg.AdminPasswordHash, RoleID: cfg.AdminRole, At: time.Now().UTC(),
 	})
 	if err != nil {

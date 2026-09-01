@@ -24,6 +24,7 @@ type mutableAdminStore struct {
 	account   store.AdminAccount
 	lookupErr error
 	lastLogin time.Time
+	extra     map[string]store.AdminAccount
 }
 
 func newMutableAdminStore(t *testing.T, roleID string, permissions []string) *mutableAdminStore {
@@ -32,8 +33,8 @@ func newMutableAdminStore(t *testing.T, roleID string, permissions []string) *mu
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &mutableAdminStore{account: store.AdminAccount{
-		ID: "admin_db", Email: "admin@example.com", DisplayName: "Database Admin", PasswordHash: string(hash),
+	return &mutableAdminStore{extra: map[string]store.AdminAccount{}, account: store.AdminAccount{
+		ID: "admin_db", Username: "admin", Email: "admin@example.com", DisplayName: "Database Admin", PasswordHash: string(hash),
 		RoleID: roleID, RoleName: "Database Role", Status: "active", AuthVersion: 1,
 		Permissions: append([]string(nil), permissions...), PasswordUpdatedAt: time.Now().UTC(),
 	}}
@@ -45,13 +46,20 @@ func (s *mutableAdminStore) snapshot() *store.AdminAccount {
 	return &copy
 }
 
-func (s *mutableAdminStore) AdminAccountByEmail(_ context.Context, email string) (*store.AdminAccount, error) {
+func (s *mutableAdminStore) AdminAccountByUsername(_ context.Context, username string) (*store.AdminAccount, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.lookupErr != nil {
 		return nil, s.lookupErr
 	}
-	if !strings.EqualFold(strings.TrimSpace(email), s.account.Email) {
+	if !strings.EqualFold(strings.TrimSpace(username), s.account.Username) {
+		for _, account := range s.extra {
+			if strings.EqualFold(strings.TrimSpace(username), account.Username) {
+				copy := account
+				copy.Permissions = append([]string(nil), account.Permissions...)
+				return &copy, nil
+			}
+		}
 		return nil, store.ErrNotFound
 	}
 	return s.snapshot(), nil
@@ -64,8 +72,57 @@ func (s *mutableAdminStore) AdminAccountByID(_ context.Context, id string) (*sto
 		return nil, s.lookupErr
 	}
 	if id != s.account.ID {
+		account, ok := s.extra[id]
+		if !ok {
+			return nil, store.ErrNotFound
+		}
+		copy := account
+		copy.Permissions = append([]string(nil), account.Permissions...)
+		return &copy, nil
+	}
+	return s.snapshot(), nil
+}
+
+func (s *mutableAdminStore) CreateAdminAccount(_ context.Context, input store.AdminAccountCreate) (*store.AdminAccount, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.EqualFold(input.Username, s.account.Username) {
+		return nil, store.ErrConflict
+	}
+	for _, existing := range s.extra {
+		if strings.EqualFold(input.Username, existing.Username) || (input.Email != "" && strings.EqualFold(input.Email, existing.Email)) {
+			return nil, store.ErrConflict
+		}
+	}
+	account := store.AdminAccount{ID: input.ID, Username: input.Username, Email: input.Email, DisplayName: input.DisplayName, PasswordHash: input.PasswordHash, RoleID: input.RoleID, RoleName: input.RoleID, Status: "active", AuthVersion: 1, PasswordUpdatedAt: input.At, CreatedBy: input.CreatedBy, CreatedAt: input.At, UpdatedAt: input.At}
+	s.extra[account.ID] = account
+	copy := account
+	return &copy, nil
+}
+
+func (s *mutableAdminStore) UpdateAdminAccount(_ context.Context, input store.AdminAccountUpdate) (*store.AdminAccount, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if input.ID != s.account.ID {
 		return nil, store.ErrNotFound
 	}
+	if input.Username != nil {
+		s.account.Username = *input.Username
+	}
+	if input.Email != nil {
+		s.account.Email = *input.Email
+	}
+	if input.DisplayName != nil {
+		s.account.DisplayName = *input.DisplayName
+	}
+	if input.RoleID != nil {
+		s.account.RoleID = *input.RoleID
+	}
+	if input.Status != nil {
+		s.account.Status = *input.Status
+	}
+	s.account.AuthVersion++
+	s.account.UpdatedAt = input.At
 	return s.snapshot(), nil
 }
 
@@ -85,7 +142,13 @@ func (s *mutableAdminStore) RecordAdminAccountLogin(_ context.Context, id string
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if id != s.account.ID {
-		return store.ErrNotFound
+		account, ok := s.extra[id]
+		if !ok {
+			return store.ErrNotFound
+		}
+		account.LastLoginAt = &at
+		s.extra[id] = account
+		return nil
 	}
 	s.lastLogin = at
 	return nil
@@ -110,7 +173,7 @@ func adminJSONRequest(t *testing.T, method, url, token, body string) *http.Respo
 
 func loginAdminToken(t *testing.T, base, password string) (*http.Response, string) {
 	t.Helper()
-	response := adminJSONRequest(t, http.MethodPost, base+"/v2/admin/auth/login", "", `{"email":"admin@example.com","password":"`+password+`"}`)
+	response := adminJSONRequest(t, http.MethodPost, base+"/v2/admin/auth/login", "", `{"username":" AdMiN ","password":"`+password+`"}`)
 	var payload struct {
 		AccessToken string `json:"accessToken"`
 	}
@@ -137,6 +200,11 @@ func TestDatabaseAdminLoginPasswordChangeAndImmediateInvalidation(t *testing.T) 
 	if login.StatusCode != http.StatusOK || token == "" || persistence.lastLogin.IsZero() {
 		t.Fatalf("login status=%d token=%q lastLogin=%v", login.StatusCode, token, persistence.lastLogin)
 	}
+	legacyEmail := adminJSONRequest(t, http.MethodPost, server.URL+"/v2/admin/auth/login", "", `{"email":"admin@example.com","password":"InitialPassword123!"}`)
+	if legacyEmail.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("legacy email login status=%d", legacyEmail.StatusCode)
+	}
+	_ = legacyEmail.Body.Close()
 	me := adminJSONRequest(t, http.MethodGet, server.URL+"/v2/admin/auth/me", token, "")
 	if me.StatusCode != http.StatusOK {
 		t.Fatalf("me status=%d", me.StatusCode)
@@ -174,6 +242,71 @@ func TestDatabaseAdminLoginPasswordChangeAndImmediateInvalidation(t *testing.T) 
 		t.Fatalf("disabled account token status=%d", disabled.StatusCode)
 	}
 	_ = disabled.Body.Close()
+}
+
+func TestDatabaseAdminUsernameChangeAndOptionalEmailAccount(t *testing.T) {
+	persistence := newMutableAdminStore(t, "platform_admin", []string{"settings.write"})
+	a, err := app.New(context.Background(), persistence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(New(config.Config{JWTSecret: strings.Repeat("n", 32)}, a).Handler())
+	defer server.Close()
+
+	login, token := loginAdminToken(t, server.URL, "InitialPassword123!")
+	if login.StatusCode != http.StatusOK || token == "" {
+		t.Fatalf("initial login status=%d token=%q", login.StatusCode, token)
+	}
+	renamed := adminJSONRequest(t, http.MethodPatch, server.URL+"/v2/admin/administrators/admin_db", token, `{"username":"new_admin","email":null,"confirmed":true,"reason":"rename test"}`)
+	if renamed.StatusCode != http.StatusOK {
+		t.Fatalf("rename status=%d", renamed.StatusCode)
+	}
+	_ = renamed.Body.Close()
+	persistence.mu.Lock()
+	clearedEmail := persistence.account.Email
+	persistence.mu.Unlock()
+	if clearedEmail != "" {
+		t.Fatalf("contact email was not cleared: %q", clearedEmail)
+	}
+	stale := adminJSONRequest(t, http.MethodGet, server.URL+"/v2/admin/auth/me", token, "")
+	if stale.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("stale token after username change status=%d", stale.StatusCode)
+	}
+	_ = stale.Body.Close()
+	oldLogin, _ := loginAdminToken(t, server.URL, "InitialPassword123!")
+	if oldLogin.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old username login status=%d", oldLogin.StatusCode)
+	}
+	newLogin := adminJSONRequest(t, http.MethodPost, server.URL+"/v2/admin/auth/login", "", `{"username":" NEW_ADMIN ","password":"InitialPassword123!"}`)
+	if newLogin.StatusCode != http.StatusOK {
+		t.Fatalf("new username login status=%d", newLogin.StatusCode)
+	}
+	var payload struct {
+		AccessToken string `json:"accessToken"`
+	}
+	_ = json.NewDecoder(newLogin.Body).Decode(&payload)
+	_ = newLogin.Body.Close()
+
+	created := adminJSONRequest(t, http.MethodPost, server.URL+"/v2/admin/administrators", payload.AccessToken, `{"username":"no_email","displayName":"No Email","roleId":"support","password":"Password123!","confirmed":true,"reason":"optional email test"}`)
+	if created.StatusCode != http.StatusCreated {
+		t.Fatalf("create without email status=%d", created.StatusCode)
+	}
+	var createdAccount store.AdminAccount
+	_ = json.NewDecoder(created.Body).Decode(&createdAccount)
+	_ = created.Body.Close()
+	if createdAccount.Username != "no_email" || createdAccount.Email != "" {
+		t.Fatalf("created account=%+v", createdAccount)
+	}
+	noEmailLogin := adminJSONRequest(t, http.MethodPost, server.URL+"/v2/admin/auth/login", "", `{"username":"no_email","password":"Password123!"}`)
+	if noEmailLogin.StatusCode != http.StatusOK {
+		t.Fatalf("no-email account login status=%d", noEmailLogin.StatusCode)
+	}
+	_ = noEmailLogin.Body.Close()
+	duplicate := adminJSONRequest(t, http.MethodPost, server.URL+"/v2/admin/administrators", payload.AccessToken, `{"username":"NO_EMAIL","displayName":"Duplicate","roleId":"support","password":"Password123!","confirmed":true,"reason":"duplicate test"}`)
+	if duplicate.StatusCode != http.StatusConflict {
+		t.Fatalf("case-insensitive duplicate username status=%d", duplicate.StatusCode)
+	}
+	_ = duplicate.Body.Close()
 }
 
 func TestDatabaseAdminRateLimitUnavailableStoreAndRealtimePermissions(t *testing.T) {

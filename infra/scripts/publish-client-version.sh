@@ -41,9 +41,9 @@ fi
 [[ -n "$admin_password" ]] || { echo "administrator password is missing" >&2; exit 1; }
 
 login_body="$(jq -nc \
-  --arg email "$IM_ADMIN_EMAIL" \
+  --arg username "$IM_ADMIN_USERNAME" \
   --arg password "$admin_password" \
-  '{email:$email,password:$password}')"
+  '{username:$username,password:$password}')"
 admin="$(curl --fail --silent --show-error "$base/v2/admin/auth/login" \
   -H 'content-type: application/json' -d "$login_body")"
 admin_token="$(jq -er '.accessToken' <<<"$admin")"

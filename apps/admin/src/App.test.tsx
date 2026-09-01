@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 
-const session = { token: 'test-admin-jwt', id: 'admin_1', email: 'admin@example.com', displayName: '测试管理员', roleId: 'platform_admin', roleName: '平台管理员', permissions: ['users.write', 'groups.write', 'reports.write', 'rules.write', 'announcements.write', 'settings.write', 'versions.write', 'content.write', 'channels.write', 'operations.write', 'support.write'], expiresAt: Date.now() + 60_000 };
+const session = { token: 'test-admin-jwt', id: 'admin_1', username: 'admin', email: 'admin@example.com', displayName: '测试管理员', roleId: 'platform_admin', roleName: '平台管理员', permissions: ['users.write', 'groups.write', 'reports.write', 'rules.write', 'announcements.write', 'settings.write', 'versions.write', 'content.write', 'channels.write', 'operations.write', 'support.write'], expiresAt: Date.now() + 60_000 };
 
 let fixtureStickerCategories: Array<Record<string, unknown>> = [];
 let fixtureStickerPacks: Array<Record<string, unknown>> = [];
@@ -457,10 +457,10 @@ describe('青蛙呱呱管理后台', () => {
     })));
     render(<App />);
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText('管理员邮箱'), 'ops@example.com');
+    await user.type(screen.getByLabelText('管理员账号'), 'ops');
     await user.type(screen.getByLabelText('密码'), 'wrong-password');
     await user.click(screen.getByRole('button', { name: '登录控制台' }));
-    expect(await screen.findByText(/邮箱或密码不正确/)).toBeInTheDocument();
+    expect(await screen.findByText(/账号或密码不正确/)).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '欢迎回来' })).toBeInTheDocument();
     await user.type(screen.getByLabelText('密码'), 'a');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
@@ -471,7 +471,7 @@ describe('青蛙呱呱管理后台', () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
     render(<App />);
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText('管理员邮箱'), 'ops@example.com');
+    await user.type(screen.getByLabelText('管理员账号'), 'ops');
     await user.type(screen.getByLabelText('密码'), 'password');
     await user.click(screen.getByRole('button', { name: '登录控制台' }));
     expect(await screen.findByText('无法连接服务，请检查网络或服务状态')).toBeInTheDocument();
@@ -490,45 +490,45 @@ describe('青蛙呱呱管理后台', () => {
     await user.click(screen.getByRole('button', { name: '显示密码' }));
     expect(password).toHaveAttribute('type', 'text');
     expect(screen.getByRole('button', { name: '隐藏密码' })).toHaveAttribute('aria-pressed', 'true');
-    await user.type(screen.getByLabelText('管理员邮箱'), 'ops@example.com');
+    await user.type(screen.getByLabelText('管理员账号'), 'ops');
     expect(screen.queryByLabelText(/动态验证码/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '登录控制台' })).toBeEnabled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('管理员邮箱仅在失焦后提示格式错误且不会发送无效请求', async () => {
+  it('管理员账号仅在失焦后提示格式错误且不会发送无效请求', async () => {
     sessionStorage.clear();
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     render(<App />);
     const user = userEvent.setup();
-    const email = screen.getByLabelText('管理员邮箱');
+    const username = screen.getByLabelText('管理员账号');
     const password = screen.getByLabelText('密码');
 
-    await user.type(email, 'not-an-email');
-    expect(screen.queryByText('请输入有效的管理员邮箱')).not.toBeInTheDocument();
+    await user.type(username, 'Bad Account');
+    expect(screen.queryByText('请输入有效的管理员账号')).not.toBeInTheDocument();
     await user.type(password, 'correct-password');
 
-    expect(email).toHaveAttribute('aria-invalid', 'true');
-    expect(screen.getByText('请输入有效的管理员邮箱')).toBeInTheDocument();
+    expect(username).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByText('请输入有效的管理员账号')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '登录控制台' })).toBeDisabled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('管理员邮箱未编辑时焦点切换不会提前显示必填错误', async () => {
+  it('管理员账号未编辑时焦点切换不会提前显示必填错误', async () => {
     sessionStorage.clear();
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     render(<App />);
     const user = userEvent.setup();
-    const email = screen.getByLabelText('管理员邮箱');
+    const username = screen.getByLabelText('管理员账号');
 
-    expect(email).toHaveFocus();
+    expect(username).toHaveFocus();
     await user.click(screen.getByLabelText('密码'));
 
-    expect(email).toHaveAttribute('aria-invalid', 'false');
-    expect(screen.queryByText('请输入管理员邮箱')).not.toBeInTheDocument();
-    expect(screen.getByText('使用管理员分配的邮箱地址')).toBeInTheDocument();
+    expect(username).toHaveAttribute('aria-invalid', 'false');
+    expect(screen.queryByText('请输入管理员账号')).not.toBeInTheDocument();
+    expect(screen.getByText('使用管理员分配的登录账号')).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -537,7 +537,7 @@ describe('青蛙呱呱管理后台', () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
         ok: true, status: 200, headers: new Headers(),
-        json: async () => ({ accessToken: 'admin.jwt', id: 'admin_moderator', email: 'moderator@example.com', displayName: '安全审核员', roleId: 'moderator', roleName: '内容审核员', permissions: ['users.write', 'reports.write', 'rules.write', 'content.write'], expiresIn: 900 }),
+        json: async () => ({ accessToken: 'admin.jwt', id: 'admin_moderator', username: 'moderator', email: 'moderator@example.com', displayName: '安全审核员', roleId: 'moderator', roleName: '内容审核员', permissions: ['users.write', 'reports.write', 'rules.write', 'content.write'], expiresIn: 900 }),
       })
       .mockResolvedValue({
         ok: true, status: 200, headers: new Headers(),
@@ -546,7 +546,7 @@ describe('青蛙呱呱管理后台', () => {
     vi.stubGlobal('fetch', fetchMock);
     render(<App />);
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText('管理员邮箱'), 'moderator@example.com');
+    await user.type(screen.getByLabelText('管理员账号'), 'moderator');
     await user.type(screen.getByLabelText('密码'), 'correct-password');
     await user.click(screen.getByRole('button', { name: '登录控制台' }));
     expect(await screen.findByText('安全审核员')).toBeInTheDocument();
@@ -558,12 +558,12 @@ describe('青蛙呱呱管理后台', () => {
     window.history.replaceState({}, '', '/users');
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/auth/me')) return response({ id: 'admin_1', email: 'admin@example.com', displayName: '值班同事', roleId: 'readonly_custom', roleName: '值班只读', permissions: [] });
+      if (url.includes('/auth/me')) return response({ id: 'admin_1', username: 'admin', email: 'admin@example.com', displayName: '值班同事', roleId: 'readonly_custom', roleName: '值班只读', permissions: [] });
       if (url.includes('/users')) return response({ items: [{ id: 'u_1', name: '真实用户', phone: '13800000000', handle: 'real_user', status: 'active', createdAt: '2026-08-01T08:00:00Z' }], total: 1 });
       return response({ items: [] });
     }));
     render(<App />);
-    expect(await screen.findByText('值班只读')).toBeInTheDocument();
+    expect(await screen.findByText(/值班只读/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '封禁账号' })).toBeDisabled();
     expect(JSON.parse(sessionStorage.getItem('qingwaguagua_admin_session') ?? '{}')).toEqual(expect.objectContaining({ roleId: 'readonly_custom', roleName: '值班只读', permissions: [] }));
   });
@@ -576,7 +576,7 @@ describe('青蛙呱呱管理后台', () => {
       const url = String(input);
       if (url.includes('/auth/me')) return response(session);
       if (url.endsWith('/roles')) return response({ items: roles });
-      if (url.includes('/administrators?')) return response({ items: [{ id: 'admin_1', email: 'admin@example.com', displayName: '测试管理员', roleId: 'platform_admin', roleName: '平台管理员', status: 'active', permissions: session.permissions, passwordUpdatedAt: '2026-08-01T08:00:00Z', createdBy: 'bootstrap', createdAt: '2026-08-01T08:00:00Z', updatedAt: '2026-08-01T08:00:00Z' }], total: 1 });
+      if (url.includes('/administrators?')) return response({ items: [{ id: 'admin_1', username: 'admin', email: 'admin@example.com', displayName: '测试管理员', roleId: 'platform_admin', roleName: '平台管理员', status: 'active', permissions: session.permissions, passwordUpdatedAt: '2026-08-01T08:00:00Z', createdBy: 'bootstrap', createdAt: '2026-08-01T08:00:00Z', updatedAt: '2026-08-01T08:00:00Z' }], total: 1 });
       if (url.endsWith('/administrators') && init?.method === 'POST') { createdBody = JSON.parse(String(init.body)); return response({ id: 'admin_2', ...createdBody, roleName: '只读支持', status: 'active', permissions: [], passwordUpdatedAt: '2026-08-17T08:00:00Z', createdBy: 'admin_1', createdAt: '2026-08-17T08:00:00Z', updatedAt: '2026-08-17T08:00:00Z' }, 201); }
       return response({ items: [] });
     });
@@ -586,12 +586,45 @@ describe('青蛙呱呱管理后台', () => {
     await screen.findByText('admin@example.com');
     await user.click(screen.getByRole('button', { name: '新增管理员' }));
     await user.type(screen.getByLabelText('显示名称'), '只读值班');
-    await user.type(screen.getByLabelText('邮箱'), 'readonly@example.com');
+    await user.type(screen.getByLabelText('登录账号'), 'readonly');
+    await user.type(screen.getByLabelText('联系邮箱（可选）'), 'readonly@example.com');
     await user.selectOptions(screen.getByLabelText('角色'), 'support');
     await user.type(screen.getByLabelText('初始密码'), 'Password123!');
     await user.type(screen.getByLabelText('操作原因'), '工单 ADMIN-1');
     await user.click(screen.getByRole('button', { name: '创建管理员' }));
-    await waitFor(() => expect(createdBody).toEqual({ email: 'readonly@example.com', displayName: '只读值班', roleId: 'support', password: 'Password123!', reason: '工单 ADMIN-1', confirmed: true }));
+    await waitFor(() => expect(createdBody).toEqual({ username: 'readonly', email: 'readonly@example.com', displayName: '只读值班', roleId: 'support', password: 'Password123!', reason: '工单 ADMIN-1', confirmed: true }));
+  });
+
+  it('本人修改账号并清空联系邮箱后立即退出旧会话', async () => {
+    window.history.replaceState({}, '', '/administrators');
+    let updatedBody: Record<string, unknown> | undefined;
+    const account = { id: 'admin_1', username: 'admin', email: 'admin@example.com', displayName: '测试管理员', roleId: 'platform_admin', roleName: '平台管理员', status: 'active', permissions: session.permissions, passwordUpdatedAt: '2026-08-01T08:00:00Z', createdBy: 'bootstrap', createdAt: '2026-08-01T08:00:00Z', updatedAt: '2026-08-01T08:00:00Z' };
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/auth/me')) return response(session);
+      if (url.endsWith('/roles')) return response({ items: [{ id: 'platform_admin', name: '平台管理员', description: '全部权限', builtIn: true, permissions: session.permissions, accountCount: 1, createdBy: 'system', createdAt: account.createdAt, updatedAt: account.updatedAt }] });
+      if (url.includes('/administrators?')) return response({ items: [account], total: 1 });
+      if (url.endsWith('/administrators/admin_1') && init?.method === 'PATCH') {
+        updatedBody = JSON.parse(String(init.body));
+        return response({ ...account, ...updatedBody, email: undefined });
+      }
+      return response({ items: [] });
+    }));
+    render(<App />);
+    const user = userEvent.setup();
+    await screen.findByText('admin@example.com');
+    await user.click(screen.getByRole('button', { name: '编辑' }));
+    const username = screen.getByLabelText('登录账号');
+    const contactEmail = screen.getByLabelText('联系邮箱（可选）');
+    await user.clear(username);
+    await user.type(username, 'admin_new');
+    await user.clear(contactEmail);
+    await user.type(screen.getByLabelText('操作原因'), '管理员账号变更');
+    await user.click(screen.getByRole('button', { name: '保存修改' }));
+    expect(await screen.findByRole('heading', { name: '欢迎回来' })).toBeInTheDocument();
+    expect(screen.getByText('管理员账号已更新，请使用新账号重新登录')).toBeInTheDocument();
+    expect(sessionStorage.getItem('qingwaguagua_admin_session')).toBeNull();
+    expect(updatedBody).toEqual({ username: 'admin_new', email: null, displayName: '测试管理员', roleId: 'platform_admin', reason: '管理员账号变更', confirmed: true });
   });
 
   it('平台管理员可以创建带实时功能域权限的自定义角色', async () => {
@@ -651,6 +684,15 @@ describe('青蛙呱呱管理后台', () => {
     render(<App />);
     expect(screen.getByRole('heading', { name: '欢迎回来' })).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('管理员会话已到期，请重新登录');
+    expect(sessionStorage.getItem('qingwaguagua_admin_session')).toBeNull();
+  });
+
+  it('缺少账号字段的旧邮箱会话会被自动清除', () => {
+    const { username: _username, ...legacySession } = session;
+    sessionStorage.setItem('qingwaguagua_admin_session', JSON.stringify(legacySession));
+    render(<App />);
+    expect(screen.getByRole('heading', { name: '欢迎回来' })).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('登录信息无效，请重新登录');
     expect(sessionStorage.getItem('qingwaguagua_admin_session')).toBeNull();
   });
 

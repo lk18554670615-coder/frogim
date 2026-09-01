@@ -26,6 +26,7 @@ func (Memory) Close()                                     {}
 func testAdminAccount() *store.AdminAccount {
 	return &store.AdminAccount{
 		ID:           "test-admin",
+		Username:     "admin",
 		Email:        "admin@example.com",
 		DisplayName:  "Test Admin",
 		PasswordHash: testAdminPasswordHash,
@@ -43,9 +44,9 @@ func testAdminAccount() *store.AdminAccount {
 
 // The fixed administrator keeps isolated HTTP tests focused on the endpoint
 // under test while production always resolves the identity from PostgreSQL.
-func (Memory) AdminAccountByEmail(_ context.Context, email string) (*store.AdminAccount, error) {
+func (Memory) AdminAccountByUsername(_ context.Context, username string) (*store.AdminAccount, error) {
 	account := testAdminAccount()
-	if email != account.Email {
+	if username != account.Username {
 		return nil, store.ErrNotFound
 	}
 	return account, nil
@@ -54,7 +55,7 @@ func (Memory) AdminAccountByEmail(_ context.Context, email string) (*store.Admin
 func (Memory) AdminAccountByID(_ context.Context, id string) (*store.AdminAccount, error) {
 	if id == "support-1" {
 		return &store.AdminAccount{
-			ID: "support-1", Email: "support@example.com", DisplayName: "Support",
+			ID: "support-1", Username: "support", Email: "support@example.com", DisplayName: "Support",
 			RoleID: "support", RoleName: "支持人员", Status: "active", AuthVersion: 1,
 		}, nil
 	}

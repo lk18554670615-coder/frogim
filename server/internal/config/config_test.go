@@ -31,6 +31,15 @@ func validConfig() Config {
 	return c
 }
 
+func TestLoadUsesAdministratorUsernameAndOptionalContactEmail(t *testing.T) {
+	t.Setenv("IM_ADMIN_USERNAME", "admin")
+	t.Setenv("IM_ADMIN_CONTACT_EMAIL", "contact@example.com")
+	loaded := Load()
+	if loaded.AdminUsername != "admin" || loaded.AdminContactEmail != "contact@example.com" {
+		t.Fatalf("administrator bootstrap identity=%q email=%q", loaded.AdminUsername, loaded.AdminContactEmail)
+	}
+}
+
 func configureLiveKit(c *Config) {
 	c.LiveKitEnabled = true
 	c.LiveKitURL = "wss://chat.example.com/rtc"
@@ -141,7 +150,7 @@ func TestProductionAllowsCompleteGetuiConfiguration(t *testing.T) {
 	c.DevMode = false
 	c.Environment = "production"
 	c.DatabaseURL = "postgres://db"
-	c.AdminEmail = "ops@example.com"
+	c.AdminUsername = "ops"
 	c.AdminPasswordHash = "$2a$12$example"
 	c.OTPWebhookURL = "https://otp.example.com"
 	c.OTPWebhookToken = strings.Repeat("o", 24)
@@ -168,7 +177,7 @@ func TestFullModeRequiresWukongAndProductionRequiresLiveKit(t *testing.T) {
 	c := validConfig()
 	c.DevMode = false
 	c.DatabaseURL = "postgres://db"
-	c.AdminEmail = "admin@example.com"
+	c.AdminUsername = "admin"
 	c.AdminPasswordHash = "$2a$12$example"
 	c.OTPWebhookURL = "https://otp.example.com"
 	c.OTPWebhookToken = strings.Repeat("o", 24)
@@ -194,7 +203,7 @@ func TestProductionLiveKitValidatesTokenTTL(t *testing.T) {
 	c := validConfig()
 	c.DevMode = false
 	c.DatabaseURL = "postgres://db"
-	c.AdminEmail = "admin@example.com"
+	c.AdminUsername = "admin"
 	c.AdminPasswordHash = "$2a$12$example"
 	c.OTPWebhookURL = "https://otp.example.com"
 	c.OTPWebhookToken = strings.Repeat("o", 24)
@@ -216,7 +225,7 @@ func TestProductionCombinedPushRequiresCompleteAPNSVoIPConfiguration(t *testing.
 	c.DevMode = false
 	c.Environment = "production"
 	c.DatabaseURL = "postgres://db"
-	c.AdminEmail = "ops@example.com"
+	c.AdminUsername = "ops"
 	c.AdminPasswordHash = "$2a$12$example"
 	c.OTPWebhookURL = "https://otp.example.com"
 	c.OTPWebhookToken = strings.Repeat("o", 24)

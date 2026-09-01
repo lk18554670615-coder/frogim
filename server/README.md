@@ -35,7 +35,8 @@ export IM_DATABASE_URL='postgres://nexachat:nexachat@localhost:5432/nexachat?ssl
 export IM_REDIS_URL='redis://localhost:6379/0'
 export IM_JWT_SECRET='replace-with-a-long-random-secret'
 export IM_ADMIN_ID='platform-admin'
-export IM_ADMIN_EMAIL='admin@example.com'
+export IM_ADMIN_USERNAME='admin'
+export IM_ADMIN_CONTACT_EMAIL='admin@example.com'
 export IM_ADMIN_PASSWORD_HASH='$2b$12$...'
 export IM_ADMIN_ROLE='platform_admin'
 export IM_DEV_MODE=false
@@ -83,7 +84,7 @@ All user routes except login require `Authorization: Bearer <accessToken>`. REST
 | Personal | `GET /v2/messages/favorites`, `POST /v2/feedback` |
 | Admin | `/v2/admin/{dashboard,users,groups,reports,sensitive-words,health,audit-logs,settings}` |
 
-Administrators authenticate at `POST /v2/admin/auth/login` with `email` and `password`, then use the returned 15-minute admin JWT. Accounts, roles and permissions are loaded from PostgreSQL on every request; disabling an account, changing a password or changing a role invalidates existing tokens immediately. The six built-in roles are `platform_admin`, `system_operator`, `moderator`, `content_operator`, `support_agent`, and read-only `support`; platform administrators can add custom roles. Bootstrap environment variables create the first account only when `im_admin_accounts` is empty. `/api/v2/admin/*` is an alias for admin frontends deployed behind an `/api` prefix; WuKongIM/LiveKit secrets are never returned to the browser.
+Administrators authenticate at `POST /v2/admin/auth/login` with `username` and `password`, then use the returned 15-minute admin JWT. Email is an optional contact field and is never accepted as a login identifier. Accounts, roles and permissions are loaded from PostgreSQL on every request; disabling an account, changing a username or password, or changing a role invalidates existing tokens immediately. The six built-in roles are `platform_admin`, `system_operator`, `moderator`, `content_operator`, `support_agent`, and read-only `support`; platform administrators can add custom roles. Bootstrap environment variables create the first account only when `im_admin_accounts` is empty. `/api/v2/admin/*` is an alias for admin frontends deployed behind an `/api` prefix; WuKongIM/LiveKit secrets are never returned to the browser.
 
 Example login and IM-session flow:
 
@@ -145,7 +146,7 @@ The tests cover memory/PostgreSQL business invariants, Outbox/reconciliation, gr
 
 ## Production checklist
 
-- `IM_DEV_MODE` defaults to false and development mode can bind only to loopback. Startup rejects missing/weak JWT and admin secrets.
+- `IM_DEV_MODE` defaults to false and development mode can bind only to loopback. Startup rejects a missing/weak JWT; when the administrator table is empty it also rejects missing or invalid administrator bootstrap credentials.
 - Refresh tokens are one-time rotating sessions persisted in PostgreSQL; reuse, logout, and account bans revoke them.
 - WuKongIM provides message long connections and CMD delivery; LiveKit provides media signaling and transport. Redis remains a business cache/task coordination dependency, never the unique copy of a message.
 - Production requires HTTPS OTP and push webhooks with high-entropy bearer tokens. OTP gateway endpoints are `POST <base>/request` and `POST <base>/verify`; the push gateway receives a bounded outbox item with up to 20 registered devices.

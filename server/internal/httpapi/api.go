@@ -1467,13 +1467,22 @@ func (x *API) adminLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 429, "RATE_LIMITED", "too many administrator login attempts")
 		return
 	}
-	var p struct{ Email, Password string }
+	var p struct {
+		Username string          `json:"username"`
+		Password string          `json:"password"`
+		Email    json.RawMessage `json:"email"`
+	}
 	if decode(r, &p) != nil {
 		x.app.RecordAdminAudit("unknown", "admin.login", "admin_session", "login", "failed", x.clientIP(r), map[string]any{"reason": "invalid request"})
 		writeError(w, 400, "INVALID_ARGUMENT", "invalid request")
 		return
 	}
-	account, err := x.app.AuthenticateAdmin(r.Context(), p.Email, p.Password)
+	if len(p.Email) > 0 {
+		x.app.RecordAdminAudit("unknown", "admin.login", "admin_session", "login", "failed", x.clientIP(r), map[string]any{"reason": "legacy email login rejected"})
+		writeError(w, 401, "UNAUTHENTICATED", "invalid administrator credentials")
+		return
+	}
+	account, err := x.app.AuthenticateAdmin(r.Context(), p.Username, p.Password)
 	if err != nil {
 		if app.IsAdminCredentialError(err) {
 			x.app.RecordAdminAudit("unknown", "admin.login", "admin_session", "login", "failed", x.clientIP(r), map[string]any{"reason": "invalid credentials"})
@@ -1496,7 +1505,11 @@ func (x *API) adminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	x.app.RecordAdminAudit(account.ID, "admin.login", "admin_session", "login", "success", x.clientIP(r), map[string]any{"role": account.RoleID})
-	write(w, 200, map[string]any{"accessToken": token, "expiresIn": 900, "id": account.ID, "email": account.Email, "displayName": account.DisplayName, "roleId": account.RoleID, "roleName": account.RoleName, "permissions": account.Permissions})
+	response := map[string]any{"accessToken": token, "expiresIn": 900, "id": account.ID, "username": account.Username, "displayName": account.DisplayName, "roleId": account.RoleID, "roleName": account.RoleName, "permissions": account.Permissions}
+	if account.Email != "" {
+		response["email"] = account.Email
+	}
+	write(w, 200, response)
 }
 func (x *API) refresh(w http.ResponseWriter, r *http.Request) {
 	var p struct{ RefreshToken string }

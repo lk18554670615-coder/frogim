@@ -25,7 +25,7 @@ var normalizedSchema string
 
 type Postgres struct{ pool *pgxpool.Pool }
 
-const schemaVersion = 56
+const schemaVersion = 57
 
 type PostgresOptions struct {
 	MaxConns          int32
@@ -138,6 +138,14 @@ func (p *Postgres) migrate(ctx context.Context) error {
 				SET payload='{}'::jsonb
 				WHERE status IN ('completed','failed') AND payload<>'{}'::jsonb;
 			`); err != nil {
+				return err
+			}
+		}
+		if current < 57 {
+			// Administrator login moved from email to a dedicated username in
+			// schema 57. Invalidate every existing administrator JWT exactly once
+			// after normalizedSchema has backfilled and constrained usernames.
+			if _, err = tx.Exec(ctx, `UPDATE im_admin_accounts SET auth_version=auth_version+1,updated_at=now()`); err != nil {
 				return err
 			}
 		}

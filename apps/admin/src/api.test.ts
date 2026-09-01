@@ -147,10 +147,10 @@ describe('live API adapter', () => {
       json: async () => ({ error: { code: 'UNAUTHENTICATED', message: 'invalid credentials' } }),
     })));
 
-    await expect(loginAdmin('ops@example.com', 'wrong-password')).rejects.toEqual(expect.objectContaining({
+    await expect(loginAdmin('ops', 'wrong-password')).rejects.toEqual(expect.objectContaining({
       status: 401,
       code: 'INVALID_CREDENTIALS',
-      message: '邮箱或密码不正确',
+      message: '账号或密码不正确',
       requestId: 'req-login',
     }));
     expect(unauthorized).not.toHaveBeenCalled();
@@ -173,13 +173,13 @@ describe('live API adapter', () => {
   it('适配数据库管理员登录会话和动态权限', async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => ({
       ok: true, status: 200, headers: new Headers(),
-      json: async () => ({ data: { accessToken: 'jwt', id: 'admin_1', email: 'ops@example.com', displayName: '运营管理员', roleId: 'custom_ops', roleName: '运营值班', permissions: ['users.write'], expiresIn: 600 } }),
+      json: async () => ({ data: { accessToken: 'jwt', id: 'admin_1', username: 'ops', email: 'ops@example.com', displayName: '运营管理员', roleId: 'custom_ops', roleName: '运营值班', permissions: ['users.write'], expiresIn: 600 } }),
     }));
     vi.stubGlobal('fetch', fetchMock);
-    const result = await loginAdmin('ops@example.com', 'password');
+    const result = await loginAdmin('ops', 'password');
     expect(result).toEqual(expect.objectContaining({ token: 'jwt', id: 'admin_1', displayName: '运营管理员', roleId: 'custom_ops', roleName: '运营值班', permissions: ['users.write'] }));
     const init = fetchMock.mock.calls[0][1] as RequestInit;
-    expect(JSON.parse(String(init.body))).toEqual({ email: 'ops@example.com', password: 'password' });
+    expect(JSON.parse(String(init.body))).toEqual({ username: 'ops', password: 'password' });
   });
 
   it('传递真实举报处置动作并消费处理结果', async () => {

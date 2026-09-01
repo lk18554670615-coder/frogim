@@ -279,13 +279,18 @@ case "${BACKUP_OFFSITE_ENABLED:-}" in
     ;;
 esac
 
-if [[ -n "${IM_ADMIN_EMAIL:-}" && -z "${IM_ADMIN_PASSWORD_HASH:-}" ]] || [[ -z "${IM_ADMIN_EMAIL:-}" && -n "${IM_ADMIN_PASSWORD_HASH:-}" ]]; then
-  echo "IM_ADMIN_EMAIL and IM_ADMIN_PASSWORD_HASH must be provided together for an empty administrator table" >&2
+if [[ -n "${IM_ADMIN_USERNAME:-}" && -z "${IM_ADMIN_PASSWORD_HASH:-}" ]] || [[ -z "${IM_ADMIN_USERNAME:-}" && -n "${IM_ADMIN_PASSWORD_HASH:-}" ]]; then
+  echo "IM_ADMIN_USERNAME and IM_ADMIN_PASSWORD_HASH must be provided together for an empty administrator table" >&2
   failed=1
 fi
 
-if [[ -n "${IM_ADMIN_EMAIL:-}" && ! "${IM_ADMIN_EMAIL:-}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; then
-  echo "IM_ADMIN_EMAIL must be a valid administrator email address" >&2
+if [[ -n "${IM_ADMIN_USERNAME:-}" && ! "${IM_ADMIN_USERNAME:-}" =~ ^[a-z0-9][a-z0-9._-]{1,30}[a-z0-9]$ ]]; then
+  echo "IM_ADMIN_USERNAME must be 3-32 lowercase letters, digits, dots, underscores or hyphens, starting and ending with a letter or digit" >&2
+  failed=1
+fi
+
+if [[ -n "${IM_ADMIN_CONTACT_EMAIL:-}" && ! "${IM_ADMIN_CONTACT_EMAIL:-}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; then
+  echo "IM_ADMIN_CONTACT_EMAIL must be a valid optional contact email address" >&2
   failed=1
 fi
 

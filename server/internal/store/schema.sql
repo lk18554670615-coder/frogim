@@ -406,7 +406,8 @@ CREATE TABLE IF NOT EXISTS im_admin_role_permissions(
 );
 CREATE TABLE IF NOT EXISTS im_admin_accounts(
  id text PRIMARY KEY,
- email text NOT NULL,
+ username text NOT NULL,
+ email text,
  display_name text NOT NULL,
  password_hash text NOT NULL,
  role_id text NOT NULL REFERENCES im_admin_roles(id),
@@ -419,7 +420,23 @@ CREATE TABLE IF NOT EXISTS im_admin_accounts(
  updated_at timestamptz NOT NULL DEFAULT now(),
  disabled_at timestamptz
 );
-CREATE UNIQUE INDEX IF NOT EXISTS im_admin_accounts_email_unique_idx ON im_admin_accounts(lower(email));
+ALTER TABLE im_admin_accounts ADD COLUMN IF NOT EXISTS username text;
+ALTER TABLE im_admin_accounts ALTER COLUMN email DROP NOT NULL;
+UPDATE im_admin_accounts SET email=NULL WHERE email IS NOT NULL AND btrim(email)='';
+UPDATE im_admin_accounts
+SET username=CASE
+ WHEN lower(COALESCE(email,''))='admin@nexachat.local' THEN 'admin'
+ ELSE 'admin_'||substr(md5(id),1,24)
+END
+WHERE username IS NULL OR btrim(username)='';
+ALTER TABLE im_admin_accounts ALTER COLUMN username SET NOT NULL;
+ALTER TABLE im_admin_accounts DROP CONSTRAINT IF EXISTS im_admin_accounts_username_check;
+ALTER TABLE im_admin_accounts ADD CONSTRAINT im_admin_accounts_username_check
+ CHECK(username=lower(username) AND username ~ '^[a-z0-9][a-z0-9._-]{1,30}[a-z0-9]$');
+CREATE UNIQUE INDEX IF NOT EXISTS im_admin_accounts_username_unique_idx ON im_admin_accounts(lower(username));
+DROP INDEX IF EXISTS im_admin_accounts_email_unique_idx;
+CREATE UNIQUE INDEX im_admin_accounts_email_unique_idx ON im_admin_accounts(lower(email))
+ WHERE email IS NOT NULL AND btrim(email)<>'';
 CREATE INDEX IF NOT EXISTS im_admin_accounts_status_created_idx ON im_admin_accounts(status,created_at DESC,id DESC);
 INSERT INTO im_admin_roles(id,name,description,built_in,created_by) VALUES
  ('platform_admin','平台管理员','拥有全部后台权限','true','system'),

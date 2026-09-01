@@ -5,7 +5,7 @@ The operations console covers service overview, users, groups, reports, sensitiv
 ## Security and environments
 
 - Development, test and production builds all use the live API adapter; the application has no demo selector or runtime demo data mode.
-- Administrators sign in with a database-backed email and password. Only the short-lived JWT returned by the server is kept in `sessionStorage`; passwords are never persisted. The console refreshes the current role and permissions through `/auth/me` when it starts.
+- Administrators sign in with a database-backed username and password. Email is an optional contact field and is not a login identifier. Only the short-lived JWT returned by the server is kept in `sessionStorage`; passwords are never persisted. The console refreshes the current role and permissions through `/auth/me` when it starts.
 - A 401 expires the current session; nested API errors and request IDs are shown to the operator.
 - UI permissions improve clarity, but the service remains the authorization boundary.
 - Destructive actions require confirmation and show explicit success or failure feedback.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/mail"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,19 +16,30 @@ import (
 type adminScanner interface{ Scan(...any) error }
 
 const adminAccountSelect = `
-SELECT a.id,a.email,a.display_name,a.password_hash,a.role_id,r.name,a.status,a.auth_version,
+SELECT a.id,a.username,COALESCE(a.email,''),a.display_name,a.password_hash,a.role_id,r.name,a.status,a.auth_version,
        COALESCE((SELECT array_agg(p.permission ORDER BY p.permission) FROM im_admin_role_permissions p WHERE p.role_id=a.role_id),ARRAY[]::text[]),
        a.last_login_at,a.password_updated_at,a.created_by,a.created_at,a.updated_at,a.disabled_at
 FROM im_admin_accounts a JOIN im_admin_roles r ON r.id=a.role_id`
 
 func scanAdminAccount(row adminScanner) (*AdminAccount, error) {
 	item := &AdminAccount{}
-	err := row.Scan(&item.ID, &item.Email, &item.DisplayName, &item.PasswordHash, &item.RoleID, &item.RoleName, &item.Status, &item.AuthVersion,
+	err := row.Scan(&item.ID, &item.Username, &item.Email, &item.DisplayName, &item.PasswordHash, &item.RoleID, &item.RoleName, &item.Status, &item.AuthVersion,
 		&item.Permissions, &item.LastLoginAt, &item.PasswordUpdatedAt, &item.CreatedBy, &item.CreatedAt, &item.UpdatedAt, &item.DisabledAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	return item, err
+}
+
+var storedAdminUsernamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{1,30}[a-z0-9]$`)
+
+func normalizeStoredAdminEmail(value string) (string, bool) {
+	email := strings.ToLower(strings.TrimSpace(value))
+	if email == "" {
+		return "", true
+	}
+	address, err := mail.ParseAddress(email)
+	return email, err == nil && address.Address == email && len(email) <= 254
 }
 
 func (p *Postgres) BootstrapAdmin(ctx context.Context, input AdminAccountCreate) (bool, error) {
@@ -46,9 +58,9 @@ func (p *Postgres) BootstrapAdmin(ctx context.Context, input AdminAccountCreate)
 	if count > 0 {
 		return false, tx.Commit(ctx)
 	}
-	email := strings.ToLower(strings.TrimSpace(input.Email))
-	address, emailErr := mail.ParseAddress(email)
-	if strings.TrimSpace(input.ID) == "" || emailErr != nil || address.Address != email || len(email) > 254 || !strings.HasPrefix(input.PasswordHash, "$2") || strings.TrimSpace(input.RoleID) == "" {
+	username := strings.ToLower(strings.TrimSpace(input.Username))
+	email, emailOK := normalizeStoredAdminEmail(input.Email)
+	if strings.TrimSpace(input.ID) == "" || !storedAdminUsernamePattern.MatchString(username) || !emailOK || !strings.HasPrefix(input.PasswordHash, "$2") || strings.TrimSpace(input.RoleID) == "" {
 		return false, fmt.Errorf("administrator database is empty and bootstrap credentials are incomplete")
 	}
 	var roleExists bool
@@ -66,16 +78,16 @@ func (p *Postgres) BootstrapAdmin(ctx context.Context, input AdminAccountCreate)
 	if displayName == "" {
 		displayName = input.ID
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO im_admin_accounts(id,email,display_name,password_hash,role_id,status,auth_version,password_updated_at,created_by,created_at,updated_at)
-		VALUES($1,$2,$3,$4,$5,'active',1,$6,'bootstrap',$6,$6)`, input.ID, email, displayName, input.PasswordHash, input.RoleID, at)
+	_, err = tx.Exec(ctx, `INSERT INTO im_admin_accounts(id,username,email,display_name,password_hash,role_id,status,auth_version,password_updated_at,created_by,created_at,updated_at)
+		VALUES($1,$2,NULLIF($3,''),$4,$5,$6,'active',1,$7,'bootstrap',$7,$7)`, input.ID, username, email, displayName, input.PasswordHash, input.RoleID, at)
 	if err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
 }
 
-func (p *Postgres) AdminAccountByEmail(ctx context.Context, email string) (*AdminAccount, error) {
-	return scanAdminAccount(p.pool.QueryRow(ctx, adminAccountSelect+` WHERE lower(a.email)=lower($1)`, strings.TrimSpace(email)))
+func (p *Postgres) AdminAccountByUsername(ctx context.Context, username string) (*AdminAccount, error) {
+	return scanAdminAccount(p.pool.QueryRow(ctx, adminAccountSelect+` WHERE lower(a.username)=lower($1)`, strings.TrimSpace(username)))
 }
 
 func (p *Postgres) AdminAccountByID(ctx context.Context, id string) (*AdminAccount, error) {
@@ -93,12 +105,12 @@ func (p *Postgres) ListAdminAccounts(ctx context.Context, query, status, cursor 
 	}
 	var total int64
 	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_admin_accounts a JOIN im_admin_roles r ON r.id=a.role_id
-		WHERE ($1='' OR a.email ILIKE '%'||$1||'%' OR a.display_name ILIKE '%'||$1||'%' OR a.id ILIKE '%'||$1||'%' OR r.name ILIKE '%'||$1||'%')
+		WHERE ($1='' OR a.username ILIKE '%'||$1||'%' OR COALESCE(a.email,'') ILIKE '%'||$1||'%' OR a.display_name ILIKE '%'||$1||'%' OR a.id ILIKE '%'||$1||'%' OR r.name ILIKE '%'||$1||'%')
 		AND ($2='' OR a.status=$2)`, query, status).Scan(&total); err != nil {
 		return nil, 0, "", err
 	}
 	rows, err := p.pool.Query(ctx, adminAccountSelect+`
-		WHERE ($1='' OR a.email ILIKE '%'||$1||'%' OR a.display_name ILIKE '%'||$1||'%' OR a.id ILIKE '%'||$1||'%' OR r.name ILIKE '%'||$1||'%')
+		WHERE ($1='' OR a.username ILIKE '%'||$1||'%' OR COALESCE(a.email,'') ILIKE '%'||$1||'%' OR a.display_name ILIKE '%'||$1||'%' OR a.id ILIKE '%'||$1||'%' OR r.name ILIKE '%'||$1||'%')
 		AND ($2='' OR a.status=$2) AND ($3='' OR a.id>$3) ORDER BY a.id LIMIT $4`, query, status, cursor, limit+1)
 	if err != nil {
 		return nil, 0, "", err
@@ -138,8 +150,8 @@ func adminConstraintError(err error) error {
 
 func (p *Postgres) CreateAdminAccount(ctx context.Context, input AdminAccountCreate) (*AdminAccount, error) {
 	at := input.At.UTC()
-	_, err := p.pool.Exec(ctx, `INSERT INTO im_admin_accounts(id,email,display_name,password_hash,role_id,status,auth_version,password_updated_at,created_by,created_at,updated_at)
-		VALUES($1,lower($2),$3,$4,$5,'active',1,$6,$7,$6,$6)`, input.ID, input.Email, input.DisplayName, input.PasswordHash, input.RoleID, at, input.CreatedBy)
+	_, err := p.pool.Exec(ctx, `INSERT INTO im_admin_accounts(id,username,email,display_name,password_hash,role_id,status,auth_version,password_updated_at,created_by,created_at,updated_at)
+		VALUES($1,lower($2),NULLIF(lower(btrim($3)),''),$4,$5,$6,'active',1,$7,$8,$7,$7)`, input.ID, input.Username, input.Email, input.DisplayName, input.PasswordHash, input.RoleID, at, input.CreatedBy)
 	if err != nil {
 		return nil, adminConstraintError(err)
 	}
@@ -193,9 +205,11 @@ func (p *Postgres) UpdateAdminAccount(ctx context.Context, input AdminAccountUpd
 		return nil, ErrNotFound
 	}
 	_, err = tx.Exec(ctx, `UPDATE im_admin_accounts SET
-		email=COALESCE($2,email),display_name=COALESCE($3,display_name),role_id=$4,status=$5,
-		auth_version=auth_version+1,updated_at=$6,disabled_at=CASE WHEN $5='disabled' THEN COALESCE(disabled_at,$6) ELSE NULL END
-		WHERE id=$1`, input.ID, input.Email, input.DisplayName, nextRole, nextStatus, input.At.UTC())
+		username=COALESCE(lower($2),username),
+		email=CASE WHEN $3::text IS NULL THEN email ELSE NULLIF(lower(btrim($3)),'') END,
+		display_name=COALESCE($4,display_name),role_id=$5,status=$6,
+		auth_version=auth_version+1,updated_at=$7,disabled_at=CASE WHEN $6='disabled' THEN COALESCE(disabled_at,$7) ELSE NULL END
+		WHERE id=$1`, input.ID, input.Username, input.Email, input.DisplayName, nextRole, nextStatus, input.At.UTC())
 	if err != nil {
 		return nil, adminConstraintError(err)
 	}
