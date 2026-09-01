@@ -14,8 +14,8 @@ import (
 )
 
 func TestAdminIdentitySchemaIsVersioned(t *testing.T) {
-	if schemaVersion != 55 {
-		t.Fatalf("group governance migration must be schema version 55, got %d", schemaVersion)
+	if schemaVersion != 56 {
+		t.Fatalf("device-type session migration must be schema version 56, got %d", schemaVersion)
 	}
 	for _, statement := range []string{
 		"CREATE TABLE IF NOT EXISTS im_admin_accounts",
@@ -26,6 +26,9 @@ func TestAdminIdentitySchemaIsVersioned(t *testing.T) {
 		"('support','只读支持'",
 		"ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS banned",
 		"CREATE TABLE IF NOT EXISTS im_group_blacklist",
+		"ALTER TABLE im_refresh_sessions ADD COLUMN IF NOT EXISTS session_id",
+		"ALTER TABLE im_refresh_sessions ADD COLUMN IF NOT EXISTS device_kind",
+		"im_refresh_sessions_active_device_idx",
 	} {
 		if !strings.Contains(normalizedSchema, statement) {
 			t.Fatalf("administrator schema is missing %q", statement)

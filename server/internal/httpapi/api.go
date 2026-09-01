@@ -132,6 +132,8 @@ func qrLoginSecretHash(value string) []byte {
 
 const userKey ctxKey = "user"
 const roleKey ctxKey = "role"
+const sessionIDKey ctxKey = "session_id"
+const deviceKindKey ctxKey = "device_kind"
 
 func New(cfg config.Config, a *app.App) *API {
 	if cfg.CallInviteTTL == 0 {
@@ -762,27 +764,51 @@ func (x *API) originAllowed(origin string) bool {
 func (x *API) clientIP(r *http.Request) string { return netutil.ClientIP(r, x.cfg.TrustProxy) }
 func (x *API) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		uid, err := x.parseRequestToken(r)
+		claims, err := x.parseRequestClaims(r)
 		if err != nil {
 			writeError(w, 401, "UNAUTHENTICATED", err.Error())
 			return
 		}
-		u, err := x.app.UserContext(r.Context(), uid)
+		u, err := x.app.UserContext(r.Context(), claims.Subject)
 		if err != nil || u.Banned {
 			writeError(w, 403, "FORBIDDEN", "account unavailable")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, uid)))
+		if active, sessionErr := x.deviceSessionActive(claims); sessionErr != nil {
+			handleErr(w, sessionErr)
+			return
+		} else if !active {
+			writeError(w, http.StatusUnauthorized, "SESSION_REPLACED", "this device type signed in again")
+			return
+		}
+		ctx := context.WithValue(r.Context(), userKey, claims.Subject)
+		ctx = context.WithValue(ctx, sessionIDKey, claims.SessionID)
+		ctx = context.WithValue(ctx, deviceKindKey, claims.DeviceKind)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 func (x *API) requireUserToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userID, err := x.parseRequestToken(r)
+		claims, err := x.parseRequestClaims(r)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "UNAUTHENTICATED", err.Error())
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, userID)))
+		if user, userErr := x.app.UserContext(r.Context(), claims.Subject); userErr == nil && user.DeletedAt != nil {
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, claims.Subject)))
+			return
+		}
+		if active, sessionErr := x.deviceSessionActive(claims); sessionErr != nil {
+			handleErr(w, sessionErr)
+			return
+		} else if !active {
+			writeError(w, http.StatusUnauthorized, "SESSION_REPLACED", "this device type signed in again")
+			return
+		}
+		ctx := context.WithValue(r.Context(), userKey, claims.Subject)
+		ctx = context.WithValue(ctx, sessionIDKey, claims.SessionID)
+		ctx = context.WithValue(ctx, deviceKindKey, claims.DeviceKind)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 func (x *API) requireAdmin(next http.Handler) http.Handler {
@@ -909,11 +935,30 @@ func adminWriteControl(r *http.Request) (reason string, err error) {
 	return reason, nil
 }
 func (x *API) parseRequestToken(r *http.Request) (string, error) {
+	claims, err := x.parseRequestClaims(r)
+	if err != nil {
+		return "", err
+	}
+	return claims.Subject, nil
+}
+func (x *API) parseRequestClaims(r *http.Request) (*auth.Claims, error) {
 	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if raw == "" {
-		return "", errors.New("missing access token")
+		return nil, errors.New("missing access token")
 	}
-	return x.auth.Parse(raw, "access")
+	return x.auth.ParseClaims(raw, "access")
+}
+func (x *API) deviceSessionActive(claims *auth.Claims) (bool, error) {
+	// Persistent deployments reject pre-device-session tokens. The in-memory
+	// test store keeps them only for isolated protocol tests that issue JWTs
+	// without creating a refresh-session row.
+	if claims.SessionID == "" && claims.DeviceKind == "" {
+		return x.app.LegacySessionsAllowed(), nil
+	}
+	if claims.SessionID == "" || claims.DeviceKind == "" {
+		return false, nil
+	}
+	return x.app.DeviceSessionActive(claims.SessionID, claims.Subject, claims.DeviceKind)
 }
 func uid(r *http.Request) string { v, _ := r.Context().Value(userKey).(string); return v }
 func decode(r *http.Request, v any) error {
@@ -1068,13 +1113,14 @@ func (x *API) login(w http.ResponseWriter, r *http.Request) {
 	x.issueUserSession(w, r, u)
 }
 func (x *API) issueUserSession(w http.ResponseWriter, r *http.Request, u *model.User) {
-	imSession, err := x.issueIMSession(r.Context(), u.ID, r.Header.Get("X-Client-Platform"))
+	platform := r.Header.Get("X-Client-Platform")
+	imSession, err := x.issueIMSession(r.Context(), u.ID, platform)
 	if err != nil {
 		slog.Warn("WuKongIM user provisioning failed", "user_id", u.ID, "error", err)
 		writeError(w, http.StatusServiceUnavailable, "IM_UNAVAILABLE", "instant messaging service is temporarily unavailable")
 		return
 	}
-	a, refresh, err := x.auth.Issue(u.ID)
+	a, refresh, sessionID, err := x.auth.IssueDeviceSession(u.ID, deviceKindForPlatform(platform))
 	if err != nil {
 		handleErr(w, err)
 		return
@@ -1085,7 +1131,7 @@ func (x *API) issueUserSession(w http.ResponseWriter, r *http.Request, u *model.
 		return
 	}
 	sum := sha256.Sum256([]byte(refresh))
-	if err = x.app.CreateRefreshSession(refreshClaims.ID, u.ID, sum[:], refreshClaims.ExpiresAt.Time); err != nil {
+	if err = x.app.CreateDeviceRefreshSession(refreshClaims.ID, sessionID, u.ID, refreshClaims.DeviceKind, sum[:], refreshClaims.ExpiresAt.Time); err != nil {
 		handleErr(w, err)
 		return
 	}
@@ -1395,6 +1441,20 @@ func (x *API) logout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 401, "UNAUTHENTICATED", "invalid refresh token")
 		return
 	}
+	requestSession, _ := r.Context().Value(sessionIDKey).(string)
+	requestDevice, _ := r.Context().Value(deviceKindKey).(string)
+	if requestSession != "" && (claims.SessionID != requestSession || claims.DeviceKind != requestDevice) {
+		writeError(w, 401, "UNAUTHENTICATED", "refresh token belongs to another session")
+		return
+	}
+	if claims.DeviceKind != "" {
+		if err = x.app.RevokeDeviceRefreshSessions(claims.Subject, claims.DeviceKind); err != nil {
+			handleErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if err = x.app.RevokeRefreshSession(claims.ID, claims.Subject); err != nil && err != app.ErrNotFound {
 		handleErr(w, err)
 		return
@@ -1450,18 +1510,25 @@ func (x *API) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := claims.Subject
+	deviceKind := deviceKindForPlatform(r.Header.Get("X-Client-Platform"))
+	if claims.DeviceKind != "" && claims.DeviceKind != deviceKind {
+		writeError(w, http.StatusUnauthorized, "DEVICE_TYPE_MISMATCH", "refresh token belongs to another device type")
+		return
+	}
 	u, err := x.app.User(user)
 	if err != nil || u.Banned {
 		writeError(w, 403, "FORBIDDEN", "account unavailable")
 		return
 	}
-	imSession, err := x.issueIMSession(r.Context(), user, r.Header.Get("X-Client-Platform"))
-	if err != nil {
-		slog.Warn("WuKongIM user reprovisioning failed", "user_id", user, "error", err)
-		writeError(w, http.StatusServiceUnavailable, "IM_UNAVAILABLE", "instant messaging service is temporarily unavailable")
+	if claims.SessionID == "" {
+		if !x.app.LegacySessionsAllowed() {
+			writeError(w, http.StatusUnauthorized, "SESSION_REPLACED", "legacy session must sign in again")
+			return
+		}
+		x.refreshLegacySession(w, r, claims)
 		return
 	}
-	a, refresh, err := x.auth.Issue(user)
+	a, refresh, err := x.auth.RotateDeviceSession(user, claims.SessionID, claims.DeviceKind)
 	if err != nil {
 		handleErr(w, err)
 		return
@@ -1472,9 +1539,14 @@ func (x *API) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sum := sha256.Sum256([]byte(refresh))
-	if err = x.app.RotateRefreshSession(claims.ID, newClaims.ID, user, sum[:], newClaims.ExpiresAt.Time); err != nil {
-		_ = x.app.RevokeAllRefreshSessions(user)
+	if err = x.app.RotateDeviceRefreshSession(claims.ID, newClaims.ID, claims.SessionID, user, claims.DeviceKind, sum[:], newClaims.ExpiresAt.Time); err != nil {
 		writeError(w, 401, "REFRESH_REUSED", "refresh token is revoked or already used")
+		return
+	}
+	imSession, err := x.issueIMSession(r.Context(), user, r.Header.Get("X-Client-Platform"))
+	if err != nil {
+		slog.Warn("WuKongIM user reprovisioning failed", "user_id", user, "error", err)
+		writeError(w, http.StatusServiceUnavailable, "IM_UNAVAILABLE", "instant messaging service is temporarily unavailable")
 		return
 	}
 	response := map[string]any{"accessToken": a, "refreshToken": refresh, "expiresIn": int(x.cfg.AccessTTL.Seconds())}
@@ -1482,6 +1554,36 @@ func (x *API) refresh(w http.ResponseWriter, r *http.Request) {
 		response["imSession"] = imSession
 	}
 	write(w, 200, response)
+}
+
+func (x *API) refreshLegacySession(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	deviceKind := deviceKindForPlatform(r.Header.Get("X-Client-Platform"))
+	a, refresh, sessionID, err := x.auth.IssueDeviceSession(claims.Subject, deviceKind)
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	newClaims, err := x.auth.ParseClaims(refresh, "refresh")
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	sum := sha256.Sum256([]byte(refresh))
+	if err = x.app.CreateDeviceRefreshSession(newClaims.ID, sessionID, claims.Subject, deviceKind, sum[:], newClaims.ExpiresAt.Time); err != nil {
+		handleErr(w, err)
+		return
+	}
+	_ = x.app.RevokeRefreshSession(claims.ID, claims.Subject)
+	imSession, err := x.issueIMSession(r.Context(), claims.Subject, r.Header.Get("X-Client-Platform"))
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "IM_UNAVAILABLE", "instant messaging service is temporarily unavailable")
+		return
+	}
+	response := map[string]any{"accessToken": a, "refreshToken": refresh, "expiresIn": int(x.cfg.AccessTTL.Seconds())}
+	if imSession != nil {
+		response["imSession"] = imSession
+	}
+	write(w, http.StatusOK, response)
 }
 
 func (x *API) issueIMSession(ctx context.Context, userID, platform string) (*wukong.ImSession, error) {
@@ -1509,6 +1611,19 @@ func (x *API) requireClientPlatform(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func deviceKindForPlatform(platform string) string {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "android", "ios":
+		return "app"
+	case "web":
+		return "web"
+	case "macos":
+		return "desktop"
+	default:
+		return ""
+	}
+}
+
 func (x *API) imSession(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Platform string `json:"platform"`
@@ -1519,6 +1634,10 @@ func (x *API) imSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(request.Platform) == "" {
 		request.Platform = r.Header.Get("X-Client-Platform")
+	}
+	if requestDevice, _ := r.Context().Value(deviceKindKey).(string); requestDevice != "" && deviceKindForPlatform(request.Platform) != requestDevice {
+		writeError(w, http.StatusForbidden, "DEVICE_TYPE_MISMATCH", "IM session belongs to another device type")
+		return
 	}
 	session, err := x.issueIMSession(r.Context(), uid(r), request.Platform)
 	if err != nil {

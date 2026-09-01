@@ -2087,6 +2087,60 @@ func TestRefreshRotationLogoutAndAdminRBAC(t *testing.T) {
 	_ = res.Body.Close()
 }
 
+func TestSameDeviceTypeLoginReplacesBusinessSessionAndDifferentTypesCoexist(t *testing.T) {
+	a, _ := app.New(context.Background(), teststore.Memory{})
+	_ = a.SeedDemo()
+	cfg := config.Config{JWTSecret: strings.Repeat("s", 32), DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
+	ts := httptest.NewServer(New(cfg, a).Handler())
+	defer ts.Close()
+	loginBody := `{"phone":"13800000001","code":"654321"}`
+
+	androidResponse := publicPlatformPost(t, ts.URL+"/v2/auth/login", "android", loginBody)
+	var android struct{ AccessToken, RefreshToken string }
+	_ = json.NewDecoder(androidResponse.Body).Decode(&android)
+	androidResponse.Body.Close()
+	if android.AccessToken == "" {
+		t.Fatal("android login did not return an access token")
+	}
+
+	// iOS and Android are both WuKongIM App devices, so the iOS login replaces
+	// the Android business session even though they are different physical OSes.
+	iosResponse := publicPlatformPost(t, ts.URL+"/v2/auth/login", "ios", loginBody)
+	var ios struct{ AccessToken, RefreshToken string }
+	_ = json.NewDecoder(iosResponse.Body).Decode(&ios)
+	iosResponse.Body.Close()
+	oldRequest := authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/users/me", android.AccessToken, "")
+	var oldBody map[string]any
+	_ = json.NewDecoder(oldRequest.Body).Decode(&oldBody)
+	oldRequest.Body.Close()
+	if oldRequest.StatusCode != http.StatusUnauthorized || !strings.Contains(fmt.Sprint(oldBody), "SESSION_REPLACED") {
+		t.Fatalf("old App session status=%d body=%v", oldRequest.StatusCode, oldBody)
+	}
+	currentApp := authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/users/me", ios.AccessToken, "")
+	currentApp.Body.Close()
+	if currentApp.StatusCode != http.StatusOK {
+		t.Fatalf("replacement App session status=%d", currentApp.StatusCode)
+	}
+
+	webResponse := publicPlatformPost(t, ts.URL+"/v2/auth/login", "web", loginBody)
+	var web struct{ AccessToken string }
+	_ = json.NewDecoder(webResponse.Body).Decode(&web)
+	webResponse.Body.Close()
+	for name, token := range map[string]string{"app": ios.AccessToken, "web": web.AccessToken} {
+		response := authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/users/me", token, "")
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("%s session should coexist, status=%d", name, response.StatusCode)
+		}
+	}
+
+	oldRefresh := publicPlatformPost(t, ts.URL+"/v2/auth/refresh", "android", `{"refreshToken":"`+android.RefreshToken+`"}`)
+	oldRefresh.Body.Close()
+	if oldRefresh.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("replaced App refresh status=%d", oldRefresh.StatusCode)
+	}
+}
+
 func TestAdminUserManagementReturnsRealRelationsDevicesAndRejectsUnavailableSystemMessage(t *testing.T) {
 	a, err := app.New(context.Background(), teststore.Memory{})
 	if err != nil {

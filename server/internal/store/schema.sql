@@ -18,8 +18,17 @@ UPDATE im_users
 SET handle='gg_'||left(md5(id),20),handle_change_count=0,updated_at=now()
 WHERE handle IS NULL OR btrim(handle)='' OR lower(handle) ~ '^(ll|usr)_[a-z0-9]{12,}$';
 CREATE UNIQUE INDEX IF NOT EXISTS im_users_handle_unique_idx ON im_users(lower(handle)) WHERE handle IS NOT NULL;
-CREATE TABLE IF NOT EXISTS im_refresh_sessions(id text PRIMARY KEY,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,token_hash bytea NOT NULL,expires_at timestamptz NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),revoked_at timestamptz,replaced_by text);
+CREATE TABLE IF NOT EXISTS im_refresh_sessions(id text PRIMARY KEY,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,token_hash bytea NOT NULL,expires_at timestamptz NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),revoked_at timestamptz,replaced_by text,session_id text,device_kind text);
+ALTER TABLE im_refresh_sessions ADD COLUMN IF NOT EXISTS session_id text;
+ALTER TABLE im_refresh_sessions ADD COLUMN IF NOT EXISTS device_kind text;
+UPDATE im_refresh_sessions SET session_id=id WHERE session_id IS NULL OR btrim(session_id)='';
+UPDATE im_refresh_sessions SET device_kind='legacy:'||id WHERE device_kind IS NULL OR btrim(device_kind)='';
+UPDATE im_refresh_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE device_kind LIKE 'legacy:%';
+ALTER TABLE im_refresh_sessions ALTER COLUMN session_id SET NOT NULL;
+ALTER TABLE im_refresh_sessions ALTER COLUMN device_kind SET NOT NULL;
 CREATE INDEX IF NOT EXISTS im_refresh_sessions_user_idx ON im_refresh_sessions(user_id,expires_at DESC);
+CREATE INDEX IF NOT EXISTS im_refresh_sessions_active_session_idx ON im_refresh_sessions(user_id,device_kind,session_id) WHERE revoked_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS im_refresh_sessions_active_device_idx ON im_refresh_sessions(user_id,device_kind) WHERE revoked_at IS NULL;
 CREATE TABLE IF NOT EXISTS im_qr_login_tickets(
  id text PRIMARY KEY,
  qr_token_hash bytea UNIQUE NOT NULL,

@@ -64,6 +64,31 @@ void main() {
     },
   );
 
+  test('WuKong同类型踢线会同步清除业务登录状态', () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final gateway = FakeWukongGateway();
+    final repository = _repository(
+      MockClient((request) async {
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
+        return http.Response('{}', 404);
+      }),
+      gateway: gateway,
+    );
+    await repository.login('13800138000', '123456');
+    await repository.connect();
+    final expired = repository.events
+        .firstWhere((event) => event.type == ImEventType.sessionExpired)
+        .timeout(const Duration(seconds: 2));
+
+    gateway.setConnectionState(WukongConnectionState.kicked);
+
+    final event = await expired;
+    expect(event.payload['reason'], 'same_device_type_replaced');
+    expect(repository.currentUser, isNull);
+    expect(await repository.restoreSession(), isFalse);
+    await repository.close();
+  });
+
   test('聊天缓存在进程重启后仍可先于网络读取', () async {
     FlutterSecureStorage.setMockInitialValues({});
     var networkRequests = 0;

@@ -157,10 +157,10 @@ type App struct {
 	policyLoadedAt     atomic.Int64
 }
 type refreshSession struct {
-	UserID    string
-	Hash      []byte
-	ExpiresAt time.Time
-	Revoked   bool
+	UserID, SessionID, DeviceKind string
+	Hash                          []byte
+	ExpiresAt                     time.Time
+	Revoked                       bool
 }
 
 func New(ctx context.Context, p store.Persistence) (*App, error) {
@@ -4322,7 +4322,28 @@ func (a *App) CreateRefreshSession(id, uid string, hash []byte, exp time.Time) e
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.refreshSessions[id] = refreshSession{UserID: uid, Hash: append([]byte(nil), hash...), ExpiresAt: exp}
+	a.refreshSessions[id] = refreshSession{UserID: uid, SessionID: id, DeviceKind: "legacy:" + id, Hash: append([]byte(nil), hash...), ExpiresAt: exp}
+	return nil
+}
+
+func (a *App) CreateDeviceRefreshSession(id, sessionID, uid, deviceKind string, hash []byte, exp time.Time) error {
+	if id == "" || sessionID == "" || uid == "" || deviceKind == "" {
+		return ErrInvalid
+	}
+	if s, ok := a.persistence.(store.RefreshSessionStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		return mapStoreError(s.CreateDeviceRefreshSession(ctx, id, sessionID, uid, deviceKind, hash, exp))
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for key, current := range a.refreshSessions {
+		if current.UserID == uid && current.DeviceKind == deviceKind && !current.Revoked {
+			current.Revoked = true
+			a.refreshSessions[key] = current
+		}
+	}
+	a.refreshSessions[id] = refreshSession{UserID: uid, SessionID: sessionID, DeviceKind: deviceKind, Hash: append([]byte(nil), hash...), ExpiresAt: exp}
 	return nil
 }
 
@@ -4447,7 +4468,68 @@ func (a *App) RotateRefreshSession(oldID, newID, uid string, hash []byte, exp ti
 	}
 	old.Revoked = true
 	a.refreshSessions[oldID] = old
-	a.refreshSessions[newID] = refreshSession{UserID: uid, Hash: append([]byte(nil), hash...), ExpiresAt: exp}
+	a.refreshSessions[newID] = refreshSession{UserID: uid, SessionID: newID, DeviceKind: "legacy:" + newID, Hash: append([]byte(nil), hash...), ExpiresAt: exp}
+	return nil
+}
+func (a *App) RotateDeviceRefreshSession(oldID, newID, sessionID, uid, deviceKind string, hash []byte, exp time.Time) error {
+	if s, ok := a.persistence.(store.RefreshSessionStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := s.RotateDeviceRefreshSession(ctx, oldID, newID, sessionID, uid, deviceKind, hash, exp); err != nil {
+			return ErrForbidden
+		}
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	old, ok := a.refreshSessions[oldID]
+	if !ok || old.Revoked || old.UserID != uid || old.SessionID != sessionID || old.DeviceKind != deviceKind || time.Now().After(old.ExpiresAt) {
+		return ErrForbidden
+	}
+	old.Revoked = true
+	a.refreshSessions[oldID] = old
+	a.refreshSessions[newID] = refreshSession{UserID: uid, SessionID: sessionID, DeviceKind: deviceKind, Hash: append([]byte(nil), hash...), ExpiresAt: exp}
+	return nil
+}
+func (a *App) DeviceSessionActive(sessionID, uid, deviceKind string) (bool, error) {
+	if sessionID == "" || uid == "" || deviceKind == "" {
+		return false, nil
+	}
+	if s, ok := a.persistence.(store.RefreshSessionStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		return s.DeviceSessionActive(ctx, sessionID, uid, deviceKind)
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for _, current := range a.refreshSessions {
+		if current.UserID == uid && current.SessionID == sessionID && current.DeviceKind == deviceKind && !current.Revoked && time.Now().Before(current.ExpiresAt) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+func (a *App) LegacySessionsAllowed() bool {
+	// Only the in-memory test/development store may accept pre-device-session
+	// tokens. Persistent deployments fail closed so upgrading the server cannot
+	// leave old business sessions usable beside the new per-type session.
+	_, persistent := a.persistence.(store.RefreshSessionStore)
+	return !persistent
+}
+func (a *App) RevokeDeviceRefreshSessions(uid, deviceKind string) error {
+	if s, ok := a.persistence.(store.RefreshSessionStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		return s.RevokeDeviceRefreshSessions(ctx, uid, deviceKind)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for id, current := range a.refreshSessions {
+		if current.UserID == uid && current.DeviceKind == deviceKind {
+			current.Revoked = true
+			a.refreshSessions[id] = current
+		}
+	}
 	return nil
 }
 func (a *App) RevokeRefreshSession(id, uid string) error {

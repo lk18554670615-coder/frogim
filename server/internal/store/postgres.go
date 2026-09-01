@@ -25,7 +25,7 @@ var normalizedSchema string
 
 type Postgres struct{ pool *pgxpool.Pool }
 
-const schemaVersion = 55
+const schemaVersion = 56
 
 type PostgresOptions struct {
 	MaxConns          int32
@@ -527,7 +527,7 @@ func (p *Postgres) UpdatePassword(ctx context.Context, phone, hash string, updat
 	return tx.Commit(ctx)
 }
 func (p *Postgres) CreateRefreshSession(ctx context.Context, id, uid string, hash []byte, exp time.Time) error {
-	_, err := p.pool.Exec(ctx, `INSERT INTO im_refresh_sessions(id,user_id,token_hash,expires_at) VALUES($1,$2,$3,$4)`, id, uid, hash, exp)
+	_, err := p.pool.Exec(ctx, `INSERT INTO im_refresh_sessions(id,user_id,token_hash,expires_at,session_id,device_kind) VALUES($1,$2,$3,$4,$1,'legacy:'||$1)`, id, uid, hash, exp)
 	return err
 }
 func (p *Postgres) RotateRefreshSession(ctx context.Context, oldID, newID string, hash []byte, exp time.Time, uid string) error {
@@ -543,7 +543,7 @@ func (p *Postgres) RotateRefreshSession(ctx context.Context, oldID, newID string
 	if tag.RowsAffected() != 1 {
 		return ErrForbidden
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO im_refresh_sessions(id,user_id,token_hash,expires_at) VALUES($1,$2,$3,$4)`, newID, uid, hash, exp); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO im_refresh_sessions(id,user_id,token_hash,expires_at,session_id,device_kind) VALUES($1,$2,$3,$4,$1,'legacy:'||$1)`, newID, uid, hash, exp); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -557,6 +557,61 @@ func (p *Postgres) RevokeRefreshSession(ctx context.Context, id, uid string) err
 }
 func (p *Postgres) RevokeUserRefreshSessions(ctx context.Context, uid string) error {
 	_, err := p.pool.Exec(ctx, `UPDATE im_refresh_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1 AND revoked_at IS NULL`, uid)
+	return err
+}
+
+func (p *Postgres) CreateDeviceRefreshSession(ctx context.Context, id, sessionID, uid, deviceKind string, hash []byte, exp time.Time) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	// Serialise same-account logins so the newest successful login always owns
+	// the single active session for this WuKongIM device category.
+	var lockedUserID string
+	if err = tx.QueryRow(ctx, `SELECT id FROM im_users WHERE id=$1 FOR UPDATE`, uid).Scan(&lockedUserID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE im_refresh_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1 AND device_kind=$2 AND revoked_at IS NULL`, uid, deviceKind); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO im_refresh_sessions(id,user_id,token_hash,expires_at,session_id,device_kind) VALUES($1,$2,$3,$4,$5,$6)`, id, uid, hash, exp, sessionID, deviceKind); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (p *Postgres) RotateDeviceRefreshSession(ctx context.Context, oldID, newID, sessionID, uid, deviceKind string, hash []byte, exp time.Time) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var lockedUserID string
+	if err = tx.QueryRow(ctx, `SELECT id FROM im_users WHERE id=$1 FOR UPDATE`, uid).Scan(&lockedUserID); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE im_refresh_sessions SET revoked_at=now(),replaced_by=$2 WHERE id=$1 AND user_id=$3 AND session_id=$4 AND device_kind=$5 AND revoked_at IS NULL AND expires_at>now()`, oldID, newID, uid, sessionID, deviceKind)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrForbidden
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO im_refresh_sessions(id,user_id,token_hash,expires_at,session_id,device_kind) VALUES($1,$2,$3,$4,$5,$6)`, newID, uid, hash, exp, sessionID, deviceKind); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (p *Postgres) DeviceSessionActive(ctx context.Context, sessionID, uid, deviceKind string) (bool, error) {
+	var active bool
+	err := p.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_refresh_sessions WHERE user_id=$1 AND device_kind=$2 AND session_id=$3 AND revoked_at IS NULL AND expires_at>now())`, uid, deviceKind, sessionID).Scan(&active)
+	return active, err
+}
+
+func (p *Postgres) RevokeDeviceRefreshSessions(ctx context.Context, uid, deviceKind string) error {
+	_, err := p.pool.Exec(ctx, `UPDATE im_refresh_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1 AND device_kind=$2 AND revoked_at IS NULL`, uid, deviceKind)
 	return err
 }
 

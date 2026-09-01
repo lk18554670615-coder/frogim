@@ -224,6 +224,10 @@ type RefreshSessionStore interface {
 	RotateRefreshSession(context.Context, string, string, []byte, time.Time, string) error
 	RevokeRefreshSession(context.Context, string, string) error
 	RevokeUserRefreshSessions(context.Context, string) error
+	CreateDeviceRefreshSession(context.Context, string, string, string, string, []byte, time.Time) error
+	RotateDeviceRefreshSession(context.Context, string, string, string, string, string, []byte, time.Time) error
+	DeviceSessionActive(context.Context, string, string, string) (bool, error)
+	RevokeDeviceRefreshSessions(context.Context, string, string) error
 }
 type QRLoginTicket struct {
 	ID, UserID, ClientPlatform, ClientName string
@@ -565,6 +569,30 @@ func (p *WithRedis) RevokeRefreshSession(ctx context.Context, id, uid string) er
 func (p *WithRedis) RevokeUserRefreshSessions(ctx context.Context, uid string) error {
 	if s, ok := p.base.(RefreshSessionStore); ok {
 		return s.RevokeUserRefreshSessions(ctx, uid)
+	}
+	return ErrUnsupported
+}
+func (p *WithRedis) CreateDeviceRefreshSession(ctx context.Context, id, sessionID, uid, deviceKind string, hash []byte, exp time.Time) error {
+	if s, ok := p.base.(RefreshSessionStore); ok {
+		return s.CreateDeviceRefreshSession(ctx, id, sessionID, uid, deviceKind, hash, exp)
+	}
+	return ErrUnsupported
+}
+func (p *WithRedis) RotateDeviceRefreshSession(ctx context.Context, oldID, newID, sessionID, uid, deviceKind string, hash []byte, exp time.Time) error {
+	if s, ok := p.base.(RefreshSessionStore); ok {
+		return s.RotateDeviceRefreshSession(ctx, oldID, newID, sessionID, uid, deviceKind, hash, exp)
+	}
+	return ErrUnsupported
+}
+func (p *WithRedis) DeviceSessionActive(ctx context.Context, sessionID, uid, deviceKind string) (bool, error) {
+	if s, ok := p.base.(RefreshSessionStore); ok {
+		return s.DeviceSessionActive(ctx, sessionID, uid, deviceKind)
+	}
+	return false, ErrUnsupported
+}
+func (p *WithRedis) RevokeDeviceRefreshSessions(ctx context.Context, uid, deviceKind string) error {
+	if s, ok := p.base.(RefreshSessionStore); ok {
+		return s.RevokeDeviceRefreshSessions(ctx, uid, deviceKind)
 	}
 	return ErrUnsupported
 }

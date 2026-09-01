@@ -117,6 +117,7 @@ class LiveImRepository
   bool _wukongHasConnected = false;
   bool _reconnectReconciliationNeeded = false;
   int _reconnectReconciliationAttempts = 0;
+  bool _handlingSessionReplacement = false;
 
   @override
   bool get isDemo => false;
@@ -282,6 +283,8 @@ class LiveImRepository
       'UNAUTHENTICATED' ||
       'INVALID_REFRESH' ||
       'REFRESH_REUSED' => '登录状态已失效，请重新登录',
+      'SESSION_REPLACED' => '该账号已在同类型设备上重新登录，请再次登录',
+      'DEVICE_TYPE_MISMATCH' => '当前登录凭据不属于此设备类型，请重新登录',
       'QR_LOGIN_NOT_FOUND' => '登录二维码无效，请在电脑端刷新后重试',
       'QR_LOGIN_EXPIRED' => '登录二维码已过期，请在电脑端刷新',
       'QR_LOGIN_USED' => '这个登录二维码已使用，请在电脑端重新获取',
@@ -517,6 +520,7 @@ class LiveImRepository
       throw const FormatException('WuKongIM session user does not match login');
     }
     _closed = false;
+    _handlingSessionReplacement = false;
     _me = _user(rawUser);
     await _persistSession();
     return _me!;
@@ -912,13 +916,16 @@ class LiveImRepository
           }
           _wukongHasConnected = true;
         case WukongConnectionState.disconnected ||
-            WukongConnectionState.networkUnavailable ||
-            WukongConnectionState.kicked:
+            WukongConnectionState.networkUnavailable:
           _reconnectReconciliationTimer?.cancel();
           _reconnectReconciliationTimer = null;
           if (_wukongHasConnected) {
             _reconnectReconciliationNeeded = true;
           }
+        case WukongConnectionState.kicked:
+          _reconnectReconciliationTimer?.cancel();
+          _reconnectReconciliationTimer = null;
+          unawaited(_handleSameTypeSessionReplacement());
         case WukongConnectionState.connecting || WukongConnectionState.syncing:
           // A successful TCP connection is reported before the SDK's own
           // conversation sync. Wait for its final connected state so our
@@ -937,6 +944,23 @@ class LiveImRepository
     _wukongSendSubscription ??= _wukong.sendResults.listen(
       (result) => unawaited(_handleWukongSendResult(result)),
     );
+  }
+
+  Future<void> _handleSameTypeSessionReplacement() async {
+    if (_closed || _handlingSessionReplacement || _userId == null) return;
+    _handlingSessionReplacement = true;
+    final hadSession = _token != null || _refreshToken != null;
+    await _disconnect();
+    await _clearSession();
+    await _store.clearAccountData();
+    if (hadSession && !_events.isClosed) {
+      _events.add(
+        const ImEvent(
+          type: ImEventType.sessionExpired,
+          payload: {'reason': 'same_device_type_replaced'},
+        ),
+      );
+    }
   }
 
   void _scheduleReconnectReconciliation() {
