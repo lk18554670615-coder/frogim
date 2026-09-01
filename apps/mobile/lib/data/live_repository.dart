@@ -646,7 +646,7 @@ class LiveImRepository
         platform: item['platform'] as String? ?? 'unknown',
         provider: item['provider'] as String? ?? '',
         updatedAt:
-            DateTime.tryParse(item['updatedAt'] as String? ?? '') ??
+            tryParseLocalDateTime(item['updatedAt']) ??
             DateTime.fromMillisecondsSinceEpoch(0),
       );
     }).toList();
@@ -1751,7 +1751,7 @@ class LiveImRepository
                 ? '你们已是好友，开始聊天吧'
                 : '打开会话查看消息'
           : preview,
-      updatedAt: DateTime.parse(raw['updatedAt']! as String),
+      updatedAt: parseLocalDateTime(raw['updatedAt']! as String),
       kind: kind,
       channelId: kind == ConversationKind.direct
           ? peer?.id
@@ -2317,8 +2317,7 @@ class LiveImRepository
     updatedAt: _tryDate(item['updatedAt']) ?? DateTime.now(),
   );
 
-  DateTime? _tryDate(Object? value) =>
-      value is String ? DateTime.tryParse(value) : null;
+  DateTime? _tryDate(Object? value) => tryParseLocalDateTime(value);
 
   @override
   Future<GroupProfile> updateGroupProfile(
@@ -2985,7 +2984,9 @@ class LiveImRepository
           (body['readCount'] as num?)?.toInt() ??
           0,
       linkPreview: previewRaw == null ? null : LinkPreview.fromJson(previewRaw),
-      sentAt: DateTime.parse((item['createdAt'] ?? item['sentAt'])! as String),
+      sentAt: parseLocalDateTime(
+        (item['createdAt'] ?? item['sentAt'])! as String,
+      ),
       isMine: isMine,
       conversationSeq: (item['conversationSeq'] as num?)?.toInt() ?? 0,
       status: item['expiredAt'] != null || rawStatus == 'expired'

@@ -162,6 +162,36 @@ void main() {
     expect(restored.mediaHeight, 1920);
   });
 
+  test('normalizes WuKong and cached UTC timestamps for local display', () {
+    final timestamp = DateTime.utc(2026, 9, 1, 5, 20);
+    final mapped = mapper.toChatMessage(
+      WukongMessage(
+        messageId: 'local-time-message',
+        messageSeq: 1,
+        clientMsgNo: 'local-time-client',
+        clientSeq: 1,
+        fromUid: 'usr_b',
+        channel: const WukongChannel(id: 'usr_b', type: 1),
+        timestamp: timestamp,
+        payload: const {'type': WukongContentType.text, 'content': 'time'},
+        state: WukongMessageState.sent,
+      ),
+      currentUserId: 'usr_a',
+      conversationId: 'conversation-time',
+    );
+
+    expect(mapped.sentAt, timestamp.toLocal());
+    expect(mapped.sentAt.isUtc, isFalse);
+    final restored = ChatMessage.fromJson({
+      ...mapped.toJson(),
+      'sentAt': timestamp.toIso8601String(),
+      'editedAt': timestamp.toIso8601String(),
+    });
+    expect(restored.sentAt, timestamp.toLocal());
+    expect(restored.editedAt, timestamp.toLocal());
+    expect(restored.sentAt.isUtc, isFalse);
+  });
+
   test(
     'preserves merged history snapshot entries from WuKong content 1001',
     () {

@@ -1432,9 +1432,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
         ),
-        subtitle: Text(
-          '${message.senderName} · ${message.sentAt.month}/${message.sentAt.day}',
-        ),
+        subtitle: Text('${message.senderName} · ${_monthDay(message.sentAt)}'),
         trailing: const Icon(CupertinoIcons.chevron_forward, size: 16),
         onTap: () => _openConversation(message),
       ),
@@ -3536,5 +3534,12 @@ IconData _imDeviceIcon(int deviceFlag) => switch (deviceFlag) {
   _ => CupertinoIcons.device_phone_portrait,
 };
 
-String _dateText(DateTime time) =>
-    '${time.year}/${time.month.toString().padLeft(2, '0')}/${time.day.toString().padLeft(2, '0')}';
+String _dateText(DateTime time) {
+  final local = time.toLocal();
+  return '${local.year}/${local.month.toString().padLeft(2, '0')}/${local.day.toString().padLeft(2, '0')}';
+}
+
+String _monthDay(DateTime time) {
+  final local = time.toLocal();
+  return '${local.month}/${local.day}';
+}

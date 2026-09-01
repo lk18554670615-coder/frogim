@@ -1291,12 +1291,13 @@ class _MomentPickerState extends State<_MomentPicker> {
 }
 
 String _relativeTime(DateTime value) {
-  final difference = DateTime.now().difference(value);
+  final local = value.toLocal();
+  final difference = DateTime.now().difference(local);
   if (difference.inMinutes < 1) return '刚刚';
   if (difference.inHours < 1) return '${difference.inMinutes} 分钟前';
   if (difference.inDays < 1) return '${difference.inHours} 小时前';
   if (difference.inDays < 7) return '${difference.inDays} 天前';
-  return '${value.month}月${value.day}日';
+  return '${local.month}月${local.day}日';
 }
 
 String _visibilityLabel(String value) => switch (value) {

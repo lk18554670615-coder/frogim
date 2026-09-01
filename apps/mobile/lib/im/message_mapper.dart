@@ -89,7 +89,7 @@ class MessageMapper {
         isMine: message.fromUid == currentUserId,
         senderName: senderName,
       ),
-      sentAt: message.timestamp,
+      sentAt: message.timestamp.toLocal(),
       isMine: message.fromUid == currentUserId,
       conversationSeq: message.messageSeq,
       status: expired

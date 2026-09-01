@@ -2629,8 +2629,9 @@ class _MessageContextPreview extends StatelessWidget {
       MessageContentKind.momentShare => message.text,
       _ => message.text,
     };
+    final localSentAt = message.sentAt.toLocal();
     final time =
-        '${message.sentAt.hour.toString().padLeft(2, '0')}:${message.sentAt.minute.toString().padLeft(2, '0')}';
+        '${localSentAt.hour.toString().padLeft(2, '0')}:${localSentAt.minute.toString().padLeft(2, '0')}';
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -3569,11 +3570,15 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
-  static String _clock(DateTime date) =>
-      '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+  static String _clock(DateTime date) {
+    final local = date.toLocal();
+    return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+  }
 
-  static String _expiry(DateTime date) =>
-      '${date.month}月${date.day}日 ${_clock(date)}';
+  static String _expiry(DateTime date) {
+    final local = date.toLocal();
+    return '${local.month}月${local.day}日 ${_clock(local)}';
+  }
 }
 
 class _MessageReactionBar extends StatelessWidget {
@@ -7833,8 +7838,10 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
     );
   }
 
-  String _searchDate(DateTime value) =>
-      '${value.month}月${value.day}日 '
-      '${value.hour.toString().padLeft(2, '0')}:'
-      '${value.minute.toString().padLeft(2, '0')}';
+  String _searchDate(DateTime value) {
+    final local = value.toLocal();
+    return '${local.month}月${local.day}日 '
+        '${local.hour.toString().padLeft(2, '0')}:'
+        '${local.minute.toString().padLeft(2, '0')}';
+  }
 }

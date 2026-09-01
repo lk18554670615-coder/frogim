@@ -2300,12 +2300,13 @@ class ConversationTile extends StatelessWidget {
 }
 
 String _relativeTime(DateTime time) {
-  final difference = DateTime.now().difference(time);
+  final local = time.toLocal();
+  final difference = DateTime.now().difference(local);
   if (difference.inMinutes < 1) return '刚刚';
   if (difference.inMinutes < 60) return '${difference.inMinutes} 分钟';
   if (difference.inHours < 24) return '${difference.inHours} 小时';
   if (difference.inDays == 1) return '昨天';
-  return '${time.month}/${time.day}';
+  return '${local.month}/${local.day}';
 }
 
 class ContactsTab extends StatefulWidget {

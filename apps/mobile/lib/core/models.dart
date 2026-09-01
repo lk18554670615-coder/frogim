@@ -1,5 +1,13 @@
 import 'dart:typed_data';
 
+DateTime parseLocalDateTime(String value) => DateTime.parse(value).toLocal();
+
+DateTime? tryParseLocalDateTime(Object? value) {
+  final text = value?.toString() ?? '';
+  if (text.isEmpty) return null;
+  return DateTime.tryParse(text)?.toLocal();
+}
+
 enum MessageStatus { sending, sent, delivered, read, failed, recalled, expired }
 
 enum MessageContentKind {
@@ -594,7 +602,7 @@ class ChatMessage {
     senderId: json['senderId']! as String,
     senderName: json['senderName']! as String,
     text: json['text']! as String,
-    sentAt: DateTime.parse(json['sentAt']! as String),
+    sentAt: parseLocalDateTime(json['sentAt']! as String),
     isMine: json['isMine']! as bool,
     conversationSeq: (json['conversationSeq'] as num?)?.toInt() ?? 0,
     status: MessageStatus.values.byName(json['status']! as String),
@@ -637,11 +645,11 @@ class ChatMessage {
         .whereType<Map<String, Object?>>()
         .map(MessageReaction.fromJson)
         .toList(),
-    editedAt: DateTime.tryParse(json['editedAt'] as String? ?? ''),
+    editedAt: tryParseLocalDateTime(json['editedAt']),
     isPinned: json['isPinned'] as bool? ?? false,
-    pinnedAt: DateTime.tryParse(json['pinnedAt'] as String? ?? ''),
+    pinnedAt: tryParseLocalDateTime(json['pinnedAt']),
     pinnedBy: json['pinnedBy'] as String?,
-    expiresAt: DateTime.tryParse(json['expiresAt'] as String? ?? ''),
+    expiresAt: tryParseLocalDateTime(json['expiresAt']),
     deliveredCount: (json['deliveredCount'] as num?)?.toInt() ?? 0,
     readCount: (json['readCount'] as num?)?.toInt() ?? 0,
     linkPreview: json['linkPreview'] is Map<String, Object?>

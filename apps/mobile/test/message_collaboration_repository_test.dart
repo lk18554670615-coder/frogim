@@ -170,7 +170,7 @@ void main() {
     expect(firstEditBody['editId'], isNotEmpty);
     expect(secondEditBody['editId'], isNotEmpty);
     expect(secondEditBody['editId'], isNot(firstEditBody['editId']));
-    expect(edited.editedAt, DateTime.parse('2026-08-01T08:30:00Z'));
+    expect(edited.editedAt, DateTime.parse('2026-08-01T08:30:00Z').toLocal());
     expect(editedAgain.text, '第二次修改');
     expect(requests[2].method, 'PUT');
     expect(requests[3].method, 'DELETE');
@@ -182,7 +182,10 @@ void main() {
     expect(history.map((item) => item.version), [0, 1, 2]);
     expect(history.first.isOriginal, isTrue);
     expect(history.last.text, '第二次修改');
-    expect(history.last.editedAt, DateTime.parse('2026-08-01T08:31:00Z'));
+    expect(
+      history.last.editedAt,
+      DateTime.parse('2026-08-01T08:31:00Z').toLocal(),
+    );
     await repository.close();
   });
 

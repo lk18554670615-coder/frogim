@@ -3859,24 +3859,18 @@ class AppController extends ChangeNotifier {
               .map(MessageReaction.fromJson)
               .where((reaction) => reaction.count > 0)
               .toList(),
-      editedAt: DateTime.tryParse(
-        (raw['editedAt'] ?? body['editedAt']) as String? ?? '',
-      ),
+      editedAt: tryParseLocalDateTime(raw['editedAt'] ?? body['editedAt']),
       isPinned:
           raw['isPinned'] as bool? ??
           body['isPinned'] as bool? ??
           raw['pinnedAt'] != null,
-      pinnedAt: DateTime.tryParse(
-        (raw['pinnedAt'] ?? body['pinnedAt']) as String? ?? '',
-      ),
+      pinnedAt: tryParseLocalDateTime(raw['pinnedAt'] ?? body['pinnedAt']),
       pinnedBy: raw['pinnedBy'] as String? ?? body['pinnedBy'] as String?,
-      expiresAt: DateTime.tryParse(
-        (raw['expiresAt'] ?? body['expiresAt']) as String? ?? '',
-      ),
+      expiresAt: tryParseLocalDateTime(raw['expiresAt'] ?? body['expiresAt']),
       deliveredCount: (raw['deliveredCount'] as num?)?.toInt() ?? 0,
       readCount: (raw['readCount'] as num?)?.toInt() ?? 0,
       linkPreview: previewRaw == null ? null : LinkPreview.fromJson(previewRaw),
-      sentAt: DateTime.parse(raw['createdAt']! as String),
+      sentAt: parseLocalDateTime(raw['createdAt']! as String),
       isMine: senderId == currentUser?.id,
       conversationSeq: (raw['conversationSeq'] as num?)?.toInt() ?? 0,
       status: raw['recalledAt'] != null
