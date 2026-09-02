@@ -1,11 +1,16 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:linli_im/core/client_upgrade.dart';
+import 'package:linli_im/core/client_upgrade_installer.dart';
 import 'package:linli_im/data/demo_repository.dart';
 import 'package:linli_im/main.dart';
+import 'package:linli_im/ui/screens/client_upgrade_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -71,6 +76,51 @@ void main() {
     ).check();
     expect(result, isNull);
     expect(called, isFalse);
+  });
+
+  test('Android release declares package installation capability', () {
+    final manifest = File(
+      'android/app/src/main/AndroidManifest.xml',
+    ).readAsStringSync();
+    expect(manifest, contains('android.permission.REQUEST_INSTALL_PACKAGES'));
+    expect(manifest, contains('application/vnd.android.package-archive'));
+  });
+
+  testWidgets('Android forced update downloads in app and displays progress', (
+    tester,
+  ) async {
+    const decision = ClientUpgradeDecision(
+      platform: 'android',
+      currentVersion: '1.0.0',
+      minimumVersion: '2.0.0',
+      latestVersion: '2.1.0',
+      updateAvailable: true,
+      forceUpdate: true,
+      rolloutEligible: true,
+      rolloutPercentage: 100,
+      releaseNotes: '必须更新才能继续连接服务。',
+      downloadUrl: 'https://downloads.example.com/app.apk',
+    );
+    final installer = _ProgressUpgradeInstaller();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ForcedUpgradeScreen(
+          decision: decision,
+          onRetry: () async {},
+          installer: installer,
+        ),
+      ),
+    );
+
+    expect(find.text('下载并安装'), findsOneWidget);
+    await tester.tap(find.text('下载并安装'));
+    await tester.pump();
+
+    expect(find.text('正在下载 50%'), findsNWidgets(2));
+    expect(find.byType(LinearProgressIndicator), findsOneWidget);
+    installer.complete();
+    await tester.pumpAndSettle();
+    expect(find.text('下载并安装'), findsOneWidget);
   });
 
   testWidgets('forced update policy replaces login and home routes', (
@@ -146,4 +196,28 @@ class _FakeUpgradeService extends ClientUpgradeService {
 
   @override
   Future<ClientUpgradeDecision?> check() async => decision;
+}
+
+class _ProgressUpgradeInstaller implements ClientUpgradeInstaller {
+  final _completer = Completer<void>();
+
+  @override
+  bool get downloadsInApp => true;
+
+  @override
+  Future<void> install(
+    ClientUpgradeDecision decision, {
+    required void Function(ClientUpgradeInstallProgress progress) onProgress,
+  }) {
+    onProgress(
+      const ClientUpgradeInstallProgress(
+        phase: ClientUpgradeInstallPhase.downloading,
+        receivedBytes: 50,
+        totalBytes: 100,
+      ),
+    );
+    return _completer.future;
+  }
+
+  void complete() => _completer.complete();
 }

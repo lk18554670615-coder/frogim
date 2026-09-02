@@ -1,48 +1,68 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/client_upgrade.dart';
-
-Future<bool> openClientUpgrade(ClientUpgradeDecision decision) async {
-  final uri = Uri.tryParse(decision.downloadUrl);
-  if (uri == null || (uri.scheme != 'https' && uri.scheme != 'http')) {
-    return false;
-  }
-  return launchUrl(uri, mode: LaunchMode.platformDefault);
-}
+import '../../core/client_upgrade_installer.dart';
 
 class ForcedUpgradeScreen extends StatefulWidget {
   const ForcedUpgradeScreen({
     super.key,
     required this.decision,
     required this.onRetry,
+    this.installer,
   });
 
   final ClientUpgradeDecision decision;
   final Future<void> Function() onRetry;
+  final ClientUpgradeInstaller? installer;
 
   @override
   State<ForcedUpgradeScreen> createState() => _ForcedUpgradeScreenState();
 }
 
 class _ForcedUpgradeScreenState extends State<ForcedUpgradeScreen> {
+  late final ClientUpgradeInstaller installer;
   bool opening = false;
   bool retrying = false;
   String error = '';
+  ClientUpgradeInstallProgress? progress;
+
+  @override
+  void initState() {
+    super.initState();
+    installer = widget.installer ?? createClientUpgradeInstaller();
+  }
 
   Future<void> _open() async {
     if (opening) return;
     setState(() {
       opening = true;
       error = '';
+      progress = null;
     });
-    final opened = await openClientUpgrade(widget.decision);
-    if (mounted) {
+    try {
+      await installer.install(
+        widget.decision,
+        onProgress: (value) {
+          if (mounted) setState(() => progress = value);
+        },
+      );
+      if (!mounted) return;
       setState(() {
         opening = false;
-        if (!opened) error = '更新地址暂时无法打开，请稍后重试';
+      });
+    } on ClientUpgradeInstallException catch (exception) {
+      if (!mounted) return;
+      setState(() {
+        opening = false;
+        error = exception.message;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        opening = false;
+        error = '更新失败，请检查网络后重试';
       });
     }
   }
@@ -113,6 +133,20 @@ class _ForcedUpgradeScreenState extends State<ForcedUpgradeScreen> {
                     style: const TextStyle(color: LinliColors.systemRed),
                   ),
                 ],
+                if (opening && installer.downloadsInApp) ...[
+                  const SizedBox(height: 16),
+                  LinearProgressIndicator(value: progress?.fraction),
+                  const SizedBox(height: 8),
+                  Text(
+                    _upgradeActionLabel(
+                      installer,
+                      progress,
+                      working: true,
+                      externalIdleLabel: '立即更新',
+                    ),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
                 const SizedBox(height: 24),
                 SizedBox(
                   width: double.infinity,
@@ -126,7 +160,14 @@ class _ForcedUpgradeScreenState extends State<ForcedUpgradeScreen> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(CupertinoIcons.arrow_down_circle),
-                    label: Text(opening ? '正在打开…' : '立即更新'),
+                    label: Text(
+                      _upgradeActionLabel(
+                        installer,
+                        progress,
+                        working: opening,
+                        externalIdleLabel: '立即更新',
+                      ),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -151,9 +192,13 @@ class _ForcedUpgradeScreenState extends State<ForcedUpgradeScreen> {
 
 Future<void> showOptionalUpgradeDialog(
   BuildContext context,
-  ClientUpgradeDecision decision,
-) async {
+  ClientUpgradeDecision decision, {
+  ClientUpgradeInstaller? upgradeInstaller,
+}) async {
+  final installer = upgradeInstaller ?? createClientUpgradeInstaller();
   var error = '';
+  var working = false;
+  ClientUpgradeInstallProgress? progress;
   await showDialog<void>(
     context: context,
     builder: (context) => StatefulBuilder(
@@ -172,27 +217,80 @@ Future<void> showOptionalUpgradeDialog(
               const SizedBox(height: 10),
               Text(error, style: const TextStyle(color: LinliColors.systemRed)),
             ],
+            if (working && installer.downloadsInApp) ...[
+              const SizedBox(height: 14),
+              LinearProgressIndicator(value: progress?.fraction),
+              const SizedBox(height: 8),
+              Text(_upgradeActionLabel(installer, progress, working: true)),
+            ],
           ],
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: working ? null : () => Navigator.pop(context),
             child: const Text('稍后'),
           ),
           FilledButton(
-            onPressed: decision.downloadUrl.isEmpty
+            onPressed: decision.downloadUrl.isEmpty || working
                 ? null
                 : () async {
-                    if (await openClientUpgrade(decision)) {
+                    setState(() {
+                      working = true;
+                      error = '';
+                      progress = null;
+                    });
+                    try {
+                      await installer.install(
+                        decision,
+                        onProgress: (value) {
+                          if (context.mounted) {
+                            setState(() => progress = value);
+                          }
+                        },
+                      );
                       if (context.mounted) Navigator.pop(context);
-                    } else {
-                      setState(() => error = '更新地址暂时无法打开');
+                    } on ClientUpgradeInstallException catch (exception) {
+                      if (context.mounted) {
+                        setState(() {
+                          working = false;
+                          error = exception.message;
+                        });
+                      }
+                    } catch (_) {
+                      if (context.mounted) {
+                        setState(() {
+                          working = false;
+                          error = '更新失败，请检查网络后重试';
+                        });
+                      }
                     }
                   },
-            child: const Text('去更新'),
+            child: Text(
+              _upgradeActionLabel(installer, progress, working: working),
+            ),
           ),
         ],
       ),
     ),
   );
+}
+
+String _upgradeActionLabel(
+  ClientUpgradeInstaller installer,
+  ClientUpgradeInstallProgress? progress, {
+  required bool working,
+  String externalIdleLabel = '去更新',
+}) {
+  if (!working) {
+    return installer.downloadsInApp ? '下载并安装' : externalIdleLabel;
+  }
+  final fraction = progress?.fraction;
+  return switch (progress?.phase) {
+    ClientUpgradeInstallPhase.downloading =>
+      fraction == null ? '正在下载…' : '正在下载 ${(fraction * 100).round()}%',
+    ClientUpgradeInstallPhase.preparing => '正在校验安装包…',
+    ClientUpgradeInstallPhase.requestingPermission => '等待安装授权…',
+    ClientUpgradeInstallPhase.openingInstaller => '正在打开安装程序…',
+    null => installer.downloadsInApp ? '准备下载…' : '正在打开…',
+  };
 }

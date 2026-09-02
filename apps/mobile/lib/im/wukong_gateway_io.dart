@@ -251,6 +251,13 @@ class IoWukongGateway implements WukongGateway {
     if (_session != null) {
       WKIM.shared.connectionManager.disconnect(logout);
     }
+    if (logout) {
+      // The full SDK clears its uid/token on logout. Invalidate the matching
+      // gateway session as well so a later login with the same stable WuKong
+      // token cannot skip SDK setup and try to connect with empty options.
+      _session = null;
+      _outgoingClientSeqs.clear();
+    }
     final completer = _fullConnectCompleter;
     if (completer != null && !completer.isCompleted) {
       completer.completeError(StateError('connection closed'));
@@ -374,6 +381,14 @@ class IoWukongGateway implements WukongGateway {
   }
 
   void _onFullConnection(int status, int? reasonCode, Object? info) {
+    if (status == full.WKConnectStatus.kicked) {
+      // WuKongIM handles a server DISCONNECT as logout and clears the SDK
+      // credentials before publishing `kicked`. Mirror that invalidation in
+      // this adapter; otherwise the next login can incorrectly reuse this
+      // session and never call WKIM.setup again.
+      _session = null;
+      _outgoingClientSeqs.clear();
+    }
     final mapped = switch (status) {
       full.WKConnectStatus.success => WukongConnectionState.connected,
       full.WKConnectStatus.syncMsg => WukongConnectionState.syncing,

@@ -64,7 +64,7 @@ void main() {
     },
   );
 
-  test('WuKong同类型踢线会同步清除业务登录状态', () async {
+  test('WuKong同类型踢线后重新登录会重新初始化SDK会话', () async {
     FlutterSecureStorage.setMockInitialValues({});
     final gateway = FakeWukongGateway();
     final repository = _repository(
@@ -86,6 +86,14 @@ void main() {
     expect(event.payload['reason'], 'same_device_type_replaced');
     expect(repository.currentUser, isNull);
     expect(await repository.restoreSession(), isFalse);
+    expect(gateway.session, isNull);
+    expect(gateway.logoutDisconnectCount, 1);
+
+    await repository.login('13800138000', '123456');
+    await repository.connect();
+
+    expect(gateway.initializeCount, 2);
+    expect(gateway.connectionState, WukongConnectionState.connected);
     await repository.close();
   });
 

@@ -950,7 +950,10 @@ class LiveImRepository
     if (_closed || _handlingSessionReplacement || _userId == null) return;
     _handlingSessionReplacement = true;
     final hadSession = _token != null || _refreshToken != null;
-    await _disconnect();
+    // A same-device-type replacement is a full IM logout. The WuKong SDK has
+    // already cleared its credentials, so the gateway session must be
+    // invalidated as well before this account can log in again.
+    await _disconnect(logout: true);
     await _clearSession();
     await _store.clearAccountData();
     if (hadSession && !_events.isClosed) {

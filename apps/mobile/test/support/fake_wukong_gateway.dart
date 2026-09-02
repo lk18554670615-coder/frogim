@@ -16,6 +16,8 @@ class FakeWukongGateway implements WukongGateway {
   bool autoAcknowledge = true;
   bool generateClientMsgNo = false;
   WukongMessageState initialSendState = WukongMessageState.sent;
+  int initializeCount = 0;
+  int logoutDisconnectCount = 0;
 
   @override
   Stream<WukongConnectionState> get connectionStates => _states.stream;
@@ -34,6 +36,7 @@ class FakeWukongGateway implements WukongGateway {
 
   @override
   Future<void> initialize(WukongSession session) async {
+    initializeCount += 1;
     _session = session;
     _setState(WukongConnectionState.disconnected);
   }
@@ -47,6 +50,10 @@ class FakeWukongGateway implements WukongGateway {
 
   @override
   Future<void> disconnect({bool logout = false}) async {
+    if (logout) {
+      logoutDisconnectCount += 1;
+      _session = null;
+    }
     _setState(WukongConnectionState.disconnected);
   }
 
