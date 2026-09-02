@@ -4,6 +4,7 @@ import 'package:linli_im/core/app_controller.dart';
 import 'package:linli_im/core/app_theme.dart';
 import 'package:linli_im/core/models.dart';
 import 'package:linli_im/data/demo_repository.dart';
+import 'package:linli_im/data/secure_local_store.dart';
 import 'package:linli_im/ui/screens/chat_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -23,7 +24,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('选择转发对象'), findsOneWidget);
-    expect(find.text('选择一个会话，确认后发送'), findsOneWidget);
+    expect(find.text('可选择多个会话，确认后发送'), findsOneWidget);
     final confirm = find.byKey(const Key('forward-conversation-confirm'));
     expect(tester.widget<FilledButton>(confirm).onPressed, isNull);
 
@@ -49,7 +50,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('选择转发对象'), findsNothing);
-    expect(find.text('已转发到 ${target.title}'), findsOneWidget);
+    expect(find.text('已转发到 1 个会话'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -73,6 +74,33 @@ void main() {
     );
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('图片预览可以一次转发到多个会话', (tester) async {
+    final fixture = await _openPreviewWithController(tester);
+    addTearDown(fixture.controller.dispose);
+    final targets = fixture.controller.conversations
+        .where((item) => !item.archived)
+        .take(2)
+        .toList();
+    expect(targets, hasLength(2));
+    await tester.tap(find.byKey(const Key('forward-message-image-preview')));
+    await tester.pumpAndSettle();
+    for (final target in targets) {
+      await tester.enterText(
+        find.byKey(const Key('forward-conversation-search')),
+        target.title,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(Key('forward-conversation-${target.id}')));
+      await tester.pump();
+    }
+    expect(find.text('转发（2）'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('forward-conversation-confirm')));
+    await tester.pumpAndSettle();
+    expect(find.text('已转发到 2 个会话'), findsOneWidget);
+    expect(find.byKey(const Key('message-image-preview')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 Future<({AppController controller, Conversation sourceConversation})>
@@ -84,7 +112,9 @@ _openPreviewWithController(WidgetTester tester) async {
   addTearDown(tester.view.resetDevicePixelRatio);
   addTearDown(tester.view.resetViewInsets);
 
-  final controller = AppController(DemoImRepository(latency: Duration.zero));
+  final controller = AppController(
+    DemoImRepository(latency: Duration.zero, store: _MemoryForwardStore()),
+  );
   await tester.runAsync(controller.loginAsDemo);
   final conversation = controller.conversations.firstWhere(
     (item) => item.kind == ConversationKind.direct,
@@ -108,4 +138,26 @@ _openPreviewWithController(WidgetTester tester) async {
   expect(find.byKey(const Key('message-image-preview')), findsOneWidget);
 
   return (controller: controller, sourceConversation: conversation);
+}
+
+class _MemoryForwardStore extends SecureLocalStore {
+  final Map<String, Object> values = {};
+
+  @override
+  Future<void> writeJson(String key, Object value) async {
+    values[key] = value;
+  }
+
+  @override
+  Future<Object?> readJson(String key) async => values[key];
+
+  @override
+  Future<void> remove(String key) async {
+    values.remove(key);
+  }
+
+  @override
+  Future<void> clearAccountData() async {
+    values.clear();
+  }
 }

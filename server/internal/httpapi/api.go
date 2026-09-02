@@ -728,7 +728,10 @@ func (x *API) middleware(next http.Handler) http.Handler {
 			}
 		}
 		limitKey := "http:" + x.clientIP(r)
-		limitMax := 300
+		limitMax := x.cfg.HTTPRateLimitPerMinute
+		if limitMax == 0 {
+			limitMax = config.DefaultHTTPRateLimitPerMinute
+		}
 		if strings.HasPrefix(r.URL.Path, "/internal/wukong/") {
 			limitKey = "http:wukong-internal:" + x.clientIP(r)
 			limitMax = x.cfg.WukongInternalRateLimitPerMinute

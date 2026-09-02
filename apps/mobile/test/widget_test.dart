@@ -19,6 +19,7 @@ import 'package:linli_im/ui/screens/home_screen.dart';
 import 'package:linli_im/ui/screens/moments_screen.dart';
 import 'package:linli_im/ui/screens/relationship_screens.dart';
 import 'package:linli_im/ui/screens/settings_screens.dart';
+import 'package:linli_im/ui/widgets/voice_composer_widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -891,6 +892,75 @@ void main() {
       findsOneWidget,
     );
   });
+
+  testWidgets(
+    'voice enqueue animates the current chat once and ACK does not replay',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final repository = ControlledMediaRepository();
+      final controller = AppController(repository);
+      await tester.runAsync(controller.loginAsDemo);
+      addTearDown(controller.dispose);
+      final conversation = controller.conversations.firstWhere(
+        (item) => item.id == 'c-linyu',
+      );
+      Widget chat(Key key) => MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: ChatScreen(
+          key: key,
+          controller: controller,
+          conversation: conversation,
+        ),
+      );
+      await tester.pumpWidget(chat(const ValueKey('initial')));
+      await tester.pumpAndSettle();
+      final composer = tester.widget<ChatComposer>(find.byType(ChatComposer));
+      await tester.runAsync(
+        () async => composer.onVoiceReady(
+          MediaUpload(
+            bytes: Uint8List.fromList([1, 2]),
+            fileName: 'voice.m4a',
+            mimeType: 'audio/mp4',
+            kind: MessageContentKind.voice,
+            durationSeconds: 2,
+          ),
+        ),
+      );
+      final message = controller.messagesFor(conversation.id).last;
+      final entrance = find.byKey(
+        ValueKey('voice-entrance-${message.clientMessageId}'),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 40));
+      final opacity = find
+          .descendant(of: entrance, matching: find.byType(Opacity))
+          .first;
+      expect(tester.widget<Opacity>(opacity).opacity, lessThan(1));
+      await tester.pump(const Duration(milliseconds: 220));
+      expect(tester.widget<Opacity>(opacity).opacity, 1);
+      repository.reportProgress(1);
+      await tester.pump();
+      expect(
+        controller.messagesFor(conversation.id).last.status,
+        MessageStatus.sending,
+      );
+      repository.complete();
+      await tester.pumpAndSettle();
+      expect(
+        controller.messagesFor(conversation.id).last.status,
+        MessageStatus.sent,
+      );
+      expect(tester.widget<Opacity>(opacity).opacity, 1);
+      expect(tester.widget<VoiceMessageEntrance>(entrance).animate, isFalse);
+      await tester.pumpWidget(chat(const ValueKey('reopened')));
+      await tester.pumpAndSettle();
+      expect(tester.widget<VoiceMessageEntrance>(entrance).animate, isFalse);
+      expect(tester.widget<Opacity>(opacity).opacity, 1);
+    },
+  );
 
   testWidgets('媒体上传展示真实进度并在完成后移除', (tester) async {
     tester.view.physicalSize = const Size(390, 844);

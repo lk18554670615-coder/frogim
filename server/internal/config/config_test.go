@@ -49,6 +49,24 @@ func configureLiveKit(c *Config) {
 	c.LiveKitTokenTTL = 5 * time.Minute
 }
 
+func TestHTTPRateLimitConfiguration(t *testing.T) {
+	t.Setenv("IM_HTTP_RATE_LIMIT_PER_MINUTE", "")
+	if got := Load().HTTPRateLimitPerMinute; got != 30000 {
+		t.Fatalf("default HTTP rate limit=%d, want 30000", got)
+	}
+	t.Setenv("IM_HTTP_RATE_LIMIT_PER_MINUTE", "45000")
+	if got := Load().HTTPRateLimitPerMinute; got != 45000 {
+		t.Fatalf("configured HTTP rate limit=%d, want 45000", got)
+	}
+	for _, limit := range []int{0, 1, 30000, 600000} {
+		c := validConfig()
+		c.HTTPRateLimitPerMinute = limit
+		if err := c.Validate(); err != nil {
+			t.Fatalf("HTTP rate limit %d: %v", limit, err)
+		}
+	}
+}
+
 func configureWukong(c *Config) {
 	c.WukongEnabled = true
 	c.WukongAPIURL = "http://wukongim:5001"
@@ -84,6 +102,8 @@ func TestValidateFailsClosed(t *testing.T) {
 		{"media limit too small", func(c *Config) { c.MediaMaxBytes = 1024 }},
 		{"android media endpoint outside development", func(c *Config) { c.S3AndroidPublicEndpoint = "10.0.2.2:9000"; c.DevMode = false }},
 		{"wukong internal rate limit too small", func(c *Config) { c.WukongInternalRateLimitPerMinute = 59999 }},
+		{"negative public HTTP rate limit", func(c *Config) { c.HTTPRateLimitPerMinute = -1 }},
+		{"public HTTP rate limit too large", func(c *Config) { c.HTTPRateLimitPerMinute = 600001 }},
 		{"wukong internal rate limit too large", func(c *Config) { c.WukongInternalRateLimitPerMinute = 600001 }},
 		{"container flag needs development env", func(c *Config) {
 			c.DatabaseURL = "postgres://db"

@@ -9,12 +9,14 @@ import 'package:flutter/foundation.dart';
 import '../calls/call_controller.dart';
 import '../calls/call_repository.dart';
 import '../data/im_repository.dart';
+import '../data/live_repository.dart' show ImApiException;
 import '../im/business_features.dart';
 import '../im/structured_event_text.dart';
 import 'auth_validation.dart';
 import 'client_message_id.dart';
 import 'client_diagnostics.dart';
 import 'client_device.dart';
+import 'forward_batch.dart';
 import 'image_dimensions.dart';
 import 'models.dart';
 
@@ -94,6 +96,8 @@ class AppController extends ChangeNotifier {
   bool _disposed = false;
   Future<void>? _authenticationBootstrap;
   bool _stickyAuthenticationError = false;
+  int _forwardSessionEpoch = 0;
+  final Set<ForwardBatchTask> _forwardTasks = {};
 
   bool get messagingUnavailable =>
       authenticated && connectionAttempted && !connected;
@@ -253,6 +257,7 @@ class AppController extends ChangeNotifier {
   }
 
   void _enterAuthenticatedShell(AppUser user, {bool refreshProfile = false}) {
+    _invalidateForwardTasks();
     _stickyAuthenticationError = false;
     currentUser = user;
     authenticated = true;
@@ -1620,6 +1625,7 @@ class AppController extends ChangeNotifier {
     String conversationId,
     MediaUpload upload, {
     ChatMessage? replyTo,
+    ValueChanged<ChatMessage>? onQueued,
   }) async {
     if (upload.kind == MessageContentKind.image &&
         (upload.width == null || upload.height == null)) {
@@ -1664,9 +1670,18 @@ class AppController extends ChangeNotifier {
     _pendingMedia[clientId] = upload;
     _mediaUploadProgress[clientId] = 0;
     final list = _messages.putIfAbsent(conversationId, () => []);
-    list.add(pending);
+    try {
+      await repository.persistMessages(conversationId, [...list, pending]);
+    } catch (_) {
+      _pendingMedia.remove(clientId);
+      _mediaUploadProgress.remove(clientId);
+      rethrow;
+    }
+    // Keep the draft out of reactive message lists until it is durable. An
+    // unrelated realtime event must not mount its entrance before onQueued.
+    _messages.putIfAbsent(conversationId, () => []).add(pending);
     _updateConversation(conversationId, label);
-    await repository.persistMessages(conversationId, list);
+    onQueued?.call(pending);
     notifyListeners();
     return _sendPending(pending);
   }
@@ -2297,40 +2312,131 @@ class AppController extends ChangeNotifier {
     List<ChatMessage> messages,
     String conversationId, {
     required String mode,
+    String? clientBatchId,
   }) async {
-    final sourceIds = messages
-        .where(
-          (item) =>
-              !item.id.startsWith('local-') &&
-              item.status != MessageStatus.recalled,
-        )
-        .map((item) => item.id)
-        .toList();
-    if (sourceIds.isEmpty) return const [];
-    try {
-      final forwarded = await repository.forwardMessages(
-        conversationId,
-        sourceIds,
+    final result = await _forwardAttempt(
+      List.unmodifiable(messages),
+      conversationId,
+      mode: mode,
+      clientBatchId: clientBatchId ?? _newClientMessageId(),
+      sessionEpoch: _forwardSessionEpoch,
+      sessionUserId: currentUser?.id,
+    );
+    if (!result.succeeded && !_disposed) {
+      error = result.error;
+      notifyListeners();
+    }
+    return result.messages;
+  }
+
+  ForwardBatchTask createForwardBatch(
+    List<ChatMessage> messages,
+    List<Conversation> targets, {
+    required String mode,
+  }) {
+    final frozenMessages = List<ChatMessage>.unmodifiable(messages);
+    final validation = validateForwardMessages(frozenMessages);
+    if (validation != null) throw ArgumentError(validation);
+    final sessionEpoch = _forwardSessionEpoch;
+    final sessionUserId = currentUser?.id;
+    late final ForwardBatchTask task;
+    task = ForwardBatchTask(
+      conversations: targets,
+      createBatchId: _newClientMessageId,
+      canContinue: () => _forwardSessionValid(sessionEpoch, sessionUserId),
+      send: (targetId, batchId) => _forwardAttempt(
+        frozenMessages,
+        targetId,
         mode: mode,
-        clientBatchId: _newClientMessageId(),
+        clientBatchId: batchId,
+        sessionEpoch: sessionEpoch,
+        sessionUserId: sessionUserId,
+      ),
+      onDispose: () => _forwardTasks.remove(task),
+    );
+    _forwardTasks.add(task);
+    return task;
+  }
+
+  bool _forwardSessionValid(int epoch, String? userId) =>
+      !_disposed &&
+      authenticated &&
+      userId != null &&
+      currentUser?.id == userId &&
+      _forwardSessionEpoch == epoch;
+
+  void _invalidateForwardTasks() {
+    _forwardSessionEpoch++;
+    for (final task in _forwardTasks.toList()) {
+      task.invalidateSession();
+    }
+  }
+
+  Future<ForwardSendResult> _forwardAttempt(
+    List<ChatMessage> messages,
+    String conversationId, {
+    required String mode,
+    required String clientBatchId,
+    required int sessionEpoch,
+    required String? sessionUserId,
+  }) async {
+    final validation = validateForwardMessages(messages);
+    if (validation != null) return ForwardSendResult.failure(validation);
+    if (!_forwardSessionValid(sessionEpoch, sessionUserId)) {
+      return const ForwardSendResult.failure(
+        '登录状态已失效，请重新登录',
+        sessionExpired: true,
       );
+    }
+    List<ChatMessage> forwarded;
+    try {
+      forwarded = await repository.forwardMessages(
+        conversationId,
+        messages.map((message) => message.id).toList(growable: false),
+        mode: mode,
+        clientBatchId: clientBatchId,
+      );
+    } catch (exception) {
+      if (exception is ImApiException && exception.statusCode == 401) {
+        if (_forwardSessionValid(sessionEpoch, sessionUserId)) {
+          await _expireRestoredSession();
+        }
+        return const ForwardSendResult.failure(
+          '登录状态已失效，请重新登录',
+          sessionExpired: true,
+        );
+      }
+      return ForwardSendResult.failure(
+        _messageFor(exception, fallback: '转发失败，请稍后重试'),
+      );
+    }
+    if (forwarded.isEmpty) {
+      return const ForwardSendResult.failure('服务器未确认转发结果，请重试');
+    }
+    // An accepted send remains successful even if local cache persistence fails.
+    // Never apply its response to a replacement login session.
+    if (_forwardSessionValid(sessionEpoch, sessionUserId)) {
       final list = _messages[conversationId];
       if (list != null) {
         for (final item in forwarded) {
           if (!list.any((existing) => existing.id == item.id)) list.add(item);
         }
-        await repository.persistMessages(conversationId, list);
       }
-      if (forwarded.isNotEmpty) {
-        _updateConversation(conversationId, forwarded.last.text);
+      _updateConversation(conversationId, forwarded.last.text);
+      notifyListeners();
+      if (list != null) {
+        try {
+          await repository.persistMessages(conversationId, List.of(list));
+        } catch (exception, stackTrace) {
+          ClientDiagnostics.instance.captureError(
+            'forward_cache_persistence',
+            exception,
+            stackTrace,
+          );
+        }
       }
-      notifyListeners();
-      return forwarded;
-    } catch (exception) {
-      error = _messageFor(exception, fallback: '转发失败，请稍后重试');
-      notifyListeners();
-      return const [];
     }
+    return ForwardSendResult.success(forwarded);
   }
 
   Future<ChatMessage?> forwardMessage(
@@ -3374,6 +3480,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    _invalidateForwardTasks();
     loading = true;
     notifyListeners();
     final connectionSubscription = _connectionSubscription;
@@ -3418,6 +3525,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _clearAuthenticatedState() async {
+    _invalidateForwardTasks();
     authenticated = false;
     connected = false;
     connectionAttempted = false;
@@ -4113,6 +4221,7 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _invalidateForwardTasks();
     _disposed = true;
     _conversationRefreshTimer?.cancel();
     for (final timer in _deliveryTimers.values) {

@@ -46,6 +46,7 @@ services:
       IM_ADDR: :8080
       IM_ENV: ${IM_ENV:-development}
       IM_LOG_LEVEL: ${IM_LOG_LEVEL:-info}
+      IM_HTTP_RATE_LIMIT_PER_MINUTE: ${IM_HTTP_RATE_LIMIT_PER_MINUTE:-30000}
       IM_DATABASE_URL: postgres://${POSTGRES_USER:-nexachat}:${POSTGRES_PASSWORD:-nexachat}@postgres:5432/${POSTGRES_DB:-nexachat}?sslmode=disable
       IM_REDIS_URL: redis://:${REDIS_PASSWORD:-local-redis-password}@redis:6379/0
       IM_JWT_SECRET: ${IM_JWT_SECRET:-local-development-jwt-secret-change-me}

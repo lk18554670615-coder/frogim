@@ -945,7 +945,7 @@ func TestCORSPreflightAllowsV2ClientPlatformHeader(t *testing.T) {
 
 func TestHealthProbeBypassesApplicationRateLimit(t *testing.T) {
 	a, _ := app.New(context.Background(), teststore.Memory{})
-	cfg := config.Config{JWTSecret: "test-secret", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}
+	cfg := config.Config{JWTSecret: "test-secret", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour, HTTPRateLimitPerMinute: 1}
 	h := New(cfg, a).Handler()
 	for i := 0; i < 350; i++ {
 		r := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -1004,12 +1004,22 @@ func TestReadyProbeIncludesWukongSessionDependencies(t *testing.T) {
 func TestWukongInternalEndpointHasCapacityIndependentOfPublicRateLimit(t *testing.T) {
 	a, _ := app.New(context.Background(), teststore.Memory{})
 	cfg := config.Config{
-		JWTSecret:          "test-secret",
-		WukongPolicySecret: strings.Repeat("p", 32),
-		AccessTTL:          time.Hour,
-		RefreshTTL:         24 * time.Hour,
+		JWTSecret:              "test-secret",
+		WukongPolicySecret:     strings.Repeat("p", 32),
+		AccessTTL:              time.Hour,
+		RefreshTTL:             24 * time.Hour,
+		HTTPRateLimitPerMinute: 2,
 	}
 	h := New(cfg, a).Handler()
+	for i := 0; i < 3; i++ {
+		r := httptest.NewRequest(http.MethodGet, "/v2/config/auth", nil)
+		r.RemoteAddr = "10.0.0.2:1234"
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if i == 2 && w.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected exhausted public quota, got %d", w.Code)
+		}
+	}
 	for i := 0; i < 350; i++ {
 		r := httptest.NewRequest(http.MethodPost, "/internal/wukong/policy/send", strings.NewReader(`{}`))
 		r.RemoteAddr = "10.0.0.2:1234"

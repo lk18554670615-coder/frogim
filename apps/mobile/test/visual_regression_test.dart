@@ -19,7 +19,20 @@ import 'package:linli_im/ui/screens/qr_tools_screen.dart';
 import 'package:linli_im/ui/screens/settings_preferences.dart';
 import 'package:linli_im/ui/screens/settings_screens.dart';
 import 'package:linli_im/ui/screens/sticker_store_screen.dart';
+import 'package:linli_im/ui/voice_composer_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+class _GoldenVoiceController extends VoiceComposerController {
+  @override
+  bool get hasDraft => phase == VoiceComposerPhase.preview;
+
+  void show(VoiceComposerPhase value) {
+    phase = value;
+    seconds = 12;
+    draftSeconds = 12;
+    notifyListeners();
+  }
+}
 
 const _surfaceKey = Key('visual-regression-surface');
 final _audioPlayerEventChannels = <EventChannel>[];
@@ -386,6 +399,53 @@ void main() {
       matchesGoldenFile('goldens/windows/mobile-support-center-empty.png'),
     );
   }, skip: !Platform.isWindows);
+
+  for (final phase in [
+    VoiceComposerPhase.recording,
+    VoiceComposerPhase.canceling,
+    VoiceComposerPhase.preview,
+  ]) {
+    testWidgets('mobile voice ${phase.name} visual baseline', (tester) async {
+      final voice = _GoldenVoiceController();
+      final text = TextEditingController();
+      await _pumpSurface(
+        tester,
+        size: const Size(390, 844),
+        child: Scaffold(
+          appBar: AppBar(
+            title: const Text('语音消息'),
+            leading: const BackButton(),
+          ),
+          body: Column(
+            children: [
+              const Expanded(child: Center(child: Text('按住说话，松开后可试听'))),
+              ChatComposer(
+                controller: text,
+                voiceController: voice,
+                onSend: () {},
+                onToggleAttachments: () {},
+                onToggleEmoji: () {},
+                onAttachment: (_) {},
+                onVoiceReady: (_) {},
+                onCancelReply: () {},
+              ),
+            ],
+          ),
+        ),
+      );
+      await tester.tap(find.byKey(const Key('voice-mode-button')));
+      await tester.pump();
+      voice.show(phase);
+      await _settle(tester);
+      await expectLater(
+        find.byKey(_surfaceKey),
+        matchesGoldenFile('goldens/windows/mobile-voice-${phase.name}.png'),
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+      voice.dispose();
+      text.dispose();
+    }, skip: !Platform.isWindows);
+  }
 
   testWidgets('mobile group chat visual baseline', (tester) async {
     final controller = await _authenticatedController(tester);

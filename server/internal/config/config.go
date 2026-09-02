@@ -14,6 +14,8 @@ import (
 	"github.com/linli/im/server/internal/wukongplugin"
 )
 
+const DefaultHTTPRateLimitPerMinute = 30000
+
 type Config struct {
 	Addr, JWTSecret, DatabaseURL, RedisURL, PushProvider                    string
 	Environment                                                             string
@@ -36,7 +38,7 @@ type Config struct {
 	DevAllowContainerBind                                                   bool
 	DevIPTestOnly                                                           bool
 	DBMaxConns, DBMinConns                                                  int
-	WukongInternalRateLimitPerMinute                                        int
+	HTTPRateLimitPerMinute, WukongInternalRateLimitPerMinute                int
 	PushWorkers, PushBatchSize                                              int
 	MediaMaxBytes                                                           int64
 	AccessTTL, RefreshTTL                                                   time.Duration
@@ -71,6 +73,7 @@ func Load() Config {
 		S3Endpoint: os.Getenv("IM_S3_ENDPOINT"), S3PublicEndpoint: os.Getenv("IM_S3_PUBLIC_ENDPOINT"), S3AndroidPublicEndpoint: os.Getenv("IM_S3_ANDROID_PUBLIC_ENDPOINT"), S3AccessKey: os.Getenv("IM_S3_ACCESS_KEY"), S3SecretKey: os.Getenv("IM_S3_SECRET_KEY"), S3Bucket: value("IM_S3_BUCKET", "nexachat-media"), S3Region: value("IM_S3_REGION", "us-east-1"), S3Secure: boolValue("IM_S3_SECURE", false), S3PublicSecure: boolValue("IM_S3_PUBLIC_SECURE", false),
 		DevMode: boolValue("IM_DEV_MODE", false), SeedDemo: boolValue("IM_SEED_DEMO", false), TrustProxy: boolValue("IM_TRUST_PROXY", false), DevAllowContainerBind: boolValue("IM_DEV_ALLOW_CONTAINER_BIND", false), DevIPTestOnly: boolValue("IM_IP_TEST_ONLY", false), DevOTPCode: os.Getenv("IM_DEV_OTP_CODE"), AllowedOrigins: csv("IM_ALLOWED_ORIGINS"),
 		DBMaxConns: intValue("IM_DB_MAX_CONNS", 20), DBMinConns: intValue("IM_DB_MIN_CONNS", 2),
+		HTTPRateLimitPerMinute:           intValue("IM_HTTP_RATE_LIMIT_PER_MINUTE", DefaultHTTPRateLimitPerMinute),
 		WukongInternalRateLimitPerMinute: intValue("IM_WUKONG_INTERNAL_RATE_LIMIT_PER_MINUTE", 120000),
 		DBMaxConnLifetime:                duration("IM_DB_MAX_CONN_LIFETIME", time.Hour), DBMaxConnIdleTime: duration("IM_DB_MAX_CONN_IDLE_TIME", 15*time.Minute), DBHealthCheckPeriod: duration("IM_DB_HEALTH_CHECK_PERIOD", time.Minute), DBStatementTimeout: duration("IM_DB_STATEMENT_TIMEOUT", 15*time.Second),
 		PushWorkers: intValue("IM_PUSH_WORKERS", 16), PushBatchSize: intValue("IM_PUSH_BATCH_SIZE", 200),
@@ -195,6 +198,9 @@ func (c Config) Validate() error {
 	}
 	if c.HTTPLogSuccessSampleRate < 0 || c.HTTPLogSuccessSampleRate > 1 {
 		return errors.New("IM_HTTP_LOG_SUCCESS_SAMPLE_RATE must be between 0 and 1")
+	}
+	if c.HTTPRateLimitPerMinute < 0 || c.HTTPRateLimitPerMinute > 600000 {
+		return errors.New("IM_HTTP_RATE_LIMIT_PER_MINUTE must be between 1 and 600000 (0 uses the default)")
 	}
 	if c.WukongInternalRateLimitPerMinute != 0 && (c.WukongInternalRateLimitPerMinute < 60000 || c.WukongInternalRateLimitPerMinute > 600000) {
 		return errors.New("IM_WUKONG_INTERNAL_RATE_LIMIT_PER_MINUTE must be between 60000 and 600000")

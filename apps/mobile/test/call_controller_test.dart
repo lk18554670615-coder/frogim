@@ -443,43 +443,59 @@ void main() {
     expect(find.byKey(const Key('call-screen')), findsNothing);
   });
 
-  testWidgets('单聊和普通群聊都显示语音视频入口', (tester) async {
-    final appController = AppController(DemoImRepository());
-    addTearDown(appController.dispose);
-    final direct = Conversation(
-      id: 'conversation-1',
-      title: '林笙',
-      subtitle: '',
-      updatedAt: DateTime(2026, 7, 31),
-      kind: ConversationKind.direct,
-      members: const [_Fixture.me, _Fixture.peer],
-    );
-    await tester.pumpWidget(
-      MaterialApp(
-        home: ChatScreen(controller: appController, conversation: direct),
-      ),
-    );
-    await tester.pump();
-    expect(find.byKey(const Key('start-audio-call')), findsOneWidget);
-    expect(find.byKey(const Key('start-video-call')), findsOneWidget);
+  for (final size in [const Size(390, 844), const Size(1280, 900)]) {
+    testWidgets('${size.width.toInt()} 宽度群聊隐藏通话入口且单聊仍可通话', (tester) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final appController = AppController(DemoImRepository());
+      addTearDown(appController.dispose);
+      final direct = Conversation(
+        id: 'conversation-1',
+        title: '林笙',
+        subtitle: '',
+        updatedAt: DateTime(2026, 7, 31),
+        kind: ConversationKind.direct,
+        members: const [_Fixture.me, _Fixture.peer],
+      );
+      final group = Conversation(
+        id: 'group-1',
+        title: '邻里产品小组',
+        subtitle: '',
+        updatedAt: DateTime(2026, 7, 31),
+        kind: ConversationKind.group,
+        members: const [_Fixture.me, _Fixture.peer],
+      );
 
-    final group = Conversation(
-      id: 'group-1',
-      title: '邻里产品小组',
-      subtitle: '',
-      updatedAt: DateTime(2026, 7, 31),
-      kind: ConversationKind.group,
-      members: const [_Fixture.me, _Fixture.peer],
-    );
-    await tester.pumpWidget(
-      MaterialApp(
-        home: ChatScreen(controller: appController, conversation: group),
-      ),
-    );
-    await tester.pump();
-    expect(find.byKey(const Key('start-audio-call')), findsOneWidget);
-    expect(find.byKey(const Key('start-video-call')), findsOneWidget);
-  });
+      // Also cover changing the active conversation in the desktop workspace.
+      for (final conversation in [direct, group, direct]) {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ChatScreen(
+              controller: appController,
+              conversation: conversation,
+            ),
+          ),
+        );
+        await tester.pump();
+        final isDirect = conversation.kind == ConversationKind.direct;
+        for (final key in ['start-audio-call', 'start-video-call']) {
+          final button = find.byKey(Key(key));
+          expect(button, isDirect ? findsOneWidget : findsNothing);
+          if (isDirect) {
+            expect(tester.widget<IconButton>(button).onPressed, isNotNull);
+          }
+        }
+        expect(
+          find.byKey(const Key('pinned-messages-button')),
+          isDirect ? findsNothing : findsOneWidget,
+        );
+        expect(find.byKey(const Key('chat-more-button')), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      }
+    });
+  }
 }
 
 class _Fixture {

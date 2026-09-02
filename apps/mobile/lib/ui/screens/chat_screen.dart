@@ -6,6 +6,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart' show kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/semantics.dart';
@@ -13,7 +14,6 @@ import 'package:flutter/services.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -21,6 +21,7 @@ import '../../calls/call_models.dart';
 import '../../core/app_controller.dart';
 import '../../core/app_config.dart';
 import '../../core/app_theme.dart';
+import '../../core/emoji_catalog.dart';
 import '../../core/image_export.dart';
 import '../../core/image_send_editor.dart';
 import '../../core/image_source_bytes.dart';
@@ -32,13 +33,22 @@ import '../../core/user_identity.dart';
 import '../../core/web_drop_paste.dart';
 import '../../im/business_features.dart';
 import '../widgets/linli_widgets.dart';
+import '../widgets/forward_conversation_sheet.dart';
 import '../widgets/media_send_widgets.dart';
+import '../widgets/voice_composer_widgets.dart';
+import '../voice_composer_controller.dart';
 import 'moments_screen.dart';
 import 'people_screens.dart';
 import 'relationship_screens.dart';
 import 'settings_preferences.dart';
 import 'settings_screens.dart';
 import 'sticker_store_screen.dart';
+
+export '../voice_composer_controller.dart'
+    show
+        voiceRecordingShouldCancel,
+        voiceRecordingIsTooShort,
+        voiceRecordingDurationSeconds;
 
 Route<T> chatScreenRoute<T>(
   BuildContext context, {
@@ -52,6 +62,16 @@ Route<T> chatScreenRoute<T>(
   // animation never starts two syncs.
   unawaited(controller.loadMessages(conversation.id, force: true));
   final reduceMotion = MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+  if (!kIsWeb && Theme.of(context).platform == TargetPlatform.iOS) {
+    return _IosChatPageRoute<T>(
+      reduceMotion: reduceMotion,
+      builder: (_) => ChatScreen(
+        controller: controller,
+        conversation: conversation,
+        initialMessageId: initialMessageId,
+      ),
+    );
+  }
   final duration = reduceMotion ? Duration.zero : nexaMotionDuration(context);
   return PageRouteBuilder<T>(
     opaque: true,
@@ -81,6 +101,40 @@ Route<T> chatScreenRoute<T>(
         ),
       );
     },
+  );
+}
+
+/// Retain Cupertino's edge gesture and interactive cancellation. A custom
+/// horizontal detector on the whole chat would compete with message gestures.
+class _IosChatPageRoute<T> extends CupertinoPageRoute<T> {
+  _IosChatPageRoute({required super.builder, required this.reduceMotion});
+
+  final bool reduceMotion;
+
+  @override
+  Duration get transitionDuration =>
+      reduceMotion ? Duration.zero : super.transitionDuration;
+
+  @override
+  Duration get reverseTransitionDuration => transitionDuration;
+
+  @override
+  bool canTransitionFrom(TransitionRoute<dynamic> previousRoute) =>
+      !reduceMotion && super.canTransitionFrom(previousRoute);
+
+  @override
+  Widget buildTransitions(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) => super.buildTransitions(
+    context,
+    // Keep the native gesture detector even when accessibility disables motion;
+    // returning child directly here would silently disable swipe-to-go-back.
+    reduceMotion ? const AlwaysStoppedAnimation<double>(1) : animation,
+    reduceMotion ? const AlwaysStoppedAnimation<double>(0) : secondaryAnimation,
+    child,
   );
 }
 
@@ -127,6 +181,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool selecting = false;
   final Set<String> selectedMessageIds = {};
   final Map<String, GlobalKey> _messageKeys = {};
+  final Set<String> _pendingVoiceEntrances = {};
   final Map<String, MessageMention> _pendingMentions = {};
   ChatMessage? replyingTo;
   Timer? _draftTimer;
@@ -570,7 +625,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   onPressed: _showPinnedMessages,
                   icon: const Icon(CupertinoIcons.pin),
                 ),
-              if (!widget.conversation.isBusinessChannel) ...[
+              if (widget.conversation.kind == ConversationKind.direct &&
+                  !widget.conversation.isBusinessChannel) ...[
                 IconButton(
                   key: const Key('start-audio-call'),
                   tooltip: '语音通话',
@@ -921,39 +977,46 @@ class _ChatScreenState extends State<ChatScreen> {
               child: Column(
                 children: [
                   if (showTime) _TimeDivider(date: message.sentAt),
-                  MessageBubble(
-                    message: message,
-                    controller: widget.controller,
-                    senderName: displaySenderName,
-                    avatarUrl:
-                        displaySender?.avatarUrl ??
-                        (widget.conversation.kind == ConversationKind.direct
-                            ? peer?.avatarUrl
-                            : null),
-                    onAvatarTap: displaySender == null
-                        ? null
-                        : () => unawaited(_openUserProfile(displaySender)),
-                    showSender:
-                        widget.conversation.kind == ConversationKind.group,
-                    showGroupReceipt:
-                        widget.conversation.kind == ConversationKind.group &&
-                        message.id == latestMineId,
-                    onRetry:
-                        _effectiveSendRestriction == null &&
-                            !_loadingSendCapability
-                        ? () => widget.controller.retryMessage(message)
-                        : null,
-                    selectionMode: selecting,
-                    selected: selectedMessageIds.contains(
+                  VoiceMessageEntrance(
+                    key: ValueKey('voice-entrance-${message.clientMessageId}'),
+                    animate: _pendingVoiceEntrances.remove(
                       message.clientMessageId,
                     ),
-                    onSelect: () => _toggleSelection(message),
-                    onLongPress: selecting
-                        ? (_) => _toggleSelection(message)
-                        : (position) => _showMessageActions(message, position),
-                    onReactionTap: (emoji) =>
-                        widget.controller.toggleReaction(message, emoji),
-                    onAddReaction: () => _showReactionPicker(message),
+                    child: MessageBubble(
+                      message: message,
+                      controller: widget.controller,
+                      senderName: displaySenderName,
+                      avatarUrl:
+                          displaySender?.avatarUrl ??
+                          (widget.conversation.kind == ConversationKind.direct
+                              ? peer?.avatarUrl
+                              : null),
+                      onAvatarTap: displaySender == null
+                          ? null
+                          : () => unawaited(_openUserProfile(displaySender)),
+                      showSender:
+                          widget.conversation.kind == ConversationKind.group,
+                      showGroupReceipt:
+                          widget.conversation.kind == ConversationKind.group &&
+                          message.id == latestMineId,
+                      onRetry:
+                          _effectiveSendRestriction == null &&
+                              !_loadingSendCapability
+                          ? () => widget.controller.retryMessage(message)
+                          : null,
+                      selectionMode: selecting,
+                      selected: selectedMessageIds.contains(
+                        message.clientMessageId,
+                      ),
+                      onSelect: () => _toggleSelection(message),
+                      onLongPress: selecting
+                          ? (_) => _toggleSelection(message)
+                          : (position) =>
+                                _showMessageActions(message, position),
+                      onReactionTap: (emoji) =>
+                          widget.controller.toggleReaction(message, emoji),
+                      onAddReaction: () => _showReactionPicker(message),
+                    ),
                   ),
                 ],
               ),
@@ -1792,20 +1855,38 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _sendVoice(MediaUpload upload) async {
+    final conversationId = widget.conversation.id;
     final reply = replyingTo;
-    setState(() {
-      replyingTo = null;
-      showEmoji = false;
-      showAttachments = false;
-    });
-    unawaited(
-      widget.controller.sendMedia(
-        widget.conversation.id,
-        upload,
-        replyTo: reply,
-      ),
-    );
-    _scrollToEnd();
+    final queued = Completer<void>();
+    unawaited(() async {
+      try {
+        await widget.controller.sendMedia(
+          conversationId,
+          upload,
+          replyTo: reply,
+          onQueued: (message) {
+            if (mounted && widget.conversation.id == conversationId) {
+              setState(() {
+                _pendingVoiceEntrances.add(message.clientMessageId);
+                replyingTo = null;
+                showEmoji = false;
+                showAttachments = false;
+              });
+              _scrollToEnd();
+            }
+            queued.complete();
+          },
+        );
+      } catch (error, stack) {
+        if (!queued.isCompleted) {
+          queued.completeError(error, stack);
+        } else if (mounted) {
+          _showError('语音发送失败，请稍后重试');
+        }
+      }
+    }());
+    // The composer releases its draft after durable enqueue, not after ACK.
+    await queued.future;
   }
 
   void _validateMediaSize(int bytes) {
@@ -2175,33 +2256,25 @@ class _ChatScreenState extends State<ChatScreen> {
     List<ChatMessage> messages, {
     required String mode,
   }) async {
-    final conversation = await _chooseForwardConversation(
+    final result = await showForwardConversations(
       context,
-      widget.controller.conversations,
-    );
-    if (!mounted || conversation == null) return;
-    final sent = await widget.controller.forwardMessages(
-      messages,
-      conversation.id,
+      controller: widget.controller,
+      messages: messages,
       mode: mode,
     );
-    if (!mounted) return;
-    if (sent.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('转发失败，请稍后重试')));
-      return;
+    if (!mounted || result == null) return;
+    if (result.allSucceeded) {
+      setState(() {
+        selecting = false;
+        selectedMessageIds.clear();
+      });
     }
-    setState(() {
-      selecting = false;
-      selectedMessageIds.clear();
-    });
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          mode == 'merged'
-              ? '已合并转发到 ${conversation.title}'
-              : '已转发 ${messages.length} 条到 ${conversation.title}',
+          result.allSucceeded
+              ? '已${mode == 'merged' ? '合并' : ''}转发到 ${result.succeeded} 个会话'
+              : '转发完成：成功 ${result.succeeded}，失败 ${result.failed}，未发送 ${result.notSent}',
         ),
       ),
     );
@@ -3412,7 +3485,16 @@ class MessageBubble extends StatelessWidget {
                           ),
                         ),
                       _MessageContent(message: message, controller: controller),
-                      if (message.status == MessageStatus.sending &&
+                      if (message.kind == MessageContentKind.voice)
+                        VoiceUploadProgress(
+                          progress: message.status == MessageStatus.sending
+                              ? controller?.mediaUploadProgressFor(
+                                  message.clientMessageId,
+                                )
+                              : null,
+                          clientMessageId: message.clientMessageId,
+                        )
+                      else if (message.status == MessageStatus.sending &&
                           controller?.mediaUploadProgressFor(
                                 message.clientMessageId,
                               ) !=
@@ -3500,63 +3582,67 @@ class MessageBubble extends StatelessWidget {
                               ),
                             ),
                           if (mine)
-                            if (message.status == MessageStatus.failed)
-                              Semantics(
-                                container: true,
-                                excludeSemantics: true,
-                                button: onRetry != null,
-                                enabled: onRetry != null,
-                                onTap: onRetry,
-                                label: onRetry == null
-                                    ? '消息发送失败'
-                                    : '消息发送失败，重新发送',
-                                child: InkWell(
-                                  key: const Key('failed-message-retry'),
-                                  borderRadius: BorderRadius.circular(8),
-                                  onTap: onRetry,
-                                  child: ConstrainedBox(
-                                    constraints: const BoxConstraints(
-                                      minHeight: 44,
-                                    ),
-                                    child: Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 4,
-                                      ),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(
-                                            CupertinoIcons
-                                                .exclamationmark_circle_fill,
-                                            size: 14,
-                                            color: LinliColors.systemRed,
+                            VoiceSendFeedback(
+                              animate: message.kind == MessageContentKind.voice,
+                              statusKey: message.status,
+                              child: message.status == MessageStatus.failed
+                                  ? Semantics(
+                                      container: true,
+                                      excludeSemantics: true,
+                                      button: onRetry != null,
+                                      enabled: onRetry != null,
+                                      onTap: onRetry,
+                                      label: onRetry == null
+                                          ? '消息发送失败'
+                                          : '消息发送失败，重新发送',
+                                      child: InkWell(
+                                        key: const Key('failed-message-retry'),
+                                        borderRadius: BorderRadius.circular(8),
+                                        onTap: onRetry,
+                                        child: ConstrainedBox(
+                                          constraints: const BoxConstraints(
+                                            minHeight: 44,
                                           ),
-                                          const SizedBox(width: 4),
-                                          Text(
-                                            onRetry == null
-                                                ? '发送失败'
-                                                : '发送失败，点此重试',
-                                            style: const TextStyle(
-                                              color: LinliColors.systemRed,
-                                              fontSize: 11,
+                                          child: Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 4,
+                                            ),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                const Icon(
+                                                  CupertinoIcons
+                                                      .exclamationmark_circle_fill,
+                                                  size: 14,
+                                                  color: LinliColors.systemRed,
+                                                ),
+                                                const SizedBox(width: 4),
+                                                Text(
+                                                  onRetry == null
+                                                      ? '发送失败'
+                                                      : '发送失败，点此重试',
+                                                  style: const TextStyle(
+                                                    color:
+                                                        LinliColors.systemRed,
+                                                    fontSize: 11,
+                                                  ),
+                                                ),
+                                              ],
                                             ),
                                           ),
-                                        ],
+                                        ),
                                       ),
+                                    )
+                                  : _DeliveryLabel(
+                                      status: message.status,
+                                      deliveredCount: showGroupReceipt
+                                          ? message.deliveredCount
+                                          : null,
+                                      readCount: showGroupReceipt
+                                          ? message.readCount
+                                          : null,
                                     ),
-                                  ),
-                                ),
-                              )
-                            else
-                              _DeliveryLabel(
-                                status: message.status,
-                                deliveredCount: showGroupReceipt
-                                    ? message.deliveredCount
-                                    : null,
-                                readCount: showGroupReceipt
-                                    ? message.readCount
-                                    : null,
-                              ),
+                            ),
                         ],
                       ),
                     ],
@@ -4083,14 +4169,18 @@ class _MessageImagePreviewState extends State<_MessageImagePreview> {
       _showMessage('图片发送成功后才能转发');
       return;
     }
-    final conversation = await _chooseForwardConversation(
+    final result = await showForwardConversations(
       context,
-      controller.conversations,
+      controller: controller,
+      messages: [_message],
+      mode: 'separate',
     );
-    if (!mounted || conversation == null) return;
-    final sent = await controller.forwardMessage(_message, conversation.id);
-    if (!mounted) return;
-    _showMessage(sent == null ? '转发失败，请稍后重试' : '已转发到 ${conversation.title}');
+    if (!mounted || result == null) return;
+    _showMessage(
+      result.allSucceeded
+          ? '已转发到 ${result.succeeded} 个会话'
+          : '转发完成：成功 ${result.succeeded}，失败 ${result.failed}，未发送 ${result.notSent}',
+    );
   }
 
   Future<void> _showActions() async {
@@ -6150,6 +6240,7 @@ class ChatComposer extends StatefulWidget {
     required this.onAttachment,
     this.allowLiveInteraction = false,
     required this.onVoiceReady,
+    this.voiceController,
     required this.onCancelReply,
     this.onMention,
     this.onTypingChanged,
@@ -6165,7 +6256,8 @@ class ChatComposer extends StatefulWidget {
   final VoidCallback onToggleEmoji;
   final ValueChanged<String> onAttachment;
   final bool allowLiveInteraction;
-  final ValueChanged<MediaUpload> onVoiceReady;
+  final FutureOr<void> Function(MediaUpload) onVoiceReady;
+  final VoiceComposerController? voiceController;
   final VoidCallback onCancelReply;
   final VoidCallback? onMention;
   final ValueChanged<bool>? onTypingChanged;
@@ -6178,21 +6270,10 @@ class ChatComposer extends StatefulWidget {
 }
 
 class _ChatComposerState extends State<ChatComposer> {
-  final AudioRecorder _recorder = AudioRecorder();
-  final AudioPlayer _player = AudioPlayer();
   final FocusNode _inputFocusNode = FocusNode();
-  Timer? _recordTimer;
+  late VoiceComposerController _voice;
+  late bool _ownsVoice;
   bool _voiceMode = false;
-  bool _recording = false;
-  bool _finishingRecording = false;
-  bool _cancelRecording = false;
-  bool _playing = false;
-  bool _pressingVoice = false;
-  int _recordSeconds = 0;
-  DateTime? _recordingStartedAt;
-  String? _activeRecordingPath;
-  String? _voiceDraftPath;
-  int _voiceDraftSeconds = 0;
 
   @override
   void initState() {
@@ -6200,9 +6281,49 @@ class _ChatComposerState extends State<ChatComposer> {
     widget.controller.addListener(_onTextChanged);
     _inputFocusNode.addListener(_onInputFocusChanged);
     HardwareKeyboard.instance.addHandler(_handleHardwareKey);
-    _player.onPlayerComplete.listen((_) {
-      if (mounted) setState(() => _playing = false);
-    });
+    _bindVoice();
+  }
+
+  void _bindVoice() {
+    _ownsVoice = widget.voiceController == null;
+    _voice = widget.voiceController ?? VoiceComposerController();
+    _voice.addListener(_onVoiceChanged);
+  }
+
+  void _onVoiceChanged() {
+    if (!mounted) return;
+    final notice = _voice.takeNotice();
+    setState(() {});
+    if (notice == null) return;
+    if (notice == VoiceComposerNotice.permissionDenied) {
+      unawaited(
+        showCupertinoDialog<void>(
+          context: context,
+          builder: (context) => CupertinoAlertDialog(
+            title: const Text('无法使用麦克风'),
+            content: const Text('请在系统设置中允许青蛙呱呱访问麦克风后再试。'),
+            actions: [
+              CupertinoDialogAction(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('知道了'),
+              ),
+            ],
+          ),
+        ),
+      );
+      return;
+    }
+    final message = switch (notice) {
+      VoiceComposerNotice.startFailed => '录音启动失败，请检查麦克风后重试',
+      VoiceComposerNotice.saveFailed => '录音保存失败，请重试',
+      VoiceComposerNotice.tooShort => '说话时间太短',
+      VoiceComposerNotice.previewFailed => '语音试听失败，请重试',
+      VoiceComposerNotice.sendFailed => '语音准备失败，录音已保留，请重试',
+      VoiceComposerNotice.permissionDenied => '',
+    };
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -6212,6 +6333,11 @@ class _ChatComposerState extends State<ChatComposer> {
       oldWidget.controller.removeListener(_onTextChanged);
       widget.controller.addListener(_onTextChanged);
     }
+    if (oldWidget.voiceController != widget.voiceController) {
+      _voice.removeListener(_onVoiceChanged);
+      if (_ownsVoice) _voice.dispose();
+      _bindVoice();
+    }
   }
 
   @override
@@ -6220,26 +6346,10 @@ class _ChatComposerState extends State<ChatComposer> {
     widget.controller.removeListener(_onTextChanged);
     _inputFocusNode.removeListener(_onInputFocusChanged);
     HardwareKeyboard.instance.removeHandler(_handleHardwareKey);
-    _recordTimer?.cancel();
-    final draftPath = _voiceDraftPath;
-    if (draftPath != null) unawaited(_deleteVoiceFile(draftPath));
-    unawaited(_disposeRecorder());
-    unawaited(_player.dispose());
+    _voice.removeListener(_onVoiceChanged);
+    if (_ownsVoice) _voice.dispose();
     _inputFocusNode.dispose();
     super.dispose();
-  }
-
-  Future<void> _disposeRecorder() async {
-    if (_recording || _finishingRecording) {
-      try {
-        await _recorder.cancel();
-      } catch (_) {
-        // The recorder may already be stopping during widget disposal.
-      }
-      final activePath = _activeRecordingPath;
-      if (activePath != null) await _deleteVoiceFile(activePath);
-    }
-    await _recorder.dispose();
   }
 
   bool _handleHardwareKey(KeyEvent event) {
@@ -6251,9 +6361,7 @@ class _ChatComposerState extends State<ChatComposer> {
             !widget.controller.value.composing.isCollapsed)) {
       return false;
     }
-    if (_voiceMode || widget.controller.text.trim().isEmpty) {
-      return false;
-    }
+    if (_voiceMode || widget.controller.text.trim().isEmpty) return false;
     widget.onSend();
     return true;
   }
@@ -6271,235 +6379,25 @@ class _ChatComposerState extends State<ChatComposer> {
   );
 
   void _toggleVoiceMode() {
-    if (_recording) return;
+    if (_voice.recording || _voice.busy) return;
     widget.onTypingChanged?.call(false);
     if (widget.showEmoji) widget.onToggleEmoji();
     if (widget.showAttachments) widget.onToggleAttachments();
+    _inputFocusNode.unfocus();
     setState(() => _voiceMode = !_voiceMode);
   }
 
-  Future<void> _startRecording() async {
-    if (_recording || _finishingRecording || _voiceDraftPath != null) return;
-    final allowed = await _recorder.hasPermission();
-    if (!mounted) return;
-    if (!allowed) {
-      await showCupertinoDialog<void>(
-        context: context,
-        builder: (context) => CupertinoAlertDialog(
-          title: const Text('无法使用麦克风'),
-          content: const Text('请在系统设置中允许青蛙呱呱访问麦克风后再试。'),
-          actions: [
-            CupertinoDialogAction(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('知道了'),
-            ),
-          ],
-        ),
-      );
-      return;
-    }
-    if (!_pressingVoice) return;
-    final path =
-        '${Directory.systemTemp.path}/linli-im-voice-${DateTime.now().microsecondsSinceEpoch}.m4a';
-    _activeRecordingPath = path;
-    await _recorder.start(
-      const RecordConfig(encoder: AudioEncoder.aacLc, bitRate: 64000),
-      path: path,
-    );
-    if (!mounted || !_pressingVoice) {
-      try {
-        await _recorder.cancel();
-      } catch (_) {
-        // The press can end while the recorder is still starting.
-      }
-      await _deleteVoiceFile(path);
-      _activeRecordingPath = null;
-      return;
-    }
-    _recordingStartedAt = DateTime.now();
-    setState(() {
-      _recording = true;
-      _cancelRecording = false;
-      _recordSeconds = 0;
-    });
-    _recordTimer?.cancel();
-    _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted || !_recording) return;
-      final elapsed = DateTime.now().difference(_recordingStartedAt!);
-      final displayedSeconds = elapsed.inSeconds.clamp(0, 60);
-      if (displayedSeconds != _recordSeconds) {
-        setState(() => _recordSeconds = displayedSeconds);
-      }
-      if (elapsed >= const Duration(seconds: 60)) {
-        unawaited(_finishRecording());
-      }
-    });
-  }
-
-  void _beginVoicePress(LongPressStartDetails _) {
-    _pressingVoice = true;
-    unawaited(_startRecordingSafely());
-  }
-
-  Future<void> _startRecordingSafely() async {
-    try {
-      await _startRecording();
-    } catch (_) {
-      try {
-        await _recorder.cancel();
-      } catch (_) {
-        // The recorder may not have reached an active state.
-      }
-      if (!mounted) return;
-      setState(() {
-        _recording = false;
-        _recordSeconds = 0;
-      });
-      final activePath = _activeRecordingPath;
-      _activeRecordingPath = null;
-      _recordingStartedAt = null;
-      if (activePath != null) await _deleteVoiceFile(activePath);
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('录音启动失败，请检查麦克风后重试')));
-    }
-  }
-
-  void _endVoicePress(LongPressEndDetails _) {
-    _pressingVoice = false;
-    unawaited(_finishRecording());
-  }
-
-  void _cancelVoicePress() {
-    _pressingVoice = false;
-    unawaited(_finishRecording(forceCancel: true));
-  }
-
   void _updateRecording(LongPressMoveUpdateDetails details) {
-    if (!_recording) return;
-    final shouldCancel = voiceRecordingShouldCancel(
-      details.offsetFromOrigin.dy,
-    );
-    if (shouldCancel != _cancelRecording) {
+    if (_voice.updateDrag(details.offsetFromOrigin.dy)) {
       HapticFeedback.selectionClick();
-      setState(() => _cancelRecording = shouldCancel);
     }
-  }
-
-  Future<void> _finishRecording({bool forceCancel = false}) async {
-    if (!_recording || _finishingRecording) return;
-    _finishingRecording = true;
-    _pressingVoice = false;
-    _recordTimer?.cancel();
-    final cancel = forceCancel || _cancelRecording;
-    final startedAt = _recordingStartedAt;
-    final fallbackPath = _activeRecordingPath;
-    String? stoppedPath;
-    Object? stopError;
-    try {
-      stoppedPath = await _recorder.stop();
-    } catch (error) {
-      stopError = error;
-    }
-    final elapsed = startedAt == null
-        ? Duration.zero
-        : DateTime.now().difference(startedAt);
-    final tooShort = !cancel && voiceRecordingIsTooShort(elapsed);
-    final path = stoppedPath ?? fallbackPath;
-    final seconds = voiceRecordingDurationSeconds(elapsed);
-    _finishingRecording = false;
-    _recordingStartedAt = null;
-    _activeRecordingPath = null;
-    if (!mounted) {
-      if (path != null) await _deleteVoiceFile(path);
-      return;
-    }
-    setState(() {
-      _recording = false;
-      _cancelRecording = false;
-      _recordSeconds = 0;
-      if (!cancel && !tooShort && stopError == null && path != null) {
-        _voiceDraftPath = path;
-        _voiceDraftSeconds = seconds;
-      }
-    });
-    if ((cancel || tooShort || stopError != null) && path != null) {
-      await _deleteVoiceFile(path);
-    }
-    if (!mounted || cancel) return;
-    if (stopError != null || path == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('录音保存失败，请重试')));
-    } else if (tooShort) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('说话时间太短')));
-    }
-  }
-
-  Future<void> _togglePreview() async {
-    final path = _voiceDraftPath;
-    if (path == null) return;
-    if (_playing) {
-      await _player.stop();
-      if (mounted) setState(() => _playing = false);
-      return;
-    }
-    await _player.play(DeviceFileSource(path));
-    if (mounted) setState(() => _playing = true);
-  }
-
-  Future<void> _discardDraft() async {
-    final path = _voiceDraftPath;
-    await _player.stop();
-    if (mounted) {
-      setState(() {
-        _playing = false;
-        _voiceDraftPath = null;
-        _voiceDraftSeconds = 0;
-      });
-    }
-    if (path != null) await _deleteVoiceFile(path);
-  }
-
-  Future<void> _sendVoice() async {
-    final path = _voiceDraftPath;
-    if (path == null) return;
-    final file = File(path);
-    if (!await file.exists()) {
-      await _discardDraft();
-      return;
-    }
-    final upload = MediaUpload(
-      bytes: await file.readAsBytes(),
-      fileName: path.split(Platform.pathSeparator).last,
-      mimeType: 'audio/mp4',
-      kind: MessageContentKind.voice,
-      localPath: path,
-      durationSeconds: _voiceDraftSeconds.clamp(1, 60),
-    );
-    await _player.stop();
-    if (!mounted) return;
-    setState(() {
-      _playing = false;
-      _voiceDraftPath = null;
-      _voiceDraftSeconds = 0;
-    });
-    widget.onVoiceReady(upload);
-  }
-
-  Future<void> _deleteVoiceFile(String path) async {
-    final file = File(path);
-    if (await file.exists()) await file.delete();
   }
 
   @override
   Widget build(BuildContext context) {
     final canSend = widget.controller.text.trim().isNotEmpty;
     final canSendText = !_voiceMode && canSend;
-    return GlassSurface(
+    final composer = GlassSurface(
       border: Border(
         top: BorderSide(color: Theme.of(context).colorScheme.outline),
       ),
@@ -6554,20 +6452,42 @@ class _ChatComposerState extends State<ChatComposer> {
                   ),
                   Expanded(
                     child: _voiceMode
-                        ? _VoiceRecorderControl(
-                            recording: _recording,
-                            canceling: _cancelRecording,
-                            seconds: _recordSeconds,
-                            draftSeconds: _voiceDraftSeconds,
-                            hasDraft: _voiceDraftPath != null,
-                            playing: _playing,
-                            onLongPressStart: _beginVoicePress,
-                            onLongPressMoveUpdate: _updateRecording,
-                            onLongPressEnd: _endVoicePress,
-                            onLongPressCancel: _cancelVoicePress,
-                            onPreview: _togglePreview,
-                            onDiscard: _discardDraft,
-                            onSend: _sendVoice,
+                        ? VoiceSizeTransition(
+                            alignment: Alignment.bottomCenter,
+                            child: AnimatedSwitcher(
+                              duration: nexaMotionDuration(context),
+                              child: _voice.hasDraft
+                                  ? VoiceDraftControl(
+                                      key: const ValueKey(
+                                        'voice-draft-control',
+                                      ),
+                                      seconds: _voice.draftSeconds,
+                                      playing: _voice.playing,
+                                      busy: _voice.busy,
+                                      previewBusy: _voice.previewBusy,
+                                      onPreview: () =>
+                                          unawaited(_voice.togglePreview()),
+                                      onDiscard: () =>
+                                          unawaited(_voice.discard()),
+                                      onSend: () => unawaited(
+                                        _voice.send(widget.onVoiceReady),
+                                      ),
+                                    )
+                                  : VoiceRecordingButton(
+                                      key: const ValueKey(
+                                        'voice-recording-control',
+                                      ),
+                                      phase: _voice.phase,
+                                      onStart: (_) =>
+                                          unawaited(_voice.beginPress()),
+                                      onMove: _updateRecording,
+                                      onEnd: (_) =>
+                                          unawaited(_voice.endPress()),
+                                      onCancel: () => unawaited(
+                                        _voice.endPress(forceCancel: true),
+                                      ),
+                                    ),
+                            ),
                           )
                         : TextField(
                             key: const Key('message-input'),
@@ -6621,7 +6541,9 @@ class _ChatComposerState extends State<ChatComposer> {
                     child: InkResponse(
                       key: const Key('send-button'),
                       radius: 24,
-                      onTap: canSendText
+                      onTap: _voice.recording || _voice.busy
+                          ? null
+                          : canSendText
                           ? widget.onSend
                           : widget.onToggleAttachments,
                       onLongPress: canSendText ? widget.onSendOptions : null,
@@ -6662,375 +6584,27 @@ class _ChatComposerState extends State<ChatComposer> {
         ),
       ),
     );
-  }
-}
-
-bool voiceRecordingShouldCancel(double verticalOffset) => verticalOffset <= -64;
-
-bool voiceRecordingIsTooShort(Duration duration) =>
-    duration < const Duration(milliseconds: 800);
-
-int voiceRecordingDurationSeconds(Duration duration) =>
-    ((duration.inMilliseconds + 999) ~/ 1000).clamp(1, 60);
-
-class _VoiceRecorderControl extends StatelessWidget {
-  const _VoiceRecorderControl({
-    required this.recording,
-    required this.canceling,
-    required this.seconds,
-    required this.draftSeconds,
-    required this.hasDraft,
-    required this.playing,
-    required this.onLongPressStart,
-    required this.onLongPressMoveUpdate,
-    required this.onLongPressEnd,
-    required this.onLongPressCancel,
-    required this.onPreview,
-    required this.onDiscard,
-    required this.onSend,
-  });
-
-  final bool recording;
-  final bool canceling;
-  final int seconds;
-  final int draftSeconds;
-  final bool hasDraft;
-  final bool playing;
-  final GestureLongPressStartCallback onLongPressStart;
-  final GestureLongPressMoveUpdateCallback onLongPressMoveUpdate;
-  final GestureLongPressEndCallback onLongPressEnd;
-  final VoidCallback onLongPressCancel;
-  final VoidCallback onPreview;
-  final VoidCallback onDiscard;
-  final VoidCallback onSend;
-
-  @override
-  Widget build(BuildContext context) {
-    if (hasDraft) {
-      return Container(
-        key: const Key('voice-draft'),
-        height: 44,
-        padding: const EdgeInsets.only(left: 10),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: Row(
-          children: [
-            IconButton(
-              tooltip: playing ? '暂停试听' : '试听',
-              onPressed: onPreview,
-              icon: Icon(
-                playing ? CupertinoIcons.pause_fill : CupertinoIcons.play_fill,
-                size: 18,
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        composer,
+        Positioned(
+          left: 12,
+          right: 12,
+          top: -12,
+          child: FractionalTranslation(
+            translation: const Offset(0, -1),
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: VoiceRecordingOverlay(
+                phase: _voice.phase,
+                seconds: _voice.seconds,
+                samples: _voice.samples,
               ),
-            ),
-            Expanded(child: Text('$draftSeconds 秒语音')),
-            IconButton(
-              tooltip: '丢弃语音',
-              onPressed: onDiscard,
-              icon: const Icon(CupertinoIcons.xmark, size: 18),
-            ),
-            IconButton(
-              key: const Key('send-voice-button'),
-              tooltip: '发送语音',
-              onPressed: onSend,
-              icon: const Icon(
-                CupertinoIcons.arrow_up_circle_fill,
-                color: LinliColors.navy,
-                size: 27,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-    return Semantics(
-      button: true,
-      label: recording
-          ? canceling
-                ? '松开取消录音'
-                : '正在录音 $seconds 秒，上滑取消'
-          : '按住说话',
-      child: GestureDetector(
-        key: const Key('hold-to-talk'),
-        behavior: HitTestBehavior.opaque,
-        onLongPressStart: onLongPressStart,
-        onLongPressMoveUpdate: onLongPressMoveUpdate,
-        onLongPressEnd: onLongPressEnd,
-        onLongPressCancel: onLongPressCancel,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 140),
-          height: 44,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: canceling
-                ? LinliColors.systemRed.withValues(alpha: .12)
-                : recording
-                ? LinliColors.navy.withValues(alpha: .10)
-                : Theme.of(context).colorScheme.surfaceContainerHigh,
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: Text(
-            canceling
-                ? '松开取消'
-                : recording
-                ? '${seconds.clamp(0, 60)}″  上滑取消'
-                : '按住说话',
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: canceling ? LinliColors.systemRed : null,
             ),
           ),
         ),
-      ),
-    );
-  }
-}
-
-Future<Conversation?> _chooseForwardConversation(
-  BuildContext context,
-  List<Conversation> conversations,
-) {
-  return showModalBottomSheet<Conversation>(
-    context: context,
-    isScrollControlled: true,
-    useSafeArea: true,
-    showDragHandle: true,
-    builder: (sheetContext) => AnimatedPadding(
-      duration: const Duration(milliseconds: 180),
-      curve: Curves.easeOut,
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
-      ),
-      child: _ForwardConversationSheet(conversations: conversations),
-    ),
-  );
-}
-
-class _ForwardConversationSheet extends StatefulWidget {
-  const _ForwardConversationSheet({required this.conversations});
-
-  final List<Conversation> conversations;
-
-  @override
-  State<_ForwardConversationSheet> createState() =>
-      _ForwardConversationSheetState();
-}
-
-class _ForwardConversationSheetState extends State<_ForwardConversationSheet> {
-  final searchController = TextEditingController();
-  String query = '';
-  String? selectedId;
-
-  @override
-  void dispose() {
-    searchController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final normalized = query.trim().toLowerCase();
-    final conversations = widget.conversations
-        .where((conversation) => !conversation.archived)
-        .where(
-          (conversation) =>
-              normalized.isEmpty ||
-              conversation.title.toLowerCase().contains(normalized) ||
-              conversation.subtitle.toLowerCase().contains(normalized),
-        )
-        .toList();
-    final selected = widget.conversations
-        .where((conversation) => conversation.id == selectedId)
-        .firstOrNull;
-    final theme = Theme.of(context);
-    final dark = theme.brightness == Brightness.dark;
-
-    return FractionallySizedBox(
-      heightFactor: .78,
-      child: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(18, 0, 18, 12),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('选择转发对象', style: theme.textTheme.titleLarge),
-                      const SizedBox(height: 3),
-                      Text(
-                        '选择一个会话，确认后发送',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Text(
-                  '${conversations.length} 个会话',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: CupertinoSearchTextField(
-              key: const Key('forward-conversation-search'),
-              controller: searchController,
-              placeholder: '搜索会话',
-              onChanged: (value) => setState(() => query = value),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Expanded(
-            child: conversations.isEmpty
-                ? Center(
-                    key: const Key('forward-conversation-empty'),
-                    child: Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            CupertinoIcons.chat_bubble_2,
-                            size: 34,
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                          const SizedBox(height: 12),
-                          Text(
-                            normalized.isEmpty ? '暂无可转发会话' : '没有匹配的会话',
-                            style: theme.textTheme.titleMedium,
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            normalized.isEmpty
-                                ? '有最近会话后，可以从这里转发消息。'
-                                : '换个会话名称试试。',
-                            textAlign: TextAlign.center,
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  )
-                : ListView.separated(
-                    key: const Key('forward-conversation-list'),
-                    keyboardDismissBehavior:
-                        ScrollViewKeyboardDismissBehavior.onDrag,
-                    padding: const EdgeInsets.fromLTRB(8, 2, 8, 8),
-                    itemCount: conversations.length,
-                    separatorBuilder: (_, _) =>
-                        const Divider(height: 1, indent: 68, endIndent: 8),
-                    itemBuilder: (context, index) {
-                      final conversation = conversations[index];
-                      final selected = selectedId == conversation.id;
-                      return Semantics(
-                        selected: selected,
-                        button: true,
-                        label: '转发到 ${conversation.title}',
-                        child: ListTile(
-                          key: Key('forward-conversation-${conversation.id}'),
-                          minTileHeight: 64,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          selected: selected,
-                          selectedTileColor: dark
-                              ? LinliColors.brandGreen.withValues(alpha: .10)
-                              : LinliColors.brandMint,
-                          leading: PersonAvatar(
-                            name: conversation.title,
-                            size: 44,
-                            avatarUrl: conversation.avatarUrl,
-                          ),
-                          title: Text(
-                            conversation.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          subtitle: conversation.subtitle.trim().isEmpty
-                              ? null
-                              : Text(
-                                  conversation.subtitle,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                          trailing: AnimatedContainer(
-                            duration: const Duration(milliseconds: 140),
-                            width: 24,
-                            height: 24,
-                            decoration: BoxDecoration(
-                              color: selected
-                                  ? LinliColors.brandGreen
-                                  : Colors.transparent,
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: selected
-                                    ? LinliColors.brandGreen
-                                    : theme.colorScheme.outlineVariant,
-                              ),
-                            ),
-                            child: selected
-                                ? const Icon(
-                                    CupertinoIcons.check_mark,
-                                    size: 15,
-                                    color: Colors.white,
-                                  )
-                                : null,
-                          ),
-                          onTap: () =>
-                              setState(() => selectedId = conversation.id),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surface,
-              border: Border(
-                top: BorderSide(color: theme.colorScheme.outlineVariant),
-              ),
-            ),
-            child: SafeArea(
-              top: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        key: const Key('forward-conversation-cancel'),
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text('取消'),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: FilledButton(
-                        key: const Key('forward-conversation-confirm'),
-                        onPressed: selected == null
-                            ? null
-                            : () => Navigator.pop(context, selected),
-                        child: const Text('转发'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+      ],
     );
   }
 }
@@ -7214,115 +6788,24 @@ class _EmojiPanel extends StatefulWidget {
 }
 
 class _EmojiPanelState extends State<_EmojiPanel> {
-  static const _recentKey = 'chat_recent_emojis';
-  static const _categories = <(String, IconData, List<String>)>[
-    (
-      '最近',
-      CupertinoIcons.clock,
-      ['😊', '😂', '❤️', '👍', '🎉', '🙏', '🥰', '👏'],
-    ),
-    (
-      '表情',
-      CupertinoIcons.smiley,
-      [
-        '😀',
-        '😃',
-        '😄',
-        '😁',
-        '😆',
-        '😅',
-        '😂',
-        '🤣',
-        '😊',
-        '🙂',
-        '🙃',
-        '😉',
-        '😍',
-        '🥰',
-        '😘',
-        '😋',
-        '😎',
-        '🤓',
-        '🧐',
-        '🥳',
-        '😏',
-        '😔',
-        '😢',
-        '😭',
-        '😤',
-        '😡',
-        '🤯',
-        '😱',
-        '😴',
-        '🤔',
-        '🤗',
-        '🫡',
-      ],
-    ),
-    (
-      '手势',
-      CupertinoIcons.hand_raised,
-      [
-        '👋',
-        '🤚',
-        '🖐️',
-        '✋',
-        '🫶',
-        '👌',
-        '🤌',
-        '🤏',
-        '✌️',
-        '🤞',
-        '🫰',
-        '🤟',
-        '🤘',
-        '🤙',
-        '👈',
-        '👉',
-        '👆',
-        '👇',
-        '☝️',
-        '👍',
-        '👎',
-        '✊',
-        '👊',
-        '👏',
-      ],
-    ),
-    (
-      '符号',
-      CupertinoIcons.heart,
-      [
-        '❤️',
-        '🧡',
-        '💛',
-        '💚',
-        '💙',
-        '💜',
-        '🖤',
-        '🤍',
-        '💔',
-        '💕',
-        '💞',
-        '💓',
-        '💗',
-        '💖',
-        '✨',
-        '⭐',
-        '🔥',
-        '🎉',
-        '🎊',
-        '✅',
-        '❌',
-        '💯',
-        '❗',
-        '❓',
-      ],
-    ),
+  static const _categoryIcons = [
+    CupertinoIcons.clock,
+    CupertinoIcons.smiley,
+    CupertinoIcons.hand_raised,
+    CupertinoIcons.heart,
+    CupertinoIcons.leaf_arrow_circlepath,
+    CupertinoIcons.cart,
+    CupertinoIcons.sportscourt,
+    CupertinoIcons.airplane,
+    CupertinoIcons.cube_box,
   ];
 
+  final _gridScrollController = ScrollController(keepScrollOffset: false);
   int _category = 0;
-  List<String> _recent = List.of(_categories.first.$3);
+  List<String> _recent = List.of(defaultRecentChatEmojis);
+
+  String _categoryLabel(int index) =>
+      index == 0 ? '最近' : chatEmojiCategories[index - 1].label;
 
   @override
   void initState() {
@@ -7330,12 +6813,30 @@ class _EmojiPanelState extends State<_EmojiPanel> {
     _loadRecent();
   }
 
+  @override
+  void dispose() {
+    _gridScrollController.dispose();
+    super.dispose();
+  }
+
+  void _selectCategory(int index) {
+    if (_category == index) return;
+    if (_gridScrollController.hasClients) _gridScrollController.jumpTo(0);
+    setState(() => _category = index);
+  }
+
   Future<void> _loadRecent() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final saved = prefs.getStringList(_recentKey);
+      final saved = prefs.getStringList(chatRecentEmojisKey);
       if (!mounted || saved == null || saved.isEmpty) return;
-      setState(() => _recent = saved.take(24).toList());
+      setState(() {
+        _recent = saved
+            .where((emoji) => emoji.trim().isNotEmpty)
+            .toSet()
+            .take(chatRecentEmojisLimit)
+            .toList();
+      });
     } catch (_) {
       // Emoji input remains fully usable when local preferences are unavailable.
     }
@@ -7345,11 +6846,13 @@ class _EmojiPanelState extends State<_EmojiPanel> {
     setState(() {
       _recent.remove(emoji);
       _recent.insert(0, emoji);
-      if (_recent.length > 24) _recent.removeRange(24, _recent.length);
+      if (_recent.length > chatRecentEmojisLimit) {
+        _recent.removeRange(chatRecentEmojisLimit, _recent.length);
+      }
     });
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList(_recentKey, _recent);
+      await prefs.setStringList(chatRecentEmojisKey, _recent);
     } catch (_) {
       // Recent history is a convenience; never block input if persistence fails.
     }
@@ -7398,8 +6901,15 @@ class _EmojiPanelState extends State<_EmojiPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final emojis = _category == 0 ? _recent : _categories[_category].$3;
+    final emojis = _category == 0
+        ? _recent
+        : chatEmojiCategories[_category - 1].emojis;
+    final cellExtent = math.max(
+      44.0,
+      MediaQuery.textScalerOf(context).scale(25) + 16,
+    );
     return Container(
+      key: const Key('chat-emoji-panel'),
       width: double.infinity,
       height: 298,
       color: Theme.of(context).colorScheme.surfaceContainerHigh,
@@ -7408,17 +6918,19 @@ class _EmojiPanelState extends State<_EmojiPanel> {
           SizedBox(
             height: 48,
             child: ListView.builder(
+              key: const Key('emoji-categories'),
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 8),
-              itemCount: _categories.length,
+              itemCount: chatEmojiCategories.length + 1,
               itemBuilder: (context, index) => IconButton(
                 key: Key('emoji-category-$index'),
-                tooltip: _categories[index].$1,
-                onPressed: () => setState(() => _category = index),
+                tooltip: _categoryLabel(index),
+                isSelected: _category == index,
+                onPressed: () => _selectCategory(index),
                 icon: Icon(
-                  _categories[index].$2,
+                  _categoryIcons[index],
                   color: _category == index
-                      ? LinliColors.navy
+                      ? Theme.of(context).colorScheme.secondary
                       : LinliColors.tertiaryLabel,
                 ),
               ),
@@ -7426,21 +6938,28 @@ class _EmojiPanelState extends State<_EmojiPanel> {
           ),
           const Divider(height: 1),
           Expanded(
-            child: GridView.builder(
-              key: const Key('emoji-grid'),
-              padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 8,
-                mainAxisExtent: 44,
-              ),
-              itemCount: emojis.length,
-              itemBuilder: (context, index) => CupertinoButton(
-                minimumSize: const Size(44, 44),
-                padding: EdgeInsets.zero,
-                onPressed: () => _insert(emojis[index]),
-                child: Text(
-                  emojis[index],
-                  style: const TextStyle(fontSize: 25),
+            child: LayoutBuilder(
+              builder: (context, constraints) => GridView.builder(
+                key: const Key('emoji-grid'),
+                controller: _gridScrollController,
+                padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: math.max(
+                    1,
+                    ((constraints.maxWidth - 20) / cellExtent).floor(),
+                  ),
+                  mainAxisExtent: cellExtent,
+                ),
+                itemCount: emojis.length,
+                itemBuilder: (context, index) => CupertinoButton(
+                  key: ValueKey('emoji-item-${emojis[index]}'),
+                  minimumSize: const Size(44, 44),
+                  padding: EdgeInsets.zero,
+                  onPressed: () => _insert(emojis[index]),
+                  child: Text(
+                    emojis[index],
+                    style: const TextStyle(fontSize: 25),
+                  ),
                 ),
               ),
             ),
@@ -7450,10 +6969,23 @@ class _EmojiPanelState extends State<_EmojiPanel> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
+                Expanded(
+                  child: Text(
+                    _categoryLabel(_category),
+                    key: const Key('emoji-category-label'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
                 IconButton.filledTonal(
                   key: const Key('emoji-backspace'),
                   tooltip: '退格',
                   onPressed: _backspace,
+                  style: IconButton.styleFrom(
+                    backgroundColor: Theme.of(context).colorScheme.surface,
+                    foregroundColor: Theme.of(context).colorScheme.secondary,
+                  ),
                   icon: const Icon(CupertinoIcons.delete_left),
                 ),
                 const SizedBox(width: 8),

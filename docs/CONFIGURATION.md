@@ -48,7 +48,8 @@
 | `IM_PUSH_WORKERS` / `IM_PUSH_BATCH_SIZE` | 推送并发与领取批次 | 默认 16/200，需结合提供商限流调整 |
 | `IM_OUTBOX_RETENTION` | 推送与任务 outbox 保留时间 | 默认 `168h`；WuKongIM 负责消息和会话同步 |
 | `IM_HTTP_LOG_SUCCESS_SAMPLE_RATE` | 成功请求日志采样率 | 默认 0.01；慢请求与错误始终记录 |
-| `IM_WUKONG_INTERNAL_RATE_LIMIT_PER_MINUTE` | WuKongIM 内部 DataSource/策略接口每来源 IP 的独立分钟配额 | 默认 120000，允许 60000–600000；与公网 300 次/分钟配额隔离，正式 1000 消息/秒门槛不得低于 60000 |
+| `IM_HTTP_RATE_LIMIT_PER_MINUTE` | 业务 HTTP API 每来源 IP 的通用分钟配额 | 默认 30000，允许 1–600000（0 使用默认值）；需重建业务容器加载新环境变量。登录、验证码等独立限流不受影响 |
+| `IM_WUKONG_INTERNAL_RATE_LIMIT_PER_MINUTE` | WuKongIM 内部 DataSource/策略接口每来源 IP 的独立分钟配额 | 默认 120000，允许 60000–600000；与公网默认 30000 次/分钟配额隔离，正式 1000 消息/秒门槛不得低于 60000 |
 | `IM_ADMIN_ID` / `IM_ADMIN_USERNAME` | 首个管理员 ID 与登录账号 | 仅在管理员表为空时使用；账号必须符合 3–32 位小写账号规则 |
 | `IM_ADMIN_CONTACT_EMAIL` | 首个管理员联系邮箱 | 可选，不参与登录 |
 | `IM_ADMIN_PASSWORD_HASH` | 首个管理员 bcrypt 哈希 | 禁止保存明文；初始化完成后不参与认证 |
