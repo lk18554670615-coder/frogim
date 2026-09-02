@@ -11,6 +11,9 @@ ALTER TABLE im_users ADD COLUMN IF NOT EXISTS password_updated_at timestamptz;
 ALTER TABLE im_users ADD COLUMN IF NOT EXISTS handle_change_count integer NOT NULL DEFAULT 0 CHECK(handle_change_count BETWEEN 0 AND 2);
 ALTER TABLE im_users ADD COLUMN IF NOT EXISTS allow_search_by_handle boolean NOT NULL DEFAULT true;
 ALTER TABLE im_users ADD COLUMN IF NOT EXISTS allow_search_by_phone boolean NOT NULL DEFAULT false;
+-- Preserve existing privacy choices, including legacy rows backfilled above.
+-- Only users created after schema 59 default to phone discovery enabled.
+ALTER TABLE im_users ALTER COLUMN allow_search_by_phone SET DEFAULT true;
 ALTER TABLE im_users ADD COLUMN IF NOT EXISTS gender text NOT NULL DEFAULT 'unspecified' CHECK(gender IN ('unspecified','male','female'));
 ALTER TABLE im_users ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
 ALTER TABLE im_users ADD COLUMN IF NOT EXISTS banned_until timestamptz;

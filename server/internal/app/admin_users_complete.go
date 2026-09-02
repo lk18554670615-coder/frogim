@@ -84,7 +84,7 @@ func (a *App) createPreparedAdminUser(ctx context.Context, actor string, prepare
 	if a.state.PhoneToUser[prepared.phone] != "" {
 		return nil, ErrConflict
 	}
-	user := &model.User{ID: id("usr"), Phone: prepared.phone, Name: prepared.name, Gender: prepared.gender, AllowSearchByHandle: true, CreatedAt: time.Now().UTC()}
+	user := &model.User{ID: id("usr"), Phone: prepared.phone, Name: prepared.name, Gender: prepared.gender, AllowSearchByHandle: true, AllowSearchByPhone: true, CreatedAt: time.Now().UTC()}
 	user.Handle = defaultHandle(user.ID)
 	a.state.Users[user.ID] = user
 	a.state.PhoneToUser[prepared.phone] = user.ID

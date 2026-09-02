@@ -881,7 +881,7 @@ func (a *App) SeedDemo() error {
 		return nil
 	}
 	now := time.Now()
-	users := []*model.User{{ID: "usr_alice", Phone: "13800000001", Name: "Alice", Gender: "unspecified", AllowSearchByHandle: true, CreatedAt: now}, {ID: "usr_bob", Phone: "13800000002", Name: "Bob", Gender: "unspecified", AllowSearchByHandle: true, CreatedAt: now}, {ID: "usr_admin", Phone: "13800000000", Name: "Admin", Gender: "unspecified", AllowSearchByHandle: true, CreatedAt: now}}
+	users := []*model.User{{ID: "usr_alice", Phone: "13800000001", Name: "Alice", Gender: "unspecified", AllowSearchByHandle: true, AllowSearchByPhone: true, CreatedAt: now}, {ID: "usr_bob", Phone: "13800000002", Name: "Bob", Gender: "unspecified", AllowSearchByHandle: true, AllowSearchByPhone: true, CreatedAt: now}, {ID: "usr_admin", Phone: "13800000000", Name: "Admin", Gender: "unspecified", AllowSearchByHandle: true, AllowSearchByPhone: true, CreatedAt: now}}
 	for _, u := range users {
 		u.Handle = defaultHandle(u.ID)
 		a.state.Users[u.ID] = u
@@ -920,7 +920,7 @@ func (a *App) Login(phone, name string) (*model.User, error) {
 		}
 		return u, nil
 	}
-	u := &model.User{ID: id("usr"), Phone: phone, Name: name, Gender: "unspecified", AllowSearchByHandle: true, CreatedAt: time.Now()}
+	u := &model.User{ID: id("usr"), Phone: phone, Name: name, Gender: "unspecified", AllowSearchByHandle: true, AllowSearchByPhone: true, CreatedAt: time.Now()}
 	u.Handle = defaultHandle(u.ID)
 	a.state.Users[u.ID] = u
 	a.state.PhoneToUser[phone] = u.ID
@@ -1081,7 +1081,7 @@ func (a *App) RegisterWithPassword(phone, name, password string) (*model.User, e
 	if a.state.PhoneToUser[phone] != "" {
 		return nil, ErrConflict
 	}
-	u := &model.User{ID: id("usr"), Phone: phone, Name: name, Gender: "unspecified", AllowSearchByHandle: true, CreatedAt: time.Now()}
+	u := &model.User{ID: id("usr"), Phone: phone, Name: name, Gender: "unspecified", AllowSearchByHandle: true, AllowSearchByPhone: true, CreatedAt: time.Now()}
 	u.Handle = defaultHandle(u.ID)
 	a.state.Users[u.ID] = u
 	a.state.PhoneToUser[phone] = u.ID

@@ -70,21 +70,22 @@ func TestPostgresGroupHistoryWithRealWuKong(t *testing.T) {
 	if _, err = p.pool.Exec(ctx, `DROP FUNCTION im_can_read_group_message(text,text,bigint,timestamptz);
 ALTER TABLE im_groups DROP COLUMN history_visible_to_new_members, DROP COLUMN history_policy_version;
 ALTER TABLE im_members DROP COLUMN history_after_seq;
-UPDATE im_schema_migrations SET version=57 WHERE version=58;`); err != nil {
+DELETE FROM im_schema_migrations WHERE version>=58;
+INSERT INTO im_schema_migrations(version) VALUES(57) ON CONFLICT DO NOTHING;`); err != nil {
 		t.Fatal(err)
 	}
 	if err = p.migrate(ctx); err != nil {
-		t.Fatal("57 to 58", err)
+		t.Fatal("upgrade schema 57", err)
 	}
 	if err = p.migrate(ctx); err != nil {
-		t.Fatal("repeat 58 migration", err)
+		t.Fatal("repeat startup migration", err)
 	}
 	oldProfile, e := p.GetGroupProfile(ctx, owner, oldCID)
 	if e != nil || oldProfile.HistoryVisibleToNewMembers || oldProfile.HistoryAccess.AfterSeq != nil || oldProfile.HistoryAccess.AfterTimestamp == nil || *oldProfile.HistoryAccess.AfterTimestamp != oldJoin.Unix() {
 		t.Fatalf("legacy migration=%+v %v", oldProfile, e)
 	}
 	var actualVersion int
-	if err = p.pool.QueryRow(ctx, `SELECT max(version) FROM im_schema_migrations`).Scan(&actualVersion); err != nil || actualVersion != 58 {
+	if err = p.pool.QueryRow(ctx, `SELECT max(version) FROM im_schema_migrations`).Scan(&actualVersion); err != nil || actualVersion != schemaVersion {
 		t.Fatalf("schema version=%d %v", actualVersion, err)
 	}
 	cid := schema + "_group"
