@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:linli_im/core/app_controller.dart';
@@ -15,6 +16,286 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
+
+  for (final delta in [-1.0, -24.0, -180.0]) {
+    testWidgets('桌面首次进入时滚轮上翻 $delta px 取消贴底及延迟刷新', (tester) async {
+      final repository = _CacheThenNetworkRepository();
+      final controller = AppController(repository);
+      addTearDown(controller.dispose);
+      await _pumpDesktopChat(tester, controller);
+      final position = _messagePosition(tester);
+      final bottom = position.pixels;
+      await _wheel(tester, delta);
+      final reading = position.pixels;
+      expect(reading, closeTo(bottom + delta, .1));
+      await _pumpFrames(tester, 24);
+      expect(position.pixels, closeTo(reading, .1));
+      repository.completeNetwork(messageCount: 44);
+      await _pumpFrames(tester, 24);
+      expect(position.pixels, closeTo(reading, 1));
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('连续滚轮阅读历史、窗口变大不贴底，主动回到底部恢复实时跟随', (tester) async {
+    final repository = _RealtimeMessageRepository();
+    final controller = AppController(repository);
+    addTearDown(controller.dispose);
+    await tester.runAsync(controller.loginAsDemo);
+    await _pumpDesktopChat(tester, controller);
+    final position = _messagePosition(tester);
+    for (var i = 0; i < 5; i++) {
+      await _wheel(tester, -24);
+    }
+    final reading = position.pixels;
+    repository.emitIncoming(sequence: 41, text: '滚轮阅读时的新消息');
+    await _pumpFrames(tester, 10);
+    expect(position.pixels, closeTo(reading, 1));
+    tester.view.physicalSize = const Size(1280, 960);
+    await _pumpFrames(tester, 10);
+    expect(position.pixels, closeTo(reading, 1));
+    repository.emitIncoming(sequence: 42, text: '尺寸变化后仍不贴底');
+    await _pumpFrames(tester, 10);
+    expect(position.pixels, closeTo(reading, 1));
+
+    // Stop 3px short: layout/realtime updates must not restore following.
+    await _wheel(tester, position.extentAfter - 3);
+    final almostBottom = position.pixels;
+    repository.emitIncoming(sequence: 43, text: '尚未回到底部');
+    await _pumpFrames(tester, 10);
+    expect(position.pixels, closeTo(almostBottom, 1));
+    await _wheel(tester, position.extentAfter - 1);
+    await _pumpFrames(tester, 10);
+    repository.emitIncoming(sequence: 44, text: '回到底部后自动跟随');
+    await _pumpFrames(tester, 10);
+    expect(position.extentAfter, closeTo(0, 1));
+    expect(find.text('回到底部后自动跟随'), findsOneWidget);
+  });
+
+  testWidgets('真实触控板 pan/zoom 上翻后不被刷新抢位置', (tester) async {
+    final repository = _CacheThenNetworkRepository();
+    final controller = AppController(repository);
+    addTearDown(controller.dispose);
+    await _pumpDesktopChat(tester, controller);
+    final position = _messagePosition(tester);
+    final before = position.pixels;
+    final center = tester.getCenter(find.byKey(const Key('message-list')));
+    final gesture = await tester.createGesture(
+      kind: PointerDeviceKind.trackpad,
+    );
+    await gesture.panZoomStart(center);
+    await gesture.panZoomUpdate(center, pan: const Offset(0, 80));
+    await tester.pump(const Duration(milliseconds: 100));
+    await gesture.panZoomUpdate(center, pan: const Offset(0, 160));
+    await tester.pump(const Duration(milliseconds: 100));
+    await gesture.panZoomEnd();
+    await _pumpFrames(tester, 10);
+    final reading = position.pixels;
+    expect(reading, lessThan(before - 50));
+    repository.completeNetwork(messageCount: 44);
+    await _pumpFrames(tester, 20);
+    expect(position.pixels, closeTo(reading, 1));
+  });
+
+  for (final brightness in Brightness.values) {
+    testWidgets('桌面窄聊天列 $brightness 只有一个滚动条且鼠标可拖动滑块', (tester) async {
+      final repository = _CacheThenNetworkRepository();
+      final controller = AppController(repository);
+      addTearDown(controller.dispose);
+      await _pumpDesktopChat(tester, controller, brightness: brightness);
+      final bar = find.byKey(const Key('message-scrollbar'));
+      expect(
+        find.byWidgetPredicate((widget) => widget is RawScrollbar),
+        findsOneWidget,
+      );
+      final scrollbar = tester.widget<RawScrollbar>(bar);
+      expect(scrollbar.interactive, isTrue);
+      expect(scrollbar.thumbVisibility, isTrue);
+      final position = _messagePosition(tester);
+      expect(scrollbar.controller!.position, same(position));
+      final list = find.byKey(const Key('message-list'));
+      final behavior = ScrollConfiguration.of(tester.element(list));
+      expect(behavior.dragDevices, isNot(contains(PointerDeviceKind.mouse)));
+      final bottom = position.pixels;
+      // Left drag inside the message panel must NOT scroll the list.
+      await tester.drag(
+        list,
+        const Offset(0, 150),
+        kind: PointerDeviceKind.mouse,
+      );
+      await _pumpFrames(tester, 5);
+      expect(position.pixels, closeTo(bottom, 1));
+
+      final rect = tester.getRect(bar);
+      final mouse = await tester.startGesture(
+        Offset(rect.right - 4, rect.bottom - 16),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      await mouse.moveBy(const Offset(0, -100));
+      await tester.pump(const Duration(milliseconds: 100));
+      await mouse.up();
+      await _pumpFrames(tester, 8);
+      final reading = position.pixels;
+      expect(reading, lessThan(bottom - 100));
+      repository.completeNetwork(messageCount: 44);
+      await _pumpFrames(tester, 20);
+      expect(position.pixels, closeTo(reading, 1));
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('本人发送恢复跟随，程序化 jumpTo 不冒充用户回到底部', (tester) async {
+    final repository = _RealtimeMessageRepository();
+    final controller = AppController(repository);
+    addTearDown(controller.dispose);
+    await tester.runAsync(controller.loginAsDemo);
+    await _pumpDesktopChat(tester, controller);
+    final position = _messagePosition(tester);
+    await _wheel(tester, -180);
+    position.jumpTo(position.maxScrollExtent);
+    final reading = position.pixels;
+    repository.emitIncoming(sequence: 41, text: '程序化定位后不恢复跟随');
+    await _pumpFrames(tester, 12);
+    expect(position.pixels, closeTo(reading, 1));
+    await tester.enterText(find.byKey(const Key('message-input')), '主动发送');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('send-button')));
+    await _pumpFrames(tester, 12);
+    expect(position.extentAfter, closeTo(0, 1));
+    repository.emitIncoming(sequence: 42, text: '本人发送后继续跟随');
+    await _pumpFrames(tester, 12);
+    expect(position.extentAfter, closeTo(0, 1));
+  });
+
+  testWidgets('点击滚动条轨道翻页也是主动滚动，不被初始贴底抢回', (tester) async {
+    final repository = _CacheThenNetworkRepository();
+    final controller = AppController(repository);
+    addTearDown(controller.dispose);
+    await _pumpDesktopChat(tester, controller);
+    final position = _messagePosition(tester);
+    final before = position.pixels;
+    final rect = tester.getRect(find.byKey(const Key('message-scrollbar')));
+    await tester.tapAt(
+      Offset(rect.right - 3, rect.center.dy),
+      kind: PointerDeviceKind.mouse,
+    );
+    await _pumpFrames(tester, 10);
+    final reading = position.pixels;
+    expect(reading, lessThan(before - 100));
+    repository.completeNetwork(messageCount: 44);
+    await _pumpFrames(tester, 20);
+    expect(position.pixels, closeTo(reading, 1));
+  });
+
+  testWidgets('未完成的初始搜索定位不会覆盖用户滚轮定位，销毁清理待执行回调', (tester) async {
+    final repository = _CacheThenNetworkRepository();
+    final controller = AppController(repository);
+    addTearDown(controller.dispose);
+    await _pumpDesktopChat(tester, controller, initialMessageId: 'message-10');
+    final position = _messagePosition(tester);
+    await _wheel(tester, 160);
+    final reading = position.pixels;
+    repository.completeNetwork(messageCount: 44);
+    await _pumpFrames(tester, 20);
+    expect(position.pixels, closeTo(reading, 1));
+    await tester.pumpWidget(const SizedBox.shrink());
+    await _pumpFrames(tester, 40);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('图片尺寸补齐不抢历史位置；回到底部后尺寸变化仍能跟随', (tester) async {
+    final repository = _RealtimeMessageRepository();
+    final controller = AppController(repository);
+    addTearDown(controller.dispose);
+    await tester.runAsync(controller.loginAsDemo);
+    await _pumpDesktopChat(tester, controller);
+    final position = _messagePosition(tester);
+    final image = controller
+        .messagesFor(_conversation.id)
+        .last
+        .copyWith(
+          kind: MessageContentKind.image,
+          mediaUrl: 'assets/brand/qingwaguagua-mark-transparent.png',
+          mediaWidth: 400,
+          mediaHeight: 200,
+        );
+    repository.updateMessage(image);
+    await _pumpFrames(tester, 12);
+    expect(position.extentAfter, closeTo(0, 1));
+    await _wheel(tester, -24);
+    final reading = position.pixels;
+    final beforeSize = tester.getSize(
+      find.byKey(Key('message-image-${image.clientMessageId}')),
+    );
+    repository.updateMessage(image.copyWith(mediaHeight: 800));
+    await _pumpFrames(tester, 12);
+    expect(
+      tester
+          .getSize(find.byKey(Key('message-image-${image.clientMessageId}')))
+          .height,
+      greaterThan(beforeSize.height),
+    );
+    expect(position.pixels, closeTo(reading, 1));
+    await _wheel(tester, 10000);
+    repository.updateMessage(image.copyWith(mediaHeight: 500));
+    await _pumpFrames(tester, 12);
+    expect(position.extentAfter, closeTo(0, 1));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('窄 macOS 窗口大字体仍有桌面滚动条，短消息没有可滚动范围', (tester) async {
+    tester.view.physicalSize = const Size(720, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final repository = _TransitionRepository();
+    final controller = AppController(repository);
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(
+          Brightness.dark,
+        ).copyWith(platform: TargetPlatform.macOS),
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: const TextScaler.linear(1.5)),
+          child: child!,
+        ),
+        home: ChatScreen(controller: controller, conversation: _conversation),
+      ),
+    );
+    repository.completeNetwork();
+    await _pumpFrames(tester, 20);
+    expect(find.byKey(const Key('message-scrollbar')), findsOneWidget);
+    final position = _messagePosition(tester);
+    expect(position.maxScrollExtent - position.minScrollExtent, closeTo(0, 1));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('同一聊天组件切换会话后忽略旧加载与待执行定位', (tester) async {
+    final firstRepository = _CacheThenNetworkRepository();
+    final first = AppController(firstRepository);
+    final secondRepository = _CacheThenNetworkRepository();
+    final second = AppController(secondRepository);
+    addTearDown(first.dispose);
+    addTearDown(second.dispose);
+    await _pumpDesktopChat(tester, first);
+    await _wheel(tester, -200);
+    // Same widget key/position, new controller: exercises didUpdateWidget,
+    // in addition to the keyed chat replacement used by HomeScreen.
+    await _pumpDesktopChat(tester, second);
+    final position = _messagePosition(tester);
+    expect(position.extentAfter, closeTo(0, 1));
+    await _wheel(tester, -24);
+    final reading = position.pixels;
+    firstRepository.completeNetwork(messageCount: 70);
+    secondRepository.completeNetwork(messageCount: 44);
+    await _pumpFrames(tester, 25);
+    expect(position.pixels, closeTo(reading, 1));
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('首次进入先展示本地消息并在服务器刷新后稳定停在最底部', (tester) async {
     tester.view.physicalSize = const Size(390, 844);
@@ -324,6 +605,53 @@ void main() {
   });
 }
 
+Future<void> _pumpDesktopChat(
+  WidgetTester tester,
+  AppController controller, {
+  Brightness brightness = Brightness.light,
+  String? initialMessageId,
+}) async {
+  tester.view.physicalSize = const Size(1280, 844);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  await tester.pumpWidget(
+    MaterialApp(
+      // An Android platform with a wide overall window also covers Web layout
+      // detection: the embedded chat is only 520px wide, not a mobile page.
+      theme: buildLinliTheme(
+        brightness,
+      ).copyWith(platform: TargetPlatform.android),
+      home: Row(
+        children: [
+          const Expanded(child: SizedBox()),
+          SizedBox(
+            width: 520,
+            child: ChatScreen(
+              controller: controller,
+              conversation: _conversation,
+              initialMessageId: initialMessageId,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+  await tester.pump();
+  await _pumpFrames(tester, 8);
+}
+
+Future<void> _wheel(WidgetTester tester, double dy) async {
+  await tester.sendEventToBinding(
+    PointerScrollEvent(
+      kind: PointerDeviceKind.mouse,
+      position: tester.getCenter(find.byKey(const Key('message-list'))),
+      scrollDelta: Offset(0, dy),
+    ),
+  );
+  await tester.pump();
+}
+
 Future<void> _pumpFrames(WidgetTester tester, int count) async {
   for (var index = 0; index < count; index++) {
     await tester.pump(const Duration(milliseconds: 50));
@@ -409,6 +737,22 @@ class _RealtimeMessageRepository extends DemoImRepository
 
   @override
   Stream<ImEvent> get events => _eventController.stream;
+
+  void updateMessage(ChatMessage message) => _eventController.add(
+    ImEvent(
+      type: ImEventType.messageChanged,
+      payload: {'message': message.toJson()},
+    ),
+  );
+
+  @override
+  Future<void> saveDraft(String conversationId, String text) async {}
+
+  @override
+  Future<void> persistMessages(
+    String conversationId,
+    List<ChatMessage> messages,
+  ) async {}
 
   @override
   Future<List<ChatMessage>> cachedMessages(String conversationId) async =>

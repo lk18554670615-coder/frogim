@@ -1202,6 +1202,7 @@ type GroupStore interface {
 	DisbandGroupRecord(context.Context, string, string, string, time.Time) error
 }
 type GroupProfileUpdate struct {
+	HistoryVisibleToNewMembers      *bool
 	Name, AvatarMediaID, JoinPolicy *string
 	AllowMemberAddFriend            *bool
 	AllMutedUntil                   *time.Time

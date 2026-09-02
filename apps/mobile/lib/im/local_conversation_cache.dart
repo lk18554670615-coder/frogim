@@ -2,9 +2,10 @@ import '../data/secure_local_store.dart';
 import 'wukong_gateway_contract.dart';
 
 class LocalConversationCache {
-  LocalConversationCache(this._store);
+  LocalConversationCache(this._store, {this.isVisible});
 
   final SecureLocalStore _store;
+  final bool Function(WukongMessage)? isVisible;
 
   Future<List<WukongMessage>> readMessages(
     String uid,
@@ -15,6 +16,7 @@ class LocalConversationCache {
     return raw
         .whereType<Map<String, Object?>>()
         .map(WukongMessage.fromJson)
+        .where((message) => isVisible?.call(message) ?? true)
         .toList();
   }
 
@@ -24,7 +26,10 @@ class LocalConversationCache {
     Iterable<WukongMessage> messages,
   ) => _store.writeJson(
     _messageKey(uid, channel),
-    messages.map((message) => message.toJson()).toList(),
+    messages
+        .where((message) => isVisible?.call(message) ?? true)
+        .map((message) => message.toJson())
+        .toList(),
   );
 
   Future<List<WukongMessage>> mergeMessages(
@@ -52,7 +57,9 @@ class LocalConversationCache {
         ? merged
         : merged.sublist(merged.length - 1000);
     await writeMessages(uid, channel, retained);
-    return retained;
+    return retained
+        .where((message) => isVisible?.call(message) ?? true)
+        .toList();
   }
 
   Future<void> upsertMessage(String uid, WukongMessage message) async {

@@ -4,6 +4,7 @@ import 'dart:js_interop_unsafe';
 import 'dart:math';
 
 import 'message_content_registry.dart';
+import 'history_access.dart';
 import 'wukong_gateway_contract.dart';
 
 @JS('globalThis.wk')
@@ -12,7 +13,61 @@ external JSObject? get _wkGlobal;
 WukongGateway createWukongGateway({WukongDataSource? dataSource}) =>
     WebWukongGateway(dataSource: dataSource);
 
-class WebWukongGateway implements WukongGateway {
+class WebWukongGateway implements WukongGateway, WukongHistoryCache {
+  @override
+  Future<void> invalidateGroupHistory(
+    String channelId,
+    GroupHistoryAccess? access,
+  ) async {
+    // Official JS 1.3.5 keeps no history DB: only conversation previews and
+    // reminders. Never touch its outgoing send queues or conversation drafts.
+    final manager = _conversationManager;
+    if (manager != null) {
+      final conversations = manager
+          .getProperty<JSArray<JSObject>>('conversations'.toJS)
+          .toDart;
+      for (final conversation in conversations) {
+        final channel = _object(conversation, 'channel');
+        if (_string(channel, 'channelID') != channelId ||
+            _integer(channel, 'channelType') != 2) {
+          continue;
+        }
+        final message = conversation.getProperty<JSObject?>('lastMessage'.toJS);
+        if (message != null &&
+            !(access?.allows(
+                  _integer(message, 'messageSeq').toInt(),
+                  DateTime.fromMillisecondsSinceEpoch(
+                    _integer(message, 'timestamp').toInt() * 1000,
+                  ),
+                ) ??
+                false)) {
+          conversation.setProperty('lastMessage'.toJS, null);
+          conversation.setProperty('unread'.toJS, 0.toJS);
+        }
+      }
+    }
+    final reminders = _reminderManager;
+    if (reminders != null) {
+      final items = reminders
+          .getProperty<JSArray<JSObject>>('reminders'.toJS)
+          .toDart;
+      reminders.setProperty(
+        'reminders'.toJS,
+        items
+            .where((item) {
+              final channel = _object(item, 'channel');
+              return _string(channel, 'channelID') != channelId ||
+                  _integer(channel, 'channelType') != 2 ||
+                  (access?.visibleAll == true ||
+                      (access?.afterSeq != null &&
+                          _integer(item, 'messageSeq') > access!.afterSeq!));
+            })
+            .toList()
+            .toJS,
+      );
+    }
+  }
+
   factory WebWukongGateway({WukongDataSource? dataSource}) =>
       WebWukongGateway._(dataSource);
 

@@ -2018,8 +2018,8 @@ func TestWukongMentionRemindersSyncAndCompleteByVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = p.pool.Exec(ctx, `
-		INSERT INTO im_members(conversation_id,user_id,role,joined_at) VALUES
-			($1,$2,'owner',$5),($1,$3,'member',$5),($1,$4,'member',$5)
+		INSERT INTO im_members(conversation_id,user_id,role,joined_at,history_after_seq) VALUES
+			($1,$2,'owner',$5,0),($1,$3,'member',$5,0),($1,$4,'member',$5,0)
 	`, groupID, sender, mentioned, other, now); err != nil {
 		t.Fatal(err)
 	}
@@ -2384,7 +2384,7 @@ func TestWukongGroupMessagePinUsesMetadataAndExtensionOnly(t *testing.T) {
 	if _, err = p.pool.Exec(ctx, `INSERT INTO im_groups(conversation_id,owner_id,updated_at) VALUES($1,$2,$3)`, cid, owner, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = p.pool.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,joined_at) VALUES($1,$2,'owner',$4),($1,$3,'member',$4)`, cid, owner, member, now); err != nil {
+	if _, err = p.pool.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,joined_at,history_after_seq) VALUES($1,$2,'owner',$4,0),($1,$3,'member',$4,0)`, cid, owner, member, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = p.pool.Exec(ctx, `
@@ -2470,8 +2470,8 @@ func TestWukongGroupMessagePinUsesMetadataAndExtensionOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	refs, err := p.ListWukongForwardMessageRefs(ctx, member, []string{messageIDText})
-	if err != nil || len(refs) != 1 || refs[0].ChannelID != cid {
-		t.Fatalf("favorite access refs=%+v err=%v", refs, err)
+	if err != ErrForbidden || len(refs) != 0 {
+		t.Fatalf("departed group favorite must not bypass membership: refs=%+v err=%v", refs, err)
 	}
 	if err = p.SetFavorite(ctx, member, messageIDText, false); err != nil {
 		t.Fatal(err)
@@ -2678,6 +2678,9 @@ func TestPostgresMediaAccessRequiresOwnerOrCurrentReferencedConversationMember(t
 	if err = p.BindMediaChannel(ctx, MediaChannelBinding{MediaID: mediaID, ChannelID: cid, ChannelType: wukong.ChannelGroup, SenderID: owner}); err != nil {
 		t.Fatal(err)
 	}
+	// A binding alone cannot grant history: authorization needs a visible,
+	// indexed message referencing this attachment.
+	insertTestWukongMessage(t, p, ctx, time.Now().UnixNano(), "media-visible-"+suffix, cid, owner, 1, wukong.ContentTypeImage, nil, mediaID, now)
 	for label, uid := range map[string]string{"owner": owner, "member": member} {
 		allowed, accessErr := p.CanAccessMedia(ctx, uid, mediaID)
 		if accessErr != nil || !allowed {
@@ -2785,6 +2788,9 @@ func TestPostgresGroupManagementPermissionsInvitesQRAndAudit(t *testing.T) {
 	defer p.Close()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	users := []string{"grp_owner_" + suffix, "grp_admin_" + suffix, "grp_member_" + suffix, "grp_qr_" + suffix}
+	// This store-only fixture has an empty IM history. Real max-sequence reads
+	// and failures are exercised by TestPostgresGroupHistoryWithRealWuKong.
+	p.SetGroupHistoryBoundaryReader(func(context.Context, string, string) (uint64, error) { return 0, nil })
 	now := time.Now()
 	for _, uid := range users {
 		if _, err = p.pool.Exec(ctx, `INSERT INTO im_users(id,phone,name,created_at)VALUES($1,$1,$1,$2)`, uid, now); err != nil {
@@ -3080,7 +3086,7 @@ func TestPostgresMessageCollaborationLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	for userID, role := range map[string]string{owner: "owner", admin: "admin", member: "member"} {
-		if _, err = p.pool.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,joined_at) VALUES($1,$2,$3,$4)`, cid, userID, role, now); err != nil {
+		if _, err = p.pool.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,joined_at,history_after_seq) VALUES($1,$2,$3,$4,0)`, cid, userID, role, now); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -14,6 +14,7 @@ import '../core/models.dart';
 import '../im/business_repository.dart';
 import '../im/business_features.dart';
 import '../im/local_conversation_cache.dart';
+import '../im/history_access.dart';
 import '../im/message_content_registry.dart';
 import '../im/message_mapper.dart';
 import '../im/structured_event_text.dart';
@@ -55,6 +56,7 @@ class LiveImRepository
     implements
         ImRepository,
         CachedMessageRepository,
+        GroupHistoryRepository,
         PaginatedMessageRepository,
         CallRepository,
         BusinessFeatureRepository {
@@ -79,7 +81,10 @@ class LiveImRepository
           client: _client,
         );
     _wukong = wukongGateway ?? createWukongGateway(dataSource: _business);
-    _conversationCache = LocalConversationCache(_store);
+    _conversationCache = LocalConversationCache(
+      _store,
+      isVisible: _canReadWukongMessage,
+    );
   }
 
   final http.Client _client;
@@ -102,6 +107,143 @@ class LiveImRepository
   AppUser? _me;
   WukongSession? _imSession;
   final Map<String, WukongChannel> _conversationChannels = {};
+  final Map<String, GroupHistoryAccess> _groupHistory = {};
+  final Map<String, String> _historyFingerprints = {};
+  final Map<String, int> _historyRequiredVersions = {};
+  final Map<String, GroupHistoryAccess> _latestHistoryAccess = {};
+
+  bool _canReadWukongMessage(WukongMessage message) {
+    if (message.channel.type != 2) return true;
+    if (message.messageSeq == 0 &&
+        message.fromUid == _userId &&
+        (message.state == WukongMessageState.sending ||
+            message.state == WukongMessageState.failed)) {
+      return true;
+    }
+    return _groupHistory[message.channel.id]?.allows(
+          message.messageSeq,
+          message.timestamp,
+        ) ??
+        false;
+  }
+
+  @override
+  bool canReadCachedMessage(ChatMessage message) {
+    final channel = _conversationChannels[message.conversationId];
+    if (channel != null && channel.type != 2) return true;
+    if (message.conversationSeq == 0 &&
+        message.senderId == _userId &&
+        (message.status == MessageStatus.sending ||
+            message.status == MessageStatus.failed)) {
+      return true;
+    }
+    return channel != null &&
+        (_groupHistory[channel.id]?.allows(
+              message.conversationSeq,
+              message.sentAt,
+            ) ??
+            false);
+  }
+
+  void _notifyGroupHistory(String conversationId) {
+    if (!_events.isClosed) {
+      _events.add(
+        ImEvent(
+          type: ImEventType.groupHistoryChanged,
+          payload: {'conversationId': conversationId},
+        ),
+      );
+    }
+  }
+
+  void _distrustGroupHistories() {
+    final ids = _groupHistory.keys.toList();
+    _groupHistory.clear();
+    _historyFingerprints.clear();
+    for (final cid in ids) {
+      _notifyGroupHistory(cid);
+    }
+  }
+
+  Future<void> _applyGroupHistory(String conversationId, Object? raw) async {
+    _conversationChannels[conversationId] = WukongChannel(
+      id: conversationId,
+      type: 2,
+    );
+    final access = GroupHistoryAccess.parse(raw);
+    final previous = _groupHistory[conversationId];
+    final latest = _latestHistoryAccess[conversationId];
+    if (access != null) {
+      if (access.version < (_historyRequiredVersions[conversationId] ?? 0)) {
+        return;
+      }
+      if (latest?.afterSeq != null &&
+          (access.afterSeq == null || access.afterSeq! < latest!.afterSeq!)) {
+        return;
+      }
+      _historyRequiredVersions[conversationId] = access.version;
+      _latestHistoryAccess[conversationId] = access;
+    }
+    if (access != null &&
+        previous != null &&
+        access.version < previous.version) {
+      return;
+    }
+    final fingerprint = access?.fingerprint ?? 'untrusted';
+    if (_historyFingerprints[conversationId] == fingerprint) return;
+    _historyFingerprints[conversationId] = fingerprint;
+    if (access == null) {
+      _groupHistory.remove(conversationId);
+    } else {
+      _groupHistory[conversationId] = access;
+    }
+    // Notify synchronously before any disk work: old in-flight reads are gated by
+    // the current policy too, so they cannot repaint a revoked message.
+    _notifyGroupHistory(conversationId);
+    final uid = _userId;
+    if (uid == null) return;
+    final channel = WukongChannel(id: conversationId, type: 2);
+    try {
+      final snapshot = await _readPageMessageSnapshot(conversationId);
+      if (_userId != uid) return;
+      await persistMessages(conversationId, snapshot);
+      final favorites = await _store.readJson('favorites');
+      if (_userId != uid) return;
+      if (favorites is List) {
+        final retained = favorites.whereType<Map>().where((raw) {
+          if (raw['conversationId'] != conversationId) return true;
+          return canReadCachedMessage(
+            ChatMessage.fromJson(wukongObjectMap(raw)),
+          );
+        }).toList();
+        await _store.writeJson('favorites', retained);
+      }
+      final cached = await _conversationCache.readMessages(uid, channel);
+      if (_userId != uid) return;
+      await _conversationCache.writeMessages(uid, channel, cached);
+      final gateway = _wukong;
+      if (gateway is WukongHistoryCache) {
+        await (gateway as WukongHistoryCache).invalidateGroupHistory(
+          conversationId,
+          access,
+        );
+      }
+    } catch (_) {
+      _groupHistory.remove(conversationId);
+      _historyFingerprints.remove(conversationId);
+      _notifyGroupHistory(conversationId);
+      rethrow;
+    }
+  }
+
+  Future<void> _refreshGroupHistory(String conversationId) async {
+    final uid = _userId;
+    final raw = await _get('/v2/channels/groups/$conversationId');
+    if (uid == _userId && uid != null) {
+      await _applyGroupHistory(conversationId, raw['historyAccess']);
+    }
+  }
+
   final Map<String, String> _channelConversations = {};
   final Map<String, _PendingWukongSend> _wukongSendsByClientMsgNo = {};
   final Map<int, _PendingWukongSend> _wukongSendsByClientSeq = {};
@@ -870,6 +1012,17 @@ class LiveImRepository
         active.tcpUrl != session.tcpUrl ||
         active.wsUrl != session.wsUrl) {
       await _wukong.initialize(session);
+      // Policies may arrive before the native SDK opens its database. Purge it
+      // again after initialization, without tombstones or server-side deletes.
+      if (_wukong is WukongHistoryCache) {
+        for (final cid in _groupHistory.keys.toList()) {
+          if (_userId != session.uid) return;
+          await (_wukong as WukongHistoryCache).invalidateGroupHistory(
+            cid,
+            _groupHistory[cid],
+          );
+        }
+      }
     }
     if (kDebugMode || kProfileMode) {
       final tcp = Uri.tryParse(session.tcpUrl);
@@ -911,12 +1064,14 @@ class LiveImRepository
       _connection.add(available);
       switch (state) {
         case WukongConnectionState.connected:
+          unawaited(conversations().catchError((Object _) => <Conversation>[]));
           if (_wukongHasConnected && _reconnectReconciliationNeeded) {
             _scheduleReconnectReconciliation();
           }
           _wukongHasConnected = true;
         case WukongConnectionState.disconnected ||
             WukongConnectionState.networkUnavailable:
+          _distrustGroupHistories();
           _reconnectReconciliationTimer?.cancel();
           _reconnectReconciliationTimer = null;
           if (_wukongHasConnected) {
@@ -1287,6 +1442,24 @@ class LiveImRepository
     if (message.contentType == WukongContentType.callEvent) {
       _handleWukongCallEvent(message.payload);
     }
+    if (message.channel.type == 2 &&
+        !_groupHistory.containsKey(message.channel.id)) {
+      try {
+        await _refreshGroupHistory(message.channel.id);
+      } catch (_) {
+        return;
+      }
+    }
+    if (!_canReadWukongMessage(message)) {
+      final gateway = _wukong;
+      if (gateway is WukongHistoryCache) {
+        await (gateway as WukongHistoryCache).invalidateGroupHistory(
+          message.channel.id,
+          _groupHistory[message.channel.id],
+        );
+      }
+      return;
+    }
     message = await _hydrateWukongMedia(message);
     final conversationId = await _conversationIdFor(message.channel);
     if (conversationId == null) {
@@ -1300,7 +1473,9 @@ class LiveImRepository
     }
     final uid = _userId;
     if (uid == null) return;
+    if (!_canReadWukongMessage(message)) return;
     await _conversationCache.upsertMessage(uid, message);
+    if (_userId != uid || !_canReadWukongMessage(message)) return;
     if (event.kind == WukongGatewayEventKind.refreshed) {
       final ownSend =
           _wukongSendsByClientMsgNo[message.clientMsgNo] ??
@@ -1558,6 +1733,28 @@ class LiveImRepository
   void _emitEvent(String rawType, Map<String, Object?> wrapper) {
     final nested = wrapper['payload'];
     final payload = nested is Map ? wukongObjectMap(nested) : wrapper;
+    if (rawType == 'group.history.updated' ||
+        (rawType == 'group.system' &&
+            payload['event'] == 'group.history.updated')) {
+      final cid = payload['conversationId']?.toString() ?? '';
+      if (cid.isNotEmpty) {
+        final details = wukongObjectMap(payload['data']);
+        final version = (details['historyPolicyVersion'] as num?)?.toInt();
+        if (version != null && version <= (_groupHistory[cid]?.version ?? 0)) {
+          return;
+        }
+        if (version != null) {
+          _historyRequiredVersions[cid] = max(
+            version,
+            _historyRequiredVersions[cid] ?? 0,
+          );
+        }
+        _groupHistory.remove(cid);
+        _historyFingerprints.remove(cid);
+        _notifyGroupHistory(cid);
+        unawaited(_refreshGroupHistory(cid).catchError((Object _) {}));
+      }
+    }
     if (rawType.startsWith('call.')) {
       _callEvents.add(CallSignalEvent(type: rawType, payload: payload));
       return;
@@ -1613,12 +1810,29 @@ class LiveImRepository
 
   @override
   Future<List<Conversation>> conversations() async {
+    final sessionUserId = _userId;
     final data = await _get('/v2/channels/conversations');
+    if (_userId != sessionUserId) return const [];
     final metadata = (data['items'] as List<Object?>? ?? const [])
         .map((item) => _conversation(item! as Map<String, Object?>))
         .toList();
     for (final conversation in metadata) {
       _registerConversation(conversation);
+      final channel = _conversationChannels[conversation.id];
+      if (channel != null) {
+        await _store.writeJson('channel.${conversation.id}', {
+          'id': channel.id,
+          'type': channel.type,
+        });
+      }
+    }
+    for (final raw
+        in (data['items'] as List<Object?>? ?? const []).whereType<Map>()) {
+      final conversation = wukongObjectMap(raw['conversation']);
+      final cid = conversation['id']?.toString() ?? '';
+      if (_conversationChannels[cid]?.type == 2) {
+        await _applyGroupHistory(cid, raw['historyAccess']);
+      }
     }
     try {
       final synced = await _business.syncConversations(
@@ -1682,13 +1896,15 @@ class LiveImRepository
         'channel_type': recent['channel_type'] ?? channel.type,
       };
       final message = WukongMessage.fromSyncJson(normalized);
-      subtitle = _messageMapper
-          .toChatMessage(
-            message,
-            currentUserId: _userId ?? '',
-            conversationId: conversation.id,
-          )
-          .text;
+      subtitle = !_canReadWukongMessage(message)
+          ? '打开会话查看消息'
+          : _messageMapper
+                .toChatMessage(
+                  message,
+                  currentUserId: _userId ?? '',
+                  conversationId: conversation.id,
+                )
+                .text;
     }
     final timestamp = (item['timestamp'] as num?)?.toInt() ?? 0;
     final updatedAt = timestamp <= 0
@@ -1699,7 +1915,9 @@ class LiveImRepository
     return conversation.copyWith(
       subtitle: subtitle?.isNotEmpty == true ? subtitle : conversation.subtitle,
       updatedAt: updatedAt,
-      unread: (item['unread'] as num?)?.toInt() ?? conversation.unread,
+      unread: channel.type == 2 && !_groupHistory.containsKey(channel.id)
+          ? 0
+          : (item['unread'] as num?)?.toInt() ?? conversation.unread,
       lastMessageSeq:
           (item['last_msg_seq'] as num?)?.toInt() ??
           (item['lastMsgSeq'] as num?)?.toInt() ??
@@ -2324,10 +2542,18 @@ class LiveImRepository
   }
 
   @override
-  Future<GroupProfile> groupProfile(String conversationId) async =>
-      _groupProfile(await _get('/v2/channels/groups/$conversationId'));
+  Future<GroupProfile> groupProfile(String conversationId) async {
+    final sessionUserId = _userId;
+    final raw = await _get('/v2/channels/groups/$conversationId');
+    if (_userId == sessionUserId) {
+      await _applyGroupHistory(conversationId, raw['historyAccess']);
+    }
+    return _groupProfile(raw);
+  }
 
   GroupProfile _groupProfile(Map<String, Object?> item) => GroupProfile(
+    historyVisibleToNewMembers: item['historyVisibleToNewMembers'] == true,
+    historyPolicyVersion: (item['historyPolicyVersion'] as num?)?.toInt() ?? 1,
     conversationId: item['conversationId']! as String,
     ownerId: item['ownerId']! as String,
     name: item['name'] as String? ?? '未命名群聊',
@@ -2353,16 +2579,24 @@ class LiveImRepository
     String? avatarMediaId,
     String? joinPolicy,
     bool? allowMemberAddFriend,
+    bool? historyVisibleToNewMembers,
     bool rotateQr = false,
-  }) async => _groupProfile(
-    await _sendRequest('PATCH', '/v2/channels/groups/$conversationId', {
-      'name': ?name,
-      'avatarMediaId': ?avatarMediaId,
-      'joinPolicy': ?joinPolicy,
-      'allowMemberAddFriend': ?allowMemberAddFriend,
-      if (rotateQr) 'rotateQr': true,
-    }),
-  );
+  }) async {
+    final sessionUserId = _userId;
+    final raw =
+        await _sendRequest('PATCH', '/v2/channels/groups/$conversationId', {
+          'name': ?name,
+          'avatarMediaId': ?avatarMediaId,
+          'joinPolicy': ?joinPolicy,
+          'allowMemberAddFriend': ?allowMemberAddFriend,
+          'historyVisibleToNewMembers': ?historyVisibleToNewMembers,
+          if (rotateQr) 'rotateQr': true,
+        });
+    if (_userId == sessionUserId) {
+      await _applyGroupHistory(conversationId, raw['historyAccess']);
+    }
+    return _groupProfile(raw);
+  }
 
   @override
   Future<GroupProfile> setGroupAnnouncement(
@@ -2596,6 +2830,9 @@ class LiveImRepository
       );
     }
     try {
+      if (channel.type == 2 && !_groupHistory.containsKey(channel.id)) {
+        await _refreshGroupHistory(conversationId);
+      }
       final data = await _business.syncMessages(
         channel: channel,
         startMessageSeq: 0,
@@ -2645,8 +2882,27 @@ class LiveImRepository
                   ),
           )
           .toList();
+      if (channel.type == 2) {
+        // An authoritative history page has no local failed/queued uploads.
+        // Retain those from the page cache while resetting visible history.
+        final local = await _readPageMessageSnapshot(conversationId);
+        if (_userId != uid) return const [];
+        for (final pending in local) {
+          if (pending.conversationSeq == 0 &&
+              pending.senderId == uid &&
+              (pending.status == MessageStatus.sending ||
+                  pending.status == MessageStatus.failed) &&
+              !result.any(
+                (m) =>
+                    m.id == pending.id ||
+                    m.stableIdentity == pending.stableIdentity,
+              )) {
+            result.add(pending);
+          }
+        }
+      }
       await persistMessages(conversationId, result);
-      return result;
+      return result.where(canReadCachedMessage).toList();
     } catch (_) {
       final cached = await _conversationCache.readMessages(uid, channel);
       if (cached.isNotEmpty) {
@@ -2666,6 +2922,15 @@ class LiveImRepository
 
   @override
   Future<List<ChatMessage>> cachedMessages(String conversationId) async {
+    if (!_conversationChannels.containsKey(conversationId)) {
+      final raw = await _store.readJson('channel.$conversationId');
+      if (raw is Map && raw['id'] is String && raw['type'] is num) {
+        _conversationChannels[conversationId] = WukongChannel(
+          id: raw['id'] as String,
+          type: (raw['type'] as num).toInt(),
+        );
+      }
+    }
     // Both stores are encrypted local data. On a cold Android start either
     // read can wait for keystore initialisation, so start them together. A
     // damaged snapshot must not hide a healthy WuKong cache (or vice versa).
@@ -2718,7 +2983,7 @@ class LiveImRepository
       final byTime = left.sentAt.compareTo(right.sentAt);
       return byTime != 0 ? byTime : left.id.compareTo(right.id);
     });
-    return merged;
+    return merged.where(canReadCachedMessage).toList();
   }
 
   Future<List<ChatMessage>> _readPageMessageSnapshot(
@@ -2867,6 +3132,7 @@ class LiveImRepository
       replySources[message.id] = message;
     }
     final result = mappedPage
+        .where(canReadCachedMessage)
         .map(
           (message) => message.replyToId == null
               ? message
@@ -3536,7 +3802,10 @@ class LiveImRepository
     List<ChatMessage> messages,
   ) => _store.writeJson(
     'messages.$conversationId',
-    messages.map((message) => message.toJson()).toList(),
+    messages
+        .where(canReadCachedMessage)
+        .map((message) => message.toJson())
+        .toList(),
   );
 
   @override
@@ -3581,6 +3850,9 @@ class LiveImRepository
   };
 
   Future<void> _clearSession() async {
+    _distrustGroupHistories();
+    _historyRequiredVersions.clear();
+    _latestHistoryAccess.clear();
     _token = null;
     _refreshToken = null;
     _userId = null;
@@ -3727,6 +3999,7 @@ class ResilientImRepository
     implements
         ImRepository,
         CachedMessageRepository,
+        GroupHistoryRepository,
         PaginatedMessageRepository,
         CallRepository,
         BusinessFeatureRepository {
@@ -3737,6 +4010,10 @@ class ResilientImRepository
   );
 
   final ImRepository? live;
+  @override
+  bool canReadCachedMessage(ChatMessage message) =>
+      live is! GroupHistoryRepository ||
+      (live as GroupHistoryRepository).canReadCachedMessage(message);
 
   ImRepository get _active {
     if (live case final live?) return live;
@@ -4378,6 +4655,7 @@ class ResilientImRepository
     String? avatarMediaId,
     String? joinPolicy,
     bool? allowMemberAddFriend,
+    bool? historyVisibleToNewMembers,
     bool rotateQr = false,
   }) => _active.updateGroupProfile(
     conversationId,
@@ -4385,6 +4663,7 @@ class ResilientImRepository
     avatarMediaId: avatarMediaId,
     joinPolicy: joinPolicy,
     allowMemberAddFriend: allowMemberAddFriend,
+    historyVisibleToNewMembers: historyVisibleToNewMembers,
     rotateQr: rotateQr,
   );
   @override

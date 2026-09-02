@@ -105,6 +105,20 @@ ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS banned boolean NOT NULL DEFAULT f
 ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS banned_at timestamptz;
 ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS banned_by text NOT NULL DEFAULT '';
 ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS ban_reason text NOT NULL DEFAULT '';
+ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS history_visible_to_new_members boolean NOT NULL DEFAULT false;
+ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS history_policy_version bigint NOT NULL DEFAULT 1;
+ALTER TABLE im_members ADD COLUMN IF NOT EXISTS history_after_seq bigint CHECK(history_after_seq >= 0);
+-- Central read predicate, intentionally independent of member role. NULL join
+-- sequences are legacy rows; same-second messages are conservatively hidden.
+CREATE OR REPLACE FUNCTION im_can_read_group_message(uid text,cid text,seq bigint,stamp timestamptz)
+RETURNS boolean LANGUAGE sql STABLE AS $$
+ SELECT NOT EXISTS(SELECT 1 FROM im_groups WHERE conversation_id=cid)
+ OR EXISTS(SELECT 1 FROM im_groups g JOIN im_members m ON m.conversation_id=g.conversation_id
+ WHERE g.conversation_id=cid AND m.user_id=uid AND
+ (g.history_visible_to_new_members OR
+ CASE WHEN m.history_after_seq IS NOT NULL THEN seq>m.history_after_seq
+ ELSE floor(extract(epoch FROM stamp))>floor(extract(epoch FROM m.joined_at)) END))
+$$;
 CREATE INDEX IF NOT EXISTS im_groups_banned_idx ON im_groups(banned,dissolved_at,updated_at DESC);
 CREATE TABLE IF NOT EXISTS im_group_blacklist(
  conversation_id text NOT NULL REFERENCES im_groups(conversation_id) ON DELETE CASCADE,

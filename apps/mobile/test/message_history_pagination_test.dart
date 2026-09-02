@@ -1,3 +1,7 @@
+import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:linli_im/core/app_controller.dart';
@@ -94,8 +98,8 @@ void main() {
       matching: find.byType(Scrollable),
     );
     final position = tester.state<ScrollableState>(scrollable).position;
-    final beforeExtent = position.maxScrollExtent;
-    position.jumpTo(position.minScrollExtent);
+    final beforeStart = position.minScrollExtent;
+    await _scroll(tester, position.minScrollExtent - position.pixels);
     await tester.pump();
     for (var attempt = 0; attempt < 20 && position.pixels == 0; attempt++) {
       await tester.pump(const Duration(milliseconds: 50));
@@ -103,27 +107,137 @@ void main() {
 
     expect(repository.historyRequestCount, 1);
     expect(controller.messagesFor('conversation-1'), hasLength(100));
-    // The offset advances by exactly the height prepended above the viewport,
-    // keeping the old first visible page in the same screen position.
-    final prependedExtent = position.maxScrollExtent - beforeExtent;
-    expect(prependedExtent, greaterThan(0));
-    expect(position.pixels, moreOrLessEquals(prependedExtent, epsilon: 1));
+    // History grows above the stable center; reading coordinates do not move.
+    expect(position.minScrollExtent, lessThan(beforeStart));
+    expect(position.pixels, moreOrLessEquals(beforeStart, epsilon: 1));
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final variableHeight in [false, true]) {
+    testWidgets('等待历史期间继续滚轮滚动保留新位置 variableHeight=$variableHeight', (
+      tester,
+    ) async {
+      final repository = _HistoryRepository(variableHeight: variableHeight);
+      repository.historyGate = Completer<void>();
+      final controller = AppController(repository);
+      addTearDown(controller.dispose);
+      await _mountChat(tester, controller);
+      final position = _position(tester);
+      await _scroll(tester, position.minScrollExtent - position.pixels);
+      expect(find.byKey(const Key('older-messages-loading')), findsOneWidget);
+      await _scroll(tester, 270);
+      final before = position.pixels;
+      final anchor = find.textContaining('消息 55');
+      final anchorY = tester.getTopLeft(anchor).dy;
+      repository.historyGate!.complete();
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(repository.historyRequestCount, 1);
+      expect(position.pixels, closeTo(before, 1));
+      expect(tester.getTopLeft(anchor).dy, closeTo(anchorY, 1));
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('滚轮触发分页失败后可重试并连续加载到历史开头', (tester) async {
+    final repository = _HistoryRepository(
+      firstSequence: 101,
+      failHistory: true,
+    );
+    final controller = AppController(repository);
+    addTearDown(controller.dispose);
+    await _mountChat(tester, controller);
+    final position = _position(tester);
+    await _scroll(tester, position.minScrollExtent - position.pixels);
+    await tester.pump();
+    expect(find.text('较早消息加载失败，点此重试'), findsOneWidget);
+    expect(controller.messagesFor('conversation-1'), hasLength(50));
+    repository.failHistory = false;
+    await tester.tap(find.text('较早消息加载失败，点此重试'));
+    await tester.pumpAndSettle();
+    expect(controller.messagesFor('conversation-1'), hasLength(100));
+    await _scroll(tester, position.minScrollExtent - position.pixels);
+    await tester.pumpAndSettle();
+    expect(controller.messagesFor('conversation-1'), hasLength(150));
+    expect(controller.messageHistoryHasMore('conversation-1'), isFalse);
+    expect(repository.historyRequestCount, 3);
     expect(tester.takeException(), isNull);
   });
 }
 
+Future<void> _mountChat(WidgetTester tester, AppController controller) async {
+  tester.view.physicalSize = const Size(1100, 844);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: buildLinliTheme(Brightness.light),
+      home: ChatScreen(
+        controller: controller,
+        conversation: Conversation(
+          id: 'conversation-1',
+          title: '历史测试',
+          subtitle: '',
+          updatedAt: DateTime(2026, 8, 16),
+          kind: ConversationKind.direct,
+          members: const [
+            AppUser(
+              id: 'user-1',
+              name: '测试用户',
+              handle: 'tester',
+              presence: '在线',
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+}
+
+ScrollPosition _position(WidgetTester tester) => tester
+    .state<ScrollableState>(
+      find.descendant(
+        of: find.byKey(const Key('message-list')),
+        matching: find.byType(Scrollable),
+      ),
+    )
+    .position;
+
+Future<void> _scroll(WidgetTester tester, double dy) async {
+  await tester.sendEventToBinding(
+    PointerScrollEvent(
+      position: tester.getCenter(find.byKey(const Key('message-list'))),
+      scrollDelta: Offset(0, dy),
+    ),
+  );
+  await tester.pump();
+}
+
 class _HistoryRepository extends DemoImRepository
     implements PaginatedMessageRepository {
-  _HistoryRepository({this.failHistory = false})
-    : super(latency: Duration.zero);
+  _HistoryRepository({
+    this.failHistory = false,
+    this.firstSequence = 51,
+    this.variableHeight = false,
+  }) : super(latency: Duration.zero);
 
-  final bool failHistory;
+  bool failHistory;
+  final int firstSequence;
+  final bool variableHeight;
+  Completer<void>? historyGate;
   int? requestedBeforeSequence;
   int historyRequestCount = 0;
 
   @override
   Future<List<ChatMessage>> messages(String conversationId) async => [
-    for (var sequence = 51; sequence <= 100; sequence++)
+    for (
+      var sequence = firstSequence;
+      sequence < firstSequence + 50;
+      sequence++
+    )
       _message(conversationId, sequence),
   ];
 
@@ -135,9 +249,14 @@ class _HistoryRepository extends DemoImRepository
   }) async {
     historyRequestCount += 1;
     requestedBeforeSequence = beforeSequence;
+    await historyGate?.future;
     if (failHistory) throw StateError('offline');
     return [
-      for (var sequence = 1; sequence <= 51; sequence++)
+      for (
+        var sequence = math.max(1, beforeSequence - limit);
+        sequence <= beforeSequence;
+        sequence++
+      )
         _message(conversationId, sequence),
     ];
   }
@@ -154,7 +273,9 @@ class _HistoryRepository extends DemoImRepository
     conversationId: conversationId,
     senderId: 'user-1',
     senderName: '测试用户',
-    text: '消息 $sequence',
+    text: variableHeight
+        ? '消息 $sequence${'\n多行正文' * (sequence % 4)}'
+        : '消息 $sequence',
     sentAt: DateTime(2026, 8, 16, 10).add(Duration(seconds: sequence)),
     isMine: false,
     conversationSeq: sequence,

@@ -128,6 +128,7 @@ class AppController extends ChangeNotifier {
   );
   String? get pendingConversationId => _pendingConversationId;
   String? get activeConversationId => _activeConversationId;
+  int groupHistoryRevision = 0;
   FriendRequest? pendingFriendRequestFor(String userId) => requests
       .where(
         (request) => request.user.id == userId && request.status == 'pending',
@@ -169,8 +170,12 @@ class AppController extends ChangeNotifier {
     return '${names.take(2).join('、')} 等正在输入…';
   }
 
-  List<ChatMessage> messagesFor(String conversationId) =>
-      List.unmodifiable(_messages[conversationId] ?? const []);
+  List<ChatMessage> messagesFor(String conversationId) => List.unmodifiable(
+    (_messages[conversationId] ?? const <ChatMessage>[]).where(canReadMessage),
+  );
+  bool canReadMessage(ChatMessage message) =>
+      repository is! GroupHistoryRepository ||
+      (repository as GroupHistoryRepository).canReadCachedMessage(message);
   bool messageHistoryHasMore(String conversationId) =>
       _messageHistoryHasMore[conversationId] ?? false;
   String draftFor(String conversationId) => _drafts[conversationId] ?? '';
@@ -1188,6 +1193,16 @@ class AppController extends ChangeNotifier {
     });
   }
 
+  Future<void> _reloadHistoryAfterPolicy(String cid) async {
+    final userId = currentUser?.id;
+    final active = _messageLoadOperations[cid];
+    if (active != null) await active;
+    if (_disposed || currentUser?.id != userId || activeConversationId != cid) {
+      return;
+    }
+    await loadMessages(cid, force: true);
+  }
+
   Future<List<ChatMessage>> _readCachedMessages(String conversationId) {
     final active = _messageCacheLoadOperations[conversationId];
     if (active != null) return active;
@@ -1377,6 +1392,7 @@ class AppController extends ChangeNotifier {
     final indexByIdentity = <String, int>{};
 
     void upsert(ChatMessage message) {
+      if (!canReadMessage(message)) return;
       final identities = <String>{
         if (message.id.isNotEmpty) 'id:${message.id}',
         if (message.clientMessageId.isNotEmpty)
@@ -2153,7 +2169,9 @@ class AppController extends ChangeNotifier {
 
   Future<List<ChatMessage>> loadPinnedMessages(String conversationId) async {
     try {
-      return await repository.pinnedMessages(conversationId);
+      return (await repository.pinnedMessages(
+        conversationId,
+      )).where(canReadMessage).toList();
     } catch (exception) {
       error = _messageFor(exception, fallback: '置顶消息加载失败');
       notifyListeners();
@@ -2167,9 +2185,9 @@ class AppController extends ChangeNotifier {
   ) async {
     final normalized = query.trim().toLowerCase();
     if (normalized.isEmpty) return const [];
-    final local = (_messages[conversationId] ?? const <ChatMessage>[]).where(
-      (message) => message.text.toLowerCase().contains(normalized),
-    );
+    final local = messagesFor(
+      conversationId,
+    ).where((message) => message.text.toLowerCase().contains(normalized));
     try {
       final remote = await repository.searchMessages(
         conversationId,
@@ -2177,6 +2195,7 @@ class AppController extends ChangeNotifier {
       );
       final merged = <String, ChatMessage>{};
       for (final message in [...remote, ...local]) {
+        if (!canReadMessage(message)) continue;
         merged[message.id] = message;
       }
       final result = merged.values.toList()
@@ -3011,6 +3030,7 @@ class AppController extends ChangeNotifier {
     MediaUpload? avatar,
     String? joinPolicy,
     bool? allowMemberAddFriend,
+    bool? historyVisibleToNewMembers,
     bool rotateQr = false,
   }) async {
     try {
@@ -3023,6 +3043,7 @@ class AppController extends ChangeNotifier {
         avatarMediaId: avatarMediaId,
         joinPolicy: joinPolicy,
         allowMemberAddFriend: allowMemberAddFriend,
+        historyVisibleToNewMembers: historyVisibleToNewMembers,
         rotateQr: rotateQr,
       );
       if (name != null || avatarMediaId != null) {
@@ -3452,7 +3473,7 @@ class AppController extends ChangeNotifier {
 
   Future<List<ChatMessage>> loadFavorites() async {
     try {
-      return await repository.favorites();
+      return (await repository.favorites()).where(canReadMessage).toList();
     } catch (exception) {
       error = _messageFor(exception, fallback: '收藏加载失败');
       notifyListeners();
@@ -3675,6 +3696,27 @@ class AppController extends ChangeNotifier {
             );
           }
         }
+      case ImEventType.groupHistoryChanged:
+        groupHistoryRevision++;
+        final cid = event.payload['conversationId']?.toString();
+        if (cid != null) {
+          final index = conversations.indexWhere((item) => item.id == cid);
+          if (index >= 0) {
+            conversations[index] = conversations[index].copyWith(
+              subtitle: '打开会话查看消息',
+              unread: 0,
+              mentionUnreadCount: 0,
+            );
+          }
+          _messages[cid]?.removeWhere((message) => !canReadMessage(message));
+          _messageHistoryHasMore.remove(cid);
+          // Cancel neither drafts nor optimistic sends. Fresh loads are gated by
+          // the repository even when an earlier request completes afterwards.
+          if (activeConversationId == cid) {
+            unawaited(_reloadHistoryAfterPolicy(cid));
+          }
+        }
+        _scheduleConversationRefresh();
       case ImEventType.conversationChanged:
         _scheduleConversationRefresh();
       case ImEventType.friendChanged:

@@ -121,6 +121,7 @@ abstract interface class ImRepository {
     String? avatarMediaId,
     String? joinPolicy,
     bool? allowMemberAddFriend,
+    bool? historyVisibleToNewMembers,
     bool rotateQr = false,
   });
   Future<GroupProfile> setGroupAnnouncement(
@@ -242,4 +243,8 @@ abstract interface class PaginatedMessageRepository {
 /// local history is the first frame, while remote sync remains authoritative.
 abstract interface class CachedMessageRepository {
   Future<List<ChatMessage>> cachedMessages(String conversationId);
+}
+
+abstract interface class GroupHistoryRepository {
+  bool canReadCachedMessage(ChatMessage message);
 }

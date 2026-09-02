@@ -82,27 +82,31 @@ type ConversationMember struct {
 	GroupNickname      string     `json:"groupNickname,omitempty"`
 	HiddenUntilSeq     *int64     `json:"hiddenUntilSeq,omitempty"`
 	JoinedAt           time.Time  `json:"joinedAt"`
+	HistoryAfterSeq    *int64     `json:"historyAfterSeq,omitempty"`
 }
 
 type GroupProfile struct {
-	ConversationID       string     `json:"conversationId"`
-	OwnerID              string     `json:"ownerId"`
-	Name                 string     `json:"name"`
-	AvatarURL            string     `json:"avatarUrl,omitempty"`
-	Announcement         string     `json:"announcement"`
-	AnnouncementVersion  int64      `json:"announcementVersion"`
-	AnnouncementReadAt   *time.Time `json:"announcementReadAt,omitempty"`
-	JoinPolicy           string     `json:"joinPolicy"`
-	AllowMemberAddFriend bool       `json:"allowMemberAddFriend"`
-	AllMutedUntil        *time.Time `json:"allMutedUntil,omitempty"`
-	Banned               bool       `json:"banned"`
-	BannedAt             *time.Time `json:"bannedAt,omitempty"`
-	BannedBy             string     `json:"bannedBy,omitempty"`
-	BanReason            string     `json:"banReason,omitempty"`
-	QRToken              string     `json:"qrToken,omitempty"`
-	QRExpiresAt          *time.Time `json:"qrExpiresAt,omitempty"`
-	DissolvedAt          *time.Time `json:"dissolvedAt,omitempty"`
-	UpdatedAt            time.Time  `json:"updatedAt"`
+	HistoryVisibleToNewMembers bool           `json:"historyVisibleToNewMembers"`
+	HistoryPolicyVersion       int64          `json:"historyPolicyVersion"`
+	HistoryAccess              *HistoryAccess `json:"historyAccess,omitempty"`
+	ConversationID             string         `json:"conversationId"`
+	OwnerID                    string         `json:"ownerId"`
+	Name                       string         `json:"name"`
+	AvatarURL                  string         `json:"avatarUrl,omitempty"`
+	Announcement               string         `json:"announcement"`
+	AnnouncementVersion        int64          `json:"announcementVersion"`
+	AnnouncementReadAt         *time.Time     `json:"announcementReadAt,omitempty"`
+	JoinPolicy                 string         `json:"joinPolicy"`
+	AllowMemberAddFriend       bool           `json:"allowMemberAddFriend"`
+	AllMutedUntil              *time.Time     `json:"allMutedUntil,omitempty"`
+	Banned                     bool           `json:"banned"`
+	BannedAt                   *time.Time     `json:"bannedAt,omitempty"`
+	BannedBy                   string         `json:"bannedBy,omitempty"`
+	BanReason                  string         `json:"banReason,omitempty"`
+	QRToken                    string         `json:"qrToken,omitempty"`
+	QRExpiresAt                *time.Time     `json:"qrExpiresAt,omitempty"`
+	DissolvedAt                *time.Time     `json:"dissolvedAt,omitempty"`
+	UpdatedAt                  time.Time      `json:"updatedAt"`
 }
 
 type GroupInvite struct {

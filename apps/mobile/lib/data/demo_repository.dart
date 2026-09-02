@@ -558,6 +558,7 @@ class DemoImRepository implements ImRepository {
     String? avatarMediaId,
     String? joinPolicy,
     bool? allowMemberAddFriend,
+    bool? historyVisibleToNewMembers,
     bool rotateQr = false,
   }) async {
     final old = await groupProfile(conversationId);
@@ -575,6 +576,11 @@ class DemoImRepository implements ImRepository {
       announcementReadAt: old.announcementReadAt,
       joinPolicy: joinPolicy ?? old.joinPolicy,
       allowMemberAddFriend: allowMemberAddFriend ?? old.allowMemberAddFriend,
+      historyVisibleToNewMembers:
+          historyVisibleToNewMembers ?? old.historyVisibleToNewMembers,
+      historyPolicyVersion:
+          old.historyPolicyVersion +
+          (historyVisibleToNewMembers == null ? 0 : 1),
       allMutedUntil: old.allMutedUntil,
       qrToken: rotateQr ? 'demo-qr-token' : old.qrToken,
       qrExpiresAt: rotateQr
@@ -601,6 +607,8 @@ class DemoImRepository implements ImRepository {
       announcementVersion: old.announcementVersion + 1,
       joinPolicy: old.joinPolicy,
       allowMemberAddFriend: old.allowMemberAddFriend,
+      historyVisibleToNewMembers: old.historyVisibleToNewMembers,
+      historyPolicyVersion: old.historyPolicyVersion,
       allMutedUntil: old.allMutedUntil,
       updatedAt: DateTime.now(),
     );
@@ -621,6 +629,8 @@ class DemoImRepository implements ImRepository {
       announcementReadAt: DateTime.now(),
       joinPolicy: old.joinPolicy,
       allowMemberAddFriend: old.allowMemberAddFriend,
+      historyVisibleToNewMembers: old.historyVisibleToNewMembers,
+      historyPolicyVersion: old.historyPolicyVersion,
       allMutedUntil: old.allMutedUntil,
       updatedAt: old.updatedAt,
     );
@@ -786,6 +796,8 @@ class DemoImRepository implements ImRepository {
       announcementReadAt: old.announcementReadAt,
       joinPolicy: old.joinPolicy,
       allowMemberAddFriend: old.allowMemberAddFriend,
+      historyVisibleToNewMembers: old.historyVisibleToNewMembers,
+      historyPolicyVersion: old.historyPolicyVersion,
       allMutedUntil: muted
           ? DateTime.now().add(const Duration(days: 3650))
           : DateTime.now(),

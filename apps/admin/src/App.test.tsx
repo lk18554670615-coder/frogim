@@ -354,6 +354,50 @@ describe('青蛙呱呱管理后台', () => {
     expect(within(dialog).getByText('u_10291')).toBeInTheDocument();
   });
 
+  it('群历史开关默认关闭，确认和理由后提交真实接口并刷新状态', async () => {
+    let visible = false;
+    let body: unknown;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/groups/g_1/history-visibility')) {
+        expect(init?.method).toBe('PUT');
+        body = JSON.parse(String(init?.body)); visible = true;
+        return response({ ok: true });
+      }
+      if (url.endsWith('/groups/g_1')) {
+        const original = await liveFixture(input, init);
+        return response({ ...await original.json() as Record<string, unknown>, historyVisibleToNewMembers: visible, historyPolicyVersion: visible ? 2 : 1 });
+      }
+      return liveFixture(input, init);
+    }));
+    window.history.replaceState({}, '', '/groups');
+    render(<App />);
+    await screen.findByText('产品交流群');
+    await userEvent.click(screen.getByRole('button', { name: '查看详情' }));
+    const toggle = await screen.findByRole('switch', { name: '新成员可查看入群前历史' });
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    await userEvent.click(toggle);
+    const confirmation = screen.getByRole('dialog', { name: '开放入群前历史' });
+    expect(within(confirmation).getByRole('button', { name: '确认修改' })).toBeDisabled();
+    expect(body).toBeUndefined();
+    await userEvent.type(within(confirmation).getByLabelText('操作理由'), '群成员协作需要');
+    await userEvent.click(within(confirmation).getByRole('button', { name: '确认修改' }));
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+    expect(body).toEqual({ historyVisibleToNewMembers: true, confirmed: true, reason: '群成员协作需要' });
+  });
+
+  it('没有 groups.write 权限的后台管理员只能查看历史开关', async () => {
+    const readonly = { ...session, roleId: 'support', permissions: [] };
+    sessionStorage.setItem('qingwaguagua_admin_session', JSON.stringify(readonly));
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).includes('/auth/me') ? response(readonly) : liveFixture(input, init)));
+    window.history.replaceState({}, '', '/groups');
+    render(<App />);
+    await screen.findByText('产品交流群');
+    await userEvent.click(screen.getByRole('button', { name: '查看详情' }));
+    expect(await screen.findByRole('switch', { name: '新成员可查看入群前历史' })).toBeDisabled();
+  });
+
   it('群成员治理提供角色、禁言和移出操作且提交审计理由', async () => {
     window.history.replaceState({}, '', '/groups');
     render(<App />);

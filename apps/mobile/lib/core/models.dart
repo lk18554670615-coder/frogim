@@ -31,6 +31,7 @@ enum MessageContentKind {
 enum ConversationKind { direct, group }
 
 enum ImEventType {
+  groupHistoryChanged,
   sessionExpired,
   messageCreated,
   messageChanged,
@@ -912,6 +913,8 @@ class FriendRequest {
 
 class GroupProfile {
   const GroupProfile({
+    this.historyVisibleToNewMembers = false,
+    this.historyPolicyVersion = 1,
     required this.conversationId,
     required this.ownerId,
     required this.name,
@@ -929,6 +932,8 @@ class GroupProfile {
   });
 
   final String conversationId;
+  final bool historyVisibleToNewMembers;
+  final int historyPolicyVersion;
   final String ownerId;
   final String name;
   final String? avatarUrl;

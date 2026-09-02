@@ -530,6 +530,64 @@ void main() {
     );
   });
 
+  testWidgets('群历史开关默认关闭，取消不保存，确认后可切换并保持样式', (tester) async {
+    tester.view.physicalSize = const Size(375, 812);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final repository = DemoImRepository(latency: Duration.zero);
+    final controller = AppController(repository);
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+    final group = controller.conversations.firstWhere(
+      (c) => c.kind == ConversationKind.group,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: GroupManagementScreen(
+          controller: controller,
+          conversation: group,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final row = find.byKey(const Key('group-history-visibility'));
+    await tester.scrollUntilVisible(row, 250);
+    final toggle = find.descendant(
+      of: row,
+      matching: find.byType(CupertinoSwitch),
+    );
+    expect(tester.widget<CupertinoSwitch>(toggle).value, isFalse);
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(find.text('开放入群前历史？'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<CupertinoSwitch>(toggle).value, isFalse);
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认修改'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<CupertinoSwitch>(toggle).value, isTrue);
+    expect(
+      (await tester.runAsync(
+        () => repository.groupProfile(group.id),
+      ))!.historyVisibleToNewMembers,
+      isTrue,
+    );
+    await tester.runAsync(
+      () => repository.setGroupAnnouncement(group.id, '公告更新不改变历史策略'),
+    );
+    expect(
+      (await tester.runAsync(
+        () => repository.groupProfile(group.id),
+      ))!.historyVisibleToNewMembers,
+      isTrue,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('群举报使用服务端接受的 group 类型', (tester) async {
     tester.view.physicalSize = const Size(375, 812);
     tester.view.devicePixelRatio = 1;

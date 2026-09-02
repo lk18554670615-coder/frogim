@@ -2983,6 +2983,14 @@ func TestGroupManagementHTTPContractPostgres(t *testing.T) {
 		t.Fatalf("group invites status=%d items=%+v", res.StatusCode, inviteList.Items)
 	}
 	res = authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/channels/group-invitations/"+inviteResponse.Invite.ID+"/accept", inviteeToken, `{}`)
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("missing authoritative history boundary status=%d", res.StatusCode)
+	}
+	res.Body.Close()
+	// This HTTP-only fixture intentionally has no IM server or messages. The
+	// separate pinned-engine integration test exercises real max-sequence reads.
+	p.SetGroupHistoryBoundaryReader(func(context.Context, string, string) (uint64, error) { return 0, nil })
+	res = authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/channels/group-invitations/"+inviteResponse.Invite.ID+"/accept", inviteeToken, `{}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("accept status=%d", res.StatusCode)
 	}
@@ -2999,6 +3007,20 @@ func TestGroupManagementHTTPContractPostgres(t *testing.T) {
 	for _, member := range members.Items {
 		if member["name"] == nil || member["handle"] == nil || member["phone"] != nil {
 			t.Fatalf("unsafe member projection=%v", member)
+		}
+	}
+	res = authenticatedRequest(t, http.MethodPatch, ts.URL+"/v2/channels/groups/"+group.ID, memberToken, `{"historyVisibleToNewMembers":true}`)
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("member history write=%d", res.StatusCode)
+	}
+	res.Body.Close()
+	for _, value := range []bool{true, false} {
+		res = authenticatedRequest(t, http.MethodPatch, ts.URL+"/v2/channels/groups/"+group.ID, ownerToken, fmt.Sprintf(`{"historyVisibleToNewMembers":%t}`, value))
+		var policy model.GroupProfile
+		_ = json.NewDecoder(res.Body).Decode(&policy)
+		res.Body.Close()
+		if res.StatusCode != http.StatusOK || policy.HistoryVisibleToNewMembers != value || policy.HistoryAccess == nil || policy.HistoryAccess.VisibleAll != value {
+			t.Fatalf("owner history=%+v status=%d", policy, res.StatusCode)
 		}
 	}
 	res = authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/messages/conversations/"+group.ID+"/history", ownerToken, "")

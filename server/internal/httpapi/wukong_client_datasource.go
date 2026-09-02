@@ -45,6 +45,20 @@ func (x *API) wukongConversationSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for index := range items {
+		if items[index].ChannelType == wukong.ChannelGroup {
+			access, accessErr := x.app.GroupHistoryAccess(r.Context(), uid(r), items[index].ChannelID)
+			if accessErr != nil {
+				items[index].Recents = []wukong.SyncedMessage{}
+				items[index].Unread = 0
+				items[index].LastClientNo = ""
+				continue
+			}
+			items[index].Recents = filterHistoryMessages(items[index].Recents, *access)
+			if len(items[index].Recents) == 0 {
+				items[index].LastClientNo = ""
+			}
+			items[index].Unread = min(items[index].Unread, max(0, int(int64(items[index].LastMsgSeq)-access.UnreadAfterSeq)))
+		}
 		for recentIndex := range items[index].Recents {
 			x.enrichWukongMedia(r.Context(), uid(r), items[index].Recents[recentIndex])
 		}
@@ -82,7 +96,7 @@ func (x *API) wukongMessageSync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "FORBIDDEN", "channel access denied")
 		return
 	}
-	output, err := x.wukongClient.SyncMessages(r.Context(), wukong.MessageSyncRequest{
+	output, err := syncVisibleGroupMessages(r.Context(), x.wukongClient, x.app, wukong.MessageSyncRequest{
 		LoginUID: userID, ChannelID: input.ChannelID, ChannelType: input.ChannelType,
 		StartMessageSeq: input.StartMessageSeq, EndMessageSeq: input.EndMessageSeq,
 		Limit: input.Limit, PullMode: input.PullMode, EventSummaryMode: input.EventSummary,

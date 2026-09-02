@@ -9,6 +9,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart' show kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:geocoding/geocoding.dart';
@@ -172,10 +173,41 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
+class _ChatScrollbar extends RawScrollbar {
+  const _ChatScrollbar({
+    super.key,
+    required super.controller,
+    required super.child,
+    required super.thumbColor,
+    required this.onTrackScroll,
+  }) : super(
+         thumbVisibility: true,
+         interactive: true,
+         thickness: 6,
+         radius: const Radius.circular(3),
+       );
+
+  final VoidCallback onTrackScroll;
+
+  @override
+  RawScrollbarState<_ChatScrollbar> createState() => _ChatScrollbarState();
+}
+
+class _ChatScrollbarState extends RawScrollbarState<_ChatScrollbar> {
+  @override
+  void handleTrackTapDown(TapDownDetails details) {
+    widget.onTrackScroll();
+    super.handleTrackTapDown(details);
+  }
+}
+
 class _ChatScreenState extends State<ChatScreen> {
   final textController = TextEditingController();
   final scrollController = ScrollController();
   final initialMessageKey = GlobalKey();
+  final _messageCenterKey = GlobalKey();
+  String? _messageListAnchorId;
+  double _messageCenterInset = 12;
   bool showAttachments = false;
   bool showEmoji = false;
   bool selecting = false;
@@ -192,7 +224,12 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _sendCapabilityFailed = false;
   bool _messageScrollReady = false;
   bool _initialMessageLoadComplete = false;
-  bool _initialPinCancelled = false;
+  bool _followingLatest = true;
+  bool _userScrolling = false;
+  double _lastUserScrollDelta = 0;
+  int _scrollEpoch = 0;
+  int _conversationEpoch = 0;
+  int? _queuedBottomEpoch;
   bool _registeredActiveConversation = false;
   String? _previousActiveConversationId;
   bool _loadingOlderFromScroll = false;
@@ -225,6 +262,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    _followingLatest = widget.initialMessageId == null;
     _observedConversation = widget.conversation;
     widget.controller.addListener(_handleConversationChanged);
     scrollController.addListener(_handleMessageScroll);
@@ -261,19 +299,21 @@ class _ChatScreenState extends State<ChatScreen> {
     // there is no route helper to start the refresh. Always request a
     // reconciliation here; an in-flight route prefetch is de-duplicated and
     // existing in-memory messages stay visible while it completes.
+    final conversationEpoch = _conversationEpoch;
+    final scrollEpoch = _scrollEpoch;
     await widget.controller.loadMessages(widget.conversation.id, force: true);
-    if (!mounted) return;
+    if (!mounted || conversationEpoch != _conversationEpoch) return;
     _initialMessageLoadComplete = true;
     if (widget.initialMessageId != null) {
       _initialScrollTimer?.cancel();
-      _scrollToInitialMessage();
+      if (scrollEpoch == _scrollEpoch) _scrollToInitialMessage();
       return;
     }
     _startInitialScrollPinning(window: const Duration(milliseconds: 900));
   }
 
   void _startInitialScrollPinning({required Duration window}) {
-    if (!mounted || widget.initialMessageId != null || _initialPinCancelled) {
+    if (!mounted || !_followingLatest) {
       return;
     }
     _initialScrollTimer?.cancel();
@@ -282,7 +322,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _initialScrollTimer = Timer.periodic(const Duration(milliseconds: 50), (
       timer,
     ) {
-      if (!mounted || _initialPinCancelled) {
+      if (!mounted || !_followingLatest) {
         timer.cancel();
         return;
       }
@@ -295,10 +335,15 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _pinInitialMessagesToEnd() {
+    if (!_followingLatest || _queuedBottomEpoch == _scrollEpoch) return;
+    final epoch = _scrollEpoch;
+    _queuedBottomEpoch = epoch;
     final binding = WidgetsBinding.instance;
     binding.addPostFrameCallback((_) {
+      if (_queuedBottomEpoch == epoch) _queuedBottomEpoch = null;
       if (!mounted ||
-          _initialPinCancelled ||
+          epoch != _scrollEpoch ||
+          !_followingLatest ||
           !scrollController.hasClients ||
           widget.controller.messagesFor(widget.conversation.id).isEmpty) {
         return;
@@ -308,27 +353,48 @@ class _ChatScreenState extends State<ChatScreen> {
     });
     // A cache-only reopen may have no network notification or image decode to
     // request another frame. Explicitly schedule one so repeated end anchoring
-    // can converge as a lazily built ListView discovers its real extent.
+    // can converge as the lazy message slivers discover their real extent.
     binding.ensureVisualUpdate();
   }
 
-  bool _handleInitialScrollNotification(ScrollNotification notification) {
-    if (!_initialPinCancelled &&
-        notification is ScrollStartNotification &&
-        notification.dragDetails != null) {
-      _initialPinCancelled = true;
-      _initialScrollTimer?.cancel();
-      _messageScrollReady = true;
-    } else if (notification is ScrollEndNotification &&
-        notification.metrics.extentAfter <= 48) {
-      _initialPinCancelled = false;
-      _pinInitialMessagesToEnd();
+  void _pauseLatestFollowing() {
+    _followingLatest = false;
+    _initialScrollTimer?.cancel();
+    _scrollEpoch += 1;
+    _messageScrollReady = true;
+  }
+
+  bool _handleMessageScrollNotification(ScrollNotification notification) {
+    if (notification.depth != 0) return false;
+    // Wheel/trackpad pointerScroll emits a user direction BEFORE changing the
+    // offset, but has no dragDetails. Thumb/touch drags also cancel a queued
+    // bottom jump as soon as the drag starts. jumpTo/animateTo are not input.
+    if ((notification is UserScrollNotification &&
+            notification.direction != ScrollDirection.idle) ||
+        (notification is ScrollStartNotification &&
+            notification.dragDetails != null)) {
+      _pauseLatestFollowing();
+      _userScrolling = true;
+      _lastUserScrollDelta = 0;
+    }
+    if (_userScrolling && notification is ScrollUpdateNotification) {
+      final delta = notification.scrollDelta ?? 0;
+      if (delta != 0) _lastUserScrollDelta = delta;
+    }
+    if (_userScrolling && notification is ScrollEndNotification) {
+      _userScrolling = false;
+      // Even a sub-2px UPWARD step means reading history. Only deliberately
+      // returning towards the end resumes following, never a layout correction.
+      if (_lastUserScrollDelta > 0 && notification.metrics.extentAfter <= 2) {
+        _followingLatest = true;
+        _pinInitialMessagesToEnd();
+      }
     }
     return false;
   }
 
   bool _handleMessageMetrics(ScrollMetricsNotification notification) {
-    if (!_initialPinCancelled && widget.initialMessageId == null) {
+    if (notification.depth == 0 && _followingLatest) {
       _pinInitialMessagesToEnd();
     }
     return false;
@@ -423,6 +489,8 @@ class _ChatScreenState extends State<ChatScreen> {
     unawaited(ScreenshotDetection.instance.stop());
     _draftTimer?.cancel();
     _initialScrollTimer?.cancel();
+    _scrollEpoch += 1;
+    _conversationEpoch += 1;
     _messageHighlightTimer?.cancel();
     if (_draftReady) {
       final conversationId = widget.conversation.id;
@@ -456,10 +524,39 @@ class _ChatScreenState extends State<ChatScreen> {
       oldWidget.controller.removeListener(_handleConversationChanged);
       widget.controller.addListener(_handleConversationChanged);
     }
+    if (oldWidget.conversation.id != widget.conversation.id ||
+        oldWidget.controller != widget.controller) {
+      _initialScrollTimer?.cancel();
+      _messageHighlightTimer?.cancel();
+      _scrollEpoch += 1;
+      _conversationEpoch += 1;
+      _followingLatest = widget.initialMessageId == null;
+      _userScrolling = false;
+      _messageScrollReady = false;
+      _initialMessageLoadComplete = false;
+      _loadingOlderFromScroll = false;
+      _messageKeys.clear();
+      _messageListAnchorId = null;
+      final epoch = _conversationEpoch;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || epoch != _conversationEpoch) return;
+        widget.controller.setActiveConversation(widget.conversation.id);
+        _startInitialScrollPinning(window: const Duration(seconds: 2));
+        unawaited(_loadInitialMessages());
+      });
+    }
     _observedConversation = widget.conversation;
   }
 
   void _handleConversationChanged() {
+    if (replyingTo != null && !widget.controller.canReadMessage(replyingTo!)) {
+      replyingTo = null;
+    }
+    final visibleIds = widget.controller
+        .messagesFor(widget.conversation.id)
+        .map((message) => message.clientMessageId)
+        .toSet();
+    selectedMessageIds.removeWhere((id) => !visibleIds.contains(id));
     if (!mounted) return;
     if (!widget.conversationAvailable &&
         widget._initialConversation.kind == ConversationKind.group) {
@@ -926,102 +1023,157 @@ class _ChatScreenState extends State<ChatScreen> {
         .where((message) => message.isMine)
         .lastOrNull
         ?.id;
+    var anchorIndex = messages.indexWhere(
+      (message) => message.stableIdentity == _messageListAnchorId,
+    );
+    if (anchorIndex < 0) {
+      anchorIndex = 0;
+      _messageListAnchorId = messages.first.stableIdentity;
+      _messageCenterInset =
+          widget.controller.messageHistoryHasMore(widget.conversation.id)
+          ? 48
+          : 12;
+    }
+    Widget buildMessage(BuildContext context, int messageIndex) {
+      final message = messages[messageIndex];
+      final previous = messageIndex == 0 ? null : messages[messageIndex - 1];
+      final showTime =
+          messageIndex == anchorIndex ||
+          previous == null ||
+          !_sameDay(message.sentAt, previous.sentAt) ||
+          message.sentAt.difference(previous.sentAt).inMinutes >= 15;
+      final sender = widget.conversation.members
+          .where((user) => user.id == message.senderId)
+          .firstOrNull;
+      final displaySender =
+          sender ??
+          (widget.conversation.kind == ConversationKind.direct ? peer : null);
+      final displaySenderName = displaySender?.name.trim().isNotEmpty == true
+          ? displaySender!.name
+          : message.senderName;
+      final stableMessageId = message.stableIdentity;
+      final messageKey = message.id == widget.initialMessageId
+          ? initialMessageKey
+          : _messageKeys.putIfAbsent(stableMessageId, GlobalKey.new);
+      if (message.id.isNotEmpty) _messageKeys[message.id] = messageKey;
+      return AnimatedContainer(
+        key: messageKey,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+        decoration: BoxDecoration(
+          color: _highlightedMessageId == message.id
+              ? LinliColors.brandGreen.withValues(alpha: .16)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          children: [
+            if (showTime) _TimeDivider(date: message.sentAt),
+            VoiceMessageEntrance(
+              key: ValueKey('voice-entrance-${message.clientMessageId}'),
+              animate: _pendingVoiceEntrances.remove(message.clientMessageId),
+              child: MessageBubble(
+                message: message,
+                controller: widget.controller,
+                senderName: displaySenderName,
+                avatarUrl:
+                    displaySender?.avatarUrl ??
+                    (widget.conversation.kind == ConversationKind.direct
+                        ? peer?.avatarUrl
+                        : null),
+                onAvatarTap: displaySender == null
+                    ? null
+                    : () => unawaited(_openUserProfile(displaySender)),
+                showSender: widget.conversation.kind == ConversationKind.group,
+                showGroupReceipt:
+                    widget.conversation.kind == ConversationKind.group &&
+                    message.id == latestMineId,
+                onRetry:
+                    _effectiveSendRestriction == null && !_loadingSendCapability
+                    ? () => widget.controller.retryMessage(message)
+                    : null,
+                selectionMode: selecting,
+                selected: selectedMessageIds.contains(message.clientMessageId),
+                onSelect: () => _toggleSelection(message),
+                onLongPress: selecting
+                    ? (_) => _toggleSelection(message)
+                    : (position) => _showMessageActions(message, position),
+                onReactionTap: (emoji) =>
+                    widget.controller.toggleReaction(message, emoji),
+                onAddReaction: () => _showReactionPicker(message),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Older pages grow UP from a stable message, while newer messages grow
+    // down. Flutter preserves the viewport's coordinate system even for lazy,
+    // variable-height rows; no guessed extent delta or stale saved offset is
+    // applied when a history request completes during an active user scroll.
+    final list = LayoutBuilder(
+      builder: (context, constraints) => CustomScrollView(
+        key: const Key('message-list'),
+        controller: scrollController,
+        center: _messageCenterKey,
+        anchor: constraints.maxHeight > 0
+            ? (_messageCenterInset / constraints.maxHeight).clamp(0.0, 1.0)
+            : 0,
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        slivers: [
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+            sliver: SliverList.builder(
+              itemCount: anchorIndex + 1,
+              itemBuilder: (context, index) => index == anchorIndex
+                  ? _buildMessageHistoryHeader()
+                  : buildMessage(context, anchorIndex - index - 1),
+            ),
+          ),
+          SliverPadding(
+            key: _messageCenterKey,
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
+            sliver: SliverList.builder(
+              itemCount: messages.length - anchorIndex,
+              itemBuilder: (context, index) =>
+                  buildMessage(context, anchorIndex + index),
+            ),
+          ),
+        ],
+      ),
+    );
+    final platform = Theme.of(context).platform;
+    final desktop =
+        platform == TargetPlatform.windows ||
+        platform == TargetPlatform.linux ||
+        platform == TargetPlatform.macOS ||
+        useLinliDesktopLayout(MediaQuery.sizeOf(context).width);
     return NotificationListener<ScrollMetricsNotification>(
       onNotification: _handleMessageMetrics,
       child: NotificationListener<ScrollNotification>(
-        onNotification: _handleInitialScrollNotification,
-        child: ListView.builder(
-          key: const Key('message-list'),
-          controller: scrollController,
-          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
-          itemCount: messages.length + 1,
-          itemBuilder: (context, index) {
-            if (index == 0) return _buildMessageHistoryHeader();
-            final messageIndex = index - 1;
-            final message = messages[messageIndex];
-            final previous = messageIndex == 0
-                ? null
-                : messages[messageIndex - 1];
-            final showTime =
-                previous == null ||
-                !_sameDay(message.sentAt, previous.sentAt) ||
-                message.sentAt.difference(previous.sentAt).inMinutes >= 15;
-            final sender = widget.conversation.members
-                .where((user) => user.id == message.senderId)
-                .firstOrNull;
-            final displaySender =
-                sender ??
-                (widget.conversation.kind == ConversationKind.direct
-                    ? peer
-                    : null);
-            final displaySenderName =
-                displaySender?.name.trim().isNotEmpty == true
-                ? displaySender!.name
-                : message.senderName;
-            final stableMessageId = message.stableIdentity;
-            final messageKey = message.id == widget.initialMessageId
-                ? initialMessageKey
-                : _messageKeys.putIfAbsent(stableMessageId, GlobalKey.new);
-            if (message.id.isNotEmpty) _messageKeys[message.id] = messageKey;
-            return AnimatedContainer(
-              key: messageKey,
-              duration: const Duration(milliseconds: 220),
-              curve: Curves.easeOutCubic,
-              decoration: BoxDecoration(
-                color: _highlightedMessageId == message.id
-                    ? LinliColors.brandGreen.withValues(alpha: .16)
-                    : Colors.transparent,
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Column(
-                children: [
-                  if (showTime) _TimeDivider(date: message.sentAt),
-                  VoiceMessageEntrance(
-                    key: ValueKey('voice-entrance-${message.clientMessageId}'),
-                    animate: _pendingVoiceEntrances.remove(
-                      message.clientMessageId,
-                    ),
-                    child: MessageBubble(
-                      message: message,
-                      controller: widget.controller,
-                      senderName: displaySenderName,
-                      avatarUrl:
-                          displaySender?.avatarUrl ??
-                          (widget.conversation.kind == ConversationKind.direct
-                              ? peer?.avatarUrl
-                              : null),
-                      onAvatarTap: displaySender == null
-                          ? null
-                          : () => unawaited(_openUserProfile(displaySender)),
-                      showSender:
-                          widget.conversation.kind == ConversationKind.group,
-                      showGroupReceipt:
-                          widget.conversation.kind == ConversationKind.group &&
-                          message.id == latestMineId,
-                      onRetry:
-                          _effectiveSendRestriction == null &&
-                              !_loadingSendCapability
-                          ? () => widget.controller.retryMessage(message)
-                          : null,
-                      selectionMode: selecting,
-                      selected: selectedMessageIds.contains(
-                        message.clientMessageId,
-                      ),
-                      onSelect: () => _toggleSelection(message),
-                      onLongPress: selecting
-                          ? (_) => _toggleSelection(message)
-                          : (position) =>
-                                _showMessageActions(message, position),
-                      onReactionTap: (emoji) =>
-                          widget.controller.toggleReaction(message, emoji),
-                      onAddReaction: () => _showReactionPicker(message),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
+        onNotification: _handleMessageScrollNotification,
+        child: ScrollConfiguration(
+          // Keep the inherited drag devices (no left-mouse list dragging).
+          // The explicit thumb shares this list's controller on every desktop.
+          behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+          child: desktop
+              ? _ChatScrollbar(
+                  key: const Key('message-scrollbar'),
+                  controller: scrollController,
+                  thumbColor: Theme.of(
+                    context,
+                  ).colorScheme.onSurface.withValues(alpha: .3),
+                  onTrackScroll: () {
+                    // RawScrollbar pages via moveTo for a track click, which
+                    // intentionally has no UserScrollNotification of its own.
+                    _pauseLatestFollowing();
+                    _userScrolling = true;
+                    _lastUserScrollDelta = 0;
+                  },
+                  child: list,
+                )
+              : list,
         ),
       ),
     );
@@ -1084,9 +1236,12 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _handleMessageScroll() {
     if (!_messageScrollReady ||
+        !_userScrolling ||
         _loadingOlderFromScroll ||
         !scrollController.hasClients ||
-        scrollController.position.pixels > 120) {
+        scrollController.position.pixels -
+                scrollController.position.minScrollExtent >
+            120) {
       return;
     }
     if (!widget.controller.messageHistoryHasMore(widget.conversation.id)) {
@@ -1097,30 +1252,14 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _loadOlderMessages() async {
     if (_loadingOlderFromScroll || !scrollController.hasClients) return;
+    _pauseLatestFollowing();
     _loadingOlderFromScroll = true;
-    final beforeOffset = scrollController.position.pixels;
-    final beforeExtent = scrollController.position.maxScrollExtent;
-    final loaded = await widget.controller.loadOlderMessages(
-      widget.conversation.id,
-    );
-    if (mounted && loaded) {
-      final anchorRestored = Completer<void>();
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        try {
-          if (!mounted || !scrollController.hasClients) return;
-          final addedExtent =
-              scrollController.position.maxScrollExtent - beforeExtent;
-          final target = (beforeOffset + addedExtent).clamp(
-            scrollController.position.minScrollExtent,
-            scrollController.position.maxScrollExtent,
-          );
-          scrollController.jumpTo(target.toDouble());
-        } finally {
-          anchorRestored.complete();
-        }
-      });
-      await anchorRestored.future;
-    }
+    final conversationEpoch = _conversationEpoch;
+    await widget.controller.loadOlderMessages(widget.conversation.id);
+    if (!mounted || conversationEpoch != _conversationEpoch) return;
+    // Keep the in-flight guard until the expanded range has been laid out.
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || conversationEpoch != _conversationEpoch) return;
     _loadingOlderFromScroll = false;
   }
 
@@ -1461,25 +1600,26 @@ class _ChatScreenState extends State<ChatScreen> {
     // Programmatic navigation is an explicit request to leave the newest
     // message. Stop the startup end-pinning first; otherwise its metrics
     // listener observes this scroll and immediately jumps back to the bottom.
-    _initialPinCancelled = true;
-    _initialScrollTimer?.cancel();
-    _messageScrollReady = true;
+    _pauseLatestFollowing();
+    _userScrolling = false;
+    final epoch = _scrollEpoch;
     var targetMessageId = messageId;
     if (searchResult != null) {
       final canonical = await widget.controller.revealSearchResult(
         searchResult,
       );
       targetMessageId = canonical.id;
-      if (!mounted) return;
+      if (!mounted || epoch != _scrollEpoch) return;
       await WidgetsBinding.instance.endOfFrame;
-      if (!mounted) return;
+      if (!mounted || epoch != _scrollEpoch) return;
     }
     final duration = nexaMotionDuration(context);
     var target = _messageKeys[targetMessageId]?.currentContext;
     if (target == null) {
       await widget.controller.loadMessages(widget.conversation.id, force: true);
-      if (!mounted) return;
+      if (!mounted || epoch != _scrollEpoch) return;
       await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || epoch != _scrollEpoch) return;
       target = _messageKeys[targetMessageId]?.currentContext;
     }
     if (target == null && scrollController.hasClients) {
@@ -1489,10 +1629,13 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       if (index >= 0 && messages.length > 1) {
         final fraction = index / (messages.length - 1);
+        final position = scrollController.position;
         scrollController.jumpTo(
-          scrollController.position.maxScrollExtent * fraction,
+          position.minScrollExtent +
+              (position.maxScrollExtent - position.minScrollExtent) * fraction,
         );
         await WidgetsBinding.instance.endOfFrame;
+        if (!mounted || epoch != _scrollEpoch) return;
         target = _messageKeys[targetMessageId]?.currentContext;
       }
     }
@@ -1948,37 +2091,53 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  void _scrollToEnd() => WidgetsBinding.instance.addPostFrameCallback((_) {
-    if (!scrollController.hasClients) return;
-    final duration = nexaMotionDuration(context);
-    if (duration == Duration.zero) {
-      scrollController.jumpTo(scrollController.position.maxScrollExtent);
-      return;
-    }
-    scrollController.animateTo(
-      scrollController.position.maxScrollExtent,
-      duration: duration,
-      curve: Curves.easeOutCubic,
-    );
-  });
-
-  void _scrollToInitialMessage() =>
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        final target = initialMessageKey.currentContext;
-        if (target == null) {
-          if (scrollController.hasClients) {
-            scrollController.jumpTo(scrollController.position.maxScrollExtent);
-          }
-          _messageScrollReady = true;
-          return;
-        }
-        Scrollable.ensureVisible(
-          target,
-          duration: nexaMotionDuration(context),
-          alignment: .42,
+  void _scrollToEnd() {
+    if (!mounted) return;
+    _initialScrollTimer?.cancel();
+    _scrollEpoch += 1;
+    _userScrolling = false;
+    _followingLatest = true;
+    final epoch = _scrollEpoch;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || epoch != _scrollEpoch || !scrollController.hasClients) {
+        return;
+      }
+      final duration = nexaMotionDuration(context);
+      if (duration == Duration.zero) {
+        scrollController.jumpTo(scrollController.position.maxScrollExtent);
+      } else {
+        await scrollController.animateTo(
+          scrollController.position.maxScrollExtent,
+          duration: duration,
+          curve: Curves.easeOutCubic,
         );
+      }
+      if (mounted && epoch == _scrollEpoch) _pinInitialMessagesToEnd();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void _scrollToInitialMessage() {
+    final epoch = _scrollEpoch;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || epoch != _scrollEpoch) return;
+      final target = initialMessageKey.currentContext;
+      if (target == null) {
+        if (scrollController.hasClients) {
+          scrollController.jumpTo(scrollController.position.maxScrollExtent);
+        }
         _messageScrollReady = true;
-      });
+        return;
+      }
+      Scrollable.ensureVisible(
+        target,
+        duration: nexaMotionDuration(context),
+        alignment: .42,
+      );
+      _messageScrollReady = true;
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
 
   Future<void> _showMessageActions(ChatMessage message, Offset anchor) async {
     final mutationWindow = widget.controller.authPolicy.messageMutationWindow;
@@ -7141,6 +7300,26 @@ class _PinnedMessagesSheet extends StatefulWidget {
 
 class _PinnedMessagesSheetState extends State<_PinnedMessagesSheet> {
   late Future<List<ChatMessage>> future = _load();
+  late int _historyRevision = widget.controller.groupHistoryRevision;
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_historyChanged);
+  }
+
+  void _historyChanged() {
+    if (!mounted || _historyRevision == widget.controller.groupHistoryRevision) {
+      return;
+    }
+    _historyRevision = widget.controller.groupHistoryRevision;
+    setState(() => future = _load());
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_historyChanged);
+    super.dispose();
+  }
 
   Future<List<ChatMessage>> _load() =>
       widget.controller.loadPinnedMessages(widget.conversationId);
@@ -7184,7 +7363,9 @@ class _PinnedMessagesSheetState extends State<_PinnedMessagesSheet> {
                   onAction: () => setState(() => future = _load()),
                 );
               }
-              final messages = snapshot.data ?? const [];
+              final messages = (snapshot.data ?? const <ChatMessage>[])
+                  .where(widget.controller.canReadMessage)
+                  .toList();
               if (messages.isEmpty) {
                 return const StatePanel(
                   icon: CupertinoIcons.pin,
@@ -7254,6 +7435,24 @@ class _MessageSearchSheet extends StatefulWidget {
 }
 
 class _MessageSearchSheetState extends State<_MessageSearchSheet> {
+  late int _historyRevision = widget.controller.groupHistoryRevision;
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_historyChanged);
+  }
+
+  void _historyChanged() {
+    if (!mounted || _historyRevision == widget.controller.groupHistoryRevision) {
+      return;
+    }
+    _historyRevision = widget.controller.groupHistoryRevision;
+    setState(
+      () => matches = matches.where(widget.controller.canReadMessage).toList(),
+    );
+    if (query.isNotEmpty) _search(query);
+  }
+
   String query = '';
   bool loading = false;
   String? error;
@@ -7262,6 +7461,7 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
 
   @override
   void dispose() {
+    widget.controller.removeListener(_historyChanged);
     debounce?.cancel();
     super.dispose();
   }

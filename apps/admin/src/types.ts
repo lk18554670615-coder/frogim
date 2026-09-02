@@ -232,6 +232,8 @@ export interface GroupRecord {
 }
 
 export interface GroupOverview {
+  historyVisibleToNewMembers: boolean;
+  historyPolicyVersion: number;
   id: string;
   title: string;
   avatarUrl: string;
@@ -872,6 +874,7 @@ export interface AdminApi {
   addGroupBlacklist(id: string, userId: string, remark: string, reason: string): Promise<void>;
   removeGroupBlacklist(id: string, userId: string, reason: string): Promise<void>;
   setGroupMuteAll(id: string, muted: boolean, reason: string): Promise<void>;
+  setGroupHistoryVisibility(id: string, visible: boolean, reason: string): Promise<void>;
   setGroupBan(id: string, banned: boolean, reason: string): Promise<void>;
   disbandGroup(id: string, reason: string): Promise<void>;
   getReports(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<ReportRecord>>;

@@ -1,0 +1,21 @@
+# Isolated local contract tests only. Never mount this in production.
+mode: release
+addr: "tcp://0.0.0.0:5100"
+httpAddr: "0.0.0.0:5001"
+wsAddr: "ws://0.0.0.0:5200"
+rootDir: "/root/wukongim/data"
+tokenAuthOn: true
+pprofOn: false
+manager:
+  on: false
+demo:
+  on: false
+channel:
+  createIfNoExist: false
+conversation:
+  on: true
+  syncInterval: 1s
+datasource:
+  channelInfoOn: false
+plugin:
+  install: []

@@ -100,6 +100,9 @@ func newWukongMessageSourceLoader(client *wukong.Client, application *app.App) a
 		if err = application.EnrichWukongMessages(ctx, userID, ordered); err != nil {
 			return nil, err
 		}
+		if _, err = application.WukongForwardMessageRefs(ctx, userID, sourceIDs); err != nil {
+			return nil, err
+		}
 		return ordered, nil
 	}
 }
@@ -123,7 +126,7 @@ func newWukongMessageSearchLoader(client *wukong.Client, application *app.App) a
 		items := make([]*model.Message, 0, limit)
 		var startSequence uint64
 		for page := 0; page < 20 && len(items) < limit; page++ {
-			output, syncErr := client.SyncMessages(ctx, wukong.MessageSyncRequest{
+			output, syncErr := syncVisibleGroupMessages(ctx, client, application, wukong.MessageSyncRequest{
 				LoginUID: userID, ChannelID: route.ChannelID, ChannelType: route.ChannelType,
 				StartMessageSeq: startSequence, Limit: 500, PullMode: 0, EventSummaryMode: "basic",
 			})
@@ -171,12 +174,15 @@ func newWukongMessageSearchLoader(client *wukong.Client, application *app.App) a
 			}
 			startSequence = minimumSequence - 1
 		}
-		return items, nil
+		return filterCurrentGroupHistory(ctx, application, userID, conversationID, route.ChannelType, items)
 	}
 }
 
 func newWukongMessageHistoryLoader(client *wukong.Client, application *app.App) app.MessageHistoryLoader {
 	return func(ctx context.Context, userID, conversationID string, before int64, limit int) ([]*model.Message, error) {
+		if before == 1 {
+			return []*model.Message{}, nil
+		}
 		if limit <= 0 || limit > 100 {
 			limit = 50
 		}
@@ -188,7 +194,7 @@ func newWukongMessageHistoryLoader(client *wukong.Client, application *app.App) 
 		if before > 1 {
 			startSequence = uint64(before - 1)
 		}
-		output, err := client.SyncMessages(ctx, wukong.MessageSyncRequest{
+		output, err := syncVisibleGroupMessages(ctx, client, application, wukong.MessageSyncRequest{
 			LoginUID: userID, ChannelID: route.ChannelID, ChannelType: route.ChannelType,
 			StartMessageSeq: startSequence, Limit: limit, PullMode: 0, EventSummaryMode: "full",
 		})
@@ -210,7 +216,7 @@ func newWukongMessageHistoryLoader(client *wukong.Client, application *app.App) 
 		if err = application.EnrichWukongMessages(ctx, userID, items); err != nil {
 			return nil, err
 		}
-		return items, nil
+		return filterCurrentGroupHistory(ctx, application, userID, conversationID, route.ChannelType, items)
 	}
 }
 
@@ -454,6 +460,13 @@ func newWukongReadStateTransport(client *wukong.Client, application *app.App) ap
 		read := uint64(0)
 		if readSequence > 0 {
 			read = uint64(readSequence)
+		}
+		if route.ChannelType == wukong.ChannelGroup {
+			access, accessErr := application.GroupHistoryAccess(ctx, userID, conversationID)
+			if accessErr != nil {
+				return 0, accessErr
+			}
+			read = max(read, uint64(access.UnreadAfterSeq))
 		}
 		unread := uint64(0)
 		if maximum > read {

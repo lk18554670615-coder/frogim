@@ -77,6 +77,7 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
     conversation.saved,
     conversation.pinned,
     conversation.muted,
+    widget.controller.groupHistoryRevision,
   ].join('|');
 
   void _handleControllerChange() {
@@ -290,6 +291,27 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
                   ],
                 ),
               ],
+              const SectionHeader('历史消息'),
+              SectionCard(
+                children: [
+                  SettingTile(
+                    key: const Key('group-history-visibility'),
+                    icon: CupertinoIcons.clock,
+                    title: '新成员可查看入群前历史',
+                    subtitle: value.historyVisibleToNewMembers
+                        ? '当前成员可查看全部群历史'
+                        : '仅可查看本人本次入群后的消息',
+                    trailing: canEdit
+                        ? CupertinoSwitch(
+                            value: value.historyVisibleToNewMembers,
+                            onChanged: busy ? null : _setHistoryVisibility,
+                          )
+                        : Text(
+                            value.historyVisibleToNewMembers ? '已开启' : '已关闭',
+                          ),
+                  ),
+                ],
+              ),
               const SectionHeader('安全'),
               SectionCard(
                 children: [
@@ -507,6 +529,23 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
       () => widget.controller.updateGroupProfile(
         widget.conversation.id,
         joinPolicy: selected,
+      ),
+    );
+  }
+
+  Future<void> _setHistoryVisibility(bool value) async {
+    final confirmed = await _confirm(
+      title: value ? '开放入群前历史？' : '隐藏入群前历史？',
+      message: value
+          ? '所有当前成员将可查看全部群历史。不会将此前历史计为新未读。'
+          : '对所有当前成员生效，仅保留本次入群后的消息可见。群主和管理员同样受限；已导出的内容无法收回。',
+      action: '确认修改',
+    );
+    if (!confirmed || !mounted) return;
+    await _runProfileUpdate(
+      () => widget.controller.updateGroupProfile(
+        widget.conversation.id,
+        historyVisibleToNewMembers: value,
       ),
     );
   }
@@ -776,6 +815,8 @@ class _GroupAnnouncementScreenState extends State<GroupAnnouncementScreen> {
               announcementReadAt: DateTime.now(),
               joinPolicy: profile.joinPolicy,
               allowMemberAddFriend: profile.allowMemberAddFriend,
+              historyVisibleToNewMembers: profile.historyVisibleToNewMembers,
+              historyPolicyVersion: profile.historyPolicyVersion,
               allMutedUntil: profile.allMutedUntil,
               qrToken: profile.qrToken,
               qrExpiresAt: profile.qrExpiresAt,

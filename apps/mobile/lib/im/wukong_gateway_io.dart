@@ -14,6 +14,8 @@ import 'package:wukongimfluttersdk/type/const.dart' as full;
 import 'package:wukongimfluttersdk/wkim.dart';
 
 import 'message_content_registry.dart';
+import 'history_access.dart';
+import 'native_history_cache.dart';
 import 'wukong_gateway_contract.dart';
 import 'wukong_gateway_macos_easy.dart';
 
@@ -22,7 +24,12 @@ WukongGateway createWukongGateway({WukongDataSource? dataSource}) =>
     ? MacOSWukongGateway(dataSource: dataSource)
     : IoWukongGateway(dataSource: dataSource);
 
-class IoWukongGateway implements WukongGateway {
+class IoWukongGateway implements WukongGateway, WukongHistoryCache {
+  @override
+  Future<void> invalidateGroupHistory(
+    String channelId,
+    GroupHistoryAccess? access,
+  ) => invalidateNativeGroupHistory(channelId, access);
   factory IoWukongGateway({WukongDataSource? dataSource}) =>
       IoWukongGateway._(dataSource);
 

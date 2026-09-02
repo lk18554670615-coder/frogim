@@ -14,8 +14,8 @@ import (
 )
 
 func TestAdminIdentitySchemaIsVersioned(t *testing.T) {
-	if schemaVersion != 57 {
-		t.Fatalf("administrator username migration must be schema version 57, got %d", schemaVersion)
+	if schemaVersion < 57 {
+		t.Fatalf("administrator username migration requires at least schema version 57, got %d", schemaVersion)
 	}
 	for _, statement := range []string{
 		"CREATE TABLE IF NOT EXISTS im_admin_accounts",

@@ -1334,13 +1334,31 @@ class FavoritesScreen extends StatefulWidget {
 }
 
 class _FavoritesScreenState extends State<FavoritesScreen> {
+  late int _historyRevision = widget.controller.groupHistoryRevision;
   List<ChatMessage>? items;
   _FavoriteFilter filter = _FavoriteFilter.all;
 
   @override
   void initState() {
     super.initState();
+    widget.controller.addListener(_historyChanged);
     _load();
+  }
+
+  void _historyChanged() {
+    if (!mounted || _historyRevision == widget.controller.groupHistoryRevision) {
+      return;
+    }
+    _historyRevision = widget.controller.groupHistoryRevision;
+    setState(
+      () => items = items?.where(widget.controller.canReadMessage).toList(),
+    );
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_historyChanged);
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -1350,7 +1368,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final allItems = items;
+    final allItems = items?.where(widget.controller.canReadMessage).toList();
     final filteredItems = allItems
         ?.where((message) => filter.matches(message.kind))
         .toList(growable: false);

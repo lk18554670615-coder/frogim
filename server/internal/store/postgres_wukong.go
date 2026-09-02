@@ -89,6 +89,13 @@ func loadWukongMutationMeta(ctx context.Context, tx pgx.Tx, userID, messageID st
 	if meta.ConversationID == "" || meta.Role == "" {
 		return meta, true, ErrForbidden
 	}
+	var visible bool
+	if err = tx.QueryRow(ctx, `SELECT im_can_read_group_message($1,$2,$3,$4)`, userID, meta.ConversationID, meta.MessageSeq, meta.MessageAt).Scan(&visible); err != nil {
+		return meta, true, err
+	}
+	if !visible {
+		return meta, true, ErrForbidden
+	}
 	if err = json.Unmarshal(extension, &meta.Extension); err != nil {
 		return meta, true, err
 	}
@@ -415,7 +422,7 @@ func (p *Postgres) listWukongMessageEdits(ctx context.Context, uid, mid string) 
 	var allowed bool
 	var recalled bool
 	err = p.pool.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM im_wukong_message_index i JOIN im_members m ON m.conversation_id=i.conversation_id AND m.user_id=$2 WHERE i.message_id::text=$1),
+		SELECT EXISTS(SELECT 1 FROM im_wukong_message_index i JOIN im_members m ON m.conversation_id=i.conversation_id AND m.user_id=$2 WHERE i.message_id::text=$1 AND im_can_read_group_message($2,i.conversation_id,i.message_seq,i.message_timestamp)),
 			EXISTS(SELECT 1 FROM im_wukong_message_extensions e WHERE e.message_id::text=$1 AND e.payload ? 'recalledAt')
 	`, mid, uid).Scan(&allowed, &recalled)
 	if err != nil {
@@ -565,9 +572,10 @@ func (p *Postgres) listWukongGroupMessagePins(ctx context.Context, uid, cid stri
 		LEFT JOIN im_wukong_message_extensions ext ON ext.message_id=i.message_id
 			AND ext.channel_id=i.channel_id AND ext.channel_type=i.channel_type
 		WHERE pin.conversation_id=$1 AND NOT (COALESCE(ext.payload,'{}'::jsonb) ? 'recalledAt')
+			AND im_can_read_group_message($4,i.conversation_id,i.message_seq,i.message_timestamp)
 			AND ($2::bigint=0 OR pin.pinned_at<to_timestamp($2::double precision/1000))
 		ORDER BY pin.pinned_at DESC,pin.message_id LIMIT $3
-	`, cid, before, limit)
+	`, cid, before, limit, uid)
 	if err != nil {
 		return true, nil, err
 	}
@@ -628,6 +636,7 @@ func (p *Postgres) setWukongFavorite(ctx context.Context, uid, messageID string,
 		FROM im_wukong_message_index i
 		JOIN im_members member ON member.conversation_id=i.conversation_id AND member.user_id=$1
 		WHERE i.message_id::text=$2
+			AND im_can_read_group_message($1,i.conversation_id,i.message_seq,i.message_timestamp)
 		ON CONFLICT(user_id,message_id) DO UPDATE SET created_at=EXCLUDED.created_at
 	`, uid, messageID)
 	if err != nil {
@@ -651,6 +660,7 @@ func (p *Postgres) listWukongFavorites(ctx context.Context, uid string, limit in
 		LEFT JOIN im_wukong_message_extensions ext ON ext.message_id=i.message_id
 			AND ext.channel_id=i.channel_id AND ext.channel_type=i.channel_type
 		WHERE favorite.user_id=$1
+			AND im_can_read_group_message($1,i.conversation_id,i.message_seq,i.message_timestamp)
 		ORDER BY favorite.created_at DESC LIMIT $2
 	`, uid, limit)
 	if err != nil {
@@ -690,6 +700,7 @@ func (p *Postgres) LoadWukongMessageExtensions(ctx context.Context, userID strin
 		LEFT JOIN im_wukong_message_extensions ext ON ext.message_id=i.message_id AND ext.channel_id=i.channel_id AND ext.channel_type=i.channel_type
 		LEFT JOIN im_group_message_pins pin ON pin.message_id=i.message_id::text AND pin.conversation_id=i.conversation_id
 		WHERE i.message_id::text=ANY($2::text[])
+			AND im_can_read_group_message($1,i.conversation_id,i.message_seq,i.message_timestamp)
 	`, userID, messageIDs)
 	if err != nil {
 		return nil, err
@@ -775,6 +786,7 @@ func (p *Postgres) SyncWukongMessageExtras(ctx context.Context, userID, channelI
 		JOIN im_wukong_message_index message_index ON message_index.message_id=extension.message_id
 			AND message_index.channel_id=extension.channel_id AND message_index.channel_type=extension.channel_type
 		WHERE message_index.conversation_id=$1 AND extension.sync_version>$3
+		AND im_can_read_group_message($2,message_index.conversation_id,message_index.message_seq,message_index.message_timestamp)
 		ORDER BY extension.sync_version LIMIT $4`, conversationID, userID, version, limit)
 	if err != nil {
 		return nil, err
@@ -857,6 +869,7 @@ func (p *Postgres) SyncWukongReminders(ctx context.Context, userID string, versi
 			is_locate,text,data,version,done,need_upload,publisher
 		FROM im_wukong_reminders
 		WHERE user_id=$1 AND version>$2
+		AND (channel_type<>2 OR EXISTS(SELECT 1 FROM im_wukong_message_index i WHERE i.message_id=im_wukong_reminders.message_id AND im_can_read_group_message($1,i.conversation_id,i.message_seq,i.message_timestamp)))
 		ORDER BY version
 		LIMIT $3
 	`, userID, version, limit)
@@ -1370,6 +1383,11 @@ func (p *Postgres) LoadWukongChannelInfo(ctx context.Context, userID, channelID 
 		}
 		info.Extra["ownerId"] = ownerID
 		info.Extra["memberCount"] = memberCount
+		historyAccess, accessErr := p.GroupHistoryAccess(ctx, userID, conversationID)
+		if accessErr != nil {
+			return WukongChannelInfo{}, accessErr
+		}
+		info.Extra["historyAccess"] = historyAccess
 	case wukong.ChannelCommunity, wukong.ChannelCommunityTopic, wukong.ChannelInfo, wukong.ChannelLive,
 		wukong.ChannelCustomer, wukong.ChannelVisitor:
 		var ownerID, parentID, description, visibility, joinPolicy, postingPolicy string
@@ -1520,6 +1538,7 @@ func (p *Postgres) ListWukongForwardMessageRefs(ctx context.Context, userID stri
 			AND (allowed.user_id IS NOT NULL OR EXISTS(
 				SELECT 1 FROM im_favorites favorite WHERE favorite.user_id=$1 AND favorite.message_id=i.message_id::text
 			))
+			AND im_can_read_group_message($1,i.conversation_id,i.message_seq,i.message_timestamp)
 	`, userID, messageIDs)
 	if err != nil {
 		return nil, err

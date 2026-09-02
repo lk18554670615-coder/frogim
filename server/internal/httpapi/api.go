@@ -152,6 +152,9 @@ func New(cfg config.Config, a *app.App) *API {
 			a.SetMessageSearchLoader(newWukongMessageSearchLoader(x.wukongClient, a))
 			a.SetMessageHistoryLoader(newWukongMessageHistoryLoader(x.wukongClient, a))
 			a.SetReadStateTransport(newWukongReadStateTransport(x.wukongClient, a))
+			a.SetGroupHistoryBoundaryReader(func(ctx context.Context, userID, channelID string) (uint64, error) {
+				return x.wukongClient.ChannelMaxMessageSeq(ctx, userID, channelID, wukong.ChannelGroup)
+			})
 			a.SetEventSink(func(userIDs []string, event string, payload any) {
 				if event != "typing" || len(userIDs) == 0 {
 					return
@@ -455,6 +458,7 @@ func (x *API) routes() {
 	x.mux.Handle("POST /v2/admin/groups/{id}/mute-all", x.requireAdmin(http.HandlerFunc(x.adminGroupMuteAll)))
 	x.mux.Handle("POST /v2/admin/groups/{id}/ban", x.requireAdmin(http.HandlerFunc(x.adminBanGroup)))
 	x.mux.Handle("POST /v2/admin/groups/{id}/unban", x.requireAdmin(http.HandlerFunc(x.adminUnbanGroup)))
+	x.mux.Handle("PUT /v2/admin/groups/{id}/history-visibility", x.requireAdmin(http.HandlerFunc(x.adminGroupHistoryVisibility)))
 	x.mux.Handle("POST /v2/admin/groups/{id}/disband", x.requireAdmin(http.HandlerFunc(x.disbandGroup)))
 	x.mux.Handle("GET /v2/admin/sensitive-words", x.requireAdmin(http.HandlerFunc(x.sensitiveWords)))
 	x.mux.Handle("POST /v2/admin/sensitive-words", x.requireAdmin(http.HandlerFunc(x.addSensitiveWord)))
@@ -2380,6 +2384,7 @@ func (x *API) groupProfile(w http.ResponseWriter, r *http.Request) {
 }
 func (x *API) updateGroupProfile(w http.ResponseWriter, r *http.Request) {
 	var p struct {
+		HistoryVisibleToNewMembers      *bool
 		Name, AvatarMediaID, JoinPolicy *string
 		AllowMemberAddFriend            *bool
 		RotateQR                        bool
@@ -2388,7 +2393,7 @@ func (x *API) updateGroupProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_ARGUMENT", "invalid request")
 		return
 	}
-	g, err := x.app.UpdateGroupProfile(uid(r), r.PathValue("id"), store.GroupProfileUpdate{Name: p.Name, AvatarMediaID: p.AvatarMediaID, JoinPolicy: p.JoinPolicy, AllowMemberAddFriend: p.AllowMemberAddFriend, RotateQR: p.RotateQR})
+	g, err := x.app.UpdateGroupProfile(uid(r), r.PathValue("id"), store.GroupProfileUpdate{HistoryVisibleToNewMembers: p.HistoryVisibleToNewMembers, Name: p.Name, AvatarMediaID: p.AvatarMediaID, JoinPolicy: p.JoinPolicy, AllowMemberAddFriend: p.AllowMemberAddFriend, RotateQR: p.RotateQR})
 	if err != nil {
 		handleErr(w, err)
 		return

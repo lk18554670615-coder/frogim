@@ -23,9 +23,12 @@ import (
 //go:embed schema.sql
 var normalizedSchema string
 
-type Postgres struct{ pool *pgxpool.Pool }
+type Postgres struct {
+	pool            *pgxpool.Pool
+	historyBoundary GroupHistoryBoundaryReader
+}
 
-const schemaVersion = 57
+const schemaVersion = 58
 
 type PostgresOptions struct {
 	MaxConns          int32
@@ -252,13 +255,13 @@ func (p *Postgres) Load(ctx context.Context) (*model.State, error) {
 		s.DirectIndex[k] = v
 	}
 	rows.Close()
-	rows, err = p.pool.Query(ctx, `SELECT conversation_id,user_id,role,last_read_seq,last_delivered_seq,muted_until,pinned,saved,archived,notifications_muted,manual_unread,hidden_until_seq,group_nickname,joined_at FROM im_members`)
+	rows, err = p.pool.Query(ctx, `SELECT conversation_id,user_id,role,last_read_seq,last_delivered_seq,muted_until,pinned,saved,archived,notifications_muted,manual_unread,hidden_until_seq,group_nickname,joined_at,history_after_seq FROM im_members`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		m := &model.ConversationMember{}
-		if err = rows.Scan(&m.ConversationID, &m.UserID, &m.Role, &m.LastReadSeq, &m.LastDeliveredSeq, &m.MutedUntil, &m.Pinned, &m.Saved, &m.Archived, &m.NotificationsMuted, &m.ManualUnread, &m.HiddenUntilSeq, &m.GroupNickname, &m.JoinedAt); err != nil {
+		if err = rows.Scan(&m.ConversationID, &m.UserID, &m.Role, &m.LastReadSeq, &m.LastDeliveredSeq, &m.MutedUntil, &m.Pinned, &m.Saved, &m.Archived, &m.NotificationsMuted, &m.ManualUnread, &m.HiddenUntilSeq, &m.GroupNickname, &m.JoinedAt, &m.HistoryAfterSeq); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -406,7 +409,7 @@ func (p *Postgres) Save(ctx context.Context, s *model.State) error {
 	}
 	for cid, xs := range s.Members {
 		for _, m := range xs {
-			_, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,last_read_seq,last_delivered_seq,muted_until,pinned,saved,archived,notifications_muted,manual_unread,hidden_until_seq,group_nickname,joined_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT(conversation_id,user_id) DO UPDATE SET role=excluded.role,last_read_seq=GREATEST(im_members.last_read_seq,excluded.last_read_seq),last_delivered_seq=GREATEST(im_members.last_delivered_seq,excluded.last_delivered_seq),muted_until=excluded.muted_until,pinned=excluded.pinned,saved=excluded.saved,archived=excluded.archived,notifications_muted=excluded.notifications_muted,manual_unread=excluded.manual_unread,hidden_until_seq=excluded.hidden_until_seq,group_nickname=excluded.group_nickname`, cid, m.UserID, m.Role, m.LastReadSeq, m.LastDeliveredSeq, m.MutedUntil, m.Pinned, m.Saved, m.Archived, m.NotificationsMuted, m.ManualUnread, m.HiddenUntilSeq, m.GroupNickname, m.JoinedAt)
+			_, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,last_read_seq,last_delivered_seq,muted_until,pinned,saved,archived,notifications_muted,manual_unread,hidden_until_seq,group_nickname,joined_at,history_after_seq) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(conversation_id,user_id) DO UPDATE SET role=excluded.role,last_read_seq=GREATEST(im_members.last_read_seq,excluded.last_read_seq),last_delivered_seq=GREATEST(im_members.last_delivered_seq,excluded.last_delivered_seq),muted_until=excluded.muted_until,pinned=excluded.pinned,saved=excluded.saved,archived=excluded.archived,notifications_muted=excluded.notifications_muted,manual_unread=excluded.manual_unread,hidden_until_seq=excluded.hidden_until_seq,group_nickname=excluded.group_nickname`, cid, m.UserID, m.Role, m.LastReadSeq, m.LastDeliveredSeq, m.MutedUntil, m.Pinned, m.Saved, m.Archived, m.NotificationsMuted, m.ManualUnread, m.HiddenUntilSeq, m.GroupNickname, m.JoinedAt, m.HistoryAfterSeq)
 			if err != nil {
 				return err
 			}
@@ -1118,17 +1121,19 @@ func (p *Postgres) ListConversations(ctx context.Context, uid string, limit int)
 		GREATEST(c.last_message_seq,COALESCE(wk.last_message_seq,0)),c.created_at,
 		GREATEST(c.updated_at,COALESCE(wk.last_message_at,c.updated_at)),
 		m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.pinned,m.saved,m.archived,m.notifications_muted,m.manual_unread,m.hidden_until_seq,m.joined_at,
-		COALESCE(mention_stats.unread_count,0),c.member_count
+		COALESCE(mention_stats.unread_count,0),c.member_count,COALESCE(g.history_policy_version,1),COALESCE(g.history_visible_to_new_members,false),m.history_after_seq,COALESCE(wk.unread_count,0)
 		FROM im_members m
 		JOIN im_conversations c ON c.id=m.conversation_id
+		LEFT JOIN im_groups g ON g.conversation_id=c.id
 		LEFT JOIN LATERAL (
-			SELECT max(message_seq) AS last_message_seq,max(message_timestamp) AS last_message_at
-			FROM im_wukong_message_index WHERE conversation_id=c.id
+			SELECT max(message_seq) AS last_message_seq,max(message_timestamp) AS last_message_at,
+			count(*) FILTER(WHERE message_seq>m.last_read_seq AND (g.conversation_id IS NULL OR CASE WHEN m.history_after_seq IS NOT NULL THEN message_seq>m.history_after_seq ELSE floor(extract(epoch FROM message_timestamp))>floor(extract(epoch FROM m.joined_at)) END)) AS unread_count
+			FROM im_wukong_message_index WHERE conversation_id=c.id AND im_can_read_group_message($1,conversation_id,message_seq,message_timestamp)
 		) wk ON true
 		LEFT JOIN LATERAL (
 			SELECT count(*)::bigint AS unread_count FROM im_wukong_reminders reminder
 			WHERE reminder.user_id=m.user_id AND reminder.conversation_id=c.id
-			  AND reminder.message_seq>m.last_read_seq AND reminder.done=false
+			  AND reminder.message_seq>m.last_read_seq AND reminder.done=false AND EXISTS(SELECT 1 FROM im_wukong_message_index i WHERE i.message_id=reminder.message_id AND im_can_read_group_message($1,i.conversation_id,i.message_seq,i.message_timestamp))
 		) mention_stats ON true
 		WHERE m.user_id=$1 AND (m.hidden_until_seq IS NULL OR GREATEST(c.last_message_seq,COALESCE(wk.last_message_seq,0))>m.hidden_until_seq)
 		ORDER BY m.pinned DESC,GREATEST(c.updated_at,COALESCE(wk.last_message_at,c.updated_at)) DESC,c.id LIMIT $2`, uid, limit)
@@ -1143,13 +1148,24 @@ func (p *Postgres) ListConversations(ctx context.Context, uid string, limit int)
 		m := &model.ConversationMember{UserID: uid}
 		var mentionUnreadCount int64
 		var memberCount int64
+		history := &model.HistoryAccess{}
+		var visibleUnread int64
 		if err = rows.Scan(&c.ID, &c.Type, &c.Title, &c.AvatarURL, &c.Seq, &c.LastMessageSeq, &c.CreatedAt, &c.UpdatedAt,
 			&m.Role, &m.MutedUntil, &m.LastReadSeq, &m.LastDeliveredSeq, &m.Pinned, &m.Saved, &m.Archived, &m.NotificationsMuted, &m.ManualUnread, &m.HiddenUntilSeq, &m.JoinedAt,
-			&mentionUnreadCount, &memberCount); err != nil {
+			&mentionUnreadCount, &memberCount, &history.Version, &history.VisibleAll, &history.AfterSeq, &visibleUnread); err != nil {
 			return nil, err
 		}
 		m.ConversationID = c.ID
-		out = append(out, map[string]any{"conversation": c, "membership": m, "lastMessage": nil, "unreadCount": max(int64(0), c.LastMessageSeq-m.LastReadSeq), "mentionUnreadCount": mentionUnreadCount, "memberCount": memberCount})
+		item := map[string]any{"conversation": c, "membership": m, "lastMessage": nil, "unreadCount": max(int64(0), c.LastMessageSeq-m.LastReadSeq), "mentionUnreadCount": mentionUnreadCount, "memberCount": memberCount}
+		if c.Type == "group" {
+			if history.AfterSeq == nil {
+				stamp := m.JoinedAt.Unix()
+				history.AfterTimestamp = &stamp
+			}
+			item["historyAccess"] = history
+			item["unreadCount"] = visibleUnread
+		}
+		out = append(out, item)
 		conversationIDs = append(conversationIDs, c.ID)
 	}
 	if err = rows.Err(); err != nil {
@@ -1370,6 +1386,7 @@ func (p *Postgres) CanAccessMedia(ctx context.Context, uid, id string) (bool, er
 					(binding.channel_type=2 AND EXISTS(
 						SELECT 1 FROM im_members member
 						WHERE member.conversation_id=binding.channel_id AND member.user_id=$1
+						AND EXISTS(SELECT 1 FROM im_wukong_message_index i WHERE i.media_id=$2 AND i.conversation_id=binding.channel_id AND im_can_read_group_message($1,i.conversation_id,i.message_seq,i.message_timestamp))
 					))
 				)
 			) OR EXISTS(
@@ -3021,11 +3038,11 @@ func (p *Postgres) ExpireFriendRequests(ctx context.Context, at time.Time, limit
 	return items, nil
 }
 
-const groupProfileColumns = `g.conversation_id,g.owner_id,c.title,c.avatar_url,g.announcement,g.announcement_version,r.read_at,g.join_policy,g.allow_member_add_friend,g.all_muted_until,g.banned,g.banned_at,g.banned_by,g.ban_reason,COALESCE(g.qr_token,''),g.qr_expires_at,g.dissolved_at,g.updated_at`
+const groupProfileColumns = `g.conversation_id,g.owner_id,c.title,c.avatar_url,g.announcement,g.announcement_version,r.read_at,g.join_policy,g.allow_member_add_friend,g.all_muted_until,g.banned,g.banned_at,g.banned_by,g.ban_reason,COALESCE(g.qr_token,''),g.qr_expires_at,g.dissolved_at,g.updated_at,g.history_visible_to_new_members,g.history_policy_version`
 
 func scanGroupProfile(row callRow) (*model.GroupProfile, error) {
 	g := &model.GroupProfile{}
-	err := row.Scan(&g.ConversationID, &g.OwnerID, &g.Name, &g.AvatarURL, &g.Announcement, &g.AnnouncementVersion, &g.AnnouncementReadAt, &g.JoinPolicy, &g.AllowMemberAddFriend, &g.AllMutedUntil, &g.Banned, &g.BannedAt, &g.BannedBy, &g.BanReason, &g.QRToken, &g.QRExpiresAt, &g.DissolvedAt, &g.UpdatedAt)
+	err := row.Scan(&g.ConversationID, &g.OwnerID, &g.Name, &g.AvatarURL, &g.Announcement, &g.AnnouncementVersion, &g.AnnouncementReadAt, &g.JoinPolicy, &g.AllowMemberAddFriend, &g.AllMutedUntil, &g.Banned, &g.BannedAt, &g.BannedBy, &g.BanReason, &g.QRToken, &g.QRExpiresAt, &g.DissolvedAt, &g.UpdatedAt, &g.HistoryVisibleToNewMembers, &g.HistoryPolicyVersion)
 	return g, err
 }
 func groupInviteColumns(prefix string) string {
@@ -3070,7 +3087,7 @@ func emitGroupSystem(ctx context.Context, tx pgx.Tx, cid, actor, event string, d
 		return err
 	}
 	meta, _ := json.Marshal(data)
-	_, err := tx.Exec(ctx, `INSERT INTO im_audits(id,actor_id,action,target_type,target_id,metadata,created_at) VALUES($1,$2,$3,'group',$4,$5,$6)`, "aud_group_"+strconv.FormatInt(at.UnixNano(), 36), actor, event, cid, meta, at)
+	_, err := tx.Exec(ctx, `INSERT INTO im_audits(id,actor_id,action,target_type,target_id,metadata,created_at) VALUES($1,$2,$3,'group',$4,$5,$6)`, "aud_group_"+event+"_"+strconv.FormatInt(at.UnixNano(), 36), actor, event, cid, meta, at)
 	return err
 }
 
@@ -3156,7 +3173,7 @@ func (p *Postgres) CreateGroupRecord(ctx context.Context, cid, owner, name strin
 		return nil, err
 	}
 	all := append([]string{owner}, members...)
-	if _, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,saved,joined_at) SELECT $1,id,CASE WHEN id=$2 THEN 'owner' ELSE 'member' END,id=$2,$3 FROM im_users WHERE id=ANY($4::text[]) ON CONFLICT DO NOTHING`, cid, owner, at, all); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,saved,joined_at,history_after_seq) SELECT $1,id,CASE WHEN id=$2 THEN 'owner' ELSE 'member' END,id=$2,$3,0 FROM im_users WHERE id=ANY($4::text[]) ON CONFLICT DO NOTHING`, cid, owner, at, all); err != nil {
 		return nil, err
 	}
 	raw, _ := json.Marshal(map[string]any{"conversation": c})
@@ -3172,6 +3189,14 @@ func (p *Postgres) GetGroupProfile(ctx context.Context, uid, cid string) (*model
 	g, err := scanGroupProfile(p.pool.QueryRow(ctx, `SELECT `+groupProfileColumns+` FROM im_groups g JOIN im_conversations c ON c.id=g.conversation_id JOIN im_members m ON m.conversation_id=g.conversation_id AND m.user_id=$2 LEFT JOIN im_group_announcement_reads r ON r.conversation_id=g.conversation_id AND r.user_id=$2 AND r.announcement_version=g.announcement_version WHERE g.conversation_id=$1`, cid, uid))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	g.HistoryAccess, err = p.GroupHistoryAccess(ctx, uid, cid)
+	if err == nil {
+		g.HistoryVisibleToNewMembers = g.HistoryAccess.VisibleAll
+		g.HistoryPolicyVersion = g.HistoryAccess.Version
 	}
 	return g, err
 }
@@ -3193,6 +3218,11 @@ func (p *Postgres) UpdateGroupProfile(ctx context.Context, actor, cid string, u 
 	}
 	if role != "owner" && (u.JoinPolicy != nil || u.AllowMemberAddFriend != nil || u.AllMutedUntil != nil || u.RotateQR) {
 		return nil, ErrForbidden
+	}
+	if u.HistoryVisibleToNewMembers != nil {
+		if err = setGroupHistoryVisibility(ctx, tx, actor, cid, *u.HistoryVisibleToNewMembers, "member setting", at); err != nil {
+			return nil, err
+		}
 	}
 	var avatarURL *string
 	if u.AvatarMediaID != nil {
@@ -3364,7 +3394,7 @@ func (p *Postgres) TransitionGroupInvite(ctx context.Context, id, uid, action st
 		if blacklisted {
 			return nil, false, ErrForbidden
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,joined_at)VALUES($1,$2,'member',$3)ON CONFLICT DO NOTHING`, i.ConversationID, i.InviteeID, at); err != nil {
+		if err = p.addGroupMembersWithHistory(ctx, tx, i.ConversationID, []string{i.InviteeID}, at); err != nil {
 			return nil, false, err
 		}
 		if err = enqueueWukongChannelReconcile(ctx, tx, i.ConversationID, "invite-accepted", at); err != nil {
@@ -3405,7 +3435,7 @@ func (p *Postgres) JoinGroupByQR(ctx context.Context, uid, token string, at time
 	if blacklisted {
 		return ErrForbidden
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,joined_at)VALUES($1,$2,'member',$3)ON CONFLICT DO NOTHING`, cid, uid, at); err != nil {
+	if err = p.addGroupMembersWithHistory(ctx, tx, cid, []string{uid}, at); err != nil {
 		return err
 	}
 	if err = emitGroupSystem(ctx, tx, cid, uid, "group.member.joined", map[string]any{"userId": uid, "source": "qr"}, at); err != nil {
@@ -3439,7 +3469,7 @@ func (p *Postgres) AddGroupMembers(ctx context.Context, actor, cid string, ids [
 	if blockedCount > 0 {
 		return ErrForbidden
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,joined_at)SELECT $1,id,'member',$3 FROM im_users WHERE id=ANY($2::text[])ON CONFLICT DO NOTHING`, cid, ids, at); err != nil {
+	if err = p.addGroupMembersWithHistory(ctx, tx, cid, ids, at); err != nil {
 		return err
 	}
 	if err = emitGroupSystem(ctx, tx, cid, actor, "group.members.added", map[string]any{"userIds": ids}, at); err != nil {

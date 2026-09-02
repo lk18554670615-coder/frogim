@@ -99,6 +99,12 @@ void main() {
 
   test('聊天缓存在进程重启后仍可先于网络读取', () async {
     FlutterSecureStorage.setMockInitialValues({});
+    // Cold-start direct-chat classification is retained separately. Unknown
+    // groups may not paint confirmed history before their policy is fetched.
+    await SecureLocalStore().writeJson('channel.conversation-cache', {
+      'id': 'peer',
+      'type': 1,
+    });
     var networkRequests = 0;
     final firstProcess = LiveImRepository(
       client: MockClient((request) async {
@@ -117,6 +123,7 @@ void main() {
       isMine: false,
       conversationSeq: 18,
     );
+    await firstProcess.cachedMessages('conversation-cache');
     await firstProcess.persistMessages('conversation-cache', [cachedMessage]);
     await firstProcess.close();
 
