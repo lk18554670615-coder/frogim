@@ -92,6 +92,8 @@ class _ForwardConversationSheetState extends State<ForwardConversationSheet> {
         widget.controller.currentUser?.id != sessionUserId) {
       setState(() => sessionEnded = true);
       task?.invalidateSession();
+    } else {
+      setState(() {});
     }
   }
 
@@ -136,6 +138,10 @@ class _ForwardConversationSheetState extends State<ForwardConversationSheet> {
           (item) =>
               normalized.isEmpty ||
               item.title.toLowerCase().contains(normalized) ||
+              widget.controller
+                  .displayConversationName(item)
+                  .toLowerCase()
+                  .contains(normalized) ||
               item.subtitle.toLowerCase().contains(normalized),
         )
         .toList();
@@ -339,7 +345,7 @@ class _ForwardConversationSheetState extends State<ForwardConversationSheet> {
           return Semantics(
             checked: selected,
             button: true,
-            label: '转发到 ${item.title}',
+            label: '转发到 ${widget.controller.displayConversationName(item)}',
             child: ListTile(
               key: Key('forward-conversation-${item.id}'),
               minTileHeight: 64,
@@ -351,12 +357,12 @@ class _ForwardConversationSheetState extends State<ForwardConversationSheet> {
                   ? LinliColors.brandGreen.withValues(alpha: .10)
                   : LinliColors.brandMint,
               leading: PersonAvatar(
-                name: item.title,
+                name: widget.controller.displayConversationName(item),
                 size: 44,
                 avatarUrl: item.avatarUrl,
               ),
               title: Text(
-                item.title,
+                widget.controller.displayConversationName(item),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
@@ -408,12 +414,14 @@ class _ForwardConversationSheetState extends State<ForwardConversationSheet> {
         return ListTile(
           key: Key('forward-result-${target.conversation.id}'),
           leading: PersonAvatar(
-            name: target.conversation.title,
+            name: widget.controller.displayConversationName(
+              target.conversation,
+            ),
             size: 40,
             avatarUrl: target.conversation.avatarUrl,
           ),
           title: Text(
-            target.conversation.title,
+            widget.controller.displayConversationName(target.conversation),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),

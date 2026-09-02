@@ -298,4 +298,17 @@ void main() {
     );
     controller.dispose();
   });
+
+  test('未打开群的转发确认更新摘要，不用部分消息覆盖磁盘缓存', () async {
+    final repository = RecordingForwardRepository();
+    final controller = forwardTestController(repository);
+    addTearDown(controller.dispose);
+    await controller.forwardMessage(forwardSource(1), 'target-1');
+    final target = controller.conversations.firstWhere(
+      (item) => item.id == 'target-1',
+    );
+    expect(target.subtitle, '转发测试消息 0');
+    expect(controller.messagesFor('target-1'), isEmpty);
+    expect(repository.persisted.containsKey('target-1'), isFalse);
+  });
 }

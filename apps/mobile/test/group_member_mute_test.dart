@@ -14,7 +14,7 @@ void main() {
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
-  test('标准群成员禁言使用服务端正式接口并以 null 解除', () async {
+  test('标准群成员禁言和管理员设置使用正式接口，解除和降级提交明确字段', () async {
     final requests = <http.Request>[];
     final repository = LiveImRepository(
       client: MockClient((request) async {
@@ -47,6 +47,10 @@ void main() {
             '/v2/channels/groups/group-1/members/member-1/mute') {
           return _json({'data': jsonDecode(request.body)});
         }
+        if (request.url.path ==
+            '/v2/channels/groups/group-1/members/member-1/role') {
+          return _json({'data': jsonDecode(request.body)});
+        }
         return http.Response('{}', 404);
       }),
       apiBaseUrl: 'https://api.example.com',
@@ -57,6 +61,8 @@ void main() {
 
     await repository.setGroupMemberMuted('group-1', 'member-1', until);
     await repository.setGroupMemberMuted('group-1', 'member-1', null);
+    await repository.setGroupRole('group-1', 'member-1', 'admin');
+    await repository.setGroupRole('group-1', 'member-1', 'member');
 
     final muteRequests = requests
         .where((request) => request.url.path.endsWith('/member-1/mute'))
@@ -67,6 +73,16 @@ void main() {
       'until': '2026-08-13T09:30:00.000Z',
     });
     expect(jsonDecode(muteRequests.last.body), {'until': null});
+    final roleRequests = requests
+        .where((request) => request.url.path.endsWith('/member-1/role'))
+        .toList();
+    expect(roleRequests, hasLength(2));
+    for (final request in roleRequests) {
+      expect(request.method, 'PUT');
+      expect(request.headers['authorization'], 'Bearer access-token');
+    }
+    expect(jsonDecode(roleRequests.first.body), {'role': 'admin'});
+    expect(jsonDecode(roleRequests.last.body), {'role': 'member'});
     await repository.close();
   });
 

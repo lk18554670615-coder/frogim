@@ -10,6 +10,7 @@
 **/build
 **/coverage
 **/node_modules
+**/.data
 artifacts
 data
 docs/archive

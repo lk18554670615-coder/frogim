@@ -24,6 +24,8 @@ void main() {
       'passwordMinLength': 12,
       'passwordMaxBytes': 72,
       'messageRecallMinutes': 5,
+      'directRecallMinutes': 60,
+      'groupRecallMinutes': 10080,
     });
 
     expect(policy.registrationEnabled, isFalse);
@@ -31,23 +33,32 @@ void main() {
     expect(policy.passwordMaxBytes, 72);
     expect(policy.messageRecallMinutes, 5);
     expect(policy.messageMutationWindow, const Duration(minutes: 5));
+    expect(policy.directRecallWindow, const Duration(minutes: 60));
+    expect(policy.groupRecallWindow, const Duration(days: 7));
 
     final constrained = AuthPolicy.fromJson({
       'registrationEnabled': 'false',
       'passwordMinLength': 99,
       'passwordMaxBytes': 120,
       'messageRecallMinutes': 9999,
+      'directRecallMinutes': 10081,
     });
     expect(constrained.registrationEnabled, isTrue);
     expect(constrained.passwordMinLength, 16);
     expect(constrained.passwordMaxBytes, 72);
     expect(constrained.messageRecallMinutes, 1440);
+    expect(constrained.directRecallMinutes, 10080);
+    expect(
+      AuthPolicy.fromJson({'directRecallMinutes': 0}).directRecallMinutes,
+      1,
+    );
 
     final fallback = AuthPolicy.fromJson(const {});
     expect(fallback.registrationEnabled, isTrue);
     expect(fallback.passwordMinLength, 8);
     expect(fallback.passwordMaxBytes, 72);
     expect(fallback.messageRecallMinutes, 2);
+    expect(fallback.directRecallWindow, const Duration(hours: 24));
   });
 
   test('controller 在动态编辑时限后隐藏编辑能力并返回明确提示', () async {
@@ -82,6 +93,7 @@ void main() {
               'passwordMinLength': 14,
               'passwordMaxBytes': 72,
               'messageRecallMinutes': 7,
+              'directRecallMinutes': 60,
             },
           }),
           200,
@@ -100,6 +112,7 @@ void main() {
     expect(policy.passwordMinLength, 14);
     expect(policy.passwordMaxBytes, 72);
     expect(policy.messageRecallMinutes, 7);
+    expect(policy.directRecallMinutes, 60);
   });
 
   test('LiveRepository 不将缺失的认证策略静默降级为默认真实配置', () async {

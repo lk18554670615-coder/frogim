@@ -28,7 +28,7 @@ type Postgres struct {
 	historyBoundary GroupHistoryBoundaryReader
 }
 
-const schemaVersion = 59
+const schemaVersion = 60
 
 type PostgresOptions struct {
 	MaxConns          int32
@@ -889,13 +889,16 @@ func nextPageCursor(offset, count int, total int64) string {
 }
 
 func (p *Postgres) ListAdminUsers(ctx context.Context, q, status, cursor string, limit int) ([]*model.User, int64, string, error) {
+	return p.listAdminUsers(ctx, q, status, cursor, limit, "", "any")
+}
+func (p *Postgres) listAdminUsers(ctx context.Context, q, status, cursor string, limit int, ip, source string) ([]*model.User, int64, string, error) {
 	offset, limit := pageOffset(cursor, limit)
 	pattern := "%" + q + "%"
 	var total int64
 	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_users u LEFT JOIN im_wukong_presence presence ON presence.user_id=u.id
 		WHERE ($1='' OR u.name ILIKE $2 OR u.phone ILIKE $2 OR u.id ILIKE $2 OR COALESCE(u.handle,'') ILIKE $2)
 		AND ($3='' OR ($3='active' AND NOT (u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))) OR ($3='banned' AND u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))
-			OR ($3='online' AND COALESCE(presence.online,false)) OR ($3='offline' AND NOT COALESCE(presence.online,false)))`, q, pattern, status).Scan(&total); err != nil {
+			OR ($3='online' AND COALESCE(presence.online,false)) OR ($3='offline' AND NOT COALESCE(presence.online,false))) AND `+userAccessIPFilter, q, pattern, status, ip, source).Scan(&total); err != nil {
 		return nil, 0, "", err
 	}
 	rows, err := p.pool.Query(ctx, `SELECT u.id,u.phone,u.name,COALESCE(u.handle,''),u.handle_change_count,u.avatar_url,u.gender,
@@ -908,7 +911,7 @@ func (p *Postgres) ListAdminUsers(ctx context.Context, q, status, cursor string,
 		WHERE ($1='' OR u.name ILIKE $2 OR u.phone ILIKE $2 OR u.id ILIKE $2 OR COALESCE(u.handle,'') ILIKE $2)
 		AND ($3='' OR ($3='active' AND NOT (u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))) OR ($3='banned' AND u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))
 			OR ($3='online' AND COALESCE(presence.online,false)) OR ($3='offline' AND NOT COALESCE(presence.online,false)))
-		ORDER BY u.created_at DESC,u.id LIMIT $4 OFFSET $5`, q, pattern, status, limit, offset)
+		AND `+userAccessIPFilter+` ORDER BY u.created_at DESC,u.id LIMIT $6 OFFSET $7`, q, pattern, status, ip, source, limit, offset)
 	if err != nil {
 		return nil, 0, "", err
 	}
@@ -1303,6 +1306,7 @@ func (p *Postgres) CleanupRuntimeData(ctx context.Context, policy RetentionPolic
 	}
 	now := time.Now()
 	jobs := []cleanup{
+		{`WITH expired AS (SELECT id FROM im_user_access_logs WHERE occurred_at<$1 ORDER BY occurred_at,id LIMIT $2) DELETE FROM im_user_access_logs l USING expired x WHERE l.id=x.id`, now.Add(-UserAccessRetention)},
 		{`WITH expired AS (SELECT id FROM im_push_outbox WHERE status IN ('sent','failed') AND COALESCE(sent_at,available_at)<$1 ORDER BY id LIMIT $2) DELETE FROM im_push_outbox o USING expired x WHERE o.id=x.id`, now.Add(-policy.Outbox)},
 		{`WITH expired AS (SELECT id FROM im_wukong_outbox WHERE status IN ('completed','failed') AND completed_at<$1 ORDER BY id LIMIT $2) DELETE FROM im_wukong_outbox o USING expired x WHERE o.id=x.id`, now.Add(-policy.Outbox)},
 		{`WITH expired AS (SELECT id FROM im_wukong_webhook_events WHERE status IN ('completed','failed') AND completed_at<$1 ORDER BY id LIMIT $2) DELETE FROM im_wukong_webhook_events e USING expired x WHERE e.id=x.id`, now.Add(-policy.Outbox)},

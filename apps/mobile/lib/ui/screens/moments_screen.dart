@@ -132,7 +132,9 @@ class _MomentsScreenState extends State<MomentsScreen> {
     if (sent.status == MessageStatus.failed) {
       _snack('朋友圈分享发送失败');
     } else {
-      _snack('已分享到「${conversation.title}」');
+      _snack(
+        '已分享到「${widget.controller.displayConversationName(conversation)}」',
+      );
     }
   }
 
@@ -141,26 +143,33 @@ class _MomentsScreenState extends State<MomentsScreen> {
         context: context,
         useSafeArea: true,
         showDragHandle: true,
-        builder: (context) => SafeArea(
-          child: ListView(
-            shrinkWrap: true,
-            children: [
-              const ListTile(title: Text('分享到聊天')),
-              for (final conversation
-                  in widget.controller.conversations
-                      .where((item) => !item.archived)
-                      .take(50))
-                ListTile(
-                  leading: PersonAvatar(
-                    name: conversation.title,
-                    avatarUrl: conversation.avatarUrl,
-                    size: 42,
+        builder: (context) => AnimatedBuilder(
+          animation: widget.controller,
+          builder: (context, _) => SafeArea(
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                const ListTile(title: Text('分享到聊天')),
+                for (final conversation
+                    in widget.controller.conversations
+                        .where((item) => !item.archived)
+                        .take(50))
+                  ListTile(
+                    leading: PersonAvatar(
+                      name: widget.controller.displayConversationName(
+                        conversation,
+                      ),
+                      avatarUrl: conversation.avatarUrl,
+                      size: 42,
+                    ),
+                    title: Text(
+                      widget.controller.displayConversationName(conversation),
+                    ),
+                    subtitle: Text(conversation.subtitle, maxLines: 1),
+                    onTap: () => Navigator.pop(context, conversation),
                   ),
-                  title: Text(conversation.title),
-                  subtitle: Text(conversation.subtitle, maxLines: 1),
-                  onTap: () => Navigator.pop(context, conversation),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
       );
@@ -695,7 +704,7 @@ class _MomentComposerScreenState extends State<MomentComposerScreen> {
       useSafeArea: true,
       showDragHandle: true,
       builder: (_) => _VisibleUsersPicker(
-        contacts: widget.controller.contacts,
+        controller: widget.controller,
         selected: selectedUsers,
       ),
     );
@@ -905,8 +914,8 @@ class _MomentComposerScreenState extends State<MomentComposerScreen> {
 }
 
 class _VisibleUsersPicker extends StatefulWidget {
-  const _VisibleUsersPicker({required this.contacts, required this.selected});
-  final List<AppUser> contacts;
+  const _VisibleUsersPicker({required this.controller, required this.selected});
+  final AppController controller;
   final Set<String> selected;
 
   @override
@@ -917,7 +926,12 @@ class _VisibleUsersPickerState extends State<_VisibleUsersPicker> {
   late final Set<String> selected = {...widget.selected};
 
   @override
-  Widget build(BuildContext context) => SafeArea(
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.controller,
+    builder: (context, _) => _buildContent(context),
+  );
+
+  Widget _buildContent(BuildContext context) => SafeArea(
     child: Column(
       children: [
         ListTile(
@@ -929,17 +943,17 @@ class _VisibleUsersPickerState extends State<_VisibleUsersPicker> {
         ),
         Expanded(
           child: ListView.builder(
-            itemCount: widget.contacts.length,
+            itemCount: widget.controller.contacts.length,
             itemBuilder: (_, index) {
-              final user = widget.contacts[index];
+              final user = widget.controller.contacts[index];
               return CheckboxListTile(
                 value: selected.contains(user.id),
                 secondary: PersonAvatar(
-                  name: user.name,
+                  name: user.displayName,
                   avatarUrl: user.avatarUrl,
                   size: 40,
                 ),
-                title: Text(user.remark.isEmpty ? user.name : user.remark),
+                title: Text(user.displayName),
                 onChanged: (value) => setState(() {
                   if (value == true) {
                     selected.add(user.id);

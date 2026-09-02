@@ -891,13 +891,17 @@ func (a *App) SeedDemo() error {
 }
 
 func (a *App) Login(phone, name string) (*model.User, error) {
+	u, _, err := a.LoginWithCreation(phone, name)
+	return u, err
+}
+func (a *App) LoginWithCreation(phone, name string) (*model.User, bool, error) {
 	phone = strings.TrimSpace(phone)
 	if !ValidPhoneNumber(phone) {
-		return nil, ErrInvalid
+		return nil, false, ErrInvalid
 	}
 	name = strings.TrimSpace(name)
 	if len([]rune(name)) > 80 {
-		return nil, ErrInvalid
+		return nil, false, ErrInvalid
 	}
 	if name == "" {
 		name = "用户" + phone[max(0, len(phone)-4):]
@@ -905,29 +909,32 @@ func (a *App) Login(phone, name string) (*model.User, error) {
 	if s, ok := a.persistence.(store.AuthStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		u, err := s.LoginOrCreateUser(ctx, phone, name, id("usr"), time.Now())
+		candidateID := id("usr")
+		u, err := s.LoginOrCreateUser(ctx, phone, name, candidateID, time.Now())
 		if err == store.ErrForbidden {
-			return nil, ErrForbidden
+			return nil, false, ErrForbidden
 		}
-		return u, err
+		// INSERT RETURNING gives either the candidate ID or the existing ID.
+		// This is an exact database creation result, not a timestamp heuristic.
+		return u, err == nil && u != nil && u.ID == candidateID, err
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if uid := a.state.PhoneToUser[phone]; uid != "" {
 		u := a.state.Users[uid]
 		if u.Banned {
-			return nil, ErrForbidden
+			return nil, false, ErrForbidden
 		}
-		return u, nil
+		return u, false, nil
 	}
 	u := &model.User{ID: id("usr"), Phone: phone, Name: name, Gender: "unspecified", AllowSearchByHandle: true, AllowSearchByPhone: true, CreatedAt: time.Now()}
 	u.Handle = defaultHandle(u.ID)
 	a.state.Users[u.ID] = u
 	a.state.PhoneToUser[phone] = u.ID
 	if err := a.saveLocked(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return u, nil
+	return u, true, nil
 }
 
 func (a *App) settingBool(key string, fallback bool) bool {
@@ -1009,6 +1016,8 @@ type PublicAuthPolicy struct {
 	PasswordMinLength    int  `json:"passwordMinLength"`
 	PasswordMaxBytes     int  `json:"passwordMaxBytes"`
 	MessageRecallMinutes int  `json:"messageRecallMinutes"`
+	DirectRecallMinutes  int  `json:"directRecallMinutes"`
+	GroupRecallMinutes   int  `json:"groupRecallMinutes"`
 }
 
 func (a *App) AuthPolicy() PublicAuthPolicy {
@@ -1036,6 +1045,8 @@ func (a *App) AuthPolicy() PublicAuthPolicy {
 		PasswordMinLength:    minimum,
 		PasswordMaxBytes:     72,
 		MessageRecallMinutes: a.settingInt("messageRecallMinutes", 2),
+		DirectRecallMinutes:  a.settingInt("directRecallMinutes", 1440),
+		GroupRecallMinutes:   a.settingInt("groupRecallMinutes", 1440),
 	}
 }
 
@@ -3094,7 +3105,7 @@ func (a *App) History(uid, cid string, before int64, limit int) ([]*model.Messag
 	return nil, ErrUnavailable
 }
 func (a *App) Recall(uid, mid string) error {
-	window := time.Duration(a.settingInt("messageRecallMinutes", 2)) * time.Minute
+	window := time.Duration(a.settingInt("directRecallMinutes", 1440)) * time.Minute
 	if s, ok := a.persistence.(store.RuntimeMutationStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -5173,6 +5184,7 @@ func (a *App) UpdateSettings(actor string, settings map[string]any) error {
 	}
 	numberRanges := map[string][2]float64{
 		"passwordMinLength": {8, 16}, "maxMessageTextLength": {100, 10000}, "messageRecallMinutes": {1, 1440},
+		"directRecallMinutes": {1, 10080}, "groupRecallMinutes": {1, 10080},
 		"maxGroupMembers": {2, 5000}, "friendRequestExpiryDays": {1, 30}, "reportSlaHours": {1, 168},
 	}
 	for key, value := range settings {

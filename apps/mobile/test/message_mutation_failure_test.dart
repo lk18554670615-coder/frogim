@@ -87,7 +87,7 @@ class _FailingMessageMutationRepository extends DemoImRepository {
       senderId: 'me',
       senderName: '我',
       text: '需要撤回的消息',
-      sentAt: DateTime(2026, 8, 16, 10, 1),
+      sentAt: DateTime.now(),
       isMine: true,
       status: MessageStatus.sent,
     ),

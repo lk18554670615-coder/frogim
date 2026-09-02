@@ -6,7 +6,8 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/cupertino.dart';
-import 'package:flutter/foundation.dart' show kIsWeb, TargetPlatform;
+import 'package:flutter/foundation.dart'
+    show kIsWeb, TargetPlatform, listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
@@ -23,6 +24,7 @@ import '../../core/app_controller.dart';
 import '../../core/app_config.dart';
 import '../../core/app_theme.dart';
 import '../../core/emoji_catalog.dart';
+import '../../core/group_send_policy.dart';
 import '../../core/image_export.dart';
 import '../../core/image_send_editor.dart';
 import '../../core/image_source_bytes.dart';
@@ -234,6 +236,10 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _previousActiveConversationId;
   bool _loadingOlderFromScroll = false;
   String? _sendRestriction;
+  Timer? _sendPolicyExpiryTimer;
+  int _sendCapabilityRequest = 0;
+  int _observedSendPolicyRevision = 0;
+  GroupSendPolicy? _observedSendPolicy;
   String? _highlightedMessageId;
   List<RobotProfile> _robotProfiles = const [];
   bool _robotMenusLoading = false;
@@ -242,6 +248,7 @@ class _ChatScreenState extends State<ChatScreen> {
   DateTime? _lastScreenshotNotice;
   ChatBackgroundStyle _chatBackground = ChatBackgroundStyle.followSystem;
   Conversation? _observedConversation;
+  List<AppUser>? _observedContacts;
   bool _closingUnavailableGroup = false;
 
   AppUser? get peer =>
@@ -252,7 +259,16 @@ class _ChatScreenState extends State<ChatScreen> {
           ? 'assets/brand/qingwaguagua-icon.png'
           : peer?.avatarUrl);
 
+  bool get _isOrdinaryGroup =>
+      widget.conversation.kind == ConversationKind.group &&
+      !widget.conversation.isBusinessChannel;
+
   String? get _effectiveSendRestriction =>
+      (_isOrdinaryGroup
+          ? widget.controller
+                .groupSendPolicyFor(widget.conversation.id)
+                ?.restrictionAt(DateTime.now())
+          : null) ??
       supportSessionSendRestriction(
         widget.conversation.channelType,
         widget.controller.messagesFor(widget.conversation.id),
@@ -264,15 +280,17 @@ class _ChatScreenState extends State<ChatScreen> {
     super.initState();
     _followingLatest = widget.initialMessageId == null;
     _observedConversation = widget.conversation;
+    _observedSendPolicyRevision = widget.controller.groupSendPolicyRevision;
     widget.controller.addListener(_handleConversationChanged);
     scrollController.addListener(_handleMessageScroll);
     HardwareKeyboard.instance.addHandler(_handleChatHardwareKey);
     _screenshotEvents = ScreenshotDetection.instance.events.listen(
       _handleScreenshot,
     );
-    if (usesManagedBusinessChannelSendPolicy(widget.conversation) &&
-        widget.controller.supportsBusinessFeatures) {
-      _loadingSendCapability = true;
+    if (_isOrdinaryGroup ||
+        (usesManagedBusinessChannelSendPolicy(widget.conversation) &&
+            widget.controller.supportsBusinessFeatures)) {
+      _loadingSendCapability = !_isOrdinaryGroup;
       unawaited(_loadSendCapability());
     }
     unawaited(_restoreDraft());
@@ -425,6 +443,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _sendRobotCommand(RobotMenu menu) async {
+    if (_effectiveSendRestriction case final restriction?) {
+      _showError(restriction);
+      return;
+    }
     setState(() => _showRobotMenus = false);
     final sent = await widget.controller.sendRobotCommand(
       widget.conversation.id,
@@ -451,34 +473,66 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _loadSendCapability() async {
-    if (!usesManagedBusinessChannelSendPolicy(widget.conversation) ||
-        !widget.controller.supportsBusinessFeatures) {
+    if (!_isOrdinaryGroup &&
+        (!usesManagedBusinessChannelSendPolicy(widget.conversation) ||
+            !widget.controller.supportsBusinessFeatures)) {
       return;
     }
+    final request = ++_sendCapabilityRequest;
+    final conversationId = widget.conversation.id;
     if (mounted) {
       setState(() {
-        _loadingSendCapability = true;
+        _loadingSendCapability = !_isOrdinaryGroup;
         _sendCapabilityFailed = false;
       });
     }
     try {
+      if (_isOrdinaryGroup) {
+        await widget.controller.loadGroupSendPolicy(conversationId);
+        if (!mounted || request != _sendCapabilityRequest) return;
+        _scheduleSendPolicyExpiry();
+        return;
+      }
       final channel = await widget.controller.loadBusinessChannel(
         widget.conversation.channelId ?? widget.conversation.id,
         widget.conversation.channelType,
       );
-      if (!mounted) return;
+      if (!mounted || request != _sendCapabilityRequest) return;
       setState(() {
         _sendRestriction = businessChannelSendRestriction(channel);
       });
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || request != _sendCapabilityRequest) return;
       setState(() {
-        _sendCapabilityFailed = true;
-        _sendRestriction = '暂时无法确认发言权限，请重试后再发送。';
+        // Retain known group restrictions on temporary lookup failures. With
+        // no snapshot, sending still uses the authoritative server validation.
+        _sendCapabilityFailed = !_isOrdinaryGroup;
+        _sendRestriction = _isOrdinaryGroup ? null : '暂时无法确认发言权限，请重试后再发送。';
       });
     } finally {
-      if (mounted) setState(() => _loadingSendCapability = false);
+      if (mounted && request == _sendCapabilityRequest) {
+        setState(() => _loadingSendCapability = false);
+      }
     }
+  }
+
+  void _scheduleSendPolicyExpiry() {
+    _sendPolicyExpiryTimer?.cancel();
+    final now = DateTime.now();
+    final next = widget.controller
+        .groupSendPolicyFor(widget.conversation.id)
+        ?.nextChangeAfter(now);
+    if (!_isOrdinaryGroup || next == null) return;
+    final delay = next.difference(now) + const Duration(milliseconds: 20);
+    // Permanent mute uses a far-future timestamp; bound browser timer delays.
+    _sendPolicyExpiryTimer = Timer(
+      delay > const Duration(days: 1) ? const Duration(days: 1) : delay,
+      () {
+        if (!mounted) return;
+        setState(() {});
+        _scheduleSendPolicyExpiry();
+      },
+    );
   }
 
   @override
@@ -488,6 +542,8 @@ class _ChatScreenState extends State<ChatScreen> {
     unawaited(_screenshotEvents.cancel());
     unawaited(ScreenshotDetection.instance.stop());
     _draftTimer?.cancel();
+    _sendPolicyExpiryTimer?.cancel();
+    _sendCapabilityRequest++;
     _initialScrollTimer?.cancel();
     _scrollEpoch += 1;
     _conversationEpoch += 1;
@@ -530,6 +586,14 @@ class _ChatScreenState extends State<ChatScreen> {
       _messageHighlightTimer?.cancel();
       _scrollEpoch += 1;
       _conversationEpoch += 1;
+      _sendPolicyExpiryTimer?.cancel();
+      _sendCapabilityRequest++;
+      _sendRestriction = null;
+      _loadingSendCapability = false;
+      _sendCapabilityFailed = false;
+      _observedSendPolicy = null;
+      _observedSendPolicyRevision = widget.controller.groupSendPolicyRevision;
+      unawaited(_loadSendCapability());
       _followingLatest = widget.initialMessageId == null;
       _userScrolling = false;
       _messageScrollReady = false;
@@ -549,7 +613,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _handleConversationChanged() {
-    if (replyingTo != null && !widget.controller.canReadMessage(replyingTo!)) {
+    if (replyingTo != null &&
+        !widget.controller.canDisplayMessage(replyingTo!)) {
       replyingTo = null;
     }
     final visibleIds = widget.controller
@@ -569,8 +634,23 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     final latest = widget.conversation;
-    if (identical(latest, _observedConversation)) return;
+    final policy = widget.controller.groupSendPolicyFor(latest.id);
+    final policyChanged = !identical(policy, _observedSendPolicy);
+    final revisionChanged =
+        _observedSendPolicyRevision !=
+        widget.controller.groupSendPolicyRevision;
+    _observedSendPolicy = policy;
+    _observedSendPolicyRevision = widget.controller.groupSendPolicyRevision;
+    if (policyChanged) _scheduleSendPolicyExpiry();
+    if (revisionChanged && _isOrdinaryGroup) unawaited(_loadSendCapability());
+    if (identical(latest, _observedConversation) &&
+        listEquals(widget.controller.contacts, _observedContacts) &&
+        !policyChanged &&
+        !revisionChanged) {
+      return;
+    }
     _observedConversation = latest;
+    _observedContacts = List.of(widget.controller.contacts);
     setState(() {});
   }
 
@@ -583,9 +663,13 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     _lastScreenshotNotice = occurredAt;
     unawaited(
-      widget.controller
-          .sendScreenshotNotice(widget.conversation.id)
-          .then((_) => _scrollToEnd()),
+      widget.controller.sendScreenshotNotice(widget.conversation.id).then((
+        notice,
+      ) {
+        if (mounted && widget.controller.canDisplayMessage(notice)) {
+          _scrollToEnd();
+        }
+      }),
     );
   }
 
@@ -617,7 +701,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildConversationAvatar() {
     final avatar = PersonAvatar(
-      name: widget.conversation.title,
+      name: widget.controller.displayConversationName(widget.conversation),
       size: 34,
       avatarUrl: conversationAvatarUrl,
       online:
@@ -630,7 +714,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     return Semantics(
       button: true,
-      label: '查看${target.name}资料',
+      label: '查看${widget.controller.displayNameFor(target)}资料',
       child: InkResponse(
         key: const Key('chat-peer-avatar-button'),
         radius: 24,
@@ -673,7 +757,9 @@ class _ChatScreenState extends State<ChatScreen> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        widget.conversation.title,
+                        widget.controller.displayConversationName(
+                          widget.conversation,
+                        ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.titleMedium,
@@ -802,8 +888,10 @@ class _ChatScreenState extends State<ChatScreen> {
                             : () => _chooseForwardMode(_selectedMessages),
                       )
                     else if (_loadingSendCapability)
-                      const ChannelSendRestrictionBar(
-                        message: '正在确认频道发言权限…',
+                      ChannelSendRestrictionBar(
+                        message: _isOrdinaryGroup
+                            ? '正在确认群聊发言权限…'
+                            : '正在确认频道发言权限…',
                         loading: true,
                       )
                     else if (_effectiveSendRestriction case final restriction?)
@@ -844,6 +932,12 @@ class _ChatScreenState extends State<ChatScreen> {
                               ChatComposer(
                                 controller: textController,
                                 replyingTo: replyingTo,
+                                replyingToName: replyingTo == null
+                                    ? null
+                                    : widget.controller.displayNameForId(
+                                        replyingTo!.senderId,
+                                        fallback: replyingTo!.senderName,
+                                      ),
                                 showAttachments: showAttachments,
                                 showEmoji: showEmoji,
                                 onCancelReply: () =>
@@ -962,7 +1056,7 @@ class _ChatScreenState extends State<ChatScreen> {
           replyTo: reply,
         );
         if (sent.status == MessageStatus.failed) {
-          _showError('“${file.name}”上传失败，可在消息旁重试');
+          _showError(sent.sendError ?? '“${file.name}”发送失败，可在消息旁重试');
           break;
         }
         _scrollToEnd();
@@ -1047,10 +1141,17 @@ class _ChatScreenState extends State<ChatScreen> {
           .firstOrNull;
       final displaySender =
           sender ??
-          (widget.conversation.kind == ConversationKind.direct ? peer : null);
+          (message.isMine
+              ? widget.controller.currentUser
+              : widget.conversation.kind == ConversationKind.direct
+              ? peer
+              : null);
       final displaySenderName = displaySender?.name.trim().isNotEmpty == true
-          ? displaySender!.name
-          : message.senderName;
+          ? widget.controller.displayNameFor(displaySender!)
+          : widget.controller.displayNameForId(
+              message.senderId,
+              fallback: message.senderName,
+            );
       final stableMessageId = message.stableIdentity;
       final messageKey = message.id == widget.initialMessageId
           ? initialMessageKey
@@ -1087,6 +1188,9 @@ class _ChatScreenState extends State<ChatScreen> {
                 showSender: widget.conversation.kind == ConversationKind.group,
                 showGroupReceipt:
                     widget.conversation.kind == ConversationKind.group &&
+                    widget.controller.canDisplayMessageReceipts(
+                      widget.conversation.id,
+                    ) &&
                     message.id == latestMineId,
                 onRetry:
                     _effectiveSendRestriction == null && !_loadingSendCapability
@@ -1264,7 +1368,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _send([int? expiresInSeconds]) async {
-    if (_effectiveSendRestriction != null) return;
+    if (_effectiveSendRestriction case final restriction?) {
+      _showError(restriction);
+      return;
+    }
     final text = textController.text;
     if (text.trim().isEmpty) return;
     final reply = replyingTo;
@@ -1293,9 +1400,10 @@ class _ChatScreenState extends State<ChatScreen> {
     final sent = await future;
     if (sent?.status == MessageStatus.failed && mounted) {
       _showError(
-        mentions.any((mention) => mention.isEveryone)
-            ? '“@所有人”发送失败，请确认当前账号是群主或管理员'
-            : '消息发送失败，请检查网络后重试',
+        sent?.sendError ??
+            (mentions.any((mention) => mention.isEveryone)
+                ? '“@所有人”发送失败，请确认当前账号是群主或管理员'
+                : '消息发送失败，请检查网络后重试'),
       );
     }
   }
@@ -1472,6 +1580,7 @@ class _ChatScreenState extends State<ChatScreen> {
       useSafeArea: true,
       showDragHandle: true,
       builder: (context) => _MentionPickerSheet(
+        controller: widget.controller,
         members: widget.conversation.members,
         currentUserId: widget.controller.currentUser?.id,
         canMentionEveryone: widget.conversation.canMentionEveryone,
@@ -1843,8 +1952,7 @@ class _ChatScreenState extends State<ChatScreen> {
       isScrollControlled: true,
       useSafeArea: true,
       showDragHandle: true,
-      builder: (context) =>
-          _ContactPickerSheet(contacts: widget.controller.contacts),
+      builder: (context) => _ContactPickerSheet(controller: widget.controller),
     );
     if (!mounted || contact == null) return;
     final confirmed = await showCupertinoDialog<bool>(
@@ -1998,6 +2106,9 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _sendVoice(MediaUpload upload) async {
+    if (_effectiveSendRestriction case final restriction?) {
+      throw FormatException(restriction);
+    }
     final conversationId = widget.conversation.id;
     final reply = replyingTo;
     final queued = Completer<void>();
@@ -2140,12 +2251,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _showMessageActions(ChatMessage message, Offset anchor) async {
-    final mutationWindow = widget.controller.authPolicy.messageMutationWindow;
-    final canRecall =
-        message.isMine &&
-        message.status != MessageStatus.sending &&
-        message.status != MessageStatus.failed &&
-        DateTime.now().difference(message.sentAt) <= mutationWindow;
+    final canRecall = widget.controller.canRecallMessage(message);
     unawaited(HapticFeedback.mediumImpact());
     final action = await showGeneralDialog<_MessageMenuAction>(
       context: context,
@@ -2154,6 +2260,7 @@ class _ChatScreenState extends State<ChatScreen> {
       barrierColor: Colors.black.withValues(alpha: .42),
       transitionDuration: nexaMotionDuration(context),
       pageBuilder: (dialogContext, _, _) => _MessageContextMenu(
+        controller: widget.controller,
         key: const Key('message-context-menu'),
         message: message,
         anchor: anchor,
@@ -2240,7 +2347,10 @@ class _ChatScreenState extends State<ChatScreen> {
           MaterialPageRoute(
             builder: (_) => ReportScreen(
               controller: widget.controller,
-              target: message.senderName,
+              target: widget.controller.displayNameForId(
+                message.senderId,
+                fallback: message.senderName,
+              ),
               targetId: message.id,
               targetType: 'message',
             ),
@@ -2472,7 +2582,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text('将 ${user.name} 加入黑名单？'),
+        title: Text('将 ${widget.controller.displayNameFor(user)} 加入黑名单？'),
         content: const Text('对方将无法继续向你发起新消息。你可以稍后在隐私设置中解除。'),
         actions: [
           TextButton(
@@ -2516,6 +2626,7 @@ enum _MessageMenuAction {
 class _MessageContextMenu extends StatelessWidget {
   const _MessageContextMenu({
     super.key,
+    required this.controller,
     required this.message,
     required this.anchor,
     required this.canRecall,
@@ -2524,6 +2635,7 @@ class _MessageContextMenu extends StatelessWidget {
     required this.onSelected,
   });
 
+  final AppController controller;
   final ChatMessage message;
   final Offset anchor;
   final bool canRecall;
@@ -2532,7 +2644,12 @@ class _MessageContextMenu extends StatelessWidget {
   final ValueChanged<_MessageMenuAction> onSelected;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: controller,
+    builder: (context, _) => _buildContent(context),
+  );
+
+  Widget _buildContent(BuildContext context) {
     final media = MediaQuery.of(context);
     final textScale = media.textScaler.scale(1);
     final canForward =
@@ -2650,7 +2767,13 @@ class _MessageContextMenu extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _MessageContextPreview(message: message),
+                  _MessageContextPreview(
+                    message: message,
+                    senderName: controller.displayNameForId(
+                      message.senderId,
+                      fallback: message.senderName,
+                    ),
+                  ),
                   const SizedBox(height: 8),
                   LayoutBuilder(
                     builder: (context, constraints) {
@@ -2847,7 +2970,11 @@ class _MessageEditHistorySheetState extends State<_MessageEditHistorySheet> {
 }
 
 class _MessageContextPreview extends StatelessWidget {
-  const _MessageContextPreview({required this.message});
+  const _MessageContextPreview({
+    required this.message,
+    required this.senderName,
+  });
+  final String senderName;
   final ChatMessage message;
 
   @override
@@ -2877,7 +3004,7 @@ class _MessageContextPreview extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  message.isMine ? '我' : message.senderName,
+                  message.isMine ? '我' : senderName,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.labelMedium?.copyWith(
@@ -3081,11 +3208,13 @@ class ChatInfoScreen extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(12, 16, 12, 14),
                 child: multiUser
                     ? _ChatMemberMatrix(
+                        controller: controller,
                         members: conversation.members,
                         fallbackName: conversation.title,
                         fallbackAvatar: conversation.avatarUrl,
                       )
                     : _DirectContactSummary(
+                        controller: controller,
                         user: directPeer,
                         fallbackName: conversation.title,
                         fallbackAvatar: conversation.avatarUrl,
@@ -3180,7 +3309,7 @@ class ChatInfoScreen extends StatelessWidget {
                   MaterialPageRoute(
                     builder: (_) => ReportScreen(
                       controller: controller,
-                      target: conversation.title,
+                      target: controller.displayConversationName(conversation),
                       targetId: group
                           ? conversation.id
                           : directPeer?.id ??
@@ -3262,12 +3391,14 @@ class _ChatInfoContent extends StatelessWidget {
 
 class _DirectContactSummary extends StatelessWidget {
   const _DirectContactSummary({
+    required this.controller,
     required this.user,
     required this.fallbackName,
     this.fallbackAvatar,
     this.onTap,
   });
 
+  final AppController controller;
   final AppUser? user;
   final String fallbackName;
   final String? fallbackAvatar;
@@ -3275,7 +3406,9 @@ class _DirectContactSummary extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final displayName = user?.name ?? fallbackName;
+    final displayName = user == null
+        ? fallbackName
+        : controller.displayNameFor(user!);
     return Semantics(
       button: onTap != null,
       label: onTap == null ? null : '查看$displayName资料',
@@ -3371,11 +3504,13 @@ class _AsyncToggleState extends State<_AsyncToggle> {
 
 class _ChatMemberMatrix extends StatelessWidget {
   const _ChatMemberMatrix({
+    required this.controller,
     required this.members,
     required this.fallbackName,
     this.fallbackAvatar,
   });
 
+  final AppController controller;
   final List<AppUser> members;
   final String fallbackName;
   final String? fallbackAvatar;
@@ -3410,18 +3545,18 @@ class _ChatMemberMatrix extends StatelessWidget {
                 key: ValueKey('chat-info-member-${user.id}'),
                 width: width,
                 child: Semantics(
-                  label: '${user.name}，聊天成员',
+                  label: '${controller.displayNameFor(user)}，聊天成员',
                   child: Column(
                     children: [
                       PersonAvatar(
-                        name: user.name,
+                        name: controller.displayNameFor(user),
                         size: 50,
                         avatarUrl: user.avatarUrl,
                         online: user.isOnline,
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        user.name,
+                        controller.displayNameFor(user),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         textAlign: TextAlign.center,
@@ -3512,11 +3647,33 @@ class MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final resolvedSenderName = senderName?.trim().isNotEmpty == true
-        ? senderName!.trim()
-        : message.senderName.trim().isNotEmpty
+    final publicSenderName = message.senderName.trim().isNotEmpty
         ? message.senderName.trim()
         : '对方';
+    final resolvedSenderName = senderName?.trim().isNotEmpty == true
+        ? senderName!.trim()
+        : controller?.displayNameForId(
+                message.senderId,
+                fallback: publicSenderName,
+              ) ??
+              publicSenderName;
+    // Keep raw ACK/read state in the model. Only the visible label and its
+    // transition key are normalized for members without receipt access.
+    final canShowReceipts =
+        controller?.canDisplayMessageReceipts(message.conversationId) ??
+        !showGroupReceipt;
+    final displayStatus =
+        !canShowReceipts &&
+            (message.status == MessageStatus.delivered ||
+                message.status == MessageStatus.read)
+        ? MessageStatus.sent
+        : message.status;
+    final showReceiptCounts =
+        showGroupReceipt &&
+        canShowReceipts &&
+        (message.status == MessageStatus.sent ||
+            message.status == MessageStatus.delivered ||
+            message.status == MessageStatus.read);
     if (message.status == MessageStatus.recalled ||
         message.status == MessageStatus.expired ||
         message.kind == MessageContentKind.system ||
@@ -3742,8 +3899,11 @@ class MessageBubble extends StatelessWidget {
                             ),
                           if (mine)
                             VoiceSendFeedback(
+                              // Drop the outgoing animation immediately on a
+                              // role change; it must not retain old counts.
+                              key: ValueKey(canShowReceipts),
                               animate: message.kind == MessageContentKind.voice,
-                              statusKey: message.status,
+                              statusKey: displayStatus,
                               child: message.status == MessageStatus.failed
                                   ? Semantics(
                                       container: true,
@@ -3793,17 +3953,31 @@ class MessageBubble extends StatelessWidget {
                                       ),
                                     )
                                   : _DeliveryLabel(
-                                      status: message.status,
-                                      deliveredCount: showGroupReceipt
+                                      status: displayStatus,
+                                      deliveredCount: showReceiptCounts
                                           ? message.deliveredCount
                                           : null,
-                                      readCount: showGroupReceipt
+                                      readCount: showReceiptCounts
                                           ? message.readCount
                                           : null,
                                     ),
                             ),
                         ],
                       ),
+                      if (mine &&
+                          message.status == MessageStatus.failed &&
+                          message.sendError != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            message.sendError!,
+                            key: ValueKey(
+                              'message-send-error-${message.clientMessageId}',
+                            ),
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(color: LinliColors.systemRed),
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -4908,7 +5082,14 @@ class _ChatHistoryDetailScreen extends StatelessWidget {
   final AppController? controller;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => controller == null
+      ? _buildContent(context)
+      : AnimatedBuilder(
+          animation: controller!,
+          builder: (context, _) => _buildContent(context),
+        );
+
+  Widget _buildContent(BuildContext context) {
     final entries = message.chatHistoryEntries;
     return Scaffold(
       appBar: AppBar(title: const Text('聊天记录')),
@@ -4974,7 +5155,7 @@ String _chatHistorySender(
     return controller?.currentUser?.name ?? '我';
   }
   for (final contact in controller?.contacts ?? const <AppUser>[]) {
-    if (contact.id == entry.senderId) return contact.name;
+    if (contact.id == entry.senderId) return contact.displayName;
   }
   for (final conversation
       in controller?.conversations ?? const <Conversation>[]) {
@@ -6404,6 +6585,7 @@ class ChatComposer extends StatefulWidget {
     this.onMention,
     this.onTypingChanged,
     this.replyingTo,
+    this.replyingToName,
     this.showAttachments = false,
     this.showEmoji = false,
   });
@@ -6421,6 +6603,7 @@ class ChatComposer extends StatefulWidget {
   final VoidCallback? onMention;
   final ValueChanged<bool>? onTypingChanged;
   final ChatMessage? replyingTo;
+  final String? replyingToName;
   final bool showAttachments;
   final bool showEmoji;
 
@@ -6580,7 +6763,7 @@ class _ChatComposerState extends State<ChatComposer> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        '回复 ${widget.replyingTo!.senderName}：${widget.replyingTo!.text}',
+                        '回复 ${widget.replyingToName ?? widget.replyingTo!.senderName}：${widget.replyingTo!.text}',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodySmall,
@@ -6769,9 +6952,9 @@ class _ChatComposerState extends State<ChatComposer> {
 }
 
 class _ContactPickerSheet extends StatefulWidget {
-  const _ContactPickerSheet({required this.contacts});
+  const _ContactPickerSheet({required this.controller});
 
-  final List<AppUser> contacts;
+  final AppController controller;
 
   @override
   State<_ContactPickerSheet> createState() => _ContactPickerSheetState();
@@ -6788,9 +6971,14 @@ class _ContactPickerSheetState extends State<_ContactPickerSheet> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.controller,
+    builder: (context, _) => _buildContent(context),
+  );
+
+  Widget _buildContent(BuildContext context) {
     final normalized = query.trim().toLowerCase();
-    final contacts = widget.contacts.where((contact) {
+    final contacts = widget.controller.contacts.where((contact) {
       if (normalized.isEmpty) return true;
       return contact.name.toLowerCase().contains(normalized) ||
           contact.handle.toLowerCase().contains(normalized) ||
@@ -6839,9 +7027,7 @@ class _ContactPickerSheetState extends State<_ContactPickerSheet> {
                     separatorBuilder: (_, _) => const Divider(indent: 62),
                     itemBuilder: (context, index) {
                       final contact = contacts[index];
-                      final name = contact.remark.trim().isEmpty
-                          ? contact.name
-                          : contact.remark;
+                      final name = contact.displayName;
                       return ListTile(
                         key: Key('contact-card-option-${contact.id}'),
                         minTileHeight: 64,
@@ -7166,11 +7352,13 @@ class _EmojiPanelState extends State<_EmojiPanel> {
 
 class _MentionPickerSheet extends StatefulWidget {
   const _MentionPickerSheet({
+    required this.controller,
     required this.members,
     required this.canMentionEveryone,
     this.currentUserId,
   });
 
+  final AppController controller;
   final List<AppUser> members;
   final String? currentUserId;
   final bool canMentionEveryone;
@@ -7183,7 +7371,12 @@ class _MentionPickerSheetState extends State<_MentionPickerSheet> {
   String query = '';
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.controller,
+    builder: (context, _) => _buildContent(context),
+  );
+
+  Widget _buildContent(BuildContext context) {
     final normalized = query.trim().toLowerCase();
     final members = widget.members
         .where((member) => member.id != widget.currentUserId)
@@ -7191,6 +7384,10 @@ class _MentionPickerSheetState extends State<_MentionPickerSheet> {
           (member) =>
               normalized.isEmpty ||
               member.name.toLowerCase().contains(normalized) ||
+              widget.controller
+                  .displayNameFor(member)
+                  .toLowerCase()
+                  .contains(normalized) ||
               member.handle.toLowerCase().contains(normalized),
         )
         .toList();
@@ -7254,11 +7451,11 @@ class _MentionPickerSheetState extends State<_MentionPickerSheet> {
                     key: Key('mention-member-${member.id}'),
                     minTileHeight: 60,
                     leading: PersonAvatar(
-                      name: member.name,
+                      name: widget.controller.displayNameFor(member),
                       size: 44,
                       avatarUrl: member.avatarUrl,
                     ),
-                    title: Text(member.name),
+                    title: Text(widget.controller.displayNameFor(member)),
                     subtitle: Text(publicUserHandleLabel(member.handle)),
                     onTap: () => Navigator.pop(
                       context,
@@ -7300,7 +7497,7 @@ class _PinnedMessagesSheet extends StatefulWidget {
 
 class _PinnedMessagesSheetState extends State<_PinnedMessagesSheet> {
   late Future<List<ChatMessage>> future = _load();
-  late int _historyRevision = widget.controller.groupHistoryRevision;
+  late int _historyRevision = widget.controller.groupPresentationRevision;
   @override
   void initState() {
     super.initState();
@@ -7308,10 +7505,12 @@ class _PinnedMessagesSheetState extends State<_PinnedMessagesSheet> {
   }
 
   void _historyChanged() {
-    if (!mounted || _historyRevision == widget.controller.groupHistoryRevision) {
+    if (!mounted) return;
+    if (_historyRevision == widget.controller.groupPresentationRevision) {
+      setState(() {});
       return;
     }
-    _historyRevision = widget.controller.groupHistoryRevision;
+    _historyRevision = widget.controller.groupPresentationRevision;
     setState(() => future = _load());
   }
 
@@ -7364,7 +7563,7 @@ class _PinnedMessagesSheetState extends State<_PinnedMessagesSheet> {
                 );
               }
               final messages = (snapshot.data ?? const <ChatMessage>[])
-                  .where(widget.controller.canReadMessage)
+                  .where(widget.controller.canDisplayMessage)
                   .toList();
               if (messages.isEmpty) {
                 return const StatePanel(
@@ -7387,7 +7586,12 @@ class _PinnedMessagesSheetState extends State<_PinnedMessagesSheet> {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
-                    subtitle: Text(message.senderName),
+                    subtitle: Text(
+                      widget.controller.displayNameForId(
+                        message.senderId,
+                        fallback: message.senderName,
+                      ),
+                    ),
                     trailing: IconButton(
                       tooltip: '取消置顶',
                       onPressed: () async {
@@ -7435,7 +7639,7 @@ class _MessageSearchSheet extends StatefulWidget {
 }
 
 class _MessageSearchSheetState extends State<_MessageSearchSheet> {
-  late int _historyRevision = widget.controller.groupHistoryRevision;
+  late int _historyRevision = widget.controller.groupPresentationRevision;
   @override
   void initState() {
     super.initState();
@@ -7443,12 +7647,15 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
   }
 
   void _historyChanged() {
-    if (!mounted || _historyRevision == widget.controller.groupHistoryRevision) {
+    if (!mounted) return;
+    if (_historyRevision == widget.controller.groupPresentationRevision) {
+      setState(() {});
       return;
     }
-    _historyRevision = widget.controller.groupHistoryRevision;
+    _historyRevision = widget.controller.groupPresentationRevision;
     setState(
-      () => matches = matches.where(widget.controller.canReadMessage).toList(),
+      () =>
+          matches = matches.where(widget.controller.canDisplayMessage).toList(),
     );
     if (query.isNotEmpty) _search(query);
   }
@@ -7553,7 +7760,7 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
                             overflow: TextOverflow.ellipsis,
                           ),
                           subtitle: Text(
-                            '${matches[index].senderName} · ${_searchDate(matches[index].sentAt)}',
+                            '${widget.controller.displayNameForId(matches[index].senderId, fallback: matches[index].senderName)} · ${_searchDate(matches[index].sentAt)}',
                           ),
                           trailing: const Icon(
                             CupertinoIcons.chevron_forward,

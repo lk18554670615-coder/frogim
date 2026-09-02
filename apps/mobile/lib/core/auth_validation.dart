@@ -6,12 +6,17 @@ class AuthPolicy {
     this.passwordMinLength = 8,
     this.passwordMaxBytes = 72,
     this.messageRecallMinutes = 2,
+    this.directRecallMinutes = 1440,
+    this.groupRecallMinutes = 1440,
   });
 
   final bool registrationEnabled;
   final int passwordMinLength;
   final int passwordMaxBytes;
+  // Legacy wire key retained for the independent message editing policy.
   final int messageRecallMinutes;
+  final int directRecallMinutes;
+  final int groupRecallMinutes;
 
   factory AuthPolicy.fromJson(Map<String, Object?> json) {
     final minimum = ((json['passwordMinLength'] as num?)?.toInt() ?? 8)
@@ -30,10 +35,20 @@ class AuthPolicy {
       passwordMinLength: minimum,
       passwordMaxBytes: maximum,
       messageRecallMinutes: recallMinutes,
+      directRecallMinutes:
+          ((json['directRecallMinutes'] as num?)?.toInt() ?? 1440)
+              .clamp(1, 10080)
+              .toInt(),
+      groupRecallMinutes:
+          ((json['groupRecallMinutes'] as num?)?.toInt() ?? 1440)
+              .clamp(1, 10080)
+              .toInt(),
     );
   }
 
   Duration get messageMutationWindow => Duration(minutes: messageRecallMinutes);
+  Duration get directRecallWindow => Duration(minutes: directRecallMinutes);
+  Duration get groupRecallWindow => Duration(minutes: groupRecallMinutes);
 
   String get passwordHelperText =>
       '至少 $passwordMinLength 个字符，最多 $passwordMaxBytes 字节';

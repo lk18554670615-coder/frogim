@@ -179,6 +179,9 @@ class AppUser {
   final bool isOnline;
   final String remark;
   final List<String> tags;
+
+  /// Local presentation only. Keep [name] as the public nickname on the wire.
+  String get displayName => remark.trim().isEmpty ? name : remark.trim();
   final int handleChangeCount;
   final int handleChangesRemaining;
   final bool allowSearchByHandle;
@@ -360,6 +363,7 @@ class ChatMessage {
     String? clientMessageId,
     this.conversationSeq = 0,
     this.status = MessageStatus.sent,
+    this.sendError,
     this.kind = MessageContentKind.text,
     this.mediaUrl,
     this.mediaId,
@@ -409,6 +413,9 @@ class ChatMessage {
   final bool isMine;
   final int conversationSeq;
   final MessageStatus status;
+
+  /// Local sending feedback; never included in the WuKongIM message payload.
+  final String? sendError;
   final MessageContentKind kind;
   final String? mediaUrl;
   final String? mediaId;
@@ -455,6 +462,7 @@ class ChatMessage {
     String? clientMessageId,
     String? text,
     MessageStatus? status,
+    String? sendError,
     int? conversationSeq,
     MessageContentKind? kind,
     String? mediaUrl,
@@ -504,6 +512,9 @@ class ChatMessage {
     isMine: isMine,
     conversationSeq: conversationSeq ?? this.conversationSeq,
     status: status ?? this.status,
+    sendError: (status ?? this.status) == MessageStatus.failed
+        ? sendError ?? this.sendError
+        : null,
     kind: kind ?? this.kind,
     mediaUrl: mediaUrl ?? this.mediaUrl,
     mediaId: mediaId ?? this.mediaId,
@@ -554,6 +565,7 @@ class ChatMessage {
     'isMine': isMine,
     'conversationSeq': conversationSeq,
     'status': status.name,
+    'sendError': sendError,
     'kind': kind.name,
     'mediaUrl': mediaUrl,
     'mediaId': mediaId,
@@ -607,6 +619,7 @@ class ChatMessage {
     isMine: json['isMine']! as bool,
     conversationSeq: (json['conversationSeq'] as num?)?.toInt() ?? 0,
     status: MessageStatus.values.byName(json['status']! as String),
+    sendError: json['sendError'] as String?,
     kind: MessageContentKind.values.byName(
       json['kind'] as String? ?? MessageContentKind.text.name,
     ),

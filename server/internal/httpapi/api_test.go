@@ -1860,6 +1860,9 @@ func TestAdminRuntimeSettingsValidateAuditAndNeverExposeSecrets(t *testing.T) {
 	}
 	status := settings["configurationStatus"].(map[string]any)
 	infra := settings["infrastructure"].(map[string]any)
+	if settings["directRecallMinutes"] != float64(1440) || settings["messageRecallMinutes"] != float64(2) {
+		t.Fatalf("default recall/edit settings=%v", settings)
+	}
 	if status["pushProvider"] != true || status["liveKit"] != true || infra["mediaMaxSizeMB"] != float64(25) || infra["callInviteTimeoutSeconds"] != float64(45) {
 		t.Fatalf("status=%v infrastructure=%v", status, infra)
 	}
@@ -1877,6 +1880,35 @@ func TestAdminRuntimeSettingsValidateAuditAndNeverExposeSecrets(t *testing.T) {
 		t.Fatalf("invalid setting status=%d", res.StatusCode)
 	}
 	_ = res.Body.Close()
+}
+
+func TestAdminDirectRecallSettingsValidateConfirmationAndBounds(t *testing.T) {
+	a, _ := app.New(t.Context(), teststore.Memory{})
+	cfg := config.Config{JWTSecret: strings.Repeat("d", 32)}
+	ts := httptest.NewServer(New(cfg, a).Handler())
+	defer ts.Close()
+	token := adminTestToken(t, cfg.JWTSecret)
+	for _, tc := range []struct {
+		body string
+		want int
+	}{
+		{`{"directRecallMinutes":60}`, http.StatusBadRequest},
+		{`{"directRecallMinutes":0,"reason":"invalid recall window","confirmed":true}`, http.StatusBadRequest},
+		{`{"directRecallMinutes":10081,"reason":"invalid recall window","confirmed":true}`, http.StatusBadRequest},
+		{`{"directRecallMinutes":1.5,"reason":"invalid recall window","confirmed":true}`, http.StatusBadRequest},
+		{`{"directRecallMinutes":1,"reason":"shorten direct recall","confirmed":true}`, http.StatusOK},
+		{`{"directRecallMinutes":10080,"reason":"extend direct recall","confirmed":true}`, http.StatusOK},
+	} {
+		res := authenticatedRequest(t, http.MethodPut, ts.URL+"/v2/admin/settings", token, tc.body)
+		if res.StatusCode != tc.want {
+			t.Fatalf("body=%s status=%d want=%d", tc.body, res.StatusCode, tc.want)
+		}
+		_ = res.Body.Close()
+	}
+	policy := a.AuthPolicy()
+	if policy.DirectRecallMinutes != 10080 || policy.GroupRecallMinutes != 1440 || policy.MessageRecallMinutes != 2 {
+		t.Fatalf("settings not independent: %+v", policy)
+	}
 }
 
 func TestAdminGroupMemberModerationRequiresReasonAndProtectsOwner(t *testing.T) {
@@ -2569,8 +2601,11 @@ func TestAuthAndProfilePhoneValidationIsConsistent(t *testing.T) {
 func TestPublicAuthPolicyMatchesRuntimeSettings(t *testing.T) {
 	a, _ := app.New(context.Background(), teststore.Memory{})
 	if err := a.UpdateSettings("admin", map[string]any{
-		"registrationEnabled": false,
-		"passwordMinLength":   float64(14),
+		"registrationEnabled":  false,
+		"passwordMinLength":    float64(14),
+		"directRecallMinutes":  float64(10080),
+		"groupRecallMinutes":   float64(60),
+		"messageRecallMinutes": float64(7),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2592,6 +2627,9 @@ func TestPublicAuthPolicyMatchesRuntimeSettings(t *testing.T) {
 	}
 	if policy.RegistrationEnabled || policy.PasswordMinLength != 14 || policy.PasswordMaxBytes != 72 {
 		t.Fatalf("policy=%+v", policy)
+	}
+	if policy.DirectRecallMinutes != 10080 || policy.GroupRecallMinutes != 60 || policy.MessageRecallMinutes != 7 {
+		t.Fatalf("recall/edit policies=%+v", policy)
 	}
 }
 

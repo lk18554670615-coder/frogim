@@ -311,7 +311,14 @@ void main() {
     final controller = AppController(repository);
     await tester.runAsync(() async {
       await controller.loginAsDemo();
-      await Future<void>.delayed(Duration.zero);
+      // The offline event invalidates the in-flight group-role snapshot.
+      // Await its real-timer refresh before switching back to the fake clock.
+      final deadline = DateTime.now().add(const Duration(seconds: 2));
+      while (controller.conversations.isEmpty &&
+          DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      expect(controller.conversations, isNotEmpty);
     });
     addTearDown(controller.dispose);
 

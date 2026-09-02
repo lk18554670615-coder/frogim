@@ -92,6 +92,9 @@ class MessageMapper {
       sentAt: message.timestamp.toLocal(),
       isMine: message.fromUid == currentUserId,
       conversationSeq: message.messageSeq,
+      sendError: message.state == WukongMessageState.failed
+          ? wukongSendFailureMessage(message.reasonCode)
+          : null,
       status: expired
           ? MessageStatus.expired
           : recalledAt != null
@@ -316,3 +319,16 @@ class MessageMapper {
     };
   }
 }
+
+/// WuKongIMGoProto v1.2.3 (server v2.2.5-20260422), also pinned in
+/// server/internal/wukong/policy.go. Generic permission codes do not prove mute.
+String wukongSendFailureMessage(int reasonCode) => switch (reasonCode) {
+  3 => '你已不在该会话中，无法发送消息',
+  4 => '消息被拒绝，当前账号在会话黑名单中',
+  11 || 13 => '消息被拒绝，请确认发言权限或消息内容',
+  19 => '会话已被封禁，无法发送消息',
+  22 => '发送过于频繁，请稍后重试',
+  24 => '会话已解散，无法发送消息',
+  25 => '当前会话已禁言，无法发送消息',
+  _ => '消息发送失败，请稍后重试',
+};

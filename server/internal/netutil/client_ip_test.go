@@ -16,3 +16,11 @@ func TestClientIPTrustBoundary(t *testing.T) {
 		t.Fatalf("trusted proxy address=%q", got)
 	}
 }
+
+func TestNormalizeIP(t *testing.T) {
+	for raw, want := range map[string]string{" 192.0.2.1 ": "192.0.2.1", "::ffff:192.0.2.1": "192.0.2.1", "2001:0db8:0000::1": "2001:db8::1", "192.0.2.1/24": "", "1.1.1.1:80": "", "example.com": "", "fe80::1%eth0": "", "garbage": ""} {
+		if got := NormalizeIP(raw); got != want {
+			t.Fatalf("%q got %q want %q", raw, got, want)
+		}
+	}
+}

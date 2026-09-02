@@ -71,6 +71,7 @@ export interface DashboardData {
 }
 
 export interface UserRecord {
+  access?: UserAccessProfile;
   id: string;
   nickname: string;
   phone: string;
@@ -92,6 +93,18 @@ export interface UserRecord {
   messageCount: number;
   latestDevice?: ClientDeviceSummary;
 }
+
+export interface IPRegion { status: string; country?: string; province?: string; city?: string; isp?: string; version: string }
+export interface UserAccessProfile {
+  registrationSource: 'unknown' | 'app' | 'admin'; registrationIp?: string; lastLoginIp?: string; lastLoginAt?: string;
+  registrationRegion: IPRegion; lastLoginRegion: IPRegion; matchedSources: string[];
+}
+export interface UserAccessLog {
+  id: string; userId?: string; user?: UserRecord; event: string; method: string; result: string; failureCode?: string;
+  ip?: string; platform: string; occurredAt: string; region: IPRegion;
+}
+export interface UserAccessFilters { userId?: string; ip?: string; event?: string; result?: string; method?: string; from?: string; to?: string; cursor?: string; limit?: number }
+export interface UserAccessLogPage { items: UserAccessLog[]; nextCursor: string; from: string; to: string; retentionDays: number; geoVersion: string }
 
 export interface AdminUserBatchInput {
   clientRow: number;
@@ -422,6 +435,8 @@ export interface AdminSettings {
   passwordMinLength: number;
   maxMessageTextLength: number;
   messageRecallMinutes: number;
+  directRecallMinutes: number;
+  groupRecallMinutes: number;
   maxGroupMembers: number;
   allowFriendRequests: boolean;
   allowSearchByHandle: boolean;
@@ -850,7 +865,8 @@ export interface AdminApi {
   updateAdministratorRole(id: string, input: Pick<AdministratorRoleRecord, 'name' | 'description' | 'permissions'>, reason: string): Promise<AdministratorRoleRecord>;
   deleteAdministratorRole(id: string, reason: string): Promise<void>;
   getDashboard(): Promise<DashboardData>;
-  getUsers(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<UserRecord>>;
+  getUsers(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string, ip?: string, ipSource?: string): Promise<PageResult<UserRecord>>;
+  getUserAccessLogs(filters: UserAccessFilters): Promise<UserAccessLogPage>;
   createUser(input: { phone: string; name: string; password: string; gender: UserRecord['gender'] }, reason: string): Promise<UserRecord>;
   createUsersBatch(items: AdminUserBatchInput[], reason: string): Promise<AdminUserBatchResult>;
   getUserOverview(id: string): Promise<UserOverview>;

@@ -53,9 +53,7 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
     return '添加好友';
   }
 
-  String get displayName => isFriend && user.remark.trim().isNotEmpty
-      ? user.remark.trim()
-      : user.name;
+  String get displayName => widget.controller.displayNameFor(user);
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(

@@ -81,6 +81,7 @@ func main() {
 		}
 	}
 	api := httpapi.New(cfg, application)
+	defer api.Close()
 	if err = api.SetupError(); err != nil {
 		slog.Error("IM transport unavailable", "error", err)
 		os.Exit(1)
@@ -133,6 +134,7 @@ func main() {
 	}
 	go reconciler.Run(workerCtx)
 	go api.RunMediaCleanup(workerCtx)
+	go api.RunUserAccess(workerCtx)
 	go application.RunCallTimeouts(workerCtx)
 	go application.RunFriendRequestTimeouts(workerCtx)
 	go application.RunAnnouncementScheduler(workerCtx)

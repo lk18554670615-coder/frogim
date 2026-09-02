@@ -176,12 +176,17 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.controller,
+    builder: (context, _) => _buildContent(context),
+  );
+
+  Widget _buildContent(BuildContext context) {
     final matchingContacts = widget.controller.contacts
         .where(
-          (user) => '${user.name}${user.handle}'.toLowerCase().contains(
-            query.toLowerCase(),
-          ),
+          (user) => '${user.displayName}${user.name}${user.handle}'
+              .toLowerCase()
+              .contains(query.toLowerCase()),
         )
         .toList();
     final contacts = <String, AppUser>{
@@ -190,9 +195,10 @@ class _SearchScreenState extends State<SearchScreen> {
     }.values.toList();
     final conversations = widget.controller.conversations
         .where(
-          (item) => '${item.title}${item.subtitle}'.toLowerCase().contains(
-            query.toLowerCase(),
-          ),
+          (item) =>
+              '${widget.controller.displayConversationName(item)}${item.title}${item.subtitle}'
+                  .toLowerCase()
+                  .contains(query.toLowerCase()),
         )
         .toList();
     return Scaffold(
@@ -333,11 +339,11 @@ class _SearchScreenState extends State<SearchScreen> {
                 (user) => ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: PersonAvatar(
-                    name: user.name,
+                    name: widget.controller.displayNameFor(user),
                     online: user.isOnline,
                     avatarUrl: user.avatarUrl,
                   ),
-                  title: Text(user.name),
+                  title: Text(widget.controller.displayNameFor(user)),
                   subtitle: Text(publicUserHandleLabel(user.handle)),
                   trailing:
                       widget.controller.contacts.any(
@@ -356,8 +362,10 @@ class _SearchScreenState extends State<SearchScreen> {
               ...conversations.map(
                 (item) => ListTile(
                   contentPadding: EdgeInsets.zero,
-                  leading: PersonAvatar(name: item.title),
-                  title: Text(item.title),
+                  leading: PersonAvatar(
+                    name: widget.controller.displayConversationName(item),
+                  ),
+                  title: Text(widget.controller.displayConversationName(item)),
                   subtitle: Text(item.subtitle),
                   onTap: () => _openConversation(item),
                 ),
@@ -844,7 +852,12 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.controller,
+    builder: (context, _) => _buildContent(context),
+  );
+
+  Widget _buildContent(BuildContext context) {
     final normalizedQuery = query.trim().toLowerCase();
     final contacts = widget.controller.contacts.where((user) {
       if (normalizedQuery.isEmpty) return true;
@@ -912,7 +925,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                       (user) => Padding(
                         padding: const EdgeInsets.only(right: 10),
                         child: Tooltip(
-                          message: '移除 ${user.name}',
+                          message: '移除 ${user.displayName}',
                           child: InkWell(
                             key: Key('create-group-selected-${user.id}'),
                             borderRadius: BorderRadius.circular(28),
@@ -924,7 +937,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                               clipBehavior: Clip.none,
                               children: [
                                 PersonAvatar(
-                                  name: user.name,
+                                  name: user.displayName,
                                   size: 48,
                                   avatarUrl: user.avatarUrl,
                                 ),
@@ -980,13 +993,11 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                           horizontal: 16,
                         ),
                         leading: PersonAvatar(
-                          name: user.name,
+                          name: user.displayName,
                           online: user.isOnline,
                           avatarUrl: user.avatarUrl,
                         ),
-                        title: Text(
-                          user.remark.isEmpty ? user.name : user.remark,
-                        ),
+                        title: Text(user.displayName),
                         subtitle: Text(
                           user.remark.isEmpty
                               ? publicIdentity

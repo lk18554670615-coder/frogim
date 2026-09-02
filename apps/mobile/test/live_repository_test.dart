@@ -1699,6 +1699,54 @@ void main() {
     await repository.close();
   });
 
+  test('群禁言及成员变更 CMD 通知客户端重新确认发言权限', () async {
+    final gateway = FakeWukongGateway();
+    final repository = _repository(
+      MockClient((request) async {
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
+        return http.Response('{}', 404);
+      }),
+      gateway: gateway,
+    );
+    await repository.login('13800138000', '123456');
+    await repository.connect();
+    final emitted = <ImEvent>[];
+    final subscription = repository.events.listen(emitted.add);
+    for (final type in [
+      'group.members.updated',
+      'group.profile.updated',
+      'group.system',
+      'conversation.preferences.updated',
+    ]) {
+      gateway.emit(
+        WukongGatewayEvent(
+          kind: WukongGatewayEventKind.command,
+          data: {
+            'cmd': type,
+            'param': {
+              'schemaVersion': 1,
+              'event': type,
+              'payload': {
+                'conversationId': 'group-1',
+                if (type == 'group.system') 'event': 'group.member.mute',
+              },
+            },
+          },
+        ),
+      );
+    }
+    await Future<void>.delayed(Duration.zero);
+    expect(emitted, hasLength(4));
+    for (final event in emitted.take(3)) {
+      expect(event.type, ImEventType.conversationChanged);
+      expect(event.payload['groupSendPolicyChanged'], isTrue);
+      expect(event.payload['conversationId'], 'group-1');
+    }
+    expect(emitted.last.payload['groupSendPolicyChanged'], isNull);
+    await subscription.cancel();
+    await repository.close();
+  });
+
   test('群资料更新只提交受控的头像媒体 ID', () async {
     late Map<String, Object?> requestBody;
     final client = MockClient((request) async {

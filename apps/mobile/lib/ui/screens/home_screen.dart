@@ -1202,7 +1202,12 @@ class _ConversationsTabState extends State<ConversationsTab> {
       .toList();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.controller,
+    builder: (context, _) => _buildContent(context),
+  );
+
+  Widget _buildContent(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
     if (widget.desktopMode) {
       return ColoredBox(
@@ -2013,7 +2018,7 @@ class ConversationTile extends StatelessWidget {
       child: Semantics(
         button: true,
         label:
-            '${conversation.archived ? '已归档，' : ''}${highlighted ? '已置顶，' : ''}${conversation.title}，$subtitle${(conversation.mentionUnreadCount ?? 0) > 0 ? '，${conversation.mentionUnreadCount}条提到我' : ''}${conversation.unread > 0 ? '，${conversation.unread}条未读' : ''}',
+            '${conversation.archived ? '已归档，' : ''}${highlighted ? '已置顶，' : ''}${controller.displayConversationName(conversation)}，$subtitle${(conversation.mentionUnreadCount ?? 0) > 0 ? '，${conversation.mentionUnreadCount}条提到我' : ''}${conversation.unread > 0 ? '，${conversation.unread}条未读' : ''}',
         child: Material(
           color: highlighted
               ? (dark
@@ -2047,7 +2052,7 @@ class ConversationTile extends StatelessWidget {
                     padding: const EdgeInsets.only(left: 16, right: 12),
                     child: PersonAvatar(
                       key: ValueKey('conversation-avatar-${conversation.id}'),
-                      name: conversation.title,
+                      name: controller.displayConversationName(conversation),
                       size: 48,
                       avatarUrl:
                           conversation.avatarUrl ?? directPeer?.avatarUrl,
@@ -2101,7 +2106,9 @@ class ConversationTile extends StatelessWidget {
                                   key: ValueKey(
                                     'conversation-title-${conversation.id}',
                                   ),
-                                  conversation.title,
+                                  controller.displayConversationName(
+                                    conversation,
+                                  ),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: Theme.of(
@@ -2226,7 +2233,9 @@ class ConversationTile extends StatelessWidget {
     final confirmed = await showCupertinoDialog<bool>(
       context: context,
       builder: (dialogContext) => CupertinoAlertDialog(
-        title: Text('删除“${conversation.title}”会话？'),
+        title: Text(
+          '删除“${controller.displayConversationName(conversation)}”会话？',
+        ),
         content: const Text('会话会从本机列表移除，但不会退出群聊或删除对方记录；收到新消息后会重新出现。'),
         actions: [
           CupertinoDialogAction(
@@ -2341,7 +2350,9 @@ class _ContactsTabState extends State<ContactsTab> {
   List<_ContactGroup> get _groups {
     final byLetter = <String, List<AppUser>>{};
     for (final user in widget.controller.contacts) {
-      byLetter.putIfAbsent(_contactInitial(user.name), () => []).add(user);
+      byLetter
+          .putIfAbsent(_contactInitial(user.displayName), () => [])
+          .add(user);
     }
     final letters = byLetter.keys.toList()
       ..sort((a, b) {
@@ -2354,8 +2365,9 @@ class _ContactsTabState extends State<ContactsTab> {
         _ContactGroup(
           letter,
           byLetter[letter]!..sort(
-            (a, b) =>
-                _contactSortName(a.name).compareTo(_contactSortName(b.name)),
+            (a, b) => _contactSortName(
+              a.displayName,
+            ).compareTo(_contactSortName(b.displayName)),
           ),
         ),
     ];
@@ -2415,8 +2427,9 @@ class _ContactsTabState extends State<ContactsTab> {
       ),
       icon: const Icon(CupertinoIcons.person_add),
     ),
-    child: Builder(
-      builder: (context) {
+    child: AnimatedBuilder(
+      animation: widget.controller,
+      builder: (context, _) {
         final controller = widget.controller;
         final groups = _groups;
         for (final group in groups) {
@@ -2432,7 +2445,7 @@ class _ContactsTabState extends State<ContactsTab> {
                   padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
                   sliver: SliverToBoxAdapter(
                     child: LinliSearchBar(
-                      hint: '搜索联系人或呱呱号',
+                      hint: '搜索昵称、备注或呱呱号',
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute(
                           builder: (_) => SearchScreen(controller: controller),
@@ -2707,11 +2720,11 @@ class _ContactListTile extends StatelessWidget {
     minTileHeight: 68,
     contentPadding: const EdgeInsets.only(left: 16, right: 36),
     leading: PersonAvatar(
-      name: user.name,
+      name: user.displayName,
       avatarUrl: user.avatarUrl,
       online: user.isOnline,
     ),
-    title: Text(user.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+    title: Text(user.displayName, maxLines: 1, overflow: TextOverflow.ellipsis),
     subtitle: Text(user.presence, maxLines: 1, overflow: TextOverflow.ellipsis),
     onTap: onTap,
   );

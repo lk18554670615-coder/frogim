@@ -78,6 +78,7 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
     conversation.pinned,
     conversation.muted,
     widget.controller.groupHistoryRevision,
+    widget.controller.groupSendPolicyRevision,
   ].join('|');
 
   void _handleControllerChange() {
@@ -173,19 +174,15 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
                     icon: CupertinoIcons.person_2,
                     title: '群成员',
                     subtitle: '${members.length} 位成员',
-                    onTap: () async {
-                      await Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => GroupMembersManagementScreen(
-                            controller: widget.controller,
-                            conversationId: widget.conversation.id,
-                            profile: value,
-                            initialMembers: members,
-                          ),
-                        ),
-                      );
-                      await _load();
-                    },
+                    onTap: () => _openMembers(),
+                  ),
+                  SettingTile(
+                    key: const Key('group-administrators-entry'),
+                    icon: CupertinoIcons.shield,
+                    title: '群管理员',
+                    subtitle:
+                        '${members.where((member) => member.isAdmin).length} 位管理员 · 仅群主可设置',
+                    onTap: () => _openMembers(administratorMode: true),
                   ),
                   SettingTile(
                     key: const Key('group-announcement-entry'),
@@ -351,6 +348,21 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
         );
       },
     );
+  }
+
+  Future<void> _openMembers({bool administratorMode = false}) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => GroupMembersManagementScreen(
+          controller: widget.controller,
+          conversationId: widget.conversation.id,
+          profile: profile!,
+          initialMembers: members,
+          administratorMode: administratorMode,
+        ),
+      ),
+    );
+    if (mounted) await _load();
   }
 
   Future<void> _editName() async {
@@ -919,11 +931,13 @@ class GroupMembersManagementScreen extends StatefulWidget {
     required this.conversationId,
     required this.profile,
     required this.initialMembers,
+    this.administratorMode = false,
   });
   final AppController controller;
   final String conversationId;
   final GroupProfile profile;
   final List<GroupMember> initialMembers;
+  final bool administratorMode;
 
   @override
   State<GroupMembersManagementScreen> createState() =>
@@ -934,6 +948,9 @@ class _GroupMembersManagementScreenState
     extends State<GroupMembersManagementScreen> {
   late List<GroupMember> members = widget.initialMembers;
   bool loading = false;
+  bool changingRole = false;
+  bool submittingRole = false;
+  int _reloadRequest = 0;
   String query = '';
   Timer? _externalRefreshTimer;
   String? _conversationFingerprint;
@@ -944,13 +961,25 @@ class _GroupMembersManagementScreenState
   bool get isOwner => me?.isOwner == true;
   bool get isAdmin => me?.isAdmin == true;
   List<GroupMember> get visibleMembers {
+    final candidates = widget.administratorMode
+        ? [
+            ...members.where((member) => member.isOwner),
+            ...members.where((member) => member.isAdmin),
+            if (isOwner)
+              ...members.where((member) => !member.isOwner && !member.isAdmin),
+          ]
+        : members;
     final normalized = query.trim().toLowerCase();
-    if (normalized.isEmpty) return members;
-    return members.where((member) {
+    if (normalized.isEmpty) return candidates;
+    return candidates.where((member) {
       final values = [
         member.user.name,
         member.user.handle,
         member.groupNickname,
+        widget.controller.displayNameFor(
+          member.user,
+          groupNickname: member.groupNickname,
+        ),
       ];
       return values.any((value) => value.toLowerCase().contains(normalized));
     }).toList();
@@ -981,6 +1010,7 @@ class _GroupMembersManagementScreenState
           conversation.currentUserRole ?? '',
           conversation.title,
           conversation.avatarUrl ?? '',
+          widget.controller.groupSendPolicyRevision,
         ].join('|');
 
   void _handleControllerChange() {
@@ -996,48 +1026,83 @@ class _GroupMembersManagementScreenState
   }
 
   Future<void> _reload() async {
+    _externalRefreshTimer?.cancel();
+    final request = ++_reloadRequest;
     setState(() => loading = true);
     final updated = await widget.controller.loadGroupMembers(
       widget.conversationId,
     );
-    if (!mounted) return;
+    if (!mounted || request != _reloadRequest) return;
     setState(() {
       loading = false;
       if (updated != null) members = updated;
     });
+    if (updated == null) {
+      _showFeedback(widget.controller.error ?? '群成员加载失败，请稍后重试');
+    }
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: GlassAppBar(title: Text('群成员 · ${members.length}')),
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.controller,
+    builder: (context, _) => _buildContent(context),
+  );
+
+  Widget _buildContent(BuildContext context) => Scaffold(
+    appBar: GlassAppBar(
+      title: Text(
+        widget.administratorMode
+            ? '群管理员 · ${members.where((member) => member.isAdmin).length}'
+            : '群成员 · ${members.length}',
+      ),
+      actions: [
+        IconButton(
+          tooltip: '刷新群成员',
+          onPressed: loading || changingRole ? null : _reload,
+          icon: const Icon(CupertinoIcons.refresh),
+        ),
+      ],
+    ),
     body: ListView(
       padding: const EdgeInsets.only(bottom: 32),
       children: [
-        if (loading) const LinearProgressIndicator(minHeight: 2),
+        if (loading || submittingRole)
+          const LinearProgressIndicator(minHeight: 2),
+        if (widget.administratorMode)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+            child: Text(
+              isOwner
+                  ? '开启成员右侧开关可设为管理员，关闭可取消。管理员可协助管理群聊；只有群主能设置管理员。'
+                  : '仅群主可设置或取消管理员，以下为本群的群主和管理员。',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
           child: CupertinoSearchTextField(
             key: const Key('group-member-search'),
-            placeholder: '搜索昵称或呱呱号',
+            placeholder: '搜索昵称、备注或呱呱号',
             onChanged: (value) => setState(() => query = value),
           ),
         ),
-        ListTile(
-          key: const Key('add-group-members'),
-          contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-          leading: Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surfaceContainerHigh,
-              borderRadius: BorderRadius.circular(14),
+        if (!widget.administratorMode)
+          ListTile(
+            key: const Key('add-group-members'),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+            leading: Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: const Icon(CupertinoIcons.person_add),
             ),
-            child: const Icon(CupertinoIcons.person_add),
+            title: Text(isOwner || isAdmin ? '添加群成员' : '邀请好友入群'),
+            subtitle: Text(isOwner || isAdmin ? '选择后直接加入群聊' : '对方同意邀请后加入'),
+            onTap: loading || changingRole ? null : _pickMembers,
           ),
-          title: Text(isOwner || isAdmin ? '添加群成员' : '邀请好友入群'),
-          subtitle: Text(isOwner || isAdmin ? '选择后直接加入群聊' : '对方同意邀请后加入'),
-          onTap: _pickMembers,
-        ),
         const Divider(),
         if (visibleMembers.isEmpty)
           const Padding(
@@ -1051,23 +1116,42 @@ class _GroupMembersManagementScreenState
   );
 
   Widget _memberTile(GroupMember member) => ListTile(
+    key: ValueKey('group-member-${member.user.id}'),
     contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
     leading: PersonAvatar(
-      name: member.user.name,
+      name: widget.controller.displayNameFor(
+        member.user,
+        groupNickname: member.groupNickname,
+      ),
       avatarUrl: member.user.avatarUrl,
     ),
     title: Text(
-      member.groupNickname.isNotEmpty ? member.groupNickname : member.user.name,
+      widget.controller.displayNameFor(
+        member.user,
+        groupNickname: member.groupNickname,
+      ),
     ),
     subtitle: Text(
       member.isMuted
           ? '${_roleLabel(member.role)} · 已禁言'
           : _roleLabel(member.role),
     ),
-    trailing: _canManage(member)
+    trailing: widget.administratorMode
+        ? isOwner && !member.isOwner
+              ? CupertinoSwitch(
+                  key: ValueKey('group-admin-switch-${member.user.id}'),
+                  value: member.isAdmin,
+                  onChanged: loading || changingRole
+                      ? null
+                      : (_) => _setAdministrator(member),
+                )
+              : Text(_roleLabel(member.role))
+        : _canManage(member)
         ? IconButton(
             tooltip: '管理成员',
-            onPressed: () => _memberActions(member),
+            onPressed: loading || changingRole
+                ? null
+                : () => _memberActions(member),
             icon: const Icon(CupertinoIcons.ellipsis),
           )
         : const Icon(CupertinoIcons.chevron_forward, size: 16),
@@ -1101,7 +1185,10 @@ class _GroupMembersManagementScreenState
       return;
     }
     final selected = await Navigator.of(context).push<List<AppUser>>(
-      MaterialPageRoute(builder: (_) => _GroupMemberPicker(users: available)),
+      MaterialPageRoute(
+        builder: (_) =>
+            _GroupMemberPicker(controller: widget.controller, users: available),
+      ),
     );
     if (selected == null || selected.isEmpty) return;
     setState(() => loading = true);
@@ -1135,6 +1222,7 @@ class _GroupMembersManagementScreenState
   }
 
   Future<void> _memberActions(GroupMember member) async {
+    if (loading || changingRole || !_canManage(member)) return;
     final action = await showModalBottomSheet<String>(
       context: context,
       builder: (context) => SafeArea(
@@ -1181,13 +1269,19 @@ class _GroupMembersManagementScreenState
         ),
       ),
     );
-    if (action == null) return;
+    if (action == null || !mounted) return;
+    if (action == 'admin' || action == 'member') {
+      await _setAdministrator(member);
+      return;
+    }
     if (action == 'transfer') {
       if (!mounted) return;
       final confirm = await showCupertinoDialog<bool>(
         context: context,
         builder: (context) => CupertinoAlertDialog(
-          title: Text('将群主转让给 ${member.user.name}？'),
+          title: Text(
+            '将群主转让给 ${widget.controller.displayNameFor(member.user, groupNickname: member.groupNickname)}？',
+          ),
           content: const Text('转让后你将变为普通成员，此操作需要新群主再次转让才能恢复。'),
           actions: [
             CupertinoDialogAction(
@@ -1224,23 +1318,93 @@ class _GroupMembersManagementScreenState
         member.user,
         null,
       ),
-      _ => await widget.controller.setGroupRole(
-        widget.conversationId,
-        member.user,
-        action,
-      ),
+      _ => false,
     };
     if (!mounted) return;
     if (success) {
       await _reload();
     } else {
       setState(() => loading = false);
+      _showFeedback(widget.controller.error ?? '操作失败，请稍后重试');
+    }
+  }
+
+  void _showFeedback(String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _setAdministrator(GroupMember member) async {
+    if (loading || changingRole || !isOwner || member.isOwner) return;
+    final makeAdmin = !member.isAdmin;
+    final name = widget.controller.displayNameFor(
+      member.user,
+      groupNickname: member.groupNickname,
+    );
+    setState(() => changingRole = true);
+    try {
+      final confirmed = await showCupertinoDialog<bool>(
+        context: context,
+        builder: (context) => CupertinoAlertDialog(
+          title: Text(makeAdmin ? '设为管理员' : '取消管理员'),
+          content: Text(
+            makeAdmin
+                ? '将“$name”设为管理员？对方将获得群管理权限。'
+                : '取消“$name”的管理员身份？对方仍会保留在群聊中。',
+          ),
+          actions: [
+            CupertinoDialogAction(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            CupertinoDialogAction(
+              key: const Key('confirm-group-administrator'),
+              isDestructiveAction: !makeAdmin,
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('确认'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || confirmed != true) return;
+      final current = members
+          .where((item) => item.user.id == member.user.id)
+          .firstOrNull;
+      if (!isOwner ||
+          current == null ||
+          current.isOwner ||
+          liveConversation == null) {
+        _showFeedback('成员身份已变化，请刷新后重试');
+        return;
+      }
+      setState(() => submittingRole = true);
+      final success = await widget.controller.setGroupRole(
+        widget.conversationId,
+        member.user,
+        makeAdmin ? 'admin' : 'member',
+      );
+      if (!mounted) return;
+      if (!success) {
+        _showFeedback(widget.controller.error ?? '群管理员设置失败');
+        return;
+      }
+      _showFeedback(makeAdmin ? '已将“$name”设为管理员' : '已取消“$name”的管理员身份');
+      await _reload();
+    } finally {
+      if (mounted) {
+        setState(() {
+          changingRole = false;
+          submittingRole = false;
+        });
+      }
     }
   }
 }
 
 class _GroupMemberPicker extends StatefulWidget {
-  const _GroupMemberPicker({required this.users});
+  const _GroupMemberPicker({required this.controller, required this.users});
+  final AppController controller;
   final List<AppUser> users;
 
   @override
@@ -1251,7 +1415,12 @@ class _GroupMemberPickerState extends State<_GroupMemberPicker> {
   final selected = <String>{};
 
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.controller,
+    builder: (context, _) => _buildContent(context),
+  );
+
+  Widget _buildContent(BuildContext context) => Scaffold(
     appBar: GlassAppBar(
       title: const Text('选择联系人'),
       actions: [
@@ -1274,8 +1443,11 @@ class _GroupMemberPickerState extends State<_GroupMemberPicker> {
         final user = widget.users[index];
         return CheckboxListTile(
           value: selected.contains(user.id),
-          secondary: PersonAvatar(name: user.name, avatarUrl: user.avatarUrl),
-          title: Text(user.name),
+          secondary: PersonAvatar(
+            name: widget.controller.displayNameFor(user),
+            avatarUrl: user.avatarUrl,
+          ),
+          title: Text(widget.controller.displayNameFor(user)),
           subtitle: Text(publicUserHandleLabel(user.handle)),
           onChanged: (value) => setState(
             () => value == true

@@ -28,6 +28,7 @@ func (x *API) createAdminUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	x.signAvatarURL(user)
+	x.recordRegistration(r, user.ID, "admin")
 	write(w, http.StatusCreated, map[string]any{"item": user})
 }
 
@@ -55,6 +56,7 @@ func (x *API) createAdminUsersBatch(w http.ResponseWriter, r *http.Request) {
 		if items[index].Status == "created" {
 			succeeded++
 			x.signAvatarURL(items[index].User)
+			x.recordRegistration(r, items[index].User.ID, "admin")
 		}
 	}
 	failed := len(items) - succeeded

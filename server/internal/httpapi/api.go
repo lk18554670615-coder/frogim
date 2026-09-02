@@ -21,9 +21,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/linli/im/server/internal/accesslog"
 	"github.com/linli/im/server/internal/app"
 	"github.com/linli/im/server/internal/auth"
 	"github.com/linli/im/server/internal/config"
+	"github.com/linli/im/server/internal/ipregion"
 	"github.com/linli/im/server/internal/linkpreview"
 	livekitcontrol "github.com/linli/im/server/internal/livekit"
 	"github.com/linli/im/server/internal/media"
@@ -36,6 +38,8 @@ import (
 )
 
 type API struct {
+	accessRecorder  *accesslog.Recorder
+	ipRegion        *ipregion.Resolver
 	cfg             config.Config
 	app             *app.App
 	auth            auth.Manager
@@ -140,6 +144,10 @@ func New(cfg config.Config, a *app.App) *API {
 		cfg.CallInviteTTL = 30 * time.Second
 	}
 	x := &API{cfg: cfg, app: a, auth: auth.Manager{Secret: []byte(cfg.JWTSecret), AccessTTL: cfg.AccessTTL, RefreshTTL: cfg.RefreshTTL}, started: time.Now(), limits: newLimiter(), links: linkpreview.New(linkpreview.Config{})}
+	x.accessRecorder = accesslog.New(a)
+	if cfg.IPRegionDir != "" {
+		x.ipRegion = ipregion.New(cfg.IPRegionDir)
+	}
 	if cfg.WukongEnabled {
 		x.wukongClient, x.wukongSetupErr = wukong.NewClient(wukong.Config{
 			APIURL: cfg.WukongAPIURL, ManagerURL: cfg.WukongManagerURL,
@@ -403,6 +411,7 @@ func (x *API) routes() {
 	x.mux.Handle("GET /v2/admin/stats", x.requireAdmin(http.HandlerFunc(x.adminStats)))
 	x.mux.Handle("GET /v2/admin/dashboard", x.requireAdmin(http.HandlerFunc(x.adminStats)))
 	x.mux.Handle("GET /v2/admin/users", x.requireAdmin(http.HandlerFunc(x.adminUsers)))
+	x.mux.Handle("GET /v2/admin/user-access-logs", x.requireAdmin(http.HandlerFunc(x.adminUserAccessLogs)))
 	x.mux.Handle("POST /v2/admin/users", x.requireAdmin(http.HandlerFunc(x.createAdminUser)))
 	x.mux.Handle("POST /v2/admin/users/batch", x.requireAdmin(http.HandlerFunc(x.createAdminUsersBatch)))
 	x.mux.Handle("GET /v2/admin/users/{id}", x.requireAdmin(http.HandlerFunc(x.adminUserOverview)))
@@ -1028,6 +1037,7 @@ func (x *API) ready(w http.ResponseWriter, r *http.Request) {
 }
 func (x *API) metrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	fmt.Fprintf(w, "im_user_access_written_total %d\nim_user_access_retried_total %d\nim_user_access_dropped_total %d\nim_user_access_pending %d\n", x.accessRecorder.Written.Load(), x.accessRecorder.Retried.Load(), x.accessRecorder.Dropped.Load(), x.accessRecorder.Pending())
 	metrics := &x.app.Metrics
 	fmt.Fprintf(w, "im_http_requests_total %d\nim_http_requests_in_flight %d\nim_messages_sent_total %d\nim_errors_total %d\nim_runtime_retention_deleted_total %d\n",
 		metrics.Requests.Load(), metrics.HTTPInFlight.Load(), metrics.Messages.Load(), metrics.Errors.Load(), metrics.RetentionDeleted.Load())
@@ -1096,6 +1106,8 @@ func (x *API) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_ARGUMENT", "valid phone and code are required")
 		return
 	}
+	attempt := x.beginUserAccess(&w, r, "login", "otp", p.Phone)
+	defer attempt.finish()
 	if !x.allow(r.Context(), "login-ip:"+x.clientIP(r), 10, 10*time.Minute) || !x.allow(r.Context(), "login-phone:"+p.Phone, 8, 10*time.Minute) {
 		w.Header().Set("Retry-After", "600")
 		writeError(w, 429, "RATE_LIMITED", "too many login attempts")
@@ -1113,10 +1125,14 @@ func (x *API) login(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	u, err := x.app.Login(p.Phone, p.Name)
+	u, created, err := x.app.LoginWithCreation(p.Phone, p.Name)
 	if err != nil {
 		handleErr(w, err)
 		return
+	}
+	attempt.entry.UserID = u.ID
+	if created {
+		x.recordRegistration(r, u.ID, "otp")
 	}
 	x.issueUserSession(w, r, u)
 }
@@ -1160,6 +1176,8 @@ func (x *API) register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "valid phone, code, password and name are required")
 		return
 	}
+	attempt := x.beginUserAccess(&w, r, "register", "password", p.Phone)
+	defer attempt.finish()
 	if !x.allow(r.Context(), "register-ip:"+x.clientIP(r), 8, 10*time.Minute) || !x.allow(r.Context(), "register-phone:"+p.Phone, 5, 10*time.Minute) {
 		w.Header().Set("Retry-After", "600")
 		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "too many registration attempts")
@@ -1182,6 +1200,9 @@ func (x *API) register(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	x.recordRegistration(r, u.ID, "password")
+	attempt.entry.UserID = u.ID
+	attempt.entry.Event = "login"
 	x.issueUserSession(w, r, u)
 }
 func (x *API) passwordLogin(w http.ResponseWriter, r *http.Request) {
@@ -1199,6 +1220,8 @@ func (x *API) passwordLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "phone or password is incorrect")
 		return
 	}
+	attempt := x.beginUserAccess(&w, r, "login", "password", p.Phone)
+	defer attempt.finish()
 	if !x.allow(r.Context(), "password-login-ip:"+x.clientIP(r), 12, 10*time.Minute) || !x.allow(r.Context(), "password-login-phone:"+p.Phone, 8, 10*time.Minute) {
 		w.Header().Set("Retry-After", "600")
 		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "too many login attempts")
@@ -1209,6 +1232,7 @@ func (x *API) passwordLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "phone or password is incorrect")
 		return
 	}
+	attempt.entry.UserID = u.ID
 	x.issueUserSession(w, r, u)
 }
 
@@ -1349,6 +1373,8 @@ func (x *API) pollQRLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "QR login ticket and poll token are required")
 		return
 	}
+	attempt := x.beginUserAccess(&w, r, "login", "qr", "")
+	defer attempt.finish()
 	if !x.allow(r.Context(), "qr-login-poll-ip:"+x.clientIP(r), 180, 5*time.Minute) || !x.allow(r.Context(), "qr-login-poll-ticket:"+payload.ID, 90, 5*time.Minute) {
 		w.Header().Set("Retry-After", "10")
 		writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "QR login polling is temporarily limited")
@@ -1361,6 +1387,7 @@ func (x *API) pollQRLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if consumed {
+		attempt.entry.UserID = ticket.UserID
 		if ticket.UserID == "" || !x.app.IsActiveUser(ticket.UserID) {
 			writeError(w, http.StatusForbidden, "QR_LOGIN_ACCOUNT_UNAVAILABLE", "the confirming account is unavailable")
 			return
@@ -2903,7 +2930,16 @@ func (x *API) adminStats(w http.ResponseWriter, r *http.Request) {
 func (x *API) adminUsers(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	limit, _ := strconv.Atoi(query.Get("limit"))
-	items, total, next, err := x.app.AdminUsersPage(query.Get("q"), query.Get("status"), query.Get("cursor"), limit)
+	ip, ok := parseAccessIP(query.Get("ip"))
+	source := query.Get("ipSource")
+	if source == "" {
+		source = "any"
+	}
+	if !ok || !memberOf(source, "any", "registration", "last_login", "history") {
+		writeError(w, 400, "INVALID_ARGUMENT", "invalid IP filter")
+		return
+	}
+	items, total, next, err := x.app.AdminUsersByIP(r.Context(), query.Get("q"), query.Get("status"), query.Get("cursor"), limit, ip, source)
 	if err != nil {
 		handleErr(w, err)
 		return
@@ -2911,7 +2947,13 @@ func (x *API) adminUsers(w http.ResponseWriter, r *http.Request) {
 	for _, item := range items {
 		x.signAvatarURL(item)
 	}
-	write(w, 200, map[string]any{"items": items, "total": total, "nextCursor": next})
+	decorated, err := x.adminAccessUsers(r.Context(), items, ip)
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	x.app.RecordAdminAudit(uid(r), "user.ip.viewed", "user_access", "users", "success", x.clientIP(r), map[string]any{"ip": ip, "ipSource": source, "q": query.Get("q"), "status": query.Get("status"), "returned": len(items)})
+	write(w, 200, map[string]any{"items": decorated, "total": total, "nextCursor": next})
 }
 func (x *API) adminUserOverview(w http.ResponseWriter, r *http.Request) {
 	item, err := x.app.AdminUserOverview(r.PathValue("id"))
@@ -2921,7 +2963,14 @@ func (x *API) adminUserOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	if user, ok := item["user"].(*model.User); ok {
 		x.signAvatarURL(user)
+		decorated, err := x.adminAccessUsers(r.Context(), []*model.User{user}, "")
+		if err != nil {
+			handleErr(w, err)
+			return
+		}
+		item["user"] = decorated[0]
 	}
+	x.app.RecordAdminAudit(uid(r), "user.ip.viewed", "user", r.PathValue("id"), "success", x.clientIP(r), map[string]any{"returned": 1})
 	write(w, http.StatusOK, item)
 }
 func (x *API) adminUserFriends(w http.ResponseWriter, r *http.Request) {
@@ -3488,6 +3537,12 @@ func (x *API) deleteSensitiveWord(w http.ResponseWriter, r *http.Request) {
 }
 func (x *API) settingsPayload() map[string]any {
 	values := x.app.Settings()
+	if _, exists := values["directRecallMinutes"]; !exists {
+		values["directRecallMinutes"] = 1440
+	}
+	if _, exists := values["groupRecallMinutes"]; !exists {
+		values["groupRecallMinutes"] = 1440
+	}
 	getuiConfigured := x.cfg.GetuiAppID != "" && x.cfg.GetuiAppKey != "" && x.cfg.GetuiMasterSecret != ""
 	apnsVoIPConfigured := x.cfg.APNSVoIPKeyID != "" && x.cfg.APNSVoIPTeamID != "" && x.cfg.APNSVoIPBundleID != "" && x.cfg.APNSVoIPKeyFile != ""
 	pushConfigured := (x.cfg.PushProvider == "getui" && getuiConfigured) ||

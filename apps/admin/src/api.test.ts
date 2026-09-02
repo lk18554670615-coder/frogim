@@ -4,6 +4,37 @@ import { getApi, loginAdmin } from './api';
 describe('live API adapter', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
+  it('IP 筛选与登录日志使用真实接口，保留 IPv6、UTC 时间、游标和失败身份', async () => {
+    const fetchMock=vi.fn(async (input:RequestInfo|URL)=>({ok:true,status:200,headers:new Headers(),json:async()=>String(input).includes('user-access-logs')?{items:[{id:'e1',userId:'u1',user:{id:'u1',name:'测试',phone:'13900000001'},event:'login',method:'password',result:'failed',failureCode:'INVALID_CREDENTIALS',ip:'2001:db8::1',platform:'ios',occurredAt:'2026-09-02T03:00:00Z',region:{status:'unavailable',version:'fixed'}}],nextCursor:'next',retentionDays:180,geoVersion:'fixed'}:{items:[{id:'u1',name:'测试',access:{registrationSource:'unknown',lastLoginIp:'2001:db8::1',lastLoginAt:'2026-09-02T03:00:00Z',lastLoginRegion:{status:'unavailable',version:'fixed'},matchedSources:['last_login']}}],total:1}}));
+    vi.stubGlobal('fetch',fetchMock);const api=getApi('token');
+    const users=await api.getUsers('测试','active',1,20,'','2001:db8::1','history');
+    expect(String(fetchMock.mock.calls[0][0])).toContain('ip=2001%3Adb8%3A%3A1&ipSource=history');
+    expect(users.items[0].access).toMatchObject({registrationSource:'unknown',lastLoginIp:'2001:db8::1',lastLoginAt:'2026-09-02T03:00:00Z',matchedSources:['last_login']});
+    const logs=await api.getUserAccessLogs({userId:'u1',ip:'2001:db8::1',method:'password',result:'failed',event:'login',from:'2026-08-01T00:00:00Z',to:'2026-09-02T04:00:00Z',cursor:'cursor+/',limit:20});
+    expect(logs.items[0]).toMatchObject({user:{nickname:'测试',phone:'13900000001'},result:'failed',failureCode:'INVALID_CREDENTIALS',occurredAt:'2026-09-02T03:00:00Z',region:{status:'unavailable'}});
+    expect(logs.nextCursor).toBe('next');expect(logs.retentionDays).toBe(180);
+    const url=new URL(String(fetchMock.mock.calls[1][0]),'http://localhost');expect(url.searchParams.get('cursor')).toBe('cursor+/');expect(url.searchParams.get('from')).toBe('2026-08-01T00:00:00Z');
+  });
+
+  it('私聊撤回独立默认 24 小时，编辑配置保留，发布包含三项策略和审计确认', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => ({
+      ok: true, status: 200, headers: new Headers(),
+      json: async () => init?.body ? JSON.parse(String(init.body)) : { messageRecallMinutes: 7, groupRecallMinutes: 60 },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = getApi('token');
+    const initial = await api.getSettings();
+    expect(initial.directRecallMinutes).toBe(1440);
+    expect(initial.messageRecallMinutes).toBe(7);
+    expect(initial.groupRecallMinutes).toBe(60);
+    const updated = await api.updateSettings({ ...initial, directRecallMinutes: 10080 }, '调整私聊撤回策略');
+    const input = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(input).toMatchObject({ directRecallMinutes: 10080, groupRecallMinutes: 60, messageRecallMinutes: 7, reason: '调整私聊撤回策略', confirmed: true });
+    expect(updated.directRecallMinutes).toBe(10080);
+    expect(updated.messageRecallMinutes).toBe(7);
+    expect(updated.groupRecallMinutes).toBe(60);
+  });
+
   it('消费服务端 items/total/nextCursor 而不在本地再切片', async () => {
     const items = Array.from({ length: 20 }, (_, index) => ({ id: `u_${index}`, name: `用户${index}`, banned: index === 0, createdAt: '2026-07-31T00:00:00Z' }));
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => ({ ok: true, status: 200, headers: new Headers(), json: async () => ({ items, total: 25, nextCursor: 'cursor-page-2' }) }));

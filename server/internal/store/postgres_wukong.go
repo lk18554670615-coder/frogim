@@ -138,14 +138,40 @@ func (p *Postgres) recallWukongAuthorized(ctx context.Context, uid, mid string, 
 	if err != nil || !found {
 		return found, "", 0, nil, err
 	}
-	if meta.SenderID != uid && meta.Role != "owner" && meta.Role != "admin" {
+	// Lock the actual membership until commit: a concurrent demotion/removal
+	// cannot retain privileges from a stale client or an earlier metadata read.
+	var isGroup bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_groups g WHERE g.conversation_id=m.conversation_id),m.role
+		FROM im_members m WHERE m.conversation_id=$1 AND m.user_id=$2
+		AND (m.expires_at IS NULL OR m.expires_at>$3) FOR SHARE OF m`, meta.ConversationID, uid, at).Scan(&isGroup, &meta.Role)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return true, "", 0, nil, ErrForbidden
 	}
-	if meta.SenderID == uid && at.Sub(meta.MessageAt) > window {
+	if err != nil {
+		return true, "", 0, nil, err
+	}
+	if meta.SenderID != uid && !(isGroup && (meta.Role == "owner" || meta.Role == "admin")) {
 		return true, "", 0, nil, ErrForbidden
 	}
 	if meta.Extension["recalledAt"] != nil {
 		return true, meta.ConversationID, meta.MessageSeq, nil, tx.Commit(ctx)
+	}
+	if isGroup {
+		// Read the independent group policy in this transaction, not the auth
+		// policy cache. Changing this must never extend the edit/direct window.
+		var minutes int
+		if err = tx.QueryRow(ctx, `SELECT COALESCE((SELECT (value #>> '{}')::integer FROM im_settings WHERE key='groupRecallMinutes'),1440)`).Scan(&minutes); err != nil {
+			return true, "", 0, nil, err
+		}
+		window = time.Duration(max(1, min(minutes, 10080))) * time.Minute
+	}
+	var expired bool
+	if err = tx.QueryRow(ctx, `SELECT expired_at IS NOT NULL OR (expires_at IS NOT NULL AND expires_at<=$2)
+		FROM im_wukong_message_index WHERE message_id::text=$1`, mid, at).Scan(&expired); err != nil {
+		return true, "", 0, nil, err
+	}
+	if expired || meta.ContentType == wukong.ContentTypeSystemEvent || at.Sub(meta.MessageAt) > window {
+		return true, "", 0, nil, ErrForbidden
 	}
 	meta.Extension["recalledAt"] = at.UTC().Format(time.RFC3339Nano)
 	meta.Extension["revoker"] = uid
@@ -2047,7 +2073,8 @@ func enqueueWukongOfflinePush(ctx context.Context, tx pgx.Tx, event wukong.Webho
 		return errors.New("WuKongIM msg.offline is incomplete")
 	}
 	var content struct {
-		Type int `json:"type"`
+		Type  int    `json:"type"`
+		Event string `json:"event"`
 	}
 	if err := json.Unmarshal(message.Payload, &content); err != nil || content.Type <= 0 {
 		return errors.New("WuKongIM msg.offline content type is invalid")
@@ -2088,17 +2115,21 @@ func enqueueWukongOfflinePush(ctx context.Context, tx pgx.Tx, event wukong.Webho
 	if !wukong.SupportedChannelType(message.ChannelType) {
 		return errors.New("WuKongIM msg.offline channel type is invalid")
 	}
+	managementOnly := message.ChannelType == wukong.ChannelGroup &&
+		(content.Type == wukong.ContentTypeScreenshot ||
+			(content.Type == wukong.ContentTypeSystemEvent && IsPrivateGroupNoticeEvent(content.Event)))
 	_, err = tx.Exec(ctx, `
 		WITH recipients(uid) AS (SELECT DISTINCT unnest($1::text[]))
 		INSERT INTO im_push_outbox(user_id,event_type,payload)
 		SELECT recipient.uid,'message.created',jsonb_build_object('message',jsonb_build_object(
-			'id',$3::text,'conversationId',$2::text,'type',$4::text))
+			'id',$3::text,'conversationId',$2::text,'type',$4::text,'managementOnly',$5::boolean))
 		FROM recipients recipient
 		JOIN im_users target ON target.id=recipient.uid AND NOT target.banned
 		JOIN im_conversations conversation ON conversation.id=$2
 		JOIN im_members member ON member.conversation_id=conversation.id AND member.user_id=recipient.uid
 			AND NOT member.notifications_muted AND (member.expires_at IS NULL OR member.expires_at>now())
-	`, recipients, message.ChannelID, messageID, messageType)
+			AND (NOT $5::boolean OR member.role IN ('owner','admin'))
+	`, recipients, message.ChannelID, messageID, messageType, managementOnly)
 	return err
 }
 

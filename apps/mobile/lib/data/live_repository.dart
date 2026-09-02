@@ -10,6 +10,7 @@ import '../calls/call_models.dart';
 import '../calls/call_repository.dart';
 import '../core/app_config.dart';
 import '../core/auth_validation.dart';
+import '../core/group_message_policy.dart';
 import '../core/models.dart';
 import '../im/business_repository.dart';
 import '../im/business_features.dart';
@@ -1733,6 +1734,18 @@ class LiveImRepository
   void _emitEvent(String rawType, Map<String, Object?> wrapper) {
     final nested = wrapper['payload'];
     final payload = nested is Map ? wukongObjectMap(nested) : wrapper;
+    if (rawType == 'message.recalled') {
+      final cid = payload['conversationId']?.toString();
+      final mid = payload['messageId']?.toString();
+      final channel = _conversationChannels[cid];
+      if (_userId != null && channel != null && mid != null) {
+        unawaited(
+          _conversationCache
+              .markRecalled(_userId!, channel, mid)
+              .catchError((Object _) {}),
+        );
+      }
+    }
     if (rawType == 'group.history.updated' ||
         (rawType == 'group.system' &&
             payload['event'] == 'group.history.updated')) {
@@ -1804,7 +1817,17 @@ class LiveImRepository
       _ => ImEventType.unknown,
     };
     if (type != ImEventType.unknown) {
-      _events.add(ImEvent(type: type, payload: payload));
+      _events.add(
+        ImEvent(
+          type: type,
+          payload: {
+            ...payload,
+            if (type == ImEventType.conversationChanged &&
+                rawType.startsWith('group.'))
+              'groupSendPolicyChanged': true,
+          },
+        ),
+      );
     }
   }
 
@@ -1845,17 +1868,29 @@ class LiveImRepository
           '${item['channel_id'] ?? item['channelId']}@${item['channel_type'] ?? item['channelType']}':
               item,
       };
-      return metadata.map((conversation) {
+      final result = <Conversation>[];
+      for (final conversation in metadata) {
         final channel = _conversationChannels[conversation.id];
         final item = channel == null ? null : byChannel[channel.key];
-        return item == null
-            ? conversation
-            : _mergeWukongConversation(conversation, channel!, item);
-      }).toList();
+        result.add(
+          item == null
+              ? (isManagedGroup(conversation)
+                    ? conversation.copyWith(subtitle: '打开会话查看消息')
+                    : conversation)
+              : await _mergeWukongConversation(conversation, channel!, item),
+        );
+      }
+      return _userId == sessionUserId ? result : const [];
     } catch (_) {
       // Business metadata remains useful during a transient IM sync outage;
       // message history itself never falls back to the legacy message store.
-      return metadata;
+      return metadata
+          .map(
+            (item) => isManagedGroup(item)
+                ? item.copyWith(subtitle: '打开会话查看消息')
+                : item,
+          )
+          .toList();
     }
   }
 
@@ -1881,13 +1916,13 @@ class LiveImRepository
     _channelConversations[channel.key] = conversation.id;
   }
 
-  Conversation _mergeWukongConversation(
+  Future<Conversation> _mergeWukongConversation(
     Conversation conversation,
     WukongChannel channel,
     Map<String, Object?> item,
-  ) {
+  ) async {
     final recents = item['recents'] as List<Object?>? ?? const [];
-    String? subtitle;
+    String? subtitle = isManagedGroup(conversation) ? '打开会话查看消息' : null;
     if (recents.isNotEmpty && recents.first is Map) {
       final recent = wukongObjectMap(recents.first);
       final normalized = <String, Object?>{
@@ -1896,15 +1931,22 @@ class LiveImRepository
         'channel_type': recent['channel_type'] ?? channel.type,
       };
       final message = WukongMessage.fromSyncJson(normalized);
-      subtitle = !_canReadWukongMessage(message)
-          ? '打开会话查看消息'
-          : _messageMapper
-                .toChatMessage(
-                  message,
-                  currentUserId: _userId ?? '',
-                  conversationId: conversation.id,
-                )
-                .text;
+      final mapped = _messageMapper.toChatMessage(
+        message,
+        currentUserId: _userId ?? '',
+        conversationId: conversation.id,
+      );
+      if (!_canReadWukongMessage(message)) {
+        subtitle = '打开会话查看消息';
+      } else if (canPresentGroupMessage(mapped, conversation)) {
+        subtitle = messagePreviewText(mapped);
+      } else {
+        subtitle = await _previousVisibleGroupPreview(
+          conversation,
+          channel,
+          message.messageSeq,
+        );
+      }
     }
     final timestamp = (item['timestamp'] as num?)?.toInt() ?? 0;
     final updatedAt = timestamp <= 0
@@ -1927,6 +1969,60 @@ class LiveImRepository
           (item['readedToMsgSeq'] as num?)?.toInt() ??
           conversation.lastReadSeq,
     );
+  }
+
+  Future<String> _previousVisibleGroupPreview(
+    Conversation conversation,
+    WukongChannel channel,
+    int before,
+  ) async {
+    final uid = _userId;
+    // Use raw sequence cursors, not the number of rendered items: any number
+    // of adjacent hidden notices may precede the last visible message.
+    try {
+      while (uid != null && _userId == uid && before > 1) {
+        final data = await _business.syncMessages(
+          channel: channel,
+          startMessageSeq: before - 1,
+          endMessageSeq: 0,
+          limit: 50,
+          pullMode: 0,
+        );
+        final page =
+            (data['messages'] as List<Object?>? ?? const [])
+                .whereType<Map>()
+                .map(
+                  (raw) => WukongMessage.fromSyncJson({
+                    ...wukongObjectMap(raw),
+                    'channel_id': channel.id,
+                    'channel_type': channel.type,
+                  }),
+                )
+                .where(
+                  (item) => item.messageSeq > 0 && item.messageSeq < before,
+                )
+                .toList()
+              ..sort((a, b) => b.messageSeq.compareTo(a.messageSeq));
+        if (_userId != uid || page.isEmpty) break;
+        await _conversationCache.mergeMessages(uid, channel, page);
+        for (final message in page) {
+          final mapped = _messageMapper.toChatMessage(
+            message,
+            currentUserId: uid,
+            conversationId: conversation.id,
+          );
+          if (_canReadWukongMessage(message) &&
+              canPresentGroupMessage(mapped, conversation)) {
+            return messagePreviewText(mapped);
+          }
+        }
+        before = page.last.messageSeq;
+        if (data['more'] == 0) break;
+      }
+    } catch (_) {
+      // Never fall back to an unclassified server digest when history is down.
+    }
+    return '打开会话查看消息';
   }
 
   Future<WukongChannel?> _channelForConversation(String conversationId) async {
@@ -2966,6 +3062,10 @@ class LiveImRepository
       }
       final pageMessage = merged[index];
       merged[index] = message.copyWith(
+        status: pageMessage.status == MessageStatus.recalled
+            ? MessageStatus.recalled
+            : message.status,
+        text: pageMessage.status == MessageStatus.recalled ? '' : message.text,
         replyToText: message.replyToText ?? pageMessage.replyToText,
         linkPreview: message.linkPreview ?? pageMessage.linkPreview,
         reactions: message.reactions.isEmpty
@@ -3800,13 +3900,24 @@ class LiveImRepository
   Future<void> persistMessages(
     String conversationId,
     List<ChatMessage> messages,
-  ) => _store.writeJson(
-    'messages.$conversationId',
-    messages
-        .where(canReadCachedMessage)
-        .map((message) => message.toJson())
-        .toList(),
-  );
+  ) async {
+    final uid = _userId;
+    final channel = _conversationChannels[conversationId];
+    if (uid != null && channel != null) {
+      for (final message in messages.where(
+        (m) => m.status == MessageStatus.recalled,
+      )) {
+        await _conversationCache.markRecalled(uid, channel, message.id);
+      }
+    }
+    await _store.writeJson(
+      'messages.$conversationId',
+      messages
+          .where(canReadCachedMessage)
+          .map((message) => message.toJson())
+          .toList(),
+    );
+  }
 
   @override
   Future<String> readDraft(String conversationId) async =>

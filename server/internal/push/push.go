@@ -216,7 +216,11 @@ func (d *Dispatcher) deliver(ctx context.Context, item store.OutboxItem) {
 	deliveryCtx, cancel := context.WithTimeout(ctx, d.deliveryTimeout)
 	defer cancel()
 	var err error
-	if len(item.Devices) > 0 {
+	allowed := true
+	if policy, ok := d.store.(store.PushPresentationPolicyStore); ok {
+		allowed, err = policy.CanPresentPush(deliveryCtx, item)
+	}
+	if err == nil && allowed && len(item.Devices) > 0 {
 		err = d.provider.Send(deliveryCtx, item)
 	}
 	var delivery *DeliveryError

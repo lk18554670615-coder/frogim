@@ -1,6 +1,30 @@
 CREATE TABLE IF NOT EXISTS im_state_meta(singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),revision bigint NOT NULL DEFAULT 0);
 INSERT INTO im_state_meta(singleton,revision) VALUES(true,0) ON CONFLICT(singleton) DO NOTHING;
 CREATE TABLE IF NOT EXISTS im_users(id text PRIMARY KEY,phone text UNIQUE NOT NULL,name text NOT NULL,handle text UNIQUE,signature text NOT NULL DEFAULT '',avatar_media_id text,avatar_url text NOT NULL DEFAULT '',banned boolean NOT NULL DEFAULT false,created_at timestamptz NOT NULL,updated_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS im_user_access_profiles(
+ user_id text PRIMARY KEY REFERENCES im_users(id) ON DELETE CASCADE,
+ registration_source text NOT NULL DEFAULT 'unknown' CHECK(registration_source IN ('unknown','app','admin')),
+ registration_ip inet,
+ last_login_ip inet,
+ last_login_at timestamptz,
+ last_login_event_id text NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS im_user_access_profiles_registration_ip_idx ON im_user_access_profiles(registration_ip) WHERE registration_ip IS NOT NULL;
+CREATE INDEX IF NOT EXISTS im_user_access_profiles_last_login_ip_idx ON im_user_access_profiles(last_login_ip) WHERE last_login_ip IS NOT NULL;
+CREATE TABLE IF NOT EXISTS im_user_access_logs(
+ id text PRIMARY KEY,
+ user_id text REFERENCES im_users(id) ON DELETE SET NULL,
+ event text NOT NULL CHECK(event IN ('register','login')),
+ method text NOT NULL CHECK(method IN ('password','otp','qr','admin')),
+ result text NOT NULL CHECK(result IN ('success','failed')),
+ failure_code text NOT NULL DEFAULT '',
+ ip inet,
+ platform text NOT NULL,
+ occurred_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS im_user_access_logs_user_time_idx ON im_user_access_logs(user_id,occurred_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS im_user_access_logs_ip_time_idx ON im_user_access_logs(ip,occurred_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS im_user_access_logs_time_idx ON im_user_access_logs(occurred_at DESC,id DESC);
 ALTER TABLE im_users ADD COLUMN IF NOT EXISTS handle text;
 ALTER TABLE im_users ADD COLUMN IF NOT EXISTS signature text NOT NULL DEFAULT '';
 ALTER TABLE im_users ADD COLUMN IF NOT EXISTS avatar_media_id text;

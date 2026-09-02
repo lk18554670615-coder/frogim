@@ -468,6 +468,19 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final now = DateTime(2026, 8, 1, 10);
+    final receiptController =
+        AppController(DemoImRepository(latency: Duration.zero))
+          ..conversations = [
+            Conversation(
+              id: 'c1',
+              title: '回执测试群',
+              subtitle: '',
+              updatedAt: now,
+              kind: ConversationKind.group,
+              currentUserRole: 'owner',
+            ),
+          ];
+    addTearDown(receiptController.dispose);
     await tester.pumpWidget(
       MediaQuery(
         data: const MediaQueryData(textScaler: TextScaler.linear(2)),
@@ -477,6 +490,7 @@ void main() {
             body: ListView(
               children: [
                 MessageBubble(
+                  controller: receiptController,
                   message: ChatMessage(
                     id: 'preview',
                     conversationId: 'c1',

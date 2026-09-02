@@ -31,6 +31,34 @@ func (s *dispatcherStore) InvalidatePushDevices(_ context.Context, ids []string)
 
 type staticProvider struct{ err error }
 
+type presentationStore struct {
+	dispatcherStore
+	allowed     bool
+	policyError error
+}
+
+func (s *presentationStore) CanPresentPush(context.Context, store.OutboxItem) (bool, error) {
+	return s.allowed, s.policyError
+}
+
+type countingProvider struct{ sends int }
+
+func (p *countingProvider) Send(context.Context, store.OutboxItem) error { p.sends++; return nil }
+func TestDispatcherChecksCurrentPresentationPolicyBeforeSending(t *testing.T) {
+	for _, tc := range []struct {
+		allowed bool
+		err     error
+		sends   int
+	}{{false, nil, 0}, {false, errors.New("db unavailable"), 0}, {true, nil, 1}} {
+		s := &presentationStore{dispatcherStore: dispatcherStore{items: []store.OutboxItem{{ID: 1, Devices: []store.Device{{ID: "test"}}}}}, allowed: tc.allowed, policyError: tc.err}
+		provider := &countingProvider{}
+		NewDispatcher(s, provider).once(t.Context())
+		if provider.sends != tc.sends || (s.completed != nil) != (tc.err != nil) {
+			t.Fatalf("sends=%d completed=%v", provider.sends, s.completed)
+		}
+	}
+}
+
 func (p staticProvider) Send(context.Context, store.OutboxItem) error { return p.err }
 
 func TestDispatcherInvalidatesPermanentDeviceTokenAndCompletesItem(t *testing.T) {

@@ -17,6 +17,8 @@ import 'client_message_id.dart';
 import 'client_diagnostics.dart';
 import 'client_device.dart';
 import 'forward_batch.dart';
+import 'group_message_policy.dart';
+import 'group_send_policy.dart';
 import 'image_dimensions.dart';
 import 'models.dart';
 
@@ -47,6 +49,36 @@ class AppController extends ChangeNotifier {
   AppUser? currentUser;
   List<Conversation> conversations = [];
   List<AppUser> contacts = [];
+
+  /// Resolve against current contacts so open pages see edits and cleared
+  /// remarks immediately. Never write this value back into public user data.
+  String displayNameFor(AppUser user, {String? groupNickname}) {
+    final contact = contacts.where((item) => item.id == user.id).firstOrNull;
+    if (contact != null && contact.remark.trim().isNotEmpty) {
+      return contact.displayName;
+    }
+    if (groupNickname?.trim().isNotEmpty == true) return groupNickname!.trim();
+    return contact?.name ?? user.name;
+  }
+
+  String displayNameForId(String userId, {String fallback = ''}) {
+    final contact = contacts.where((item) => item.id == userId).firstOrNull;
+    return contact?.displayName ?? fallback;
+  }
+
+  String displayConversationName(Conversation conversation) {
+    if (conversation.kind != ConversationKind.direct) return conversation.title;
+    final peer = conversation.directPeerFor(currentUser?.id);
+    if (peer != null) {
+      final name = displayNameFor(peer);
+      if (name.trim().isNotEmpty) return name;
+    }
+    return displayNameForId(
+      conversation.channelId ?? '',
+      fallback: conversation.title,
+    );
+  }
+
   List<FriendRequest> requests = [];
   List<GroupInvitation> groupInvitations = [];
   List<AppAnnouncement> announcements = [];
@@ -55,6 +87,44 @@ class AppController extends ChangeNotifier {
   String? groupInvitationsLoadError;
   String? announcementsLoadError;
   final Map<String, List<ChatMessage>> _messages = {};
+  final Map<String, GroupSendPolicy> _groupSendPolicies = {};
+  final Map<String, int> _groupSendPolicyRequests = {};
+  int groupSendPolicyRevision = 0;
+
+  GroupSendPolicy? groupSendPolicyFor(String conversationId) =>
+      _groupSendPolicies[conversationId];
+
+  Future<GroupSendPolicy> loadGroupSendPolicy(String conversationId) async {
+    final userId = currentUser?.id;
+    final revision = groupSendPolicyRevision;
+    final request = (_groupSendPolicyRequests[conversationId] ?? 0) + 1;
+    _groupSendPolicyRequests[conversationId] = request;
+    final results = await Future.wait<Object>([
+      repository.groupProfile(conversationId),
+      repository.groupMembers(conversationId),
+    ]).timeout(const Duration(seconds: 6));
+    final policy = GroupSendPolicy(
+      profile: results[0] as GroupProfile,
+      member: (results[1] as List<GroupMember>)
+          .where((member) => member.user.id == userId)
+          .firstOrNull,
+    );
+    if (!_disposed &&
+        userId == currentUser?.id &&
+        revision == groupSendPolicyRevision &&
+        request == _groupSendPolicyRequests[conversationId]) {
+      _groupSendPolicies[conversationId] = policy;
+      notifyListeners();
+    }
+    return policy;
+  }
+
+  final Set<String> _untrustedGroupRoles = {};
+  int _groupRoleEpoch = 0;
+  int _presentationRevision = 0;
+  final Set<String> _recalledMessageIds = {};
+  int get groupPresentationRevision =>
+      groupHistoryRevision + _groupRoleEpoch + _presentationRevision;
   final Map<String, Future<void>> _messageLoadOperations = {};
   final Map<String, Future<List<ChatMessage>>> _messageCacheLoadOperations = {};
   final Map<String, String> _drafts = {};
@@ -157,10 +227,15 @@ class AppController extends ChangeNotifier {
     }
     final names = userIds
         .map(
-          (userId) => conversation.members
-              .where((member) => member.id == userId)
-              .firstOrNull
-              ?.name,
+          (userId) => displayNameForId(
+            userId,
+            fallback:
+                conversation.members
+                    .where((member) => member.id == userId)
+                    .firstOrNull
+                    ?.name ??
+                '',
+          ),
         )
         .whereType<String>()
         .where((name) => name.trim().isNotEmpty)
@@ -171,8 +246,108 @@ class AppController extends ChangeNotifier {
   }
 
   List<ChatMessage> messagesFor(String conversationId) => List.unmodifiable(
-    (_messages[conversationId] ?? const <ChatMessage>[]).where(canReadMessage),
+    (_messages[conversationId] ?? const <ChatMessage>[])
+        .where(canDisplayMessage)
+        .map(_displayMessage),
   );
+  Conversation? _conversationFor(String id) =>
+      conversations.where((item) => item.id == id).firstOrNull;
+
+  ChatMessage _currentVersion(ChatMessage message) {
+    return _recalledMessageIds.contains(message.id)
+        ? message.copyWith(text: '', status: MessageStatus.recalled)
+        : message;
+  }
+
+  bool canDisplayMessage(ChatMessage message) =>
+      canReadMessage(message) &&
+      canPresentGroupMessage(
+        _currentVersion(message),
+        _conversationFor(message.conversationId),
+        roleTrusted: !_untrustedGroupRoles.contains(message.conversationId),
+      );
+
+  bool canRecallMessage(ChatMessage message) =>
+      canReadMessage(message) &&
+      canRecallChatMessage(
+        _currentVersion(message),
+        _conversationFor(message.conversationId),
+        authPolicy,
+        roleTrusted: !_untrustedGroupRoles.contains(message.conversationId),
+      );
+
+  bool canDisplayMessageReceipts(String conversationId) =>
+      canPresentMessageReceipts(
+        _conversationFor(conversationId),
+        roleTrusted: !_untrustedGroupRoles.contains(conversationId),
+      );
+
+  ChatMessage _displayMessage(ChatMessage message) {
+    message = _currentVersion(message);
+    if (message.status == MessageStatus.recalled) {
+      return message.copyWith(text: '消息已撤回', replyToText: '原消息暂不可见');
+    }
+    if (message.replyToId == null) return message;
+    final source = (_messages[message.conversationId] ?? const <ChatMessage>[])
+        .where((item) => item.id == message.replyToId)
+        .firstOrNull;
+    if (source != null &&
+        (source.status == MessageStatus.recalled ||
+            !canDisplayMessage(source))) {
+      return message.copyWith(replyToText: '原消息暂不可见');
+    }
+    if (source == null &&
+        isManagedGroup(_conversationFor(message.conversationId))) {
+      return message.copyWith(replyToText: '原消息暂不可见');
+    }
+    return message;
+  }
+
+  bool shouldNotifyConversation(String id, {required int afterSequence}) {
+    if (!isManagedGroup(_conversationFor(id))) return true;
+    if (_untrustedGroupRoles.contains(id)) return false;
+    return (_messages[id] ?? const <ChatMessage>[]).any(
+      (message) =>
+          message.conversationSeq > afterSequence &&
+          !message.isMine &&
+          canDisplayMessage(message),
+    );
+  }
+
+  void _suspendGroupRoles([String? cid]) {
+    _groupRoleEpoch++;
+    for (final conversation in conversations) {
+      if (isManagedGroup(conversation) &&
+          (cid == null || conversation.id == cid)) {
+        _untrustedGroupRoles.add(conversation.id);
+        _refreshGroupPreview(conversation.id, force: true);
+      }
+    }
+  }
+
+  void _refreshGroupPreview(
+    String cid, {
+    bool force = false,
+    List<ChatMessage> fallbackMessages = const [],
+  }) {
+    final index = conversations.indexWhere((item) => item.id == cid);
+    if (index < 0 || !isManagedGroup(conversations[index])) return;
+    final current = conversations[index];
+    final raw = _messages[cid] ?? fallbackMessages;
+    final highest = raw.fold<int>(
+      0,
+      (seq, item) => max(seq, item.conversationSeq),
+    );
+    if (!force && highest < current.lastMessageSeq) return;
+    final visible = raw.where(canDisplayMessage).toList()
+      ..sort((a, b) => a.sentAt.compareTo(b.sentAt));
+    final last = visible.lastOrNull;
+    conversations[index] = current.copyWith(
+      subtitle: last == null ? '打开会话查看消息' : messagePreviewText(last),
+      lastMessageSeq: max(highest, current.lastMessageSeq),
+    );
+  }
+
   bool canReadMessage(ChatMessage message) =>
       repository is! GroupHistoryRepository ||
       (repository as GroupHistoryRepository).canReadCachedMessage(message);
@@ -648,12 +823,16 @@ class AppController extends ChangeNotifier {
       connected = value;
       connectionAttempted = true;
       if (value) {
+        groupSendPolicyRevision++;
         connectionRetrying = false;
+        _scheduleConversationRefresh();
+        unawaited(refreshAuthPolicy());
         unawaited(_flushPendingDeliveries());
         unawaited(_resumeMediaAfterReconnect());
       } else if (_sendingMediaMessageIds.isNotEmpty) {
         _mediaAwaitingReconnect.addAll(_sendingMediaMessageIds);
       }
+      if (!value) _suspendGroupRoles();
       notifyListeners();
     });
     _eventSubscription ??= repository.events.listen(_handleEvent);
@@ -687,10 +866,21 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _loadCore() async {
+    final roleEpoch = _groupRoleEpoch;
     final loadedConversations = await repository.conversations();
     if (!authenticated) return;
-    conversations = loadedConversations;
-    _sortConversations();
+    if (roleEpoch != _groupRoleEpoch) {
+      _scheduleConversationRefresh();
+    } else {
+      conversations = loadedConversations;
+      _untrustedGroupRoles.clear();
+      _presentationRevision++;
+      for (final conversation in conversations) {
+        _refreshGroupPreview(conversation.id);
+      }
+      _sortConversations();
+    }
+    // Stale group metadata must not cancel contacts/invitations bootstrap.
     _prewarmRecentMessageCaches();
     final results = await Future.wait<Object>([
       _loadOptional(
@@ -1246,6 +1436,7 @@ class AppController extends ChangeNotifier {
     }
     final existing = _messages[conversationId] ?? const <ChatMessage>[];
     _messages[conversationId] = _mergeMessageLists(existing, cached);
+    _refreshGroupPreview(conversationId);
     final oldestSequence = _oldestServerSequence(_messages[conversationId]!);
     _messageHistoryHasMore[conversationId] =
         repository is PaginatedMessageRepository && oldestSequence > 1;
@@ -1286,10 +1477,10 @@ class AppController extends ChangeNotifier {
       }
       final messages = remoteResult.messages!;
       final existing = _messages[conversationId] ?? const <ChatMessage>[];
-      final merged = force && existing.isNotEmpty
-          ? _mergeMessageLists(existing, messages)
-          : _mergeMessageLists(const [], messages);
+      // Preserve live events (especially recalls) arriving during the fetch.
+      final merged = _mergeMessageLists(existing, messages);
       _messages[conversationId] = merged;
+      _refreshGroupPreview(conversationId);
       final oldestSequence = _oldestServerSequence(merged);
       _messageHistoryHasMore[conversationId] =
           repository is PaginatedMessageRepository && oldestSequence > 1;
@@ -1302,6 +1493,10 @@ class AppController extends ChangeNotifier {
         ),
       );
       _hydrateLinkPreviews(conversationId);
+      if (messagesFor(conversationId).isEmpty &&
+          messageHistoryHasMore(conversationId)) {
+        await loadOlderMessages(conversationId);
+      }
     } catch (exception) {
       messageErrors[conversationId] = _messageFor(
         exception,
@@ -1341,27 +1536,46 @@ class AppController extends ChangeNotifier {
     messageHistoryErrors.remove(conversationId);
     notifyListeners();
     try {
-      final older = await historyRepository.olderMessages(
-        conversationId,
-        beforeSequence: beforeSequence,
-        limit: limit,
-      );
-      final merged = _mergeMessageLists(current, older);
-      final nextOldest = _oldestServerSequence(merged);
-      final advanced = nextOldest > 0 && nextOldest < beforeSequence;
-      _messages[conversationId] = merged;
-      _messageHistoryHasMore[conversationId] =
-          advanced && nextOldest > 1 && older.isNotEmpty;
-      if (advanced) {
-        _hydrateLinkPreviews(conversationId);
-        // The production repository has already committed its bounded WuKong
-        // hot cache. Persist the page-model snapshot off the scroll path so a
-        // slow local store cannot delay viewport anchoring.
-        unawaited(
-          repository.persistMessages(conversationId, merged).catchError((_) {}),
+      var cursor = beforeSequence;
+      var progressed = false;
+      final sessionUserId = currentUser?.id;
+      do {
+        final older = await historyRepository.olderMessages(
+          conversationId,
+          beforeSequence: cursor,
+          limit: limit,
         );
-      }
-      return advanced;
+        if (_disposed || currentUser?.id != sessionUserId) return false;
+        final merged = _mergeMessageLists(
+          _messages[conversationId] ?? const <ChatMessage>[],
+          older,
+        );
+        final nextOldest = _oldestServerSequence(merged);
+        final advanced = nextOldest > 0 && nextOldest < cursor;
+        progressed = progressed || advanced;
+        _messages[conversationId] = merged;
+        _messageHistoryHasMore[conversationId] =
+            advanced && nextOldest > 1 && older.isNotEmpty;
+        if (advanced) {
+          _hydrateLinkPreviews(conversationId);
+          // The production repository has already committed its bounded WuKong
+          // hot cache. Persist the page-model snapshot off the scroll path so a
+          // slow local store cannot delay viewport anchoring.
+          unawaited(
+            repository
+                .persistMessages(conversationId, merged)
+                .catchError((_) {}),
+          );
+        }
+        _refreshGroupPreview(conversationId);
+        // Page by raw sequence, not by visible row count: a page containing
+        // only management notices must not make earlier history unreachable.
+        if (!messageHistoryHasMore(conversationId) ||
+            older.any(canDisplayMessage)) {
+          return progressed;
+        }
+        cursor = nextOldest;
+      } while (true);
     } catch (exception) {
       messageHistoryErrors[conversationId] = _messageFor(
         exception,
@@ -1393,6 +1607,10 @@ class AppController extends ChangeNotifier {
 
     void upsert(ChatMessage message) {
       if (!canReadMessage(message)) return;
+      if (message.status == MessageStatus.recalled) {
+        _recalledMessageIds.add(message.id);
+      }
+      message = _currentVersion(message);
       final identities = <String>{
         if (message.id.isNotEmpty) 'id:${message.id}',
         if (message.clientMessageId.isNotEmpty)
@@ -1406,7 +1624,9 @@ class AppController extends ChangeNotifier {
         index = merged.length;
         merged.add(message);
       } else {
-        merged[index] = message;
+        merged[index] = merged[index].status == MessageStatus.recalled
+            ? message.copyWith(text: '', status: MessageStatus.recalled)
+            : message;
       }
       for (final identity in identities) {
         indexByIdentity[identity] = index;
@@ -1945,7 +2165,7 @@ class AppController extends ChangeNotifier {
         );
         _pendingMedia[pending.clientMessageId] = upload;
       }
-      final sent = upload == null
+      var sent = upload == null
           ? await repository.send(pending)
           : await repository.sendMedia(
               pending,
@@ -1958,6 +2178,9 @@ class AppController extends ChangeNotifier {
                 notifyListeners();
               },
             );
+      if (sent.status == MessageStatus.failed) {
+        sent = await _explainSendFailure(sent);
+      }
       _replaceMessage(pending.conversationId, pending.clientMessageId, sent);
       _pendingMedia.remove(pending.clientMessageId);
       _mediaUploadProgress.remove(pending.clientMessageId);
@@ -1977,7 +2200,10 @@ class AppController extends ChangeNotifier {
         _mediaAwaitingReconnect.add(pending.clientMessageId);
       }
       _mediaUploadProgress.remove(pending.clientMessageId);
-      final failed = pending.copyWith(status: MessageStatus.failed);
+      final failed = await _explainSendFailure(
+        pending.copyWith(status: MessageStatus.failed),
+        exception: exception,
+      );
       _replaceMessage(pending.conversationId, pending.clientMessageId, failed);
       await repository.persistMessages(pending.conversationId, list);
       notifyListeners();
@@ -2001,6 +2227,51 @@ class AppController extends ChangeNotifier {
         message.contains('connection closed') ||
         message.contains('network is unreachable') ||
         message.contains('software caused connection abort');
+  }
+
+  Future<ChatMessage> _explainSendFailure(
+    ChatMessage message, {
+    Object? exception,
+  }) async {
+    String? reason;
+    final conversation = conversations
+        .where((item) => item.id == message.conversationId)
+        .firstOrNull;
+    if (conversation?.kind == ConversationKind.group &&
+        !conversation!.isBusinessChannel) {
+      try {
+        final policy = await loadGroupSendPolicy(message.conversationId);
+        reason = policy.restrictionAt(DateTime.now());
+      } catch (_) {
+        // A failed permission lookup must not turn a network error into a mute.
+      }
+    }
+    reason ??= exception == null
+        ? message.sendError ?? '消息发送失败，请稍后重试'
+        : _messageFor(exception, fallback: '消息发送失败，请稍后重试');
+    return message.copyWith(sendError: reason);
+  }
+
+  Future<void> _explainLateSendFailure(ChatMessage message) async {
+    final userId = currentUser?.id;
+    final explained = await _explainSendFailure(message);
+    if (_disposed || userId != currentUser?.id) return;
+    final list = _messages[message.conversationId];
+    final index = list?.indexWhere(
+      (item) => item.clientMessageId == message.clientMessageId,
+    );
+    // A retry or a later successful ACK wins over this asynchronous lookup.
+    if (list == null ||
+        index == null ||
+        index < 0 ||
+        !identical(list[index], message)) {
+      return;
+    }
+    list[index] = explained;
+    notifyListeners();
+    try {
+      await repository.persistMessages(message.conversationId, list);
+    } catch (_) {}
   }
 
   Future<void> _resumeMediaAfterReconnect() async {
@@ -2171,7 +2442,7 @@ class AppController extends ChangeNotifier {
     try {
       return (await repository.pinnedMessages(
         conversationId,
-      )).where(canReadMessage).toList();
+      )).where(canDisplayMessage).map(_displayMessage).toList();
     } catch (exception) {
       error = _messageFor(exception, fallback: '置顶消息加载失败');
       notifyListeners();
@@ -2195,8 +2466,8 @@ class AppController extends ChangeNotifier {
       );
       final merged = <String, ChatMessage>{};
       for (final message in [...remote, ...local]) {
-        if (!canReadMessage(message)) continue;
-        merged[message.id] = message;
+        if (!canDisplayMessage(message)) continue;
+        merged[message.id] = _displayMessage(message);
       }
       final result = merged.values.toList()
         ..sort((a, b) => b.sentAt.compareTo(a.sentAt));
@@ -2209,6 +2480,9 @@ class AppController extends ChangeNotifier {
   }
 
   Future<ChatMessage> revealSearchResult(ChatMessage message) async {
+    if (!canDisplayMessage(message)) {
+      throw StateError('这条消息当前不可见');
+    }
     final current = _messages[message.conversationId] ?? const <ChatMessage>[];
     for (final item in current) {
       if (item.id == message.id ||
@@ -2234,22 +2508,27 @@ class AppController extends ChangeNotifier {
   }
 
   Future<bool> recallMessage(ChatMessage message) async {
-    if (!message.isMine || message.id.startsWith('local-')) {
+    if (!canRecallMessage(message)) {
       error = '这条消息当前不能撤回';
       notifyListeners();
       return false;
     }
     try {
       await repository.recallMessage(message.id);
-      _replaceMessage(
-        message.conversationId,
-        message.clientMessageId,
-        message.copyWith(text: '', status: MessageStatus.recalled),
+      _messages[message.conversationId] = _mergeMessageLists(
+        _messages[message.conversationId] ?? const <ChatMessage>[],
+        [message.copyWith(text: '', status: MessageStatus.recalled)],
       );
-      await repository.persistMessages(
-        message.conversationId,
-        _messages[message.conversationId]!,
-      );
+      _refreshGroupPreview(message.conversationId);
+      _presentationRevision++;
+      // A successful server recall must not be reported as failed just because
+      // the local cache write failed. The next extension sync repairs it.
+      try {
+        await repository.persistMessages(
+          message.conversationId,
+          _messages[message.conversationId]!,
+        );
+      } catch (_) {}
       notifyListeners();
       return true;
     } catch (exception) {
@@ -2442,6 +2721,10 @@ class AppController extends ChangeNotifier {
         }
       }
       _updateConversation(conversationId, forwarded.last.text);
+      // An unopened target has no in-memory history. Use the confirmed result
+      // for presentation without persisting a partial list over its disk cache.
+      // Existing cached recalls still take precedence over this fallback.
+      _refreshGroupPreview(conversationId, fallbackMessages: forwarded);
       notifyListeners();
       if (list != null) {
         try {
@@ -3149,10 +3432,17 @@ class AppController extends ChangeNotifier {
     AppUser user,
     String role,
   ) async {
+    final actorId = currentUser?.id;
     try {
       await repository.setGroupRole(conversationId, user.id, role);
+      if (_disposed || currentUser?.id != actorId) return false;
+      error = null;
+      groupSendPolicyRevision++;
+      _scheduleConversationRefresh();
+      notifyListeners();
       return true;
     } catch (exception) {
+      if (_disposed || currentUser?.id != actorId) return false;
       error = _messageFor(exception, fallback: '群管理员设置失败');
       notifyListeners();
       return false;
@@ -3473,7 +3763,10 @@ class AppController extends ChangeNotifier {
 
   Future<List<ChatMessage>> loadFavorites() async {
     try {
-      return (await repository.favorites()).where(canReadMessage).toList();
+      return (await repository.favorites())
+          .where(canDisplayMessage)
+          .map(_displayMessage)
+          .toList();
     } catch (exception) {
       error = _messageFor(exception, fallback: '收藏加载失败');
       notifyListeners();
@@ -3562,6 +3855,12 @@ class AppController extends ChangeNotifier {
     groupInvitationsLoadError = null;
     announcementsLoadError = null;
     _messages.clear();
+    _groupSendPolicies.clear();
+    _groupSendPolicyRequests.clear();
+    groupSendPolicyRevision++;
+    _recalledMessageIds.clear();
+    _untrustedGroupRoles.clear();
+    _groupRoleEpoch++;
     _messageLoadOperations.clear();
     _messageCacheLoadOperations.clear();
     _pendingMedia.clear();
@@ -3614,7 +3913,10 @@ class AppController extends ChangeNotifier {
       case ImEventType.messageCreated:
         final raw = event.payload['message'] as Map<String, Object?>?;
         if (raw == null) return;
-        final message = _messageFromEvent(raw);
+        final message = _currentVersion(_messageFromEvent(raw));
+        if (message.status == MessageStatus.recalled) {
+          _recalledMessageIds.add(message.id);
+        }
         if (!message.isMine) {
           _clearTypingUser(message.conversationId, message.senderId);
         }
@@ -3625,21 +3927,28 @@ class AppController extends ChangeNotifier {
               existing.clientMessageId == message.clientMessageId,
         );
         if (index >= 0) {
-          list[index] = message;
+          list[index] = list[index].status == MessageStatus.recalled
+              ? message.copyWith(text: '', status: MessageStatus.recalled)
+              : message;
         } else {
           list.add(message);
         }
-        _updateConversation(
-          message.conversationId,
-          message.text,
-          incrementUnread:
-              !message.isMine &&
-              _activeConversationId != message.conversationId,
-          incrementMention:
-              !message.isMine &&
-              _activeConversationId != message.conversationId &&
-              event.payload['mentioned'] == true,
-        );
+        final presented = index >= 0 ? list[index] : message;
+        if (canDisplayMessage(presented)) {
+          _updateConversation(
+            message.conversationId,
+            messagePreviewText(presented),
+            incrementUnread:
+                !message.isMine &&
+                _activeConversationId != message.conversationId,
+            incrementMention:
+                !message.isMine &&
+                _activeConversationId != message.conversationId &&
+                event.payload['mentioned'] == true,
+          );
+        } else {
+          _refreshGroupPreview(message.conversationId);
+        }
         if (!message.isMine &&
             _activeConversationId == message.conversationId) {
           unawaited(markRead(message.conversationId));
@@ -3650,7 +3959,11 @@ class AppController extends ChangeNotifier {
       case ImEventType.messageChanged:
         final raw = event.payload['message'] as Map<String, Object?>?;
         if (raw != null) {
-          final message = _messageFromEvent(raw);
+          final message = _currentVersion(_messageFromEvent(raw));
+          if (message.status == MessageStatus.recalled) {
+            _recalledMessageIds.add(message.id);
+            _presentationRevision++;
+          }
           final list = _messages[message.conversationId];
           final index = list?.indexWhere(
             (existing) =>
@@ -3658,8 +3971,14 @@ class AppController extends ChangeNotifier {
                 existing.clientMessageId == message.clientMessageId,
           );
           if (list != null && index != null && index >= 0) {
-            list[index] = message;
+            list[index] = list[index].status == MessageStatus.recalled
+                ? message.copyWith(text: '', status: MessageStatus.recalled)
+                : message;
+            _refreshGroupPreview(message.conversationId);
             unawaited(repository.persistMessages(message.conversationId, list));
+            if (message.isMine && message.status == MessageStatus.failed) {
+              unawaited(_explainLateSendFailure(list[index]));
+            }
           }
           break;
         }
@@ -3668,8 +3987,10 @@ class AppController extends ChangeNotifier {
           unawaited(loadMessages(conversationId, force: true));
         }
       case ImEventType.messageRecalled:
+        _presentationRevision++;
         final id = event.payload['messageId'] as String?;
         if (id == null) return;
+        _recalledMessageIds.add(id);
         for (final list in _messages.values) {
           final index = list.indexWhere((message) => message.id == id);
           if (index >= 0) {
@@ -3677,8 +3998,14 @@ class AppController extends ChangeNotifier {
               text: '',
               status: MessageStatus.recalled,
             );
+            final cid = list[index].conversationId;
+            _refreshGroupPreview(cid);
+            unawaited(
+              repository.persistMessages(cid, list).catchError((Object _) {}),
+            );
           }
         }
+        _scheduleConversationRefresh();
       case ImEventType.messageDelivered:
         _applyReceipt(event.payload, delivered: true);
       case ImEventType.messageRead:
@@ -3718,6 +4045,11 @@ class AppController extends ChangeNotifier {
         }
         _scheduleConversationRefresh();
       case ImEventType.conversationChanged:
+        if (event.payload['groupSendPolicyChanged'] == true) {
+          groupSendPolicyRevision++;
+        }
+        final cid = event.payload['conversationId']?.toString();
+        _suspendGroupRoles(cid);
         _scheduleConversationRefresh();
       case ImEventType.friendChanged:
         unawaited(_refreshSocial());
@@ -3822,10 +4154,20 @@ class AppController extends ChangeNotifier {
     }
     _conversationRefreshTimer = null;
     _conversationRefreshRunning = true;
+    final roleEpoch = _groupRoleEpoch;
     try {
       final refreshed = await repository.conversations();
       if (_disposed || !authenticated) return;
+      if (roleEpoch != _groupRoleEpoch) {
+        _conversationRefreshQueued = true;
+        return;
+      }
       conversations = refreshed;
+      _untrustedGroupRoles.clear();
+      _presentationRevision++;
+      for (final conversation in conversations) {
+        _refreshGroupPreview(conversation.id);
+      }
       _sortConversations();
       notifyListeners();
     } catch (_) {
@@ -4151,6 +4493,8 @@ class AppController extends ChangeNotifier {
         _messages[id]?.lastOrNull?.conversationSeq ?? 0,
       ),
     );
+    // A late send ACK must not restore the preview of a recalled group message.
+    _refreshGroupPreview(id);
     _sortConversations();
   }
 

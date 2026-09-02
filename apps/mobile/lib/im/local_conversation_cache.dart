@@ -6,6 +6,31 @@ class LocalConversationCache {
 
   final SecureLocalStore _store;
   final bool Function(WukongMessage)? isVisible;
+  final Map<String, Object> _recalls = {};
+
+  WukongMessage _withRecall(String uid, WukongMessage message) {
+    final key = '$uid:${message.messageId}';
+    final stamp = message.payload['recalledAt'];
+    if (stamp != null) _recalls[key] = stamp;
+    final recalled = _recalls[key];
+    return recalled == null
+        ? message
+        : message.copyWith(
+            payload: {...message.payload, 'recalledAt': recalled},
+          );
+  }
+
+  Future<void> markRecalled(
+    String uid,
+    WukongChannel channel,
+    String id,
+  ) async {
+    final key = '$uid:$id';
+    if (_recalls.containsKey(key)) return;
+    _recalls[key] = DateTime.now().toUtc().toIso8601String();
+    final messages = await readMessages(uid, channel);
+    await writeMessages(uid, channel, messages);
+  }
 
   Future<List<WukongMessage>> readMessages(
     String uid,
@@ -16,6 +41,7 @@ class LocalConversationCache {
     return raw
         .whereType<Map<String, Object?>>()
         .map(WukongMessage.fromJson)
+        .map((message) => _withRecall(uid, message))
         .where((message) => isVisible?.call(message) ?? true)
         .toList();
   }
@@ -27,6 +53,7 @@ class LocalConversationCache {
   ) => _store.writeJson(
     _messageKey(uid, channel),
     messages
+        .map((message) => _withRecall(uid, message))
         .where((message) => isVisible?.call(message) ?? true)
         .map((message) => message.toJson())
         .toList(),
@@ -38,7 +65,8 @@ class LocalConversationCache {
     Iterable<WukongMessage> authoritative,
   ) async {
     final merged = await readMessages(uid, channel);
-    for (final message in authoritative) {
+    for (final raw in authoritative) {
+      final message = _withRecall(uid, raw);
       final index = merged.indexWhere(
         (item) =>
             (message.messageId.isNotEmpty &&
@@ -64,6 +92,7 @@ class LocalConversationCache {
 
   Future<void> upsertMessage(String uid, WukongMessage message) async {
     final messages = await readMessages(uid, message.channel);
+    message = _withRecall(uid, message);
     final index = messages.indexWhere(
       (item) =>
           (message.messageId.isNotEmpty &&

@@ -15,6 +15,7 @@ import 'core/client_upgrade.dart';
 import 'core/client_diagnostics.dart';
 import 'core/bundled_licenses.dart';
 import 'core/push_service.dart';
+import 'core/web_context_menu.dart';
 import 'data/im_repository.dart';
 import 'data/live_repository.dart';
 import 'ui/screens/home_screen.dart';
@@ -39,7 +40,7 @@ void disposePersistentWebSemanticsForTest() {
 void main() {
   final startup = Stopwatch()..start();
   final diagnostics = ClientDiagnostics.instance;
-  runZonedGuarded(() {
+  runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
     // Flutter Web otherwise exposes only a one-time "Enable accessibility"
     // gate. Keep the semantic tree available from first paint so keyboard and
@@ -59,6 +60,7 @@ void main() {
     };
     AppConfig.validate();
     registerBundledLicenses();
+    await configureWebContextMenu();
     runApp(const LinliApp());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       startup.stop();

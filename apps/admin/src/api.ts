@@ -1,5 +1,7 @@
 import type {
   AdminApi,
+  IPRegion,
+  UserAccessProfile,
   AdministratorRecord,
   AdministratorRoleRecord,
   AnnouncementInput,
@@ -224,6 +226,13 @@ function localPageResult<T>(items: T[], requestedPage: number, requestedSize: nu
   return { items: items.slice(start, start + pageSize), page, pageSize, total: items.length, hasNext: start + pageSize < items.length };
 }
 
+function adaptIPRegion(value: unknown): IPRegion {
+  const r=object(value); return {status:string(r.status,'unavailable'),country:string(r.country),province:string(r.province),city:string(r.city),isp:string(r.isp),version:string(r.version)};
+}
+function adaptUserAccess(value: unknown): UserAccessProfile | undefined {
+  if (!value || typeof value!=='object') return undefined;
+  const r=object(value);return {registrationSource:r.registrationSource==='app'?'app':r.registrationSource==='admin'?'admin':'unknown',registrationIp:string(r.registrationIp),lastLoginIp:string(r.lastLoginIp),lastLoginAt:string(r.lastLoginAt),registrationRegion:adaptIPRegion(r.registrationRegion),lastLoginRegion:adaptIPRegion(r.lastLoginRegion),matchedSources:list(r.matchedSources).map(v=>string(v))};
+}
 function adaptUser(value: unknown): UserRecord {
   const raw = object(value);
   const nickname = string(raw.nickname, string(raw.name, '未命名用户'));
@@ -244,7 +253,7 @@ function adaptUser(value: unknown): UserRecord {
     avatar: string(raw.avatar, initial(nickname)), avatarUrl: string(raw.avatarUrl), status,
     online: boolean(raw.online), onlineConnections: number(raw.onlineConnections), lastOfflineAt,
     registeredAt: formatDate(raw.registeredAt ?? raw.createdAt), lastSeen: string(raw.lastSeen, lastOfflineAt ? formatDate(lastOfflineAt) : '暂无'),
-    deviceCount: number(raw.deviceCount), messageCount: number(raw.messageCount), latestDevice,
+    deviceCount: number(raw.deviceCount), messageCount: number(raw.messageCount), latestDevice, access:adaptUserAccess(raw.access),
   };
 }
 
@@ -730,7 +739,7 @@ function adaptSettings(payload: unknown): AdminSettings {
   return {
     allowRegistration: boolean(raw.allowRegistration, boolean(raw.registrationEnabled, true)),
     passwordMinLength: number(raw.passwordMinLength, 8),
-    maxMessageTextLength: number(raw.maxMessageTextLength, 5000), messageRecallMinutes: number(raw.messageRecallMinutes, 2),
+    maxMessageTextLength: number(raw.maxMessageTextLength, 5000), messageRecallMinutes: number(raw.messageRecallMinutes, 2), directRecallMinutes: number(raw.directRecallMinutes, 1440), groupRecallMinutes: number(raw.groupRecallMinutes, 1440),
     maxGroupMembers: number(raw.maxGroupMembers, 500),
     allowFriendRequests: boolean(raw.allowFriendRequests, true), allowSearchByHandle: boolean(raw.allowSearchByHandle, true), allowSearchByPhone: boolean(raw.allowSearchByPhone, false), friendRequestExpiryDays: number(raw.friendRequestExpiryDays, 7),
     announcementPushEnabled: boolean(raw.announcementPushEnabled, true), callsEnabled: boolean(raw.callsEnabled, true),
@@ -944,7 +953,12 @@ function liveApi(token: string): AdminApi {
     async updateAdministratorRole(id, input, reason) { return adaptAdministratorRole(await request(`/roles/${encodeURIComponent(id)}`, token, { method: 'PATCH', body: JSON.stringify({ ...input, reason, confirmed: true }) })); },
     async deleteAdministratorRole(id, reason) { await request(`/roles/${encodeURIComponent(id)}`, token, { method: 'DELETE', body: JSON.stringify({ reason, confirmed: true }) }); },
     async getDashboard() { return adaptDashboard(await request('/dashboard', token)); },
-    async getUsers(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/users?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptUser, page, pageSize); },
+    async getUsers(q = '', status = '', page = 1, pageSize = 20, cursor = '', ip = '', ipSource = 'any') { const suffix=ip||ipSource!=='any'?`&ip=${encodeURIComponent(ip)}&ipSource=${encodeURIComponent(ipSource)}`:''; const payload = await request(`/users?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}${suffix}`, token); return serverPage(payload, adaptUser, page, pageSize); },
+    async getUserAccessLogs(filters) {
+      const params=new URLSearchParams();for(const [key,value] of Object.entries(filters)){if(value!==undefined&&value!=='')params.set(key,String(value));}
+      const r=object(await request(`/user-access-logs?${params}`,token));
+      return {items:list(r.items).map(value=>{const e=object(value);return {id:string(e.id),userId:string(e.userId),user:e.user?adaptUser(e.user):undefined,event:string(e.event),method:string(e.method),result:string(e.result),failureCode:string(e.failureCode),ip:string(e.ip),platform:string(e.platform),occurredAt:string(e.occurredAt),region:adaptIPRegion(e.region)};}),nextCursor:string(r.nextCursor),from:string(r.from),to:string(r.to),retentionDays:number(r.retentionDays,180),geoVersion:string(r.geoVersion)};
+    },
     async createUser(input, reason) { return adaptUser(unwrapItem(await request('/users', token, { method: 'POST', body: JSON.stringify({ ...input, reason, confirmed: true }) }))); },
     async createUsersBatch(items: AdminUserBatchInput[], reason: string): Promise<AdminUserBatchResult> {
       const raw = object(await request('/users/batch', token, { method: 'POST', body: JSON.stringify({ items, reason, confirmed: true }) }));

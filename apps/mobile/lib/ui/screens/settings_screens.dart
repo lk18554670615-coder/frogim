@@ -1334,7 +1334,7 @@ class FavoritesScreen extends StatefulWidget {
 }
 
 class _FavoritesScreenState extends State<FavoritesScreen> {
-  late int _historyRevision = widget.controller.groupHistoryRevision;
+  late int _historyRevision = widget.controller.groupPresentationRevision;
   List<ChatMessage>? items;
   _FavoriteFilter filter = _FavoriteFilter.all;
 
@@ -1346,13 +1346,16 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   void _historyChanged() {
-    if (!mounted || _historyRevision == widget.controller.groupHistoryRevision) {
+    if (!mounted) return;
+    if (_historyRevision == widget.controller.groupPresentationRevision) {
+      setState(() {});
       return;
     }
-    _historyRevision = widget.controller.groupHistoryRevision;
+    _historyRevision = widget.controller.groupPresentationRevision;
     setState(
-      () => items = items?.where(widget.controller.canReadMessage).toList(),
+      () => items = items?.where(widget.controller.canDisplayMessage).toList(),
     );
+    unawaited(_load());
   }
 
   @override
@@ -1368,7 +1371,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final allItems = items?.where(widget.controller.canReadMessage).toList();
+    final allItems = items?.where(widget.controller.canDisplayMessage).toList();
     final filteredItems = allItems
         ?.where((message) => filter.matches(message.kind))
         .toList(growable: false);
@@ -1450,7 +1453,9 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
         ),
-        subtitle: Text('${message.senderName} · ${_monthDay(message.sentAt)}'),
+        subtitle: Text(
+          '${widget.controller.displayNameForId(message.senderId, fallback: message.senderName)} · ${_monthDay(message.sentAt)}',
+        ),
         trailing: const Icon(CupertinoIcons.chevron_forward, size: 16),
         onTap: () => _openConversation(message),
       ),

@@ -7,6 +7,34 @@ import 'package:linli_im/im/wukong_gateway_contract.dart';
 void main() {
   final mapper = MessageMapper();
 
+  test('失败回执有明确提示，重试不把本地错误文案发送给其他成员', () {
+    final failed = mapper.toChatMessage(
+      WukongMessage(
+        messageId: '',
+        messageSeq: 0,
+        clientMsgNo: 'muted-client',
+        clientSeq: 1,
+        fromUid: 'usr_a',
+        channel: const WukongChannel(id: 'group_1', type: 2),
+        timestamp: DateTime.utc(2026, 9, 2),
+        payload: const {'type': 1, 'content': '待发送'},
+        state: WukongMessageState.failed,
+        reasonCode: 25,
+      ),
+      currentUserId: 'usr_a',
+      conversationId: 'conversation-1',
+    );
+    expect(failed.status, MessageStatus.failed);
+    expect(failed.sendError, '当前会话已禁言，无法发送消息');
+    expect(ChatMessage.fromJson(failed.toJson()).sendError, failed.sendError);
+    expect(failed.copyWith(status: MessageStatus.sending).sendError, isNull);
+    final outgoing = mapper.toOutgoing(
+      failed,
+      channel: const WukongChannel(id: 'group_1', type: 2),
+    );
+    expect(outgoing.payload, {'type': 1, 'content': '待发送'});
+  });
+
   test('maps text reply and mentions to the WuKong wire body', () {
     final pending = ChatMessage(
       id: 'local-1',

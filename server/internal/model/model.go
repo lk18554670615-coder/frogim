@@ -307,7 +307,7 @@ func NewState() *State {
 		Reports: map[string]*Report{}, Audits: []*AuditEntry{},
 		SensitiveWords: map[string]string{}, Settings: map[string]any{
 			"registrationEnabled": true, "allowRegistration": true, "passwordMinLength": 8,
-			"maxMessageTextLength": 5000, "messageRecallMinutes": 2,
+			"maxMessageTextLength": 5000, "messageRecallMinutes": 2, "directRecallMinutes": 1440, "groupRecallMinutes": 1440,
 			"maxGroupMembers": 500, "allowFriendRequests": true, "friendRequestExpiryDays": 7,
 			"allowSearchByHandle": true, "allowSearchByPhone": false,
 			"announcementPushEnabled": true, "callsEnabled": true, "videoCallsEnabled": true,

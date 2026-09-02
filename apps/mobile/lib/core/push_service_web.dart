@@ -135,6 +135,10 @@ class _WebPushService implements PlatformPushService {
       if (previous != null &&
           conversation.lastMessageSeq > previous &&
           conversation.unread > 0 &&
+          controller.shouldNotifyConversation(
+            conversation.id,
+            afterSequence: previous,
+          ) &&
           conversation.id != controller.activeConversationId) {
         advanced.add(conversation);
       }
@@ -346,12 +350,26 @@ class _WebPushService implements PlatformPushService {
         now - claimed < const Duration(hours: 24).inMilliseconds) {
       return;
     }
+    // Recheck after the multi-tab claim delay: a recall or role change may have
+    // invalidated the snapshot while we were waiting to display it.
+    final controller = _controller;
+    final current = controller?.conversations
+        .where((item) => item.id == conversation.id)
+        .firstOrNull;
+    if (controller?.currentUser?.id != userId ||
+        current == null ||
+        !controller!.shouldNotifyConversation(
+          conversation.id,
+          afterSequence: conversation.lastMessageSeq - 1,
+        )) {
+      return;
+    }
     web.window.localStorage.setItem(storageKey, '$now');
     _post({'type': 'shown', 'key': key, 'tabId': _tabId});
     final notification = web.Notification(
-      conversation.title,
+      current.title,
       web.NotificationOptions(
-        body: preview ? conversation.subtitle : '收到一条新消息',
+        body: preview ? current.subtitle : '收到一条新消息',
         tag: 'conversation-${conversation.id}',
         icon: 'icons/Icon-192.png',
         silent: !sound,

@@ -60,7 +60,7 @@ async function liveFixture(input: RequestInfo | URL, init?: RequestInit) {
   if (url.includes('/reports')) return response({ items: [], total: 0 });
   if (url.includes('/health')) return response({ items: [{ name: 'WuKongIM 长连接', status: 'healthy', latency: 18, uptime: '99.998%', version: 'v2.2.5', detail: '服务端探针响应正常' }] });
   if (url.includes('/settings')) return response({
-    allowRegistration: true, passwordMinLength: 8, maxMessageTextLength: 5000, messageRecallMinutes: 2, maxGroupMembers: 500,
+    allowRegistration: true, passwordMinLength: 8, maxMessageTextLength: 5000, messageRecallMinutes: 2, directRecallMinutes: 1440, groupRecallMinutes: 1440, maxGroupMembers: 500,
     allowFriendRequests: true, allowSearchByHandle: true, allowSearchByPhone: false, friendRequestExpiryDays: 7,
     announcementPushEnabled: true, callsEnabled: true, videoCallsEnabled: true, sensitiveWordEnabled: true,
     reportSlaHours: 8, maintenanceMode: false, announcement: '', restartRequiredKeys: [],
@@ -1002,6 +1002,21 @@ describe('青蛙呱呱管理后台', () => {
     const saveButton = await screen.findByRole('button', { name: '保存并立即生效' });
     expect(saveButton).toBeDisabled();
     expect(screen.getByText('当前设置与服务端一致')).toBeInTheDocument();
+    const groupRecall = screen.getByLabelText('群聊撤回时限（分钟）');
+    expect(groupRecall).toHaveValue(1440);
+    expect(groupRecall).toHaveAttribute('min', '1');
+    expect(groupRecall).toHaveAttribute('max', '10080');
+    await user.clear(groupRecall);
+    await user.type(groupRecall, '10080');
+    const directRecall = screen.getByLabelText('私聊撤回时限（分钟）');
+    expect(directRecall).toHaveValue(1440);
+    expect(directRecall).toHaveAttribute('min', '1');
+    expect(directRecall).toHaveAttribute('max', '10080');
+    expect(directRecall).toHaveAttribute('step', '1');
+    await user.clear(directRecall);
+    await user.type(directRecall, '60');
+    expect(groupRecall).toHaveValue(10080);
+    expect(screen.getByLabelText('消息编辑时限（分钟）')).toHaveValue(2);
     await user.click(screen.getByRole('checkbox', { name: /允许新用户注册/ }));
     expect(saveButton).toBeEnabled();
     expect(screen.getByText('有未保存的策略更改')).toBeInTheDocument();
