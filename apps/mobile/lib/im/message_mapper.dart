@@ -297,6 +297,10 @@ class MessageMapper {
     if (contentType == WukongContentType.supportEvent) {
       return supportEventDisplayText(payload);
     }
+    if (contentType == WukongContentType.systemEvent &&
+        payload['event'] == groupAnnouncementUpdatedEvent) {
+      return groupAnnouncementUpdatedText;
+    }
     return switch (kind) {
       MessageContentKind.text ||
       MessageContentKind.reply => payload['content'] as String? ?? '',

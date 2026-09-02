@@ -2,10 +2,19 @@ import 'dart:async';
 
 import '../core/auth_validation.dart';
 import '../core/models.dart';
+import '../core/user_presence.dart';
 import 'im_repository.dart';
 import 'secure_local_store.dart';
 
 class DemoImRepository implements ImRepository {
+  @override
+  Future<List<UserPresenceSnapshot>> userPresence(
+    List<String> userIds, {
+    String? groupId,
+  }) async => [
+    for (final id in userIds)
+      UserPresenceSnapshot(id, UserPresenceStatus.unknown),
+  ];
   DemoImRepository({
     this.latency = const Duration(milliseconds: 180),
     SecureLocalStore? store,

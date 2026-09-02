@@ -1320,8 +1320,68 @@ void main() {
     expect(message.text, 'WuKong 收到');
     expect(message.conversationSeq, 9);
     expect(message.isMine, isFalse);
+    expect(event.payload['realtime'], isFalse, reason: '旧消息不得触发前台提示音');
     await repository.close();
   });
+
+  for (final scenario in ['live', 'history', 'syncing', 'refresh']) {
+    test('incoming feedback provenance: $scenario', () async {
+      final gateway = FakeWukongGateway();
+      final client = MockClient((request) async {
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/channels/conversations') {
+          return _conversationResponse();
+        }
+        if (request.url.path == '/v2/im/datasource/conversations') {
+          return _jsonResponse({
+            'data': {'items': <Object?>[]},
+          });
+        }
+        return http.Response('{}', 404);
+      });
+      final repository = _repository(client, gateway: gateway);
+      addTearDown(repository.close);
+      await repository.login('13800138000', '123456');
+      await repository.conversations();
+      await repository.connect();
+      if (scenario == 'syncing') {
+        gateway.setConnectionState(WukongConnectionState.syncing);
+      }
+      final result = repository.events.firstWhere(
+        (event) =>
+            event.type == ImEventType.messageCreated ||
+            event.type == ImEventType.messageChanged,
+      );
+      gateway.emit(
+        WukongGatewayEvent(
+          kind: scenario == 'refresh'
+              ? WukongGatewayEventKind.refreshed
+              : WukongGatewayEventKind.received,
+          channel: const WukongChannel(id: 'user-2', type: 1),
+          data: scenario == 'history' ? const {'historySync': true} : const {},
+          message: WukongMessage(
+            messageId: 'feedback-$scenario',
+            clientMsgNo: 'feedback-$scenario',
+            messageSeq: 99,
+            clientSeq: 0,
+            fromUid: 'user-2',
+            channel: const WukongChannel(id: 'user-2', type: 1),
+            timestamp: DateTime.now().toUtc(),
+            payload: const {'type': 1, 'content': '即时测试'},
+            state: WukongMessageState.sent,
+            reasonCode: 1,
+          ),
+        ),
+      );
+      final event = await result.timeout(const Duration(seconds: 2));
+      if (scenario == 'refresh') {
+        expect(event.type, ImEventType.messageChanged);
+        expect(event.payload['realtime'], isNot(true));
+      } else {
+        expect(event.payload['realtime'], scenario == 'live');
+      }
+    });
+  }
 
   test('WuKong 热重连后按本地序号补齐全部离线消息', () async {
     FlutterSecureStorage.setMockInitialValues({});
@@ -1372,7 +1432,7 @@ void main() {
                 sequence: 2,
                 content: '离线消息二',
                 fromUid: 'user-2',
-              ),
+              )..['timestamp'] = DateTime.now().millisecondsSinceEpoch ~/ 1000,
             ],
           },
         });
@@ -1412,6 +1472,7 @@ void main() {
     gateway.setConnectionState(WukongConnectionState.connected);
 
     final events = await received.timeout(const Duration(seconds: 2));
+    expect(events.every((event) => event.payload['realtime'] == false), isTrue);
     expect(
       events
           .map(

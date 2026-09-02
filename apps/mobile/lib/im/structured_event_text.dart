@@ -3,6 +3,9 @@ Map<String, Object?> _objectMap(Object? value) {
   return value.map((key, entry) => MapEntry(key.toString(), entry));
 }
 
+const groupAnnouncementUpdatedEvent = 'group.announcement.updated';
+const groupAnnouncementUpdatedText = '群公告已更新，点击查看';
+
 Object? _eventValue(Map<String, Object?> payload, String key) {
   final data = _objectMap(payload['data']);
   final call = _objectMap(payload['call']);

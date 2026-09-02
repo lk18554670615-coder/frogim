@@ -1,3 +1,5 @@
+import 'structured_event_text.dart';
+
 typedef WukongContentValidator = void Function(Map<String, Object?> payload);
 typedef WukongContentDigest = String Function(Map<String, Object?> payload);
 
@@ -306,7 +308,11 @@ class MessageContentRegistry {
         throw FormatException('$name requires a valid event');
       }
     },
-    digest: (payload) => payload['digest'] as String? ?? fallbackDigest,
+    digest: (payload) =>
+        type == WukongContentType.systemEvent &&
+            payload['event'] == groupAnnouncementUpdatedEvent
+        ? groupAnnouncementUpdatedText
+        : payload['digest'] as String? ?? fallbackDigest,
   );
 
   static void _requireSchemaVersion(Map<String, Object?> payload, String name) {

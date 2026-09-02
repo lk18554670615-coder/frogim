@@ -1,5 +1,6 @@
 import 'auth_validation.dart';
 import 'models.dart';
+import '../im/structured_event_text.dart';
 
 const groupManagementNoticeEvents = <String>{
   'group.invite.accepted',
@@ -51,7 +52,12 @@ bool canPresentGroupMessage(
 }
 
 String messagePreviewText(ChatMessage message) =>
-    message.status == MessageStatus.recalled ? '消息已撤回' : message.text;
+    message.status == MessageStatus.recalled
+    ? '消息已撤回'
+    : message.kind == MessageContentKind.system &&
+          message.event == groupAnnouncementUpdatedEvent
+    ? groupAnnouncementUpdatedText
+    : message.text;
 
 bool canRecallChatMessage(
   ChatMessage message,

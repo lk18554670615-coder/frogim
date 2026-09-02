@@ -1880,7 +1880,9 @@ class _NotificationSettingsScreenState
     body: ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
       children: [
-        const _PageIntro('通知偏好会同步到当前推送设备；关闭总开关后，服务端不再向该设备发送离线通知。'),
+        const _PageIntro(
+          '通知偏好用于手机前台消息提醒，并同步到当前推送设备。免打扰会话不响铃；最终效果仍受系统通知、静音和勿扰设置控制。',
+        ),
         if (loadError != null)
           _SettingsNotice(
             message: loadError!,

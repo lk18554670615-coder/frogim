@@ -35,12 +35,16 @@ import '../../core/screenshot_detection.dart';
 import '../../core/user_identity.dart';
 import '../../core/web_drop_paste.dart';
 import '../../im/business_features.dart';
+import '../../im/structured_event_text.dart';
 import '../widgets/linli_widgets.dart';
+import '../widgets/user_presence.dart';
 import '../widgets/forward_conversation_sheet.dart';
 import '../widgets/media_send_widgets.dart';
 import '../widgets/voice_composer_widgets.dart';
 import '../voice_composer_controller.dart';
 import 'moments_screen.dart';
+import 'group_management_screens.dart';
+import 'group_invite_members_screen.dart';
 import 'people_screens.dart';
 import 'relationship_screens.dart';
 import 'settings_preferences.dart';
@@ -250,6 +254,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Conversation? _observedConversation;
   List<AppUser>? _observedContacts;
   bool _closingUnavailableGroup = false;
+  bool _openingAnnouncement = false;
 
   AppUser? get peer =>
       widget.conversation.directPeerFor(widget.controller.currentUser?.id);
@@ -262,6 +267,81 @@ class _ChatScreenState extends State<ChatScreen> {
   bool get _isOrdinaryGroup =>
       widget.conversation.kind == ConversationKind.group &&
       !widget.conversation.isBusinessChannel;
+
+  Future<void> _openGroupAnnouncement() async {
+    if (_openingAnnouncement || !_isOrdinaryGroup) return;
+    _openingAnnouncement = true;
+    final epoch = _conversationEpoch;
+    try {
+      final policy = widget.controller.groupSendPolicyFor(
+        widget.conversation.id,
+      );
+      final profile =
+          policy?.profile ??
+          await widget.controller.loadGroupProfile(widget.conversation.id);
+      if (!mounted || epoch != _conversationEpoch) return;
+      if (profile == null) {
+        _showError(widget.controller.error ?? '群公告加载失败，请重试');
+        return;
+      }
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => GroupAnnouncementScreen(
+            controller: widget.controller,
+            profile: profile,
+            canEdit:
+                policy?.member?.isOwner == true ||
+                policy?.member?.isAdmin == true,
+          ),
+        ),
+      );
+      if (mounted && epoch == _conversationEpoch) {
+        await _loadSendCapability();
+      }
+    } finally {
+      _openingAnnouncement = false;
+    }
+  }
+
+  Widget _buildGroupAnnouncement() {
+    final profile = widget.controller
+        .groupSendPolicyFor(widget.conversation.id)
+        ?.profile;
+    if (profile == null || profile.announcement.trim().isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: colors.primary.withValues(alpha: .06),
+      child: InkWell(
+        key: const Key('chat-group-announcement'),
+        onTap: _openGroupAnnouncement,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              Icon(CupertinoIcons.speaker_2, size: 18, color: colors.primary),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '群公告：${profile.announcement}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Icon(
+                CupertinoIcons.chevron_forward,
+                size: 14,
+                color: colors.primary,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   String? get _effectiveSendRestriction =>
       (_isOrdinaryGroup
@@ -695,18 +775,25 @@ class _ChatScreenState extends State<ChatScreen> {
         user: user,
         requestSource: 'conversation',
         requestSourceId: widget.conversation.id,
+        presenceGroupId: widget.conversation.kind == ConversationKind.group
+            ? widget.conversation.id
+            : null,
       ),
     ),
   );
 
   Widget _buildConversationAvatar() {
-    final avatar = PersonAvatar(
-      name: widget.controller.displayConversationName(widget.conversation),
-      size: 34,
-      avatarUrl: conversationAvatarUrl,
-      online:
-          widget.conversation.kind == ConversationKind.direct &&
-          (peer?.isOnline ?? false),
+    final avatar = UserPresence(
+      controller: widget.controller,
+      userId: widget.conversation.kind == ConversationKind.direct
+          ? peer?.id ?? ''
+          : '',
+      builder: (context, status) => PersonAvatar(
+        name: widget.controller.displayConversationName(widget.conversation),
+        size: 34,
+        avatarUrl: conversationAvatarUrl,
+        online: status == UserPresenceStatus.online,
+      ),
     );
     final target = peer;
     if (widget.conversation.kind != ConversationKind.direct || target == null) {
@@ -770,24 +857,42 @@ class _ChatScreenState extends State<ChatScreen> {
                           final typing = widget.controller.typingLabelFor(
                             widget.conversation.id,
                           );
+                          if (widget.conversation.kind ==
+                              ConversationKind.direct) {
+                            return UserPresence(
+                              controller: widget.controller,
+                              userId: peer?.id ?? '',
+                              builder: (context, status) => typing != null
+                                  ? Text(
+                                      typing,
+                                      key: Key(
+                                        'chat-presence-${widget.conversation.id}',
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .labelSmall
+                                          ?.copyWith(
+                                            color: LinliColors.systemGreen,
+                                          ),
+                                    )
+                                  : PresenceLabel(
+                                      status,
+                                      key: Key(
+                                        'chat-presence-${widget.conversation.id}',
+                                      ),
+                                    ),
+                            );
+                          }
                           return Text(
-                            typing ??
-                                (widget.conversation.kind ==
-                                        ConversationKind.group
-                                    ? '${widget.conversation.memberCount} 位成员'
-                                    : (peer?.isOnline ?? false)
-                                    ? '在线'
-                                    : '稍后回复'),
+                            typing ?? '${widget.conversation.memberCount} 位成员',
                             key: Key('chat-presence-${widget.conversation.id}'),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: Theme.of(context).textTheme.labelSmall
                                 ?.copyWith(
-                                  color:
-                                      typing != null ||
-                                          (widget.conversation.kind ==
-                                                  ConversationKind.direct &&
-                                              (peer?.isOnline ?? false))
+                                  color: typing != null
                                       ? LinliColors.systemGreen
                                       : LinliColors.preview,
                                 ),
@@ -840,6 +945,7 @@ class _ChatScreenState extends State<ChatScreen> {
               Expanded(
                 child: Column(
                   children: [
+                    if (_isOrdinaryGroup) _buildGroupAnnouncement(),
                     Expanded(
                       child: ColoredBox(
                         key: const Key('chat-background-surface'),
@@ -1175,6 +1281,9 @@ class _ChatScreenState extends State<ChatScreen> {
               animate: _pendingVoiceEntrances.remove(message.clientMessageId),
               child: MessageBubble(
                 message: message,
+                onAnnouncementTap: _isOrdinaryGroup && !selecting
+                    ? _openGroupAnnouncement
+                    : null,
                 controller: widget.controller,
                 senderName: displaySenderName,
                 avatarUrl:
@@ -1581,6 +1690,7 @@ class _ChatScreenState extends State<ChatScreen> {
       showDragHandle: true,
       builder: (context) => _MentionPickerSheet(
         controller: widget.controller,
+        conversationId: widget.conversation.id,
         members: widget.conversation.members,
         currentUserId: widget.controller.currentUser?.id,
         canMentionEveryone: widget.conversation.canMentionEveryone,
@@ -3209,6 +3319,7 @@ class ChatInfoScreen extends StatelessWidget {
                 child: multiUser
                     ? _ChatMemberMatrix(
                         controller: controller,
+                        groupId: group ? conversation.id : null,
                         members: conversation.members,
                         fallbackName: conversation.title,
                         fallbackAvatar: conversation.avatarUrl,
@@ -3422,7 +3533,6 @@ class _DirectContactSummary extends StatelessWidget {
               name: displayName,
               size: 60,
               avatarUrl: user?.avatarUrl ?? fallbackAvatar,
-              online: user?.isOnline ?? false,
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -3437,6 +3547,11 @@ class _DirectContactSummary extends StatelessWidget {
                   Text(
                     '呱呱号：${publicUserHandleLabel(user?.handle, fallback: '尚未设置')}',
                     style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  UserPresence(
+                    controller: controller,
+                    userId: user?.id ?? '',
+                    builder: (context, status) => PresenceLabel(status),
                   ),
                   if ((user?.signature ?? user?.presence ?? '')
                       .trim()
@@ -3505,12 +3620,14 @@ class _AsyncToggleState extends State<_AsyncToggle> {
 class _ChatMemberMatrix extends StatelessWidget {
   const _ChatMemberMatrix({
     required this.controller,
+    this.groupId,
     required this.members,
     required this.fallbackName,
     this.fallbackAvatar,
   });
 
   final AppController controller;
+  final String? groupId;
   final List<AppUser> members;
   final String fallbackName;
   final String? fallbackAvatar;
@@ -3527,7 +3644,7 @@ class _ChatMemberMatrix extends StatelessWidget {
               avatarUrl: fallbackAvatar,
             ),
           ]
-        : members.take(10).toList();
+        : members.take(groupId == null ? 10 : 9).toList();
     return LayoutBuilder(
       builder: (context, constraints) {
         final scale = MediaQuery.textScalerOf(context).scale(1);
@@ -3535,7 +3652,10 @@ class _ChatMemberMatrix extends StatelessWidget {
         final fittingColumns = (constraints.maxWidth / minimumCellWidth)
             .floor()
             .clamp(2, scale >= 1.6 ? 3 : 5);
-        final columns = math.max(1, math.min(people.length, fittingColumns));
+        final columns = math.max(
+          1,
+          math.min(people.length + (groupId == null ? 0 : 1), fittingColumns),
+        );
         final width = constraints.maxWidth / columns;
         return Wrap(
           runSpacing: 14,
@@ -3546,24 +3666,53 @@ class _ChatMemberMatrix extends StatelessWidget {
                 width: width,
                 child: Semantics(
                   label: '${controller.displayNameFor(user)}，聊天成员',
-                  child: Column(
-                    children: [
-                      PersonAvatar(
-                        name: controller.displayNameFor(user),
-                        size: 50,
-                        avatarUrl: user.avatarUrl,
-                        online: user.isOnline,
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        controller.displayNameFor(user),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.labelSmall,
-                      ),
-                    ],
+                  button: groupId != null && members.isNotEmpty,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: groupId == null || members.isEmpty
+                        ? null
+                        : () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => FriendProfileScreen(
+                                controller: controller,
+                                user: user,
+                                requestSource: 'group',
+                                requestSourceId: groupId,
+                              ),
+                            ),
+                          ),
+                    child: Column(
+                      children: [
+                        PersonAvatar(
+                          name: controller.displayNameFor(user),
+                          size: 50,
+                          avatarUrl: user.avatarUrl,
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          controller.displayNameFor(user),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.labelSmall,
+                        ),
+                        UserPresence(
+                          controller: controller,
+                          userId: members.isEmpty ? '' : user.id,
+                          groupId: groupId,
+                          builder: (context, status) => PresenceLabel(status),
+                        ),
+                      ],
+                    ),
                   ),
+                ),
+              ),
+            if (groupId != null)
+              SizedBox(
+                width: width,
+                child: _GroupInviteTile(
+                  controller: controller,
+                  groupId: groupId!,
                 ),
               ),
           ],
@@ -3571,6 +3720,54 @@ class _ChatMemberMatrix extends StatelessWidget {
       },
     );
   }
+}
+
+class _GroupInviteTile extends StatefulWidget {
+  const _GroupInviteTile({required this.controller, required this.groupId});
+  final AppController controller;
+  final String groupId;
+  @override
+  State<_GroupInviteTile> createState() => _GroupInviteTileState();
+}
+
+class _GroupInviteTileState extends State<_GroupInviteTile> {
+  bool _opening = false;
+  Future<void> _open() async {
+    if (_opening) return;
+    setState(() => _opening = true);
+    try {
+      await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => GroupInviteMembersScreen(
+            controller: widget.controller,
+            conversationId: widget.groupId,
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _opening = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      IconButton.outlined(
+        key: const Key('chat-info-invite-members'),
+        tooltip: '邀请好友入群',
+        onPressed: _opening ? null : _open,
+        style: IconButton.styleFrom(
+          fixedSize: const Size(50, 50),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+        icon: const Icon(CupertinoIcons.plus, size: 28),
+      ),
+      const SizedBox(height: 6),
+      Text('邀请', style: Theme.of(context).textTheme.labelSmall),
+    ],
+  );
 }
 
 class _TimeDivider extends StatelessWidget {
@@ -3628,6 +3825,7 @@ class MessageBubble extends StatelessWidget {
     this.selected = false,
     this.onReactionTap,
     this.onAddReaction,
+    this.onAnnouncementTap,
   });
 
   final ChatMessage message;
@@ -3644,6 +3842,7 @@ class MessageBubble extends StatelessWidget {
   final bool selected;
   final ValueChanged<String>? onReactionTap;
   final VoidCallback? onAddReaction;
+  final VoidCallback? onAnnouncementTap;
 
   @override
   Widget build(BuildContext context) {
@@ -3674,6 +3873,21 @@ class MessageBubble extends StatelessWidget {
         (message.status == MessageStatus.sent ||
             message.status == MessageStatus.delivered ||
             message.status == MessageStatus.read);
+    if (message.kind == MessageContentKind.system &&
+        message.event == groupAnnouncementUpdatedEvent &&
+        message.status != MessageStatus.recalled &&
+        message.status != MessageStatus.expired) {
+      return Center(
+        child: TextButton(
+          key: Key('group-announcement-notice-${message.clientMessageId}'),
+          onPressed: onAnnouncementTap,
+          child: const Text(
+            groupAnnouncementUpdatedText,
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
     if (message.status == MessageStatus.recalled ||
         message.status == MessageStatus.expired ||
         message.kind == MessageContentKind.system ||
@@ -5712,6 +5926,14 @@ class _ContactMessageCard extends StatelessWidget {
                       avatarUrl: message.contactAvatarUrl,
                     ),
                     requestSource: 'card',
+                    presenceGroupId:
+                        controller!.conversations.any(
+                          (c) =>
+                              c.id == message.conversationId &&
+                              c.kind == ConversationKind.group,
+                        )
+                        ? message.conversationId
+                        : null,
                   ),
                 ),
               ),
@@ -7353,12 +7575,14 @@ class _EmojiPanelState extends State<_EmojiPanel> {
 class _MentionPickerSheet extends StatefulWidget {
   const _MentionPickerSheet({
     required this.controller,
+    required this.conversationId,
     required this.members,
     required this.canMentionEveryone,
     this.currentUserId,
   });
 
   final AppController controller;
+  final String conversationId;
   final List<AppUser> members;
   final String? currentUserId;
   final bool canMentionEveryone;
@@ -7378,6 +7602,9 @@ class _MentionPickerSheetState extends State<_MentionPickerSheet> {
 
   Widget _buildContent(BuildContext context) {
     final normalized = query.trim().toLowerCase();
+    final showHandle = widget.controller.canViewGroupMemberHandle(
+      widget.conversationId,
+    );
     final members = widget.members
         .where((member) => member.id != widget.currentUserId)
         .where(
@@ -7388,7 +7615,7 @@ class _MentionPickerSheetState extends State<_MentionPickerSheet> {
                   .displayNameFor(member)
                   .toLowerCase()
                   .contains(normalized) ||
-              member.handle.toLowerCase().contains(normalized),
+              (showHandle && member.handle.toLowerCase().contains(normalized)),
         )
         .toList();
     return FractionallySizedBox(
@@ -7456,19 +7683,21 @@ class _MentionPickerSheetState extends State<_MentionPickerSheet> {
                       avatarUrl: member.avatarUrl,
                     ),
                     title: Text(widget.controller.displayNameFor(member)),
-                    subtitle: Text(publicUserHandleLabel(member.handle)),
+                    subtitle: showHandle
+                        ? Text(publicUserHandleLabel(member.handle))
+                        : null,
                     onTap: () => Navigator.pop(
                       context,
                       MessageMention(userId: member.id, name: member.name),
                     ),
                   ),
                 if (members.isEmpty && normalized.isNotEmpty)
-                  const Padding(
+                  Padding(
                     padding: EdgeInsets.only(top: 48),
                     child: StatePanel(
                       icon: CupertinoIcons.person_2,
                       title: '没有匹配成员',
-                      body: '换个昵称或呱呱号试试。',
+                      body: showHandle ? '换个昵称、备注或呱呱号试试。' : '换个昵称或备注试试。',
                     ),
                   ),
               ],

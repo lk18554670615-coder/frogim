@@ -20,6 +20,7 @@ class MainActivity : FlutterActivity() {
     private var screenshotRequested = false
     private var activityStarted = false
     private var screenshotCallbackRegistered = false
+    private var messageFeedback: LinliMessageFeedback? = null
 
     private val screenshotCallback =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -45,6 +46,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        messageFeedback = LinliMessageFeedback(this, flutterEngine.dartExecutor.binaryMessenger)
         systemCallChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             systemCallChannelName,
@@ -112,12 +114,15 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onStop() {
+        messageFeedback?.stop()
         activityStarted = false
         updateScreenshotRegistration()
         super.onStop()
     }
 
     override fun onDestroy() {
+        messageFeedback?.dispose()
+        messageFeedback = null
         screenshotRequested = false
         updateScreenshotRegistration()
         screenshotChannel?.setMethodCallHandler(null)

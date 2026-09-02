@@ -9,11 +9,12 @@ import '../../core/app_controller.dart';
 import '../../core/app_theme.dart';
 import '../../core/avatar_image.dart';
 import '../../core/models.dart';
-import '../../core/user_identity.dart';
 import '../widgets/linli_widgets.dart';
+import '../widgets/user_presence.dart';
 import 'relationship_screens.dart';
 import 'qr_tools_screen.dart';
 import 'settings_screens.dart';
+import 'group_invite_members_screen.dart';
 
 class GroupManagementScreen extends StatefulWidget {
   const GroupManagementScreen({
@@ -799,50 +800,109 @@ class GroupAnnouncementScreen extends StatefulWidget {
       _GroupAnnouncementScreenState();
 }
 
-class _GroupAnnouncementScreenState extends State<GroupAnnouncementScreen> {
+class _GroupAnnouncementScreenState extends State<GroupAnnouncementScreen>
+    with WidgetsBindingObserver {
   late GroupProfile profile = widget.profile;
   bool editing = false;
   bool saving = false;
+  bool refreshing = true;
+  String? loadError;
+  int _request = 0;
+  late int _revision;
+  Timer? _refreshTimer;
+  int? _readVersion;
+  DateTime? _readAt;
   late final TextEditingController controller = TextEditingController(
     text: profile.announcement,
   );
 
+  bool get canEdit {
+    final conversation = widget.controller.conversations
+        .where((item) => item.id == profile.conversationId)
+        .firstOrNull;
+    final role = conversation?.currentUserRole;
+    return role == null ? widget.canEdit : role == 'owner' || role == 'admin';
+  }
+
   @override
   void initState() {
     super.initState();
-    if (profile.announcementUnread) {
-      WidgetsBinding.instance.addPostFrameCallback((_) async {
-        final success = await widget.controller.markGroupAnnouncementRead(
-          profile.conversationId,
-        );
-        if (mounted && success) {
-          setState(() {
-            profile = GroupProfile(
-              conversationId: profile.conversationId,
-              ownerId: profile.ownerId,
-              name: profile.name,
-              avatarUrl: profile.avatarUrl,
-              announcement: profile.announcement,
-              announcementVersion: profile.announcementVersion,
-              announcementReadAt: DateTime.now(),
-              joinPolicy: profile.joinPolicy,
-              allowMemberAddFriend: profile.allowMemberAddFriend,
-              historyVisibleToNewMembers: profile.historyVisibleToNewMembers,
-              historyPolicyVersion: profile.historyPolicyVersion,
-              allMutedUntil: profile.allMutedUntil,
-              qrToken: profile.qrToken,
-              qrExpiresAt: profile.qrExpiresAt,
-              dissolvedAt: profile.dissolvedAt,
-              updatedAt: profile.updatedAt,
-            );
-          });
-        }
+    _revision = widget.controller.groupSendPolicyRevision;
+    WidgetsBinding.instance.addObserver(this);
+    widget.controller.addListener(_handleChange);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_refresh());
+    });
+  }
+
+  void _handleChange() {
+    if (_revision == widget.controller.groupSendPolicyRevision) return;
+    _revision = widget.controller.groupSendPolicyRevision;
+    _refreshTimer?.cancel();
+    _refreshTimer = Timer(const Duration(milliseconds: 160), () {
+      if (mounted) unawaited(_refresh());
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) unawaited(_refresh());
+  }
+
+  Future<void> _refresh() async {
+    if (saving) return; // A save always refreshes again when it completes.
+    final request = ++_request;
+    final userId = widget.controller.currentUser?.id;
+    setState(() {
+      refreshing = true;
+      loadError = null;
+    });
+    final latest = await widget.controller.loadGroupProfile(
+      profile.conversationId,
+    );
+    if (!mounted ||
+        request != _request ||
+        userId != widget.controller.currentUser?.id) {
+      return;
+    }
+    setState(() {
+      refreshing = false;
+      if (latest == null) {
+        loadError = widget.controller.error ?? '群公告加载失败，请重试';
+      } else {
+        profile = latest;
+        // A remote update must never overwrite an administrator's edit draft.
+        if (!editing) controller.text = latest.announcement;
+      }
+    });
+    if (latest == null ||
+        !latest.announcementUnread ||
+        editing ||
+        _readVersion == latest.announcementVersion) {
+      return;
+    }
+    final success = await widget.controller.markGroupAnnouncementRead(
+      profile.conversationId,
+    );
+    if (!mounted ||
+        request != _request ||
+        userId != widget.controller.currentUser?.id) {
+      return;
+    }
+    if (success) {
+      setState(() {
+        _readVersion = latest.announcementVersion;
+        _readAt = DateTime.now();
       });
     }
   }
 
   @override
   void dispose() {
+    _request++;
+    _refreshTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    widget.controller.removeListener(_handleChange);
     controller.dispose();
     super.dispose();
   }
@@ -852,7 +912,13 @@ class _GroupAnnouncementScreenState extends State<GroupAnnouncementScreen> {
     appBar: GlassAppBar(
       title: const Text('群公告'),
       actions: [
-        if (widget.canEdit)
+        IconButton(
+          key: const Key('refresh-group-announcement'),
+          tooltip: '刷新公告',
+          onPressed: refreshing || saving ? null : _refresh,
+          icon: const Icon(CupertinoIcons.refresh, size: 20),
+        ),
+        if (canEdit)
           TextButton(
             onPressed: saving
                 ? null
@@ -866,6 +932,15 @@ class _GroupAnnouncementScreenState extends State<GroupAnnouncementScreen> {
     body: ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
       children: [
+        if (refreshing) const LinearProgressIndicator(minHeight: 2),
+        if (loadError != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: Text(
+              loadError!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ),
         if (editing)
           TextField(
             key: const Key('group-announcement-input'),
@@ -892,9 +967,10 @@ class _GroupAnnouncementScreenState extends State<GroupAnnouncementScreen> {
             '版本 ${profile.announcementVersion} · 更新于 ${_displayDate(profile.updatedAt)}',
             style: Theme.of(context).textTheme.bodySmall,
           ),
-          if (profile.announcementReadAt != null)
+          if (profile.announcementReadAt != null ||
+              _readVersion == profile.announcementVersion)
             Text(
-              '已读于 ${_displayDate(profile.announcementReadAt!)}',
+              '已读于 ${_displayDate(profile.announcementReadAt ?? _readAt!)}',
               style: Theme.of(context).textTheme.bodySmall,
             ),
         ],
@@ -903,6 +979,8 @@ class _GroupAnnouncementScreenState extends State<GroupAnnouncementScreen> {
   );
 
   Future<void> _save() async {
+    if (saving || !canEdit) return;
+    _request++; // Ignore refreshes started before this publication.
     setState(() => saving = true);
     final updated = await widget.controller.saveGroupAnnouncement(
       profile.conversationId,
@@ -921,6 +999,7 @@ class _GroupAnnouncementScreenState extends State<GroupAnnouncementScreen> {
         SnackBar(content: Text(widget.controller.error ?? '发布失败')),
       );
     }
+    unawaited(_refresh());
   }
 }
 
@@ -974,7 +1053,8 @@ class _GroupMembersManagementScreenState
     return candidates.where((member) {
       final values = [
         member.user.name,
-        member.user.handle,
+        if (widget.controller.canViewGroupMemberHandle(widget.conversationId))
+          member.user.handle,
         member.groupNickname,
         widget.controller.displayNameFor(
           member.user,
@@ -1082,7 +1162,12 @@ class _GroupMembersManagementScreenState
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
           child: CupertinoSearchTextField(
             key: const Key('group-member-search'),
-            placeholder: '搜索昵称、备注或呱呱号',
+            placeholder:
+                widget.controller.canViewGroupMemberHandle(
+                  widget.conversationId,
+                )
+                ? '搜索昵称、备注或呱呱号'
+                : '搜索昵称或备注',
             onChanged: (value) => setState(() => query = value),
           ),
         ),
@@ -1131,10 +1216,22 @@ class _GroupMembersManagementScreenState
         groupNickname: member.groupNickname,
       ),
     ),
-    subtitle: Text(
-      member.isMuted
-          ? '${_roleLabel(member.role)} · 已禁言'
-          : _roleLabel(member.role),
+    subtitle: UserPresence(
+      controller: widget.controller,
+      userId: member.user.id,
+      groupId: widget.conversationId,
+      builder: (context, status) => Wrap(
+        spacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Text(
+            member.isMuted
+                ? '${_roleLabel(member.role)} · 已禁言'
+                : _roleLabel(member.role),
+          ),
+          PresenceLabel(status),
+        ],
+      ),
     ),
     trailing: widget.administratorMode
         ? isOwner && !member.isOwner
@@ -1174,51 +1271,15 @@ class _GroupMembersManagementScreenState
   }
 
   Future<void> _pickMembers() async {
-    final existing = members.map((member) => member.user.id).toSet();
-    final available = widget.controller.contacts
-        .where((user) => !existing.contains(user.id))
-        .toList();
-    if (available.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('没有可添加的联系人')));
-      return;
-    }
-    final selected = await Navigator.of(context).push<List<AppUser>>(
+    await Navigator.of(context).push<bool>(
       MaterialPageRoute(
-        builder: (_) =>
-            _GroupMemberPicker(controller: widget.controller, users: available),
+        builder: (_) => GroupInviteMembersScreen(
+          controller: widget.controller,
+          conversationId: widget.conversationId,
+        ),
       ),
     );
-    if (selected == null || selected.isEmpty) return;
-    setState(() => loading = true);
-    bool success;
-    if (isOwner || isAdmin) {
-      success = await widget.controller.addGroupMembers(
-        widget.conversationId,
-        selected,
-      );
-    } else {
-      final results = await Future.wait(
-        selected.map(
-          (user) =>
-              widget.controller.inviteGroupMember(widget.conversationId, user),
-        ),
-      );
-      success = results.every((value) => value);
-    }
-    if (!mounted) return;
-    if (success) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(isOwner || isAdmin ? '群成员已添加' : '群邀请已发送')),
-      );
-      await _reload();
-    } else {
-      setState(() => loading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(widget.controller.error ?? '操作失败')),
-      );
-    }
+    if (mounted) await _reload();
   }
 
   Future<void> _memberActions(GroupMember member) async {
@@ -1400,64 +1461,6 @@ class _GroupMembersManagementScreenState
       }
     }
   }
-}
-
-class _GroupMemberPicker extends StatefulWidget {
-  const _GroupMemberPicker({required this.controller, required this.users});
-  final AppController controller;
-  final List<AppUser> users;
-
-  @override
-  State<_GroupMemberPicker> createState() => _GroupMemberPickerState();
-}
-
-class _GroupMemberPickerState extends State<_GroupMemberPicker> {
-  final selected = <String>{};
-
-  @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: widget.controller,
-    builder: (context, _) => _buildContent(context),
-  );
-
-  Widget _buildContent(BuildContext context) => Scaffold(
-    appBar: GlassAppBar(
-      title: const Text('选择联系人'),
-      actions: [
-        TextButton(
-          onPressed: selected.isEmpty
-              ? null
-              : () => Navigator.pop(
-                  context,
-                  widget.users
-                      .where((user) => selected.contains(user.id))
-                      .toList(),
-                ),
-          child: Text('完成 ${selected.length}'),
-        ),
-      ],
-    ),
-    body: ListView.builder(
-      itemCount: widget.users.length,
-      itemBuilder: (context, index) {
-        final user = widget.users[index];
-        return CheckboxListTile(
-          value: selected.contains(user.id),
-          secondary: PersonAvatar(
-            name: widget.controller.displayNameFor(user),
-            avatarUrl: user.avatarUrl,
-          ),
-          title: Text(widget.controller.displayNameFor(user)),
-          subtitle: Text(publicUserHandleLabel(user.handle)),
-          onChanged: (value) => setState(
-            () => value == true
-                ? selected.add(user.id)
-                : selected.remove(user.id),
-          ),
-        );
-      },
-    ),
-  );
 }
 
 class _DisbandGroupDialog extends StatefulWidget {

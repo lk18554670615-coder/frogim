@@ -1,5 +1,7 @@
 import Flutter
 import AVFAudio
+import AudioToolbox
+import UserNotifications
 import CallKit
 import CryptoKit
 import PushKit
@@ -12,6 +14,8 @@ import flutter_callkit_incoming
   private var voipRegistry: PKPushRegistry?
   private var screenshotChannel: FlutterMethodChannel?
   private var screenshotObserver: NSObjectProtocol?
+  private var messageFeedbackChannel: FlutterMethodChannel?
+  private var messageSound: SystemSoundID = 0
 
   override func application(
     _ application: UIApplication,
@@ -30,6 +34,50 @@ import flutter_callkit_incoming
       forPlugin: "LinliScreenshotDetection"
     ) else {
       return
+    }
+    let feedback = FlutterMethodChannel(
+      name: "com.fd.kuailiao/message_feedback",
+      binaryMessenger: registrar.messenger()
+    )
+    messageFeedbackChannel?.setMethodCallHandler(nil)
+    messageFeedbackChannel = feedback
+    if messageSound != 0 {
+      AudioServicesDisposeSystemSoundID(messageSound)
+      messageSound = 0
+    }
+    let soundKey = registrar.lookupKey(forAsset: "assets/sounds/message.wav")
+    if let path = Bundle.main.path(forResource: soundKey, ofType: nil) {
+      AudioServicesCreateSystemSoundID(URL(fileURLWithPath: path) as CFURL, &messageSound)
+    }
+    feedback.setMethodCallHandler { [weak self] call, result in
+      guard call.method == "play" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      let args = call.arguments as? [String: Any] ?? [:]
+      UNUserNotificationCenter.current().getNotificationSettings { settings in
+        DispatchQueue.main.async {
+          guard let self = self, UIApplication.shared.applicationState == .active,
+                settings.authorizationStatus == .authorized else {
+            result(nil)
+            return
+          }
+          let sound = args["sound"] as? Bool == true && settings.soundSetting == .enabled
+          let vibration = args["vibration"] as? Bool == true
+          // System Sound Services respects the ringer switch and does not
+          // replace the audio session used by voice recording or LiveKit.
+          if sound && self.messageSound != 0 {
+            if vibration {
+              AudioServicesPlayAlertSound(self.messageSound)
+            } else {
+              AudioServicesPlaySystemSound(self.messageSound)
+            }
+          } else if vibration {
+            AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+          }
+          result(nil)
+        }
+      }
     }
     let channel = FlutterMethodChannel(
       name: "com.fd.kuailiao/screenshot",

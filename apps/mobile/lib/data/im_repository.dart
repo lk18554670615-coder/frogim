@@ -1,5 +1,6 @@
 import '../core/auth_validation.dart';
 import '../core/models.dart';
+import '../core/user_presence.dart';
 
 abstract interface class ImRepository {
   Stream<bool> get connectionChanges;
@@ -32,6 +33,10 @@ abstract interface class ImRepository {
   });
   Future<void> logout();
   Future<AppUser> profile();
+  Future<List<UserPresenceSnapshot>> userPresence(
+    List<String> userIds, {
+    String? groupId,
+  });
   Future<AppUser> updateProfile({
     String? name,
     String? handle,

@@ -102,6 +102,13 @@ class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
     pushCoordinator = PushCoordinator();
     upgradeService = widget.upgradeService ?? ClientUpgradeService();
     WidgetsBinding.instance.addObserver(this);
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    controller.presence.setForeground(
+      lifecycle == null || lifecycle == AppLifecycleState.resumed,
+    );
+    controller.messageFeedback.setForeground(
+      lifecycle == null || lifecycle == AppLifecycleState.resumed,
+    );
     controller.addListener(_refreshRoot);
     unawaited(pushCoordinator.initialize(controller));
     unawaited(controller.initialize());
@@ -140,6 +147,10 @@ class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    controller.presence.setForeground(state == AppLifecycleState.resumed);
+    controller.messageFeedback.setForeground(
+      state == AppLifecycleState.resumed,
+    );
     if (state == AppLifecycleState.resumed) unawaited(_checkUpgrade());
   }
 

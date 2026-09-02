@@ -340,7 +340,6 @@ class _SearchScreenState extends State<SearchScreen> {
                   contentPadding: EdgeInsets.zero,
                   leading: PersonAvatar(
                     name: widget.controller.displayNameFor(user),
-                    online: user.isOnline,
                     avatarUrl: user.avatarUrl,
                   ),
                   title: Text(widget.controller.displayNameFor(user)),
@@ -994,7 +993,6 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                         ),
                         leading: PersonAvatar(
                           name: user.displayName,
-                          online: user.isOnline,
                           avatarUrl: user.avatarUrl,
                         ),
                         title: Text(user.displayName),

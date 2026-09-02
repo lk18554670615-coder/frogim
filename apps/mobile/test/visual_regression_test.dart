@@ -12,6 +12,7 @@ import 'package:linli_im/im/business_features.dart';
 import 'package:linli_im/ui/legal_documents.dart';
 import 'package:linli_im/ui/screens/business_channel_screens.dart';
 import 'package:linli_im/ui/screens/chat_screen.dart';
+import 'package:linli_im/ui/screens/group_invite_members_screen.dart';
 import 'package:linli_im/ui/screens/home_screen.dart';
 import 'package:linli_im/ui/screens/login_screen.dart';
 import 'package:linli_im/ui/screens/moments_screen.dart';
@@ -285,6 +286,43 @@ void main() {
       matchesGoldenFile('goldens/windows/mobile-chat-info-brand.png'),
     );
   }, skip: !Platform.isWindows);
+
+  for (final screen in ['info', 'invite']) {
+    testWidgets(
+      'mobile group $screen quick invite visual baseline',
+      (tester) async {
+        final controller = await _authenticatedController(tester);
+        addTearDown(controller.dispose);
+        final group = controller.conversations.firstWhere(
+          (c) => c.id == 'c-team',
+        );
+        await _pumpSurface(
+          tester,
+          size: const Size(390, 844),
+          child: screen == 'info'
+              ? ChatInfoScreen(
+                  controller: controller,
+                  conversation: group,
+                  onSearch: () {},
+                  onClearLocal: () async {},
+                  onBlock: () async {},
+                  onScheduledMessages: () {},
+                )
+              : GroupInviteMembersScreen(
+                  controller: controller,
+                  conversationId: group.id,
+                ),
+        );
+        await expectLater(
+          find.byKey(_surfaceKey),
+          matchesGoldenFile(
+            'goldens/windows/mobile-group-$screen-quick-invite.png',
+          ),
+        );
+      },
+      skip: !Platform.isWindows,
+    );
+  }
 
   testWidgets('mobile moments visual baseline', (tester) async {
     final controller = await _authenticatedController(tester);

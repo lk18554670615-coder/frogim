@@ -148,6 +148,7 @@ flutter:
   assets:
     - assets/brand/
     - assets/avatars/
+    - assets/sounds/
     - assets/fonts/OFL.txt
     - assets/fonts/NotoColorEmoji-OFL.txt
     - assets/fonts/THIRD_PARTY.md

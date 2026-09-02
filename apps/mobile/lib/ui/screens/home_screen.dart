@@ -9,6 +9,7 @@ import '../../core/app_theme.dart';
 import '../../core/models.dart';
 import '../../core/user_identity.dart';
 import '../widgets/linli_widgets.dart';
+import '../widgets/user_presence.dart';
 import 'announcement_screens.dart';
 import 'chat_screen.dart';
 import 'moments_screen.dart';
@@ -70,7 +71,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   index: index,
                   children: [
                     ConversationsTab(controller: widget.controller),
-                    ContactsTab(controller: widget.controller),
+                    TickerMode(
+                      enabled: index == 1,
+                      child: ContactsTab(controller: widget.controller),
+                    ),
                     DiscoverTab(controller: widget.controller),
                     MeTab(
                       controller: widget.controller,
@@ -2056,9 +2060,6 @@ class ConversationTile extends StatelessWidget {
                       size: 48,
                       avatarUrl:
                           conversation.avatarUrl ?? directPeer?.avatarUrl,
-                      online:
-                          conversation.kind == ConversationKind.direct &&
-                          (directPeer?.isOnline ?? false),
                     ),
                   ),
                   Expanded(
@@ -2596,6 +2597,7 @@ class _ContactsTabState extends State<ContactsTab> {
                     SliverList.builder(
                       itemCount: group.users.length,
                       itemBuilder: (context, index) => _ContactListTile(
+                        controller: controller,
                         user: group.users[index],
                         onTap: () async {
                           final user = group.users[index];
@@ -2709,24 +2711,49 @@ class _ContactGroupHeader extends StatelessWidget {
 }
 
 class _ContactListTile extends StatelessWidget {
-  const _ContactListTile({required this.user, required this.onTap});
+  const _ContactListTile({
+    required this.controller,
+    required this.user,
+    required this.onTap,
+  });
 
+  final AppController controller;
   final AppUser user;
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => ListTile(
-    key: Key('contact-${user.id}'),
-    minTileHeight: 68,
-    contentPadding: const EdgeInsets.only(left: 16, right: 36),
-    leading: PersonAvatar(
-      name: user.displayName,
-      avatarUrl: user.avatarUrl,
-      online: user.isOnline,
+  Widget build(BuildContext context) => UserPresence(
+    controller: controller,
+    userId: user.id,
+    builder: (context, status) => ListTile(
+      key: Key('contact-${user.id}'),
+      minTileHeight: 68,
+      contentPadding: const EdgeInsets.only(left: 16, right: 36),
+      leading: PersonAvatar(
+        name: user.displayName,
+        avatarUrl: user.avatarUrl,
+        online: status == UserPresenceStatus.online,
+      ),
+      title: Text(
+        user.displayName,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Row(
+        children: [
+          PresenceLabel(status),
+          if (status != UserPresenceStatus.hidden) const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              user.presence,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+      onTap: onTap,
     ),
-    title: Text(user.displayName, maxLines: 1, overflow: TextOverflow.ellipsis),
-    subtitle: Text(user.presence, maxLines: 1, overflow: TextOverflow.ellipsis),
-    onTap: onTap,
   );
 }
 

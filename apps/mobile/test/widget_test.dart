@@ -565,6 +565,9 @@ void main() {
       of: row,
       matching: find.byType(CupertinoSwitch),
     );
+    // A cached row can exist before its trailing switch is inside the viewport.
+    await tester.ensureVisible(toggle);
+    await tester.pumpAndSettle();
     expect(tester.widget<CupertinoSwitch>(toggle).value, isFalse);
     await tester.tap(toggle);
     await tester.pumpAndSettle();

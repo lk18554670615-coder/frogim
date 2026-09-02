@@ -3068,6 +3068,10 @@ func groupActor(ctx context.Context, tx pgx.Tx, cid, uid string) (string, string
 }
 func emitGroupSystem(ctx context.Context, tx pgx.Tx, cid, actor, event string, data map[string]any, at time.Time) error {
 	payload, _ := json.Marshal(map[string]any{"conversationId": cid, "event": event, "actorId": actor, "data": data})
+	digest := "[群系统消息]"
+	if event == "group.announcement.updated" {
+		digest = "群公告已更新，点击查看"
+	}
 	var actorExists bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_users WHERE id=$1)`, actor).Scan(&actorExists); err != nil {
 		return err
@@ -3081,7 +3085,7 @@ func emitGroupSystem(ctx context.Context, tx pgx.Tx, cid, actor, event string, d
 			ClientMsgNo: clientMsgNo, FromUID: actor, ChannelID: cid, ChannelType: wukong.ChannelGroup,
 			Payload: map[string]any{
 				"type": wukong.ContentTypeSystemEvent, "schemaVersion": 1,
-				"event": event, "actorId": actor, "data": data, "digest": "[群系统消息]",
+				"event": event, "actorId": actor, "data": data, "digest": digest,
 			},
 		}); err != nil {
 			return err
@@ -3296,10 +3300,13 @@ func (p *Postgres) SetGroupAnnouncement(ctx context.Context, actor, cid, content
 	if role != "owner" && role != "admin" {
 		return nil, ErrForbidden
 	}
-	if _, err = tx.Exec(ctx, `UPDATE im_groups SET announcement=$2,announcement_version=announcement_version+1,updated_at=$3 WHERE conversation_id=$1`, cid, content, at); err != nil {
+	var version int64
+	if err = tx.QueryRow(ctx, `UPDATE im_groups SET announcement=$2,announcement_version=announcement_version+1,updated_at=$3 WHERE conversation_id=$1 RETURNING announcement_version`, cid, content, at).Scan(&version); err != nil {
 		return nil, err
 	}
-	if err = emitGroupSystem(ctx, tx, cid, actor, "group.announcement.updated", map[string]any{}, at); err != nil {
+	// Business event outbox keys include the payload digest. Without a version,
+	// every publication by the same actor is deduplicated as the first update.
+	if err = emitGroupSystem(ctx, tx, cid, actor, "group.announcement.updated", map[string]any{"announcementVersion": version}, at); err != nil {
 		return nil, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -3308,7 +3315,7 @@ func (p *Postgres) SetGroupAnnouncement(ctx context.Context, actor, cid, content
 	return p.GetGroupProfile(ctx, actor, cid)
 }
 func (p *Postgres) MarkGroupAnnouncementRead(ctx context.Context, uid, cid string, at time.Time) error {
-	tag, err := p.pool.Exec(ctx, `INSERT INTO im_group_announcement_reads(conversation_id,user_id,announcement_version,read_at) SELECT g.conversation_id,$2,g.announcement_version,$3 FROM im_groups g JOIN im_members m ON m.conversation_id=g.conversation_id AND m.user_id=$2 WHERE g.conversation_id=$1 ON CONFLICT DO NOTHING`, cid, uid, at)
+	tag, err := p.pool.Exec(ctx, `INSERT INTO im_group_announcement_reads(conversation_id,user_id,announcement_version,read_at) SELECT g.conversation_id,$2,g.announcement_version,$3 FROM im_groups g JOIN im_members m ON m.conversation_id=g.conversation_id AND m.user_id=$2 WHERE g.conversation_id=$1 ON CONFLICT(conversation_id,user_id,announcement_version) DO UPDATE SET read_at=LEAST(im_group_announcement_reads.read_at,excluded.read_at)`, cid, uid, at)
 	if err == nil && tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}

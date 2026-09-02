@@ -51,6 +51,7 @@ type API struct {
 	otp             otpProvider
 	links           *linkpreview.Service
 	wukongClient    *wukong.Client
+	presence        *wukong.PresenceCache
 	imSessions      *wukong.SessionIssuer
 	wukongSetupErr  error
 	pluginInstaller *wukongplugin.Installer
@@ -206,6 +207,11 @@ func New(cfg config.Config, a *app.App) *API {
 		x.cleaner = cleaner
 	}
 	a.SetCallInviteTTL(cfg.CallInviteTTL)
+	var presenceLoader func(context.Context, []string) (map[string]bool, error)
+	if x.wukongClient != nil && x.wukongSetupErr == nil {
+		presenceLoader = x.wukongClient.OnlineUsers
+	}
+	x.presence = wukong.NewPresenceCache(presenceLoader)
 	x.mux = http.NewServeMux()
 	x.routes()
 	return x
@@ -364,6 +370,7 @@ func (x *API) routes() {
 	x.mux.HandleFunc("POST /v2/admin/auth/login", x.adminLogin)
 	x.mux.Handle("GET /v2/admin/auth/me", x.requireAdminSession(http.HandlerFunc(x.adminMe)))
 	x.mux.Handle("POST /v2/admin/auth/change-password", x.requireAdminSession(http.HandlerFunc(x.changeAdminPassword)))
+	x.mux.Handle("POST /v2/users/presence", x.requireAuth(http.HandlerFunc(x.userPresence)))
 	x.mux.Handle("GET /v2/users/me", x.requireAuth(http.HandlerFunc(x.me)))
 	x.mux.Handle("PATCH /v2/users/me", x.requireAuth(http.HandlerFunc(x.updateMe)))
 	x.mux.Handle("POST /v2/users/me/deletion/code", x.requireAuth(http.HandlerFunc(x.requestAccountDeletionCode)))

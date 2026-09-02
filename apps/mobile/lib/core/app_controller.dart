@@ -21,11 +21,19 @@ import 'group_message_policy.dart';
 import 'group_send_policy.dart';
 import 'image_dimensions.dart';
 import 'models.dart';
+import 'message_feedback.dart';
+import 'user_presence.dart';
 
 class AppController extends ChangeNotifier {
-  AppController(this.repository);
+  AppController(this.repository, {MessageFeedback? messageFeedback})
+    : messageFeedback = messageFeedback ?? MessageFeedback();
+
+  final MessageFeedback messageFeedback;
 
   final ImRepository repository;
+  late final PresenceCoordinator presence = PresenceCoordinator(
+    repository.userPresence,
+  );
   late final CallController? callController = repository is CallRepository
       ? CallController(
           repository: repository as CallRepository,
@@ -282,6 +290,16 @@ class AppController extends ChangeNotifier {
         roleTrusted: !_untrustedGroupRoles.contains(conversationId),
       );
 
+  /// Group-context presentation only; contact/direct profiles keep their
+  /// existing public handle. Unknown or stale group roles fail closed.
+  bool canViewGroupMemberHandle(String? conversationId) {
+    if (!authenticated || conversationId == null) return false;
+    final conversation = _conversationFor(conversationId);
+    return isManagedGroup(conversation) &&
+        !_untrustedGroupRoles.contains(conversationId) &&
+        isGroupManager(conversation?.currentUserRole);
+  }
+
   ChatMessage _displayMessage(ChatMessage message) {
     message = _currentVersion(message);
     if (message.status == MessageStatus.recalled) {
@@ -441,6 +459,8 @@ class AppController extends ChangeNotifier {
     _stickyAuthenticationError = false;
     currentUser = user;
     authenticated = true;
+    presence.setAccount(user.id);
+    messageFeedback.setAccount(user.id);
     loading = true;
     error = null;
     _subscribe();
@@ -821,6 +841,7 @@ class AppController extends ChangeNotifier {
     _connectionSubscription ??= repository.connectionChanges.listen((value) {
       if (_disposed) return;
       connected = value;
+      presence.invalidate();
       connectionAttempted = true;
       if (value) {
         groupSendPolicyRevision++;
@@ -3254,6 +3275,7 @@ class AppController extends ChangeNotifier {
   Future<bool> deleteFriend(AppUser user) async {
     try {
       await repository.deleteFriend(user.id);
+      presence.invalidate();
       contacts.removeWhere((item) => item.id == user.id);
       notifyListeners();
       return true;
@@ -3267,6 +3289,7 @@ class AppController extends ChangeNotifier {
   Future<bool> blockUser(AppUser user, bool blocked) async {
     try {
       await repository.blockUser(user.id, blocked);
+      presence.invalidate();
       if (blocked) contacts.removeWhere((item) => item.id == user.id);
       notifyListeners();
       return true;
@@ -3288,9 +3311,12 @@ class AppController extends ChangeNotifier {
   }
 
   Future<GroupProfile?> loadGroupProfile(String conversationId) async {
+    final userId = currentUser?.id;
     try {
-      return await repository.groupProfile(conversationId);
+      final profile = await repository.groupProfile(conversationId);
+      return _disposed || currentUser?.id != userId ? null : profile;
     } catch (exception) {
+      if (_disposed || currentUser?.id != userId) return null;
       error = _messageFor(exception, fallback: '群资料加载失败');
       notifyListeners();
       return null;
@@ -3298,9 +3324,12 @@ class AppController extends ChangeNotifier {
   }
 
   Future<List<GroupMember>?> loadGroupMembers(String conversationId) async {
+    final userId = currentUser?.id;
     try {
-      return await repository.groupMembers(conversationId);
+      final members = await repository.groupMembers(conversationId);
+      return _disposed || currentUser?.id != userId ? null : members;
     } catch (exception) {
+      if (_disposed || currentUser?.id != userId) return null;
       error = _messageFor(exception, fallback: '群成员加载失败');
       notifyListeners();
       return null;
@@ -3353,12 +3382,19 @@ class AppController extends ChangeNotifier {
     String conversationId,
     String content,
   ) async {
+    final userId = currentUser?.id;
     try {
-      return await repository.setGroupAnnouncement(
+      final profile = await repository.setGroupAnnouncement(
         conversationId,
         content.trim(),
       );
+      if (_disposed || currentUser?.id != userId) return null;
+      // Refresh every visible group surface even before our own CMD arrives.
+      groupSendPolicyRevision++;
+      notifyListeners();
+      return profile;
     } catch (exception) {
+      if (_disposed || currentUser?.id != userId) return null;
       error = _messageFor(exception, fallback: '群公告发布失败');
       notifyListeners();
       return null;
@@ -3366,10 +3402,12 @@ class AppController extends ChangeNotifier {
   }
 
   Future<bool> markGroupAnnouncementRead(String conversationId) async {
+    final userId = currentUser?.id;
     try {
       await repository.markGroupAnnouncementRead(conversationId);
-      return true;
+      return !_disposed && currentUser?.id == userId;
     } catch (exception) {
+      if (_disposed || currentUser?.id != userId) return false;
       error = _messageFor(exception, fallback: '群公告已读状态同步失败');
       notifyListeners();
       return false;
@@ -3380,13 +3418,20 @@ class AppController extends ChangeNotifier {
     String conversationId,
     List<AppUser> users,
   ) async {
+    final userId = currentUser?.id;
     try {
       await repository.addGroupMembers(
         conversationId,
         users.map((user) => user.id).toList(),
       );
+      if (_disposed || currentUser?.id != userId) return false;
+      presence.invalidate();
+      groupSendPolicyRevision++;
+      _scheduleConversationRefresh();
+      notifyListeners();
       return true;
     } catch (exception) {
+      if (_disposed || currentUser?.id != userId) return false;
       error = _messageFor(exception, fallback: '添加群成员失败');
       notifyListeners();
       return false;
@@ -3394,10 +3439,12 @@ class AppController extends ChangeNotifier {
   }
 
   Future<bool> inviteGroupMember(String conversationId, AppUser user) async {
+    final userId = currentUser?.id;
     try {
       await repository.inviteGroupMember(conversationId, user.id);
-      return true;
+      return !_disposed && currentUser?.id == userId;
     } catch (exception) {
+      if (_disposed || currentUser?.id != userId) return false;
       error = _messageFor(exception, fallback: '群邀请发送失败');
       notifyListeners();
       return false;
@@ -3419,6 +3466,7 @@ class AppController extends ChangeNotifier {
   Future<bool> removeGroupMember(String conversationId, AppUser user) async {
     try {
       await repository.removeGroupMember(conversationId, user.id);
+      presence.invalidate();
       return true;
     } catch (exception) {
       error = _messageFor(exception, fallback: '移除群成员失败');
@@ -3435,6 +3483,7 @@ class AppController extends ChangeNotifier {
     final actorId = currentUser?.id;
     try {
       await repository.setGroupRole(conversationId, user.id, role);
+      presence.invalidate();
       if (_disposed || currentUser?.id != actorId) return false;
       error = null;
       groupSendPolicyRevision++;
@@ -3467,6 +3516,7 @@ class AppController extends ChangeNotifier {
   Future<bool> transferGroupOwner(String conversationId, AppUser user) async {
     try {
       await repository.transferGroupOwner(conversationId, user.id);
+      presence.invalidate();
       return true;
     } catch (exception) {
       error = _messageFor(exception, fallback: '群主转让失败');
@@ -3502,6 +3552,7 @@ class AppController extends ChangeNotifier {
   Future<bool> leaveGroup(String conversationId) async {
     try {
       await repository.leaveGroup(conversationId);
+      presence.invalidate();
       conversations.removeWhere((item) => item.id == conversationId);
       notifyListeners();
       return true;
@@ -3839,6 +3890,8 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _clearAuthenticatedState() async {
+    presence.setAccount(null);
+    messageFeedback.setAccount(null);
     _invalidateForwardTasks();
     authenticated = false;
     connected = false;
@@ -3934,6 +3987,34 @@ class AppController extends ChangeNotifier {
           list.add(message);
         }
         final presented = index >= 0 ? list[index] : message;
+        if (index < 0 && event.payload['realtime'] == true) {
+          final userId = currentUser?.id;
+          unawaited(
+            messageFeedback.received(
+              presented,
+              eligible: () {
+                final conversation = _conversationFor(presented.conversationId);
+                return !_disposed &&
+                    authenticated &&
+                    currentUser?.id == userId &&
+                    !presented.isMine &&
+                    conversation != null &&
+                    !conversation.muted &&
+                    callController?.isVisible != true &&
+                    presented.status != MessageStatus.recalled &&
+                    presented.status != MessageStatus.expired &&
+                    presented.status != MessageStatus.failed &&
+                    presented.status != MessageStatus.sending &&
+                    (presented.expiresAt == null ||
+                        presented.expiresAt!.isAfter(DateTime.now())) &&
+                    presented.kind != MessageContentKind.system &&
+                    presented.kind != MessageContentKind.screenshotNotice &&
+                    !_recalledMessageIds.contains(presented.id) &&
+                    canDisplayMessage(presented);
+              },
+            ),
+          );
+        }
         if (canDisplayMessage(presented)) {
           _updateConversation(
             message.conversationId,
@@ -4046,12 +4127,14 @@ class AppController extends ChangeNotifier {
         _scheduleConversationRefresh();
       case ImEventType.conversationChanged:
         if (event.payload['groupSendPolicyChanged'] == true) {
+          presence.invalidate();
           groupSendPolicyRevision++;
         }
         final cid = event.payload['conversationId']?.toString();
         _suspendGroupRoles(cid);
         _scheduleConversationRefresh();
       case ImEventType.friendChanged:
+        presence.invalidate();
         unawaited(_refreshSocial());
         _scheduleConversationRefresh();
       case ImEventType.groupInvitationChanged:
@@ -4607,6 +4690,8 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    messageFeedback.dispose();
+    presence.dispose();
     _invalidateForwardTasks();
     _disposed = true;
     _conversationRefreshTimer?.cancel();

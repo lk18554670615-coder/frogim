@@ -6,6 +6,7 @@ import '../../core/app_theme.dart';
 import '../../core/models.dart';
 import '../../core/user_identity.dart';
 import '../widgets/linli_widgets.dart';
+import '../widgets/user_presence.dart';
 import 'chat_screen.dart';
 import 'settings_screens.dart';
 
@@ -16,12 +17,14 @@ class FriendProfileScreen extends StatefulWidget {
     required this.user,
     this.requestSource = 'search',
     this.requestSourceId,
+    this.presenceGroupId,
   });
 
   final AppController controller;
   final AppUser user;
   final String requestSource;
   final String? requestSourceId;
+  final String? presenceGroupId;
 
   @override
   State<FriendProfileScreen> createState() => _FriendProfileScreenState();
@@ -55,6 +58,24 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
 
   String get displayName => widget.controller.displayNameFor(user);
 
+  String? get presenceGroupId {
+    if (widget.presenceGroupId != null) return widget.presenceGroupId;
+    if (widget.requestSource == 'group') return widget.requestSourceId;
+    if (widget.requestSource == 'conversation' &&
+        widget.controller.conversations.any(
+          (c) =>
+              c.id == widget.requestSourceId &&
+              c.kind == ConversationKind.group,
+        )) {
+      return widget.requestSourceId;
+    }
+    return null;
+  }
+
+  bool get showHandle =>
+      (presenceGroupId == null && widget.requestSource != 'group') ||
+      widget.controller.canViewGroupMemberHandle(presenceGroupId);
+
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: widget.controller,
@@ -63,7 +84,17 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
         children: [
-          _ProfileHeader(user: user, displayName: displayName),
+          UserPresence(
+            controller: widget.controller,
+            userId: user.id,
+            groupId: presenceGroupId,
+            builder: (context, status) => _ProfileHeader(
+              user: user,
+              displayName: displayName,
+              status: status,
+              showHandle: showHandle,
+            ),
+          ),
           const SizedBox(height: 24),
           Row(
             children: [
@@ -94,11 +125,13 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
           const SectionHeader('资料'),
           SectionCard(
             children: [
-              SettingTile(
-                icon: CupertinoIcons.at,
-                title: '呱呱号',
-                subtitle: publicUserHandleLabel(user.handle),
-              ),
+              if (showHandle)
+                SettingTile(
+                  key: const Key('friend-profile-handle'),
+                  icon: CupertinoIcons.at,
+                  title: '呱呱号',
+                  subtitle: publicUserHandleLabel(user.handle),
+                ),
               SettingTile(
                 icon: CupertinoIcons.quote_bubble,
                 title: '个性签名',
@@ -299,9 +332,16 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
 }
 
 class _ProfileHeader extends StatelessWidget {
-  const _ProfileHeader({required this.user, required this.displayName});
+  const _ProfileHeader({
+    required this.user,
+    required this.displayName,
+    this.status = UserPresenceStatus.hidden,
+    this.showHandle = true,
+  });
   final AppUser user;
   final String displayName;
+  final UserPresenceStatus status;
+  final bool showHandle;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -310,7 +350,7 @@ class _ProfileHeader extends StatelessWidget {
         name: displayName,
         size: 88,
         avatarUrl: user.avatarUrl,
-        online: user.isOnline,
+        online: status == UserPresenceStatus.online,
       ),
       const SizedBox(height: 12),
       Text(
@@ -322,11 +362,14 @@ class _ProfileHeader extends StatelessWidget {
         const SizedBox(height: 4),
         Text('昵称：${user.name}', style: Theme.of(context).textTheme.bodySmall),
       ],
-      const SizedBox(height: 4),
-      Text(
-        publicUserHandleLabel(user.handle),
-        style: Theme.of(context).textTheme.bodyMedium,
-      ),
+      if (showHandle) ...[
+        const SizedBox(height: 4),
+        Text(
+          publicUserHandleLabel(user.handle),
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+      ],
+      PresenceLabel(status),
     ],
   );
 }

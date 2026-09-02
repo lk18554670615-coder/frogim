@@ -12,6 +12,7 @@ import '../core/app_config.dart';
 import '../core/auth_validation.dart';
 import '../core/group_message_policy.dart';
 import '../core/models.dart';
+import '../core/user_presence.dart';
 import '../im/business_repository.dart';
 import '../im/business_features.dart';
 import '../im/local_conversation_cache.dart';
@@ -1248,6 +1249,7 @@ class LiveImRepository
               kind: WukongGatewayEventKind.received,
               message: message,
               channel: channel,
+              data: const {'historySync': true},
             ),
           );
           localSequence = max(localSequence, message.messageSeq);
@@ -1413,6 +1415,10 @@ class LiveImRepository
 
   Future<void> _handleWukongEvent(WukongGatewayEvent event) async {
     if (_closed) return;
+    final realtime =
+        event.kind == WukongGatewayEventKind.received &&
+        event.data['historySync'] != true &&
+        _wukong.connectionState == WukongConnectionState.connected;
     if (event.kind == WukongGatewayEventKind.messageEvent) {
       await _handleWukongMessageEvent(event.data);
       return;
@@ -1510,7 +1516,18 @@ class LiveImRepository
     _events.add(
       ImEvent(
         type: ImEventType.messageCreated,
-        payload: {'message': mapped.toJson(), 'mentioned': mentioned},
+        payload: {
+          'message': mapped.toJson(), 'mentioned': mentioned,
+          // Suppress delayed/offline SDK deliveries as well as explicit history
+          // pages. Do not produce a burst of tones after reconnecting.
+          'realtime':
+              realtime &&
+              DateTime.now()
+                      .toUtc()
+                      .difference(message.timestamp.toUtc())
+                      .abs() <=
+                  const Duration(seconds: 30),
+        },
       ),
     );
     await _drainPendingWukongMessageEvents(message.clientMsgNo);
@@ -2432,6 +2449,24 @@ class LiveImRepository
     final data = await _get('/v2/contacts/friends');
     return (data['items'] as List<Object?>? ?? const [])
         .map((item) => _user(item! as Map<String, Object?>))
+        .toList();
+  }
+
+  @override
+  Future<List<UserPresenceSnapshot>> userPresence(
+    List<String> userIds, {
+    String? groupId,
+  }) async {
+    final data = await _sendRequest('POST', '/v2/users/presence', {
+      'userIds': userIds,
+      'groupId': ?groupId,
+    });
+    return (data['items'] as List)
+        .map(
+          (row) => UserPresenceSnapshot.fromJson(
+            Map<String, Object?>.from(row as Map),
+          ),
+        )
         .toList();
   }
 
@@ -3438,6 +3473,9 @@ class LiveImRepository
   String _messageText(Map<String, Object?>? item) {
     if (item == null) return '';
     final body = item['body'] as Map<String, Object?>?;
+    if (body?['event'] == groupAnnouncementUpdatedEvent) {
+      return groupAnnouncementUpdatedText;
+    }
     final text = body?['text'] as String? ?? item['text'] as String?;
     if (text != null && text.isNotEmpty) return text;
     final type = item['type'] as String? ?? body?['type'] as String?;
@@ -4697,6 +4735,11 @@ class ResilientImRepository
   Future<List<Conversation>> conversations() => _active.conversations();
   @override
   Future<List<AppUser>> contacts() => _active.contacts();
+  @override
+  Future<List<UserPresenceSnapshot>> userPresence(
+    List<String> userIds, {
+    String? groupId,
+  }) => _active.userPresence(userIds, groupId: groupId);
   @override
   Future<List<AppUser>> searchUsers(String query, {String by = 'handle'}) =>
       _active.searchUsers(query, by: by);
