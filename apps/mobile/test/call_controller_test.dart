@@ -478,6 +478,10 @@ void main() {
             ),
           ),
         );
+        // Switching into a group loads the send policy and member directory.
+        // Finish the demo repository's delayed requests before switching away
+        // or disposing the fixture, rather than leaving fake timers pending.
+        await tester.pump(const Duration(milliseconds: 200));
         await tester.pump();
         final isDirect = conversation.kind == ConversationKind.direct;
         for (final key in ['start-audio-call', 'start-video-call']) {
@@ -494,6 +498,8 @@ void main() {
         expect(find.byKey(const Key('chat-more-button')), findsOneWidget);
         expect(tester.takeException(), isNull);
       }
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
     });
   }
 }
