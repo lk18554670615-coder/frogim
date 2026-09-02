@@ -8,6 +8,7 @@ import '../../core/app_controller.dart';
 import '../../core/app_theme.dart';
 import '../../core/models.dart';
 import '../../core/user_identity.dart';
+import '../widgets/conversation_identity.dart';
 import '../widgets/linli_widgets.dart';
 import '../widgets/user_presence.dart';
 import 'announcement_screens.dart';
@@ -2022,7 +2023,7 @@ class ConversationTile extends StatelessWidget {
       child: Semantics(
         button: true,
         label:
-            '${conversation.archived ? '已归档，' : ''}${highlighted ? '已置顶，' : ''}${controller.displayConversationName(conversation)}，$subtitle${(conversation.mentionUnreadCount ?? 0) > 0 ? '，${conversation.mentionUnreadCount}条提到我' : ''}${conversation.unread > 0 ? '，${conversation.unread}条未读' : ''}',
+            '${conversationTypeLabel(conversation)}，${conversation.archived ? '已归档，' : ''}${highlighted ? '已置顶，' : ''}${controller.displayConversationName(conversation)}，$subtitle${(conversation.mentionUnreadCount ?? 0) > 0 ? '，${conversation.mentionUnreadCount}条提到我' : ''}${conversation.unread > 0 ? '，${conversation.unread}条未读' : ''}',
         child: Material(
           color: highlighted
               ? (dark
@@ -2054,8 +2055,9 @@ class ConversationTile extends StatelessWidget {
                 children: [
                   Padding(
                     padding: const EdgeInsets.only(left: 16, right: 12),
-                    child: PersonAvatar(
+                    child: ConversationAvatar(
                       key: ValueKey('conversation-avatar-${conversation.id}'),
+                      conversation: conversation,
                       name: controller.displayConversationName(conversation),
                       size: 48,
                       avatarUrl:
@@ -2081,48 +2083,62 @@ class ConversationTile extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Row(
-                            children: [
-                              if (highlighted) ...[
-                                Icon(
-                                  CupertinoIcons.pin_fill,
-                                  key: ValueKey(
-                                    'conversation-pinned-indicator-${conversation.id}',
+                          LayoutBuilder(
+                            builder: (context, constraints) {
+                              final compactPinnedLabel =
+                                  isOrdinaryGroupConversation(conversation) &&
+                                  constraints.maxWidth < 270 &&
+                                  MediaQuery.textScalerOf(context).scale(12) >
+                                      16;
+                              return Row(
+                                children: [
+                                  if (highlighted) ...[
+                                    Icon(
+                                      CupertinoIcons.pin_fill,
+                                      key: ValueKey(
+                                        'conversation-pinned-indicator-${conversation.id}',
+                                      ),
+                                      size: 12,
+                                      color: dark
+                                          ? LinliColors.darkPreview
+                                          : LinliColors.preview,
+                                    ),
+                                    if (!compactPinnedLabel) ...[
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        '置顶',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .labelSmall
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                      ),
+                                    ],
+                                    const SizedBox(width: 7),
+                                  ],
+                                  Expanded(
+                                    child: ConversationTitle(
+                                      conversation: conversation,
+                                      announceType: false,
+                                      textKey: ValueKey(
+                                        'conversation-title-${conversation.id}',
+                                      ),
+                                      name: controller.displayConversationName(
+                                        conversation,
+                                      ),
+                                    ),
                                   ),
-                                  size: 12,
-                                  color: dark
-                                      ? LinliColors.darkPreview
-                                      : LinliColors.preview,
-                                ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  '置顶',
-                                  style: Theme.of(context).textTheme.labelSmall
-                                      ?.copyWith(fontWeight: FontWeight.w600),
-                                ),
-                                const SizedBox(width: 7),
-                              ],
-                              Expanded(
-                                child: Text(
-                                  key: ValueKey(
-                                    'conversation-title-${conversation.id}',
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    _relativeTime(conversation.updatedAt),
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.labelSmall,
                                   ),
-                                  controller.displayConversationName(
-                                    conversation,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: Theme.of(
-                                    context,
-                                  ).textTheme.titleMedium,
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Text(
-                                _relativeTime(conversation.updatedAt),
-                                style: Theme.of(context).textTheme.labelSmall,
-                              ),
-                            ],
+                                ],
+                              );
+                            },
                           ),
                           const SizedBox(height: 5),
                           Row(

@@ -249,7 +249,9 @@ class LiveImRepository
   final Map<String, String> _channelConversations = {};
   final Map<String, _PendingWukongSend> _wukongSendsByClientMsgNo = {};
   final Map<int, _PendingWukongSend> _wukongSendsByClientSeq = {};
-  final List<WukongSendResult> _earlyWukongSendResults = [];
+  // Only buffer ACKs during an actual gateway dispatch. SDK refresh callbacks
+  // after a completed attempt must not become the next retry's early result.
+  final Set<List<WukongSendResult>> _dispatchResultBuffers = {};
   final Set<String> _seenWukongMessageEvents = {};
   Future<void> _wukongEventSerial = Future<void>.value();
   final Map<String, List<Map<String, Object?>>> _pendingWukongMessageEvents =
@@ -1271,24 +1273,43 @@ class LiveImRepository
   _PendingWukongSend? _findWukongSend(WukongSendResult result) {
     if (result.clientMsgNo.isNotEmpty) {
       final byNumber = _wukongSendsByClientMsgNo[result.clientMsgNo];
-      if (byNumber != null) return byNumber;
+      if (byNumber != null && _matchesWukongAttempt(byNumber.message, result)) {
+        return byNumber;
+      }
     }
     if (result.clientSeq > 0) {
-      return _wukongSendsByClientSeq[result.clientSeq];
+      final bySequence = _wukongSendsByClientSeq[result.clientSeq];
+      if (bySequence != null &&
+          _matchesWukongAttempt(bySequence.message, result)) {
+        return bySequence;
+      }
     }
     return null;
+  }
+
+  bool _matchesWukongAttempt(WukongMessage message, WukongSendResult result) {
+    if (result.clientSeq > 0 &&
+        message.clientSeq > 0 &&
+        result.clientSeq != message.clientSeq) {
+      return false;
+    }
+    if (result.clientMsgNo.isNotEmpty &&
+        message.clientMsgNo.isNotEmpty &&
+        result.clientMsgNo != message.clientMsgNo) {
+      return false;
+    }
+    return (result.clientSeq > 0 && result.clientSeq == message.clientSeq) ||
+        (result.clientMsgNo.isNotEmpty &&
+            result.clientMsgNo == message.clientMsgNo);
   }
 
   Future<void> _handleWukongSendResult(WukongSendResult result) async {
     if (_closed) return;
     final pending = _findWukongSend(result);
     if (pending == null) {
-      _earlyWukongSendResults.add(result);
-      if (_earlyWukongSendResults.length > 100) {
-        _earlyWukongSendResults.removeRange(
-          0,
-          _earlyWukongSendResults.length - 100,
-        );
+      for (final buffer in _dispatchResultBuffers) {
+        buffer.add(result);
+        if (buffer.length > 100) buffer.removeAt(0);
       }
       return;
     }
@@ -1304,6 +1325,8 @@ class LiveImRepository
     WukongSendResult result, {
     required bool emitEvent,
   }) async {
+    // Claim the result before the cache write yields to duplicate callbacks.
+    _removeWukongSend(pending);
     final authoritative = pending.message.copyWith(
       messageId: result.messageId.isEmpty ? null : result.messageId,
       messageSeq: result.messageSeq <= 0 ? null : result.messageSeq,
@@ -1333,7 +1356,6 @@ class LiveImRepository
           mentions: pending.source.mentions,
           expiresAt: pending.source.expiresAt,
         );
-    _removeWukongSend(pending);
     if (emitEvent && !_closed) {
       _events.add(
         ImEvent(
@@ -1348,9 +1370,30 @@ class LiveImRepository
     return mapped;
   }
 
+  Future<ChatMessage> _dispatchWukongSend({
+    required ChatMessage source,
+    required WukongOutgoingMessage outgoing,
+    ChatMessage Function(ChatMessage message)? decorate,
+  }) async {
+    final earlyResults = <WukongSendResult>[];
+    _dispatchResultBuffers.add(earlyResults);
+    try {
+      final sent = await _wukong.send(outgoing);
+      return await _trackWukongSend(
+        source: source,
+        sent: sent,
+        decorate: decorate,
+        earlyResults: earlyResults,
+      );
+    } finally {
+      _dispatchResultBuffers.remove(earlyResults);
+    }
+  }
+
   Future<ChatMessage> _trackWukongSend({
     required ChatMessage source,
     required WukongMessage sent,
+    required List<WukongSendResult> earlyResults,
     ChatMessage Function(ChatMessage message)? decorate,
   }) async {
     final uid = _userId;
@@ -1370,15 +1413,12 @@ class LiveImRepository
     if (sent.clientSeq > 0) {
       _wukongSendsByClientSeq[sent.clientSeq] = tracked;
     }
-    final earlyIndex = _earlyWukongSendResults.indexWhere(
-      (result) =>
-          (result.clientMsgNo.isNotEmpty &&
-              result.clientMsgNo == sent.clientMsgNo) ||
-          (result.clientSeq > 0 && result.clientSeq == sent.clientSeq),
+    final earlyIndex = earlyResults.indexWhere(
+      (result) => _matchesWukongAttempt(sent, result),
     );
     final early = earlyIndex < 0
         ? tracked.earlyResult
-        : _earlyWukongSendResults.removeAt(earlyIndex);
+        : earlyResults.removeAt(earlyIndex);
     ChatMessage mapped;
     if (early != null) {
       mapped = await _completeWukongSend(tracked, early, emitEvent: false);
@@ -1406,10 +1446,20 @@ class LiveImRepository
 
   void _removeWukongSend(_PendingWukongSend pending) {
     if (pending.message.clientMsgNo.isNotEmpty) {
-      _wukongSendsByClientMsgNo.remove(pending.message.clientMsgNo);
+      if (identical(
+        _wukongSendsByClientMsgNo[pending.message.clientMsgNo],
+        pending,
+      )) {
+        _wukongSendsByClientMsgNo.remove(pending.message.clientMsgNo);
+      }
     }
     if (pending.message.clientSeq > 0) {
-      _wukongSendsByClientSeq.remove(pending.message.clientSeq);
+      if (identical(
+        _wukongSendsByClientSeq[pending.message.clientSeq],
+        pending,
+      )) {
+        _wukongSendsByClientSeq.remove(pending.message.clientSeq);
+      }
     }
   }
 
@@ -3527,9 +3577,21 @@ class LiveImRepository
     if (_wukong.connectionState != WukongConnectionState.connected) {
       await connect();
     }
-    final outgoing = _messageMapper.toOutgoing(pending, channel: channel);
-    final sent = await _wukong.send(outgoing);
-    return _trackWukongSend(source: pending, sent: sent);
+    var source = pending;
+    if (pending.mediaId?.isNotEmpty == true &&
+        {
+          MessageContentKind.image,
+          MessageContentKind.voice,
+          MessageContentKind.video,
+          MessageContentKind.file,
+        }.contains(pending.kind)) {
+      // A failed SENDACK does not invalidate a completed upload. Rebind for a
+      // fresh authorised URL, even if the original local file no longer exists.
+      final remoteURL = await _business.bindMedia(pending.mediaId!, channel);
+      source = pending.copyWith(mediaUrl: remoteURL);
+    }
+    final outgoing = _messageMapper.toOutgoing(source, channel: channel);
+    return _dispatchWukongSend(source: source, outgoing: outgoing);
   }
 
   @override
@@ -3740,10 +3802,9 @@ class LiveImRepository
       clientMsgNo: base.clientMsgNo,
       expireSeconds: base.expireSeconds,
     );
-    final sent = await _wukong.send(outgoing);
-    return _trackWukongSend(
+    return _dispatchWukongSend(
       source: wireMessage,
-      sent: sent,
+      outgoing: outgoing,
       decorate: (message) => message.copyWith(
         kind: upload.kind,
         mediaUrl: upload.localPath,
@@ -4011,7 +4072,7 @@ class LiveImRepository
     _channelConversations.clear();
     _wukongSendsByClientMsgNo.clear();
     _wukongSendsByClientSeq.clear();
-    _earlyWukongSendResults.clear();
+    _dispatchResultBuffers.clear();
     _seenWukongMessageEvents.clear();
     _pendingWukongMessageEvents.clear();
     _reconnectReconciliationTimer?.cancel();

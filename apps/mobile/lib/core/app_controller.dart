@@ -18,6 +18,7 @@ import 'client_diagnostics.dart';
 import 'client_device.dart';
 import 'forward_batch.dart';
 import 'group_message_policy.dart';
+import 'group_member_directory.dart';
 import 'group_send_policy.dart';
 import 'image_dimensions.dart';
 import 'models.dart';
@@ -69,9 +70,26 @@ class AppController extends ChangeNotifier {
     return contact?.name ?? user.name;
   }
 
-  String displayNameForId(String userId, {String fallback = ''}) {
+  String displayNameForId(
+    String userId, {
+    String fallback = '',
+    String? conversationId,
+  }) {
     final contact = contacts.where((item) => item.id == userId).firstOrNull;
-    return contact?.displayName ?? fallback;
+    final member = conversationId == null
+        ? null
+        : groupMemberFor(conversationId, userId);
+    if (member != null) {
+      return displayNameFor(member.user, groupNickname: member.groupNickname);
+    }
+    if (contact != null) return contact.displayName;
+    final conversation = conversationId == null
+        ? null
+        : _conversationFor(conversationId);
+    final sender = conversation == null
+        ? null
+        : messageSenderFor(conversation, userId);
+    return sender?.name.trim().isNotEmpty == true ? sender!.name : fallback;
   }
 
   String displayConversationName(Conversation conversation) {
@@ -95,6 +113,40 @@ class AppController extends ChangeNotifier {
   String? groupInvitationsLoadError;
   String? announcementsLoadError;
   final Map<String, List<ChatMessage>> _messages = {};
+  late final _groupDirectory = GroupMemberDirectory(
+    repository.groupMembers,
+    onChanged: () {
+      if (_disposed) return;
+      notifyListeners();
+    },
+  );
+
+  List<GroupMember>? cachedGroupMembers(String id) =>
+      _groupDirectory.members(id);
+
+  GroupMember? groupMemberFor(String id, String userId) =>
+      _groupDirectory.member(id, userId);
+
+  List<AppUser> conversationUsers(Conversation conversation) =>
+      (isManagedGroup(conversation)
+              ? cachedGroupMembers(conversation.id)
+              : null)
+          ?.map((m) => m.user)
+          .toList() ??
+      conversation.members;
+
+  AppUser? messageSenderFor(Conversation conversation, String userId) =>
+      (isManagedGroup(conversation)
+          ? groupMemberFor(conversation.id, userId)?.user
+          : null) ??
+      conversation.members.where((u) => u.id == userId).firstOrNull ??
+      contacts.where((u) => u.id == userId).firstOrNull ??
+      (currentUser?.id == userId ? currentUser : null);
+
+  void _invalidateGroupMembers([String? id]) {
+    _groupDirectory.invalidate(id);
+  }
+
   final Map<String, GroupSendPolicy> _groupSendPolicies = {};
   final Map<String, int> _groupSendPolicyRequests = {};
   int groupSendPolicyRevision = 0;
@@ -109,7 +161,7 @@ class AppController extends ChangeNotifier {
     _groupSendPolicyRequests[conversationId] = request;
     final results = await Future.wait<Object>([
       repository.groupProfile(conversationId),
-      repository.groupMembers(conversationId),
+      _groupDirectory.load(conversationId, force: true),
     ]).timeout(const Duration(seconds: 6));
     final policy = GroupSendPolicy(
       profile: results[0] as GroupProfile,
@@ -137,6 +189,7 @@ class AppController extends ChangeNotifier {
   final Map<String, Future<List<ChatMessage>>> _messageCacheLoadOperations = {};
   final Map<String, String> _drafts = {};
   final Map<String, MediaUpload> _pendingMedia = {};
+  final Map<String, Object> _sendOperations = {};
   final Map<String, double> _mediaUploadProgress = {};
   final Set<String> _sendingMediaMessageIds = {};
   final Set<String> _mediaAwaitingReconnect = {};
@@ -844,6 +897,7 @@ class AppController extends ChangeNotifier {
       presence.invalidate();
       connectionAttempted = true;
       if (value) {
+        _invalidateGroupMembers();
         groupSendPolicyRevision++;
         connectionRetrying = false;
         _scheduleConversationRefresh();
@@ -1647,7 +1701,7 @@ class AppController extends ChangeNotifier {
       } else {
         merged[index] = merged[index].status == MessageStatus.recalled
             ? message.copyWith(text: '', status: MessageStatus.recalled)
-            : message;
+            : _preserveConfirmedSend(merged[index], message);
       }
       for (final identity in identities) {
         indexByIdentity[identity] = index;
@@ -2156,7 +2210,57 @@ class AppController extends ChangeNotifier {
   }
 
   Future<ChatMessage> _sendPending(ChatMessage pending) async {
-    final list = _messages[pending.conversationId]!;
+    final clientId = pending.clientMessageId;
+    if (_sendOperations.containsKey(clientId)) {
+      return _queuedMessage(pending) ?? pending;
+    }
+    final operation = Object();
+    _sendOperations[clientId] = operation;
+    bool isCurrentAttempt() =>
+        !_disposed &&
+        identical(_sendOperations[clientId], operation) &&
+        _queuedMessage(pending) != null;
+    try {
+      return await _performSendPending(pending, isCurrentAttempt);
+    } finally {
+      if (identical(_sendOperations[clientId], operation)) {
+        _sendOperations.remove(clientId);
+        if (!_disposed &&
+            connected &&
+            _mediaAwaitingReconnect.contains(clientId)) {
+          unawaited(_resumeMediaAfterReconnect());
+        }
+      }
+    }
+  }
+
+  ChatMessage? _queuedMessage(ChatMessage message) =>
+      _messages[message.conversationId]
+          ?.where((item) => item.clientMessageId == message.clientMessageId)
+          .firstOrNull;
+
+  // A queued snapshot must not undo a terminal result. Explicit retry changes
+  // the live row to sending before dispatch and does not go through this merge.
+  ChatMessage _preserveConfirmedSend(ChatMessage current, ChatMessage update) {
+    if (current.isMine &&
+        current.status == MessageStatus.failed &&
+        update.status == MessageStatus.sending) {
+      return current;
+    }
+    if (current.isMine &&
+        current.status != MessageStatus.sending &&
+        current.status != MessageStatus.failed &&
+        (update.status == MessageStatus.sending ||
+            update.status == MessageStatus.failed)) {
+      return current;
+    }
+    return update;
+  }
+
+  Future<ChatMessage> _performSendPending(
+    ChatMessage pending,
+    bool Function() isCurrentAttempt,
+  ) async {
     final isMediaMessage =
         pending.kind == MessageContentKind.image ||
         pending.kind == MessageContentKind.file ||
@@ -2166,8 +2270,12 @@ class AppController extends ChangeNotifier {
       _sendingMediaMessageIds.add(pending.clientMessageId);
     }
     try {
-      var upload = _pendingMedia[pending.clientMessageId];
+      final alreadyUploaded = pending.mediaId?.isNotEmpty == true;
+      var upload = alreadyUploaded
+          ? null
+          : _pendingMedia[pending.clientMessageId];
       if (upload == null &&
+          !alreadyUploaded &&
           (pending.kind == MessageContentKind.image ||
               pending.kind == MessageContentKind.file ||
               pending.kind == MessageContentKind.video ||
@@ -2183,15 +2291,19 @@ class AppController extends ChangeNotifier {
           kind: pending.kind,
           localPath: path,
           durationSeconds: pending.durationSeconds,
+          width: pending.mediaWidth,
+          height: pending.mediaHeight,
         );
         _pendingMedia[pending.clientMessageId] = upload;
       }
+      if (!isCurrentAttempt()) return pending;
       var sent = upload == null
           ? await repository.send(pending)
           : await repository.sendMedia(
               pending,
               upload,
               onProgress: (progress) {
+                if (!isCurrentAttempt()) return;
                 _mediaUploadProgress[pending.clientMessageId] = progress.clamp(
                   0,
                   1,
@@ -2199,20 +2311,35 @@ class AppController extends ChangeNotifier {
                 notifyListeners();
               },
             );
+      if (!isCurrentAttempt()) return sent;
+      sent = _preserveConfirmedSend(_queuedMessage(pending)!, sent);
       if (sent.status == MessageStatus.failed) {
         sent = await _explainSendFailure(sent);
       }
+      if (!isCurrentAttempt()) return sent;
+      sent = _preserveConfirmedSend(_queuedMessage(pending)!, sent);
       _replaceMessage(pending.conversationId, pending.clientMessageId, sent);
-      _pendingMedia.remove(pending.clientMessageId);
+      if (sent.mediaId?.isNotEmpty == true ||
+          (sent.status != MessageStatus.failed &&
+              sent.status != MessageStatus.sending)) {
+        _pendingMedia.remove(pending.clientMessageId);
+      }
       _mediaUploadProgress.remove(pending.clientMessageId);
       _sendingMediaMessageIds.remove(pending.clientMessageId);
       _mediaAwaitingReconnect.remove(pending.clientMessageId);
       _mediaAutomaticallyRetried.remove(pending.clientMessageId);
-      await repository.persistMessages(pending.conversationId, list);
+      await repository.persistMessages(
+        pending.conversationId,
+        _messages[pending.conversationId]!,
+      );
+      if (!isCurrentAttempt()) return sent;
       notifyListeners();
       _hydrateLinkPreview(sent);
       return sent;
     } catch (exception) {
+      if (!isCurrentAttempt()) {
+        return pending.copyWith(status: MessageStatus.failed);
+      }
       _sendingMediaMessageIds.remove(pending.clientMessageId);
       if (isMediaMessage &&
           (!connected ||
@@ -2221,17 +2348,23 @@ class AppController extends ChangeNotifier {
         _mediaAwaitingReconnect.add(pending.clientMessageId);
       }
       _mediaUploadProgress.remove(pending.clientMessageId);
-      final failed = await _explainSendFailure(
+      var failed = await _explainSendFailure(
         pending.copyWith(status: MessageStatus.failed),
         exception: exception,
       );
+      if (!isCurrentAttempt()) return failed;
+      failed = _preserveConfirmedSend(_queuedMessage(pending)!, failed);
       _replaceMessage(pending.conversationId, pending.clientMessageId, failed);
-      await repository.persistMessages(pending.conversationId, list);
-      notifyListeners();
-      if (connected &&
-          _mediaAwaitingReconnect.contains(pending.clientMessageId)) {
-        unawaited(_resumeMediaAfterReconnect());
+      try {
+        await repository.persistMessages(
+          pending.conversationId,
+          _messages[pending.conversationId]!,
+        );
+      } catch (_) {
+        // Keep the failed row actionable in memory even if local storage fails.
       }
+      if (!isCurrentAttempt()) return failed;
+      notifyListeners();
       return failed;
     }
   }
@@ -2331,11 +2464,29 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> retryMessage(ChatMessage message) async {
-    if (message.status != MessageStatus.failed) return;
-    final sending = message.copyWith(status: MessageStatus.sending);
+    if (!canRetryMessage(message)) return;
+    // Resolve the live row, not a stale widget callback captured before an ACK.
+    final sending = _queuedMessage(
+      message,
+    )!.copyWith(status: MessageStatus.sending);
+    _mediaAutomaticallyRetried.remove(message.clientMessageId);
+    _mediaAwaitingReconnect.remove(message.clientMessageId);
     _replaceMessage(message.conversationId, message.clientMessageId, sending);
     notifyListeners();
     await _sendPending(sending);
+  }
+
+  bool canRetryMessage(ChatMessage message) {
+    final current = _queuedMessage(message);
+    return !_disposed &&
+        authenticated &&
+        current != null &&
+        current.isMine &&
+        current.senderId == currentUser?.id &&
+        current.status == MessageStatus.failed &&
+        !_sendOperations.containsKey(current.clientMessageId) &&
+        (current.expiresAt == null ||
+            current.expiresAt!.isAfter(DateTime.now()));
   }
 
   Future<bool> editMessage(ChatMessage message, String text) async {
@@ -3323,17 +3474,34 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<List<GroupMember>?> loadGroupMembers(String conversationId) async {
+  Future<List<GroupMember>?> loadGroupMembers(
+    String conversationId, {
+    bool force = true,
+  }) async {
     final userId = currentUser?.id;
-    try {
-      final members = await repository.groupMembers(conversationId);
-      return _disposed || currentUser?.id != userId ? null : members;
-    } catch (exception) {
-      if (_disposed || currentUser?.id != userId) return null;
-      error = _messageFor(exception, fallback: '群成员加载失败');
-      notifyListeners();
-      return null;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        final members = await _groupDirectory.load(
+          conversationId,
+          force: force,
+        );
+        return _disposed || currentUser?.id != userId ? null : members;
+      } catch (exception) {
+        if (_disposed || currentUser?.id != userId || !authenticated) {
+          return null;
+        }
+        if (exception is GroupMembersInvalidated) {
+          // A reconnect/CMD may replace a request while the picker is opening.
+          // Join the new generation once, never return the discarded snapshot.
+          if (attempt == 0) continue;
+          return null;
+        }
+        error = _messageFor(exception, fallback: '群成员加载失败');
+        notifyListeners();
+        return null;
+      }
     }
+    return null;
   }
 
   Future<GroupProfile?> updateGroupProfile(
@@ -3426,6 +3594,7 @@ class AppController extends ChangeNotifier {
       );
       if (_disposed || currentUser?.id != userId) return false;
       presence.invalidate();
+      _invalidateGroupMembers(conversationId);
       groupSendPolicyRevision++;
       _scheduleConversationRefresh();
       notifyListeners();
@@ -3467,6 +3636,7 @@ class AppController extends ChangeNotifier {
     try {
       await repository.removeGroupMember(conversationId, user.id);
       presence.invalidate();
+      _invalidateGroupMembers(conversationId);
       return true;
     } catch (exception) {
       error = _messageFor(exception, fallback: '移除群成员失败');
@@ -3486,6 +3656,7 @@ class AppController extends ChangeNotifier {
       presence.invalidate();
       if (_disposed || currentUser?.id != actorId) return false;
       error = null;
+      _invalidateGroupMembers(conversationId);
       groupSendPolicyRevision++;
       _scheduleConversationRefresh();
       notifyListeners();
@@ -3908,6 +4079,7 @@ class AppController extends ChangeNotifier {
     groupInvitationsLoadError = null;
     announcementsLoadError = null;
     _messages.clear();
+    _invalidateGroupMembers();
     _groupSendPolicies.clear();
     _groupSendPolicyRequests.clear();
     groupSendPolicyRevision++;
@@ -3917,6 +4089,7 @@ class AppController extends ChangeNotifier {
     _messageLoadOperations.clear();
     _messageCacheLoadOperations.clear();
     _pendingMedia.clear();
+    _sendOperations.clear();
     _mediaUploadProgress.clear();
     _sendingMediaMessageIds.clear();
     _mediaAwaitingReconnect.clear();
@@ -3967,6 +4140,17 @@ class AppController extends ChangeNotifier {
         final raw = event.payload['message'] as Map<String, Object?>?;
         if (raw == null) return;
         final message = _currentVersion(_messageFromEvent(raw));
+        final conversation = _conversationFor(message.conversationId);
+        if (authenticated &&
+            activeConversationId == message.conversationId &&
+            isManagedGroup(conversation)) {
+          unawaited(
+            _groupDirectory.loadForSender(
+              message.conversationId,
+              message.senderId,
+            ),
+          );
+        }
         if (message.status == MessageStatus.recalled) {
           _recalledMessageIds.add(message.id);
         }
@@ -3982,7 +4166,7 @@ class AppController extends ChangeNotifier {
         if (index >= 0) {
           list[index] = list[index].status == MessageStatus.recalled
               ? message.copyWith(text: '', status: MessageStatus.recalled)
-              : message;
+              : _preserveConfirmedSend(list[index], message);
         } else {
           list.add(message);
         }
@@ -4052,9 +4236,24 @@ class AppController extends ChangeNotifier {
                 existing.clientMessageId == message.clientMessageId,
           );
           if (list != null && index != null && index >= 0) {
+            final previous = list[index];
+            if (message.isMine &&
+                message.status == MessageStatus.failed &&
+                (previous.status == MessageStatus.failed ||
+                    !identical(
+                      _preserveConfirmedSend(previous, message),
+                      message,
+                    ))) {
+              break;
+            }
             list[index] = list[index].status == MessageStatus.recalled
                 ? message.copyWith(text: '', status: MessageStatus.recalled)
-                : message;
+                : _preserveConfirmedSend(previous, message);
+            if (message.isMine &&
+                message.status != MessageStatus.failed &&
+                message.status != MessageStatus.sending) {
+              _pendingMedia.remove(message.clientMessageId);
+            }
             _refreshGroupPreview(message.conversationId);
             unawaited(repository.persistMessages(message.conversationId, list));
             if (message.isMine && message.status == MessageStatus.failed) {
@@ -4128,6 +4327,7 @@ class AppController extends ChangeNotifier {
       case ImEventType.conversationChanged:
         if (event.payload['groupSendPolicyChanged'] == true) {
           presence.invalidate();
+          _invalidateGroupMembers(event.payload['conversationId']?.toString());
           groupSendPolicyRevision++;
         }
         final cid = event.payload['conversationId']?.toString();
@@ -4246,6 +4446,10 @@ class AppController extends ChangeNotifier {
         return;
       }
       conversations = refreshed;
+      _groupDirectory.retainGroups({
+        for (final c in refreshed)
+          if (isManagedGroup(c)) c.id,
+      });
       _untrustedGroupRoles.clear();
       _presentationRevision++;
       for (final conversation in conversations) {
@@ -4690,6 +4894,7 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _groupDirectory.dispose();
     messageFeedback.dispose();
     presence.dispose();
     _invalidateForwardTasks();

@@ -291,7 +291,8 @@ void main() {
     testWidgets(
       'mobile group $screen quick invite visual baseline',
       (tester) async {
-        final controller = await _authenticatedController(tester);
+        final controller = AppController(_GroupMembersGoldenRepository());
+        await tester.runAsync(controller.loginAsDemo);
         addTearDown(controller.dispose);
         final group = controller.conversations.firstWhere(
           (c) => c.id == 'c-team',
@@ -322,6 +323,41 @@ void main() {
       },
       skip: !Platform.isWindows,
     );
+  }
+
+  for (final screen in ['info', 'all']) {
+    testWidgets('mobile large group $screen visual baseline', (tester) async {
+      final controller = AppController(_LargeGroupGoldenRepository());
+      await tester.runAsync(controller.loginAsDemo);
+      addTearDown(controller.dispose);
+      final group = controller.conversations.firstWhere(
+        (c) => c.id == 'c-team',
+      );
+      await _pumpSurface(
+        tester,
+        size: const Size(390, 844),
+        child: ChatInfoScreen(
+          controller: controller,
+          conversation: group,
+          onSearch: () {},
+          onClearLocal: () async {},
+          onBlock: () async {},
+          onScheduledMessages: () {},
+        ),
+      );
+      if (screen == 'all') {
+        await tester.tap(find.byKey(const Key('chat-info-all-members')));
+        await tester.pumpAndSettle();
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 80)),
+        );
+        await _settle(tester);
+      }
+      await expectLater(
+        find.byKey(_surfaceKey),
+        matchesGoldenFile('goldens/windows/mobile-large-group-$screen.png'),
+      );
+    }, skip: !Platform.isWindows);
   }
 
   testWidgets('mobile moments visual baseline', (tester) async {
@@ -531,6 +567,61 @@ void main() {
     );
   }, skip: !Platform.isWindows);
 
+  testWidgets('group identity dark large text visual baseline', (tester) async {
+    final controller = AppController(_GroupIdentityGoldenRepository());
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+    final group = controller.conversations.firstWhere((c) => c.id == 'c-team');
+    await _pumpSurface(
+      tester,
+      size: const Size(390, 844),
+      brightness: Brightness.dark,
+      textScale: 2,
+      child: ChatScreen(controller: controller, conversation: group),
+    );
+    await expectLater(
+      find.byKey(_surfaceKey),
+      matchesGoldenFile('goldens/windows/group-identity-dark-large.png'),
+    );
+  }, skip: !Platform.isWindows);
+
+  testWidgets('group identity narrow list visual baseline', (tester) async {
+    final controller = AppController(_GroupIdentityGoldenRepository());
+    await tester.runAsync(controller.loginAsDemo);
+    addTearDown(controller.dispose);
+    final group = controller.conversations.firstWhere((c) => c.id == 'c-team');
+    final direct = controller.conversations.firstWhere(
+      (c) => c.id == 'c-linyu',
+    );
+    await _pumpSurface(
+      tester,
+      size: const Size(320, 400),
+      textScale: 2,
+      child: Scaffold(
+        body: Column(
+          children: [
+            ConversationTile(
+              conversation: group,
+              controller: controller,
+              highlighted: true,
+            ),
+            ConversationTile(
+              conversation: direct.copyWith(
+                title: group.title,
+                avatarUrl: group.avatarUrl,
+              ),
+              controller: controller,
+            ),
+          ],
+        ),
+      ),
+    );
+    await expectLater(
+      find.byKey(_surfaceKey),
+      matchesGoldenFile('goldens/windows/group-identity-narrow-list.png'),
+    );
+  }, skip: !Platform.isWindows);
+
   testWidgets('desktop QR login visual baseline', (tester) async {
     final controller = AppController(_ProductionAuthGoldenRepository());
     addTearDown(controller.dispose);
@@ -655,6 +746,61 @@ Future<void> _expectMobileHomeTabGolden(
     find.byKey(_surfaceKey),
     matchesGoldenFile('goldens/windows/$goldenName'),
   );
+}
+
+class _GroupIdentityGoldenRepository extends _GoldenRepository {
+  @override
+  Future<List<Conversation>> conversations() async => [
+    for (final c in await super.conversations())
+      c.id == 'c-team'
+          ? c.copyWith(
+              title: '这是一个用于区分单聊和群聊的长名称',
+              memberCount: 11,
+              unread: 99,
+              muted: false,
+            )
+          : c,
+  ];
+}
+
+class _GroupMembersGoldenRepository extends _GoldenRepository {
+  @override
+  Future<List<Conversation>> conversations() async => [
+    // Demo previews omit self but groupMembers includes self. The real server's
+    // memberCount includes everybody, independent of the preview size.
+    for (final c in await super.conversations())
+      c.id == 'c-team' ? c.copyWith(memberCount: 5) : c,
+  ];
+}
+
+class _LargeGroupGoldenRepository extends _GoldenRepository {
+  final members = List.generate(
+    11,
+    (index) => GroupMember(
+      user: index == 0
+          ? DemoImRepository.demoUser
+          : AppUser(
+              id: 'large-$index',
+              name: '测试群友$index',
+              handle: 'user$index',
+              presence: '',
+            ),
+      role: index == 0 ? 'owner' : 'member',
+      joinedAt: DateTime(2026),
+    ),
+  );
+  @override
+  Future<List<GroupMember>> groupMembers(String id) async => List.of(members);
+  @override
+  Future<List<Conversation>> conversations() async => [
+    for (final c in await super.conversations())
+      c.id == 'c-team'
+          ? c.copyWith(
+              members: members.take(8).map((m) => m.user).toList(),
+              memberCount: 11,
+            )
+          : c,
+  ];
 }
 
 class _GoldenRepository extends DemoImRepository
@@ -844,6 +990,8 @@ Future<void> _pumpSurface(
   WidgetTester tester, {
   required Size size,
   required Widget child,
+  Brightness brightness = Brightness.light,
+  double textScale = 1,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
@@ -853,12 +1001,13 @@ Future<void> _pumpSurface(
   await tester.pumpWidget(
     MaterialApp(
       debugShowCheckedModeBanner: false,
-      theme: buildLinliTheme(Brightness.light, fontFamily: 'NotoSansSC'),
+      theme: buildLinliTheme(brightness, fontFamily: 'NotoSansSC'),
       builder: (context, navigator) => MediaQuery(
         data: MediaQueryData(
           size: size,
           devicePixelRatio: 1,
           disableAnimations: true,
+          textScaler: TextScaler.linear(textScale),
         ),
         child: RepaintBoundary(
           key: _surfaceKey,

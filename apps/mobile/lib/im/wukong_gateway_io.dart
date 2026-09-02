@@ -132,8 +132,7 @@ class IoWukongGateway implements WukongGateway, WukongHistoryCache {
         ),
       );
       if (item.status != full.WKSendMsgResult.sendLoading &&
-          (_outgoingClientSeqs.remove(item.clientSeq) ||
-              item.fromUID == _session?.uid)) {
+          _outgoingClientSeqs.remove(item.clientSeq)) {
         _sendResults.add(
           WukongSendResult(
             clientMsgNo: item.clientMsgNO,

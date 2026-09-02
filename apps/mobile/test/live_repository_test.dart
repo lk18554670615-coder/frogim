@@ -1030,6 +1030,121 @@ void main() {
     await repository.close();
   });
 
+  test('重发不消费上次重复失败回执，旧发送序号不能击败新 ACK', () async {
+    final gateway = FakeWukongGateway()
+      ..autoAcknowledge = false
+      ..initialSendState = WukongMessageState.sending;
+    final repository = _repository(
+      MockClient((request) async {
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/channels/conversations') {
+          return _conversationResponse();
+        }
+        return _jsonResponse({
+          'data': {'items': <Object?>[]},
+        });
+      }),
+      gateway: gateway,
+    );
+    addTearDown(repository.close);
+    await repository.login('13800138000', '123456');
+    final pending = ChatMessage(
+      id: 'local-retry',
+      clientMessageId: 'retry-client',
+      conversationId: 'c1',
+      senderId: 'user-1',
+      senderName: '我',
+      text: '只发送一次',
+      sentAt: DateTime.now(),
+      isMine: true,
+      status: MessageStatus.sending,
+    );
+    final changes = <ChatMessage>[];
+    final subscription = repository.events.listen((event) {
+      final raw = event.payload['message'];
+      if (raw is Map<String, Object?>) changes.add(ChatMessage.fromJson(raw));
+    });
+    addTearDown(subscription.cancel);
+    void ack(int sequence, int reason) => gateway.emitSendResult(
+      clientMsgNo: 'retry-client',
+      clientSeq: sequence,
+      messageId: reason == 1 ? 'confirmed' : '',
+      messageSeq: reason == 1 ? 42 : 0,
+      reasonCode: reason,
+    );
+    await repository.send(pending);
+    ack(1, 11);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(changes.single.status, MessageStatus.failed);
+    // SDK refreshes can repeat the previous failure while nobody is sending.
+    ack(1, 11);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    final retry = await repository.send(pending);
+    expect(retry.status, MessageStatus.sending);
+    expect(gateway.sentMessages.map((item) => item.clientMsgNo), [
+      'retry-client',
+      'retry-client',
+    ]);
+    ack(1, 11); // delayed old attempt, same idempotency key but old sequence
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(changes, hasLength(1));
+    ack(2, 1);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(changes.last.status, MessageStatus.sent);
+    expect(changes.last.id, 'confirmed');
+  });
+
+  test('已上传附件重发重新取得媒体地址，不重复上传文件', () async {
+    final gateway = FakeWukongGateway();
+    final paths = <String>[];
+    final repository = _repository(
+      MockClient((request) async {
+        paths.add(request.url.path);
+        if (request.url.path == '/v2/auth/login') return _loginResponse();
+        if (request.url.path == '/v2/channels/conversations') {
+          return _conversationResponse();
+        }
+        if (request.url.path == '/v2/media/uploaded/bind') {
+          return _jsonResponse({
+            'data': {
+              'mediaId': 'uploaded',
+              'url': 'https://cdn.example.com/fresh-file',
+            },
+          });
+        }
+        return _jsonResponse({
+          'data': {'items': <Object?>[]},
+        });
+      }),
+      gateway: gateway,
+    );
+    addTearDown(repository.close);
+    await repository.login('13800138000', '123456');
+    await repository.send(
+      ChatMessage(
+        id: 'local-file',
+        clientMessageId: 'file-retry',
+        conversationId: 'c1',
+        senderId: 'user-1',
+        senderName: '我',
+        text: '[文件]',
+        sentAt: DateTime.now(),
+        isMine: true,
+        status: MessageStatus.sending,
+        kind: MessageContentKind.file,
+        mediaId: 'uploaded',
+        mediaUrl: '/deleted/local-file',
+        fileName: 'file.bin',
+      ),
+    );
+    expect(paths.where((path) => path.endsWith('/bind')), hasLength(1));
+    expect(paths, isNot(contains('/v2/media/presign')));
+    expect(
+      gateway.sentMessages.single.payload.values,
+      contains('https://cdn.example.com/fresh-file'),
+    );
+  });
+
   test('会话草稿加密保存、恢复并在清空后删除', () async {
     final client = MockClient((request) async {
       if (request.url.path == '/v2/auth/login') return _loginResponse();

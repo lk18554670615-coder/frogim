@@ -37,6 +37,7 @@ import '../../core/web_drop_paste.dart';
 import '../../im/business_features.dart';
 import '../../im/structured_event_text.dart';
 import '../widgets/linli_widgets.dart';
+import '../widgets/conversation_identity.dart';
 import '../widgets/user_presence.dart';
 import '../widgets/forward_conversation_sheet.dart';
 import '../widgets/media_send_widgets.dart';
@@ -782,13 +783,50 @@ class _ChatScreenState extends State<ChatScreen> {
     ),
   );
 
+  bool _openingSenderProfile = false;
+  Future<void> _openMessageSenderProfile(ChatMessage message) async {
+    if (_openingSenderProfile || message.senderId.isEmpty) return;
+    final accountId = widget.controller.currentUser?.id;
+    final conversationId = widget.conversation.id;
+    _openingSenderProfile = true;
+    try {
+      var user = widget.controller.messageSenderFor(
+        widget.conversation,
+        message.senderId,
+      );
+      if (user == null && _isOrdinaryGroup) {
+        await widget.controller.loadGroupMembers(conversationId);
+        if (!mounted ||
+            widget.conversation.id != conversationId ||
+            widget.controller.currentUser?.id != accountId) {
+          return;
+        }
+        user = widget.controller.messageSenderFor(
+          widget.conversation,
+          message.senderId,
+        );
+      }
+      if (!mounted) return;
+      if (user == null) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('暂时无法获取该成员资料，请稍后重试')));
+        return;
+      }
+      await _openUserProfile(user);
+    } finally {
+      _openingSenderProfile = false;
+    }
+  }
+
   Widget _buildConversationAvatar() {
     final avatar = UserPresence(
       controller: widget.controller,
       userId: widget.conversation.kind == ConversationKind.direct
           ? peer?.id ?? ''
           : '',
-      builder: (context, status) => PersonAvatar(
+      builder: (context, status) => ConversationAvatar(
+        conversation: widget.conversation,
         name: widget.controller.displayConversationName(widget.conversation),
         size: 34,
         avatarUrl: conversationAvatarUrl,
@@ -843,13 +881,11 @@ class _ChatScreenState extends State<ChatScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text(
-                        widget.controller.displayConversationName(
+                      ConversationTitle(
+                        conversation: widget.conversation,
+                        name: widget.controller.displayConversationName(
                           widget.conversation,
                         ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleMedium,
                       ),
                       AnimatedBuilder(
                         animation: widget.controller,
@@ -1042,6 +1078,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                     ? null
                                     : widget.controller.displayNameForId(
                                         replyingTo!.senderId,
+                                        conversationId:
+                                            replyingTo!.conversationId,
                                         fallback: replyingTo!.senderName,
                                       ),
                                 showAttachments: showAttachments,
@@ -1242,9 +1280,10 @@ class _ChatScreenState extends State<ChatScreen> {
           previous == null ||
           !_sameDay(message.sentAt, previous.sentAt) ||
           message.sentAt.difference(previous.sentAt).inMinutes >= 15;
-      final sender = widget.conversation.members
-          .where((user) => user.id == message.senderId)
-          .firstOrNull;
+      final sender = widget.controller.messageSenderFor(
+        widget.conversation,
+        message.senderId,
+      );
       final displaySender =
           sender ??
           (message.isMine
@@ -1252,12 +1291,17 @@ class _ChatScreenState extends State<ChatScreen> {
               : widget.conversation.kind == ConversationKind.direct
               ? peer
               : null);
-      final displaySenderName = displaySender?.name.trim().isNotEmpty == true
-          ? widget.controller.displayNameFor(displaySender!)
-          : widget.controller.displayNameForId(
-              message.senderId,
-              fallback: message.senderName,
-            );
+      final displaySenderName = widget.controller.displayNameForId(
+        message.senderId,
+        conversationId: widget.conversation.id,
+        fallback: displaySender?.name.trim().isNotEmpty == true
+            ? widget.controller.displayNameFor(displaySender!)
+            : message.senderName.isNotEmpty
+            ? message.senderName
+            : _isOrdinaryGroup
+            ? '群成员'
+            : '对方',
+      );
       final stableMessageId = message.stableIdentity;
       final messageKey = message.id == widget.initialMessageId
           ? initialMessageKey
@@ -1291,9 +1335,9 @@ class _ChatScreenState extends State<ChatScreen> {
                     (widget.conversation.kind == ConversationKind.direct
                         ? peer?.avatarUrl
                         : null),
-                onAvatarTap: displaySender == null
+                onAvatarTap: message.senderId.isEmpty
                     ? null
-                    : () => unawaited(_openUserProfile(displaySender)),
+                    : () => unawaited(_openMessageSenderProfile(message)),
                 showSender: widget.conversation.kind == ConversationKind.group,
                 showGroupReceipt:
                     widget.conversation.kind == ConversationKind.group &&
@@ -1302,7 +1346,9 @@ class _ChatScreenState extends State<ChatScreen> {
                     ) &&
                     message.id == latestMineId,
                 onRetry:
-                    _effectiveSendRestriction == null && !_loadingSendCapability
+                    _effectiveSendRestriction == null &&
+                        !_loadingSendCapability &&
+                        widget.controller.canRetryMessage(message)
                     ? () => widget.controller.retryMessage(message)
                     : null,
                 selectionMode: selecting,
@@ -1506,15 +1552,9 @@ class _ChatScreenState extends State<ChatScreen> {
       expiresInSeconds: expiresInSeconds,
     );
     _scrollToEnd();
-    final sent = await future;
-    if (sent?.status == MessageStatus.failed && mounted) {
-      _showError(
-        sent?.sendError ??
-            (mentions.any((mention) => mention.isEveryone)
-                ? '“@所有人”发送失败，请确认当前账号是群主或管理员'
-                : '消息发送失败，请检查网络后重试'),
-      );
-    }
+    // Failure belongs to the durable message row and its retry action, not a
+    // queue of transient snackbars competing with subsequent sends.
+    await future;
   }
 
   Future<void> _showSendOptions() async {
@@ -2459,6 +2499,7 @@ class _ChatScreenState extends State<ChatScreen> {
               controller: widget.controller,
               target: widget.controller.displayNameForId(
                 message.senderId,
+                conversationId: message.conversationId,
                 fallback: message.senderName,
               ),
               targetId: message.id,
@@ -2881,6 +2922,7 @@ class _MessageContextMenu extends StatelessWidget {
                     message: message,
                     senderName: controller.displayNameForId(
                       message.senderId,
+                      conversationId: message.conversationId,
                       fallback: message.senderName,
                     ),
                   ),
@@ -3317,13 +3359,18 @@ class ChatInfoScreen extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 16, 12, 14),
                 child: multiUser
-                    ? _ChatMemberMatrix(
-                        controller: controller,
-                        groupId: group ? conversation.id : null,
-                        members: conversation.members,
-                        fallbackName: conversation.title,
-                        fallbackAvatar: conversation.avatarUrl,
-                      )
+                    ? group
+                          ? _GroupMembersPreview(
+                              controller: controller,
+                              conversation: conversation,
+                            )
+                          : _ChatMemberMatrix(
+                              controller: controller,
+                              groupId: group ? conversation.id : null,
+                              members: conversation.members,
+                              fallbackName: conversation.title,
+                              fallbackAvatar: conversation.avatarUrl,
+                            )
                     : _DirectContactSummary(
                         controller: controller,
                         user: directPeer,
@@ -3617,6 +3664,100 @@ class _AsyncToggleState extends State<_AsyncToggle> {
   );
 }
 
+class _GroupMembersPreview extends StatefulWidget {
+  const _GroupMembersPreview({
+    required this.controller,
+    required this.conversation,
+  });
+  final AppController controller;
+  final Conversation conversation;
+  @override
+  State<_GroupMembersPreview> createState() => _GroupMembersPreviewState();
+}
+
+class _GroupMembersPreviewState extends State<_GroupMembersPreview> {
+  bool _failed = false;
+  bool _loading = false;
+  int _request = 0;
+  late int _policyRevision;
+
+  @override
+  void initState() {
+    super.initState();
+    _policyRevision = widget.controller.groupSendPolicyRevision;
+    _load(force: false);
+  }
+
+  @override
+  void didUpdateWidget(covariant _GroupMembersPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller ||
+        oldWidget.conversation.id != widget.conversation.id ||
+        oldWidget.conversation.memberCount != widget.conversation.memberCount ||
+        _policyRevision != widget.controller.groupSendPolicyRevision) {
+      _policyRevision = widget.controller.groupSendPolicyRevision;
+      _load();
+    }
+  }
+
+  Future<void> _load({bool force = true}) async {
+    final request = ++_request;
+    _loading = true;
+    final members = await widget.controller.loadGroupMembers(
+      widget.conversation.id,
+      force: force,
+    );
+    if (!mounted || request != _request) return;
+    setState(() {
+      _loading = false;
+      _failed = members == null;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final loaded = widget.controller.cachedGroupMembers(widget.conversation.id);
+    final people = widget.controller.conversationUsers(widget.conversation);
+    final count = loaded?.length ?? widget.conversation.memberCount;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _ChatMemberMatrix(
+          controller: widget.controller,
+          groupId: widget.conversation.id,
+          members: people,
+          fallbackName: widget.conversation.title,
+          fallbackAvatar: widget.conversation.avatarUrl,
+        ),
+        if (count > 9 || count > people.length)
+          TextButton(
+            key: const Key('chat-info-all-members'),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => GroupMembersOverviewScreen(
+                  controller: widget.controller,
+                  conversationId: widget.conversation.id,
+                ),
+              ),
+            ),
+            child: Text('查看全部 $count 位成员'),
+          ),
+        if (_failed)
+          TextButton(
+            key: const Key('chat-info-members-retry'),
+            onPressed: _loading
+                ? null
+                : () {
+                    _load();
+                    setState(() {});
+                  },
+            child: const Text('成员资料加载失败，点击重试'),
+          ),
+      ],
+    );
+  }
+}
+
 class _ChatMemberMatrix extends StatelessWidget {
   const _ChatMemberMatrix({
     required this.controller,
@@ -3853,6 +3994,7 @@ class MessageBubble extends StatelessWidget {
         ? senderName!.trim()
         : controller?.displayNameForId(
                 message.senderId,
+                conversationId: message.conversationId,
                 fallback: publicSenderName,
               ) ??
               publicSenderName;
@@ -4153,7 +4295,7 @@ class MessageBubble extends StatelessWidget {
                                                 Text(
                                                   onRetry == null
                                                       ? '发送失败'
-                                                      : '发送失败，点此重试',
+                                                      : '重新发送',
                                                   style: const TextStyle(
                                                     color:
                                                         LinliColors.systemRed,
@@ -7605,19 +7747,25 @@ class _MentionPickerSheetState extends State<_MentionPickerSheet> {
     final showHandle = widget.controller.canViewGroupMemberHandle(
       widget.conversationId,
     );
-    final members = widget.members
-        .where((member) => member.id != widget.currentUserId)
-        .where(
-          (member) =>
-              normalized.isEmpty ||
-              member.name.toLowerCase().contains(normalized) ||
-              widget.controller
-                  .displayNameFor(member)
-                  .toLowerCase()
-                  .contains(normalized) ||
-              (showHandle && member.handle.toLowerCase().contains(normalized)),
-        )
-        .toList();
+    final members =
+        (widget.controller
+                    .cachedGroupMembers(widget.conversationId)
+                    ?.map((m) => m.user)
+                    .toList() ??
+                widget.members)
+            .where((member) => member.id != widget.currentUserId)
+            .where(
+              (member) =>
+                  normalized.isEmpty ||
+                  member.name.toLowerCase().contains(normalized) ||
+                  widget.controller
+                      .displayNameFor(member)
+                      .toLowerCase()
+                      .contains(normalized) ||
+                  (showHandle &&
+                      member.handle.toLowerCase().contains(normalized)),
+            )
+            .toList();
     return FractionallySizedBox(
       heightFactor: .72,
       child: Column(
@@ -7818,6 +7966,7 @@ class _PinnedMessagesSheetState extends State<_PinnedMessagesSheet> {
                     subtitle: Text(
                       widget.controller.displayNameForId(
                         message.senderId,
+                        conversationId: message.conversationId,
                         fallback: message.senderName,
                       ),
                     ),
@@ -7989,7 +8138,7 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
                             overflow: TextOverflow.ellipsis,
                           ),
                           subtitle: Text(
-                            '${widget.controller.displayNameForId(matches[index].senderId, fallback: matches[index].senderName)} · ${_searchDate(matches[index].sentAt)}',
+                            '${widget.controller.displayNameForId(matches[index].senderId, conversationId: matches[index].conversationId, fallback: matches[index].senderName)} · ${_searchDate(matches[index].sentAt)}',
                           ),
                           trailing: const Icon(
                             CupertinoIcons.chevron_forward,

@@ -1003,6 +1003,72 @@ class _GroupAnnouncementScreenState extends State<GroupAnnouncementScreen>
   }
 }
 
+/// Direct entry from the chat-info preview, without going through settings.
+class GroupMembersOverviewScreen extends StatefulWidget {
+  const GroupMembersOverviewScreen({
+    super.key,
+    required this.controller,
+    required this.conversationId,
+  });
+  final AppController controller;
+  final String conversationId;
+  @override
+  State<GroupMembersOverviewScreen> createState() =>
+      _GroupMembersOverviewScreenState();
+}
+
+class _GroupMembersOverviewScreenState
+    extends State<GroupMembersOverviewScreen> {
+  GroupProfile? _profile;
+  List<GroupMember>? _members;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final accountId = widget.controller.currentUser?.id;
+    setState(() => _loading = true);
+    final results = await Future.wait<Object?>([
+      widget.controller.loadGroupProfile(widget.conversationId),
+      widget.controller.loadGroupMembers(widget.conversationId),
+    ]);
+    if (!mounted || accountId != widget.controller.currentUser?.id) return;
+    setState(() {
+      _profile = results[0] as GroupProfile?;
+      _members = results[1] as List<GroupMember>?;
+      _loading = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_loading && _profile != null && _members != null) {
+      return GroupMembersManagementScreen(
+        controller: widget.controller,
+        conversationId: widget.conversationId,
+        profile: _profile!,
+        initialMembers: _members!,
+      );
+    }
+    return Scaffold(
+      appBar: const GlassAppBar(title: Text('群成员')),
+      body: _loading
+          ? const Center(child: CupertinoActivityIndicator())
+          : StatePanel(
+              icon: CupertinoIcons.exclamationmark_bubble,
+              title: '群成员加载失败',
+              body: '请检查网络后重试。',
+              actionLabel: '重新加载',
+              onAction: _load,
+            ),
+    );
+  }
+}
+
 class GroupMembersManagementScreen extends StatefulWidget {
   const GroupMembersManagementScreen({
     super.key,

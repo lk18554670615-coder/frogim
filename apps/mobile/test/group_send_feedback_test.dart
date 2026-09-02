@@ -164,6 +164,231 @@ void main() {
     controller.removeListener(observe);
   });
 
+  test('旧失败对象连续点击只重发一次，成功后旧入口失效', () async {
+    final repository = _MuteRepository();
+    final controller = AppController(repository);
+    await controller.loginAsDemo();
+    addTearDown(controller.dispose);
+    final failed = (await controller.sendMessage('c-team', '重发测试'))!;
+    final barrier = Completer<ChatMessage>();
+    repository.sendBarrier = barrier;
+    final retry = controller.retryMessage(failed);
+    await controller.retryMessage(failed);
+    expect(repository.sendCalls, 2);
+    expect(controller.canRetryMessage(failed), isFalse);
+    expect(
+      controller.messagesFor('c-team').single.status,
+      MessageStatus.sending,
+    );
+    barrier.complete(failed.copyWith(status: MessageStatus.sent));
+    await retry;
+    await controller.retryMessage(failed);
+    expect(repository.sendCalls, 2);
+    expect(controller.messagesFor('c-team').single.status, MessageStatus.sent);
+    expect(controller.messagesFor('c-team').single.sendError, isNull);
+  });
+
+  for (final kind in [
+    MessageContentKind.image,
+    MessageContentKind.voice,
+    MessageContentKind.video,
+    MessageContentKind.file,
+  ]) {
+    test('$kind 无本地路径的失败媒体仍保留原文件供重发', () async {
+      final repository = _MuteRepository();
+      final controller = AppController(repository);
+      await controller.loginAsDemo();
+      addTearDown(controller.dispose);
+      final failed = await controller.sendMedia(
+        'c-team',
+        MediaUpload(
+          bytes: Uint8List.fromList([1, 2, 3]),
+          fileName: 'retry.bin',
+          mimeType: 'application/octet-stream',
+          kind: kind,
+          width: 80,
+          height: 60,
+        ),
+      );
+      repository.sendStatus = MessageStatus.sent;
+      await controller.retryMessage(failed);
+      expect(repository.mediaCalls, 2);
+      expect(repository.lastUpload?.bytes, [1, 2, 3]);
+      expect(
+        controller.messagesFor('c-team').single.status,
+        MessageStatus.sent,
+      );
+    });
+  }
+
+  test('上传后延迟失败只重发消息，不依赖已删除的本地文件', () async {
+    final repository = _MuteRepository()
+      ..sendStatus = MessageStatus.sending
+      ..uploadedMediaId = 'uploaded-media';
+    final controller = AppController(repository);
+    await controller.loginAsDemo();
+    addTearDown(controller.dispose);
+    final sent = await controller.sendMedia(
+      'c-team',
+      MediaUpload(
+        bytes: Uint8List.fromList([1, 2, 3]),
+        fileName: 'voice.m4a',
+        mimeType: 'audio/mp4',
+        kind: MessageContentKind.voice,
+      ),
+    );
+    repository.bus.add(
+      ImEvent(
+        type: ImEventType.messageChanged,
+        payload: {
+          'message': sent.copyWith(status: MessageStatus.failed).toJson(),
+        },
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    repository.sendStatus = MessageStatus.sent;
+    await controller.retryMessage(controller.messagesFor('c-team').single);
+    expect(repository.mediaCalls, 1);
+    expect(repository.sendCalls, 2);
+    expect(controller.messagesFor('c-team').single.status, MessageStatus.sent);
+  });
+
+  test('重复失败事件不反复查禁言原因，成功后不再退回失败', () async {
+    final repository = _MuteRepository()..sendStatus = MessageStatus.sending;
+    final controller = AppController(repository);
+    await controller.loginAsDemo();
+    addTearDown(controller.dispose);
+    final pending = (await controller.sendMessage('c-team', '延迟回执'))!;
+    final failedEvent = ImEvent(
+      type: ImEventType.messageChanged,
+      payload: {
+        'message': pending.copyWith(status: MessageStatus.failed).toJson(),
+      },
+    );
+    final before = repository.policyLoads;
+    for (var i = 0; i < 10; i++) {
+      repository.bus.add(failedEvent);
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(repository.policyLoads, before + 1);
+    repository.sendStatus = MessageStatus.sent;
+    await controller.retryMessage(controller.messagesFor('c-team').single);
+    repository.bus.add(failedEvent);
+    expect(controller.messagesFor('c-team').single.status, MessageStatus.sent);
+  });
+
+  test('发送中 ACK 成功优先于稍晚返回的发送中快照，退出后不恢复旧消息', () async {
+    final repository = _MuteRepository();
+    final controller = AppController(repository);
+    await controller.loginAsDemo();
+    addTearDown(controller.dispose);
+    final failed = (await controller.sendMessage('c-team', 'ACK 抢先'))!;
+    final barrier = Completer<ChatMessage>();
+    repository.sendBarrier = barrier;
+    final retry = controller.retryMessage(failed);
+    repository.bus.add(
+      ImEvent(
+        type: ImEventType.messageChanged,
+        payload: {
+          'message': failed
+              .copyWith(id: 'confirmed', status: MessageStatus.sent)
+              .toJson(),
+        },
+      ),
+    );
+    barrier.complete(failed.copyWith(status: MessageStatus.sending));
+    await retry;
+    expect(controller.messagesFor('c-team').single.id, 'confirmed');
+    expect(controller.messagesFor('c-team').single.status, MessageStatus.sent);
+    repository.sendBarrier = null;
+    final second = (await controller.sendMessage('c-team', '退出中的重发'))!;
+    final secondBarrier = Completer<ChatMessage>();
+    repository.sendBarrier = secondBarrier;
+    final secondRetry = controller.retryMessage(second);
+    await controller.logout();
+    secondBarrier.complete(second.copyWith(status: MessageStatus.sent));
+    await secondRetry;
+    expect(controller.messagesFor('c-team'), isEmpty);
+    expect(controller.canRetryMessage(second), isFalse);
+  });
+
+  test('失败 ACK 早于发送返回时保留重发入口，刷新旧缓存不回退成功状态', () async {
+    final repository = _MuteRepository();
+    final controller = AppController(repository);
+    await controller.loginAsDemo();
+    addTearDown(controller.dispose);
+    final failed = (await controller.sendMessage('c-team', '乱序状态'))!;
+    final barrier = Completer<ChatMessage>();
+    repository.sendBarrier = barrier;
+    final retry = controller.retryMessage(failed);
+    repository.bus.add(
+      ImEvent(
+        type: ImEventType.messageChanged,
+        payload: {'message': failed.toJson()},
+      ),
+    );
+    barrier.complete(failed.copyWith(status: MessageStatus.sending));
+    await retry;
+    expect(
+      controller.messagesFor('c-team').single.status,
+      MessageStatus.failed,
+    );
+    expect(controller.canRetryMessage(failed), isTrue);
+    repository.sendBarrier = null;
+    repository.sendStatus = MessageStatus.sent;
+    await controller.retryMessage(failed);
+    repository.history = [failed];
+    await controller.loadMessages('c-team', force: true);
+    expect(controller.messagesFor('c-team').single.status, MessageStatus.sent);
+  });
+
+  for (final width in [390.0, 1280.0]) {
+    testWidgets('$width 失败消息旁直接重发，不重复弹出失败提醒', (tester) async {
+      final repository = _MuteRepository();
+      final controller = AppController(repository);
+      await tester.runAsync(controller.loginAsDemo);
+      addTearDown(controller.dispose);
+      tester.view.physicalSize = Size(width, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildLinliTheme(
+            width > 600 ? Brightness.dark : Brightness.light,
+          ),
+          home: ChatScreen(
+            controller: controller,
+            conversation: controller.conversations.firstWhere(
+              (item) => item.id == 'c-team',
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('message-input')), '失败后手动重发');
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('send-button')));
+      await tester.pumpAndSettle();
+      expect(find.text('重新发送'), findsOneWidget);
+      expect(find.byType(SnackBar), findsNothing);
+      final failed = controller.messagesFor('c-team').single;
+      final barrier = Completer<ChatMessage>();
+      repository.sendBarrier = barrier;
+      await tester.tap(find.byKey(const Key('failed-message-retry')));
+      await tester.pump();
+      expect(find.text('重新发送'), findsNothing);
+      expect(repository.sendCalls, 2);
+      barrier.complete(failed.copyWith(status: MessageStatus.sent));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('failed-message-retry')), findsNothing);
+      expect(find.byType(SnackBar), findsNothing);
+      expect(find.text('失败后手动重发'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
   test('普通权限错误码不伪称禁言，明确禁言和限流错误码有独立提示', () {
     expect(wukongSendFailureMessage(11), isNot(contains('禁言')));
     expect(wukongSendFailureMessage(13), isNot(contains('禁言')));
@@ -275,11 +500,19 @@ class _MuteRepository extends DemoImRepository {
   bool failPolicy = false;
   bool throwOnSend = false;
   MessageStatus sendStatus = MessageStatus.failed;
+  int sendCalls = 0;
+  int mediaCalls = 0;
+  int policyLoads = 0;
+  MediaUpload? lastUpload;
+  String? uploadedMediaId;
+  Completer<ChatMessage>? sendBarrier;
+  List<ChatMessage> history = [];
   final bus = StreamController<ImEvent>.broadcast(sync: true);
   @override
   Stream<ImEvent> get events => bus.stream;
   @override
   Future<GroupProfile> groupProfile(String conversationId) async {
+    policyLoads++;
     if (failPolicy) throw StateError('offline');
     return GroupProfile(
       conversationId: conversationId,
@@ -308,9 +541,11 @@ class _MuteRepository extends DemoImRepository {
     member: (await groupMembers('c-team')).first,
   );
   @override
-  Future<List<ChatMessage>> messages(String conversationId) async => [];
+  Future<List<ChatMessage>> messages(String conversationId) async => history;
   @override
   Future<ChatMessage> send(ChatMessage pending) async {
+    sendCalls++;
+    if (sendBarrier != null) return sendBarrier!.future;
     if (throwOnSend) throw const FormatException('forbidden');
     return pending.copyWith(status: sendStatus);
   }
@@ -320,7 +555,12 @@ class _MuteRepository extends DemoImRepository {
     ChatMessage pending,
     MediaUpload upload, {
     void Function(double)? onProgress,
-  }) => send(pending);
+  }) {
+    mediaCalls++;
+    lastUpload = upload;
+    return send(pending.copyWith(mediaId: uploadedMediaId));
+  }
+
   @override
   Future<void> persistMessages(
     String conversationId,

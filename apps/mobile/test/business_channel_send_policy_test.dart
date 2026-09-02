@@ -100,7 +100,7 @@ void main() {
     );
 
     expect(find.text('发送失败'), findsOneWidget);
-    expect(find.text('发送失败，点此重试'), findsNothing);
+    expect(find.text('重新发送'), findsNothing);
   });
 
   testWidgets('失败消息重试入口具备可读语义和至少 44 点触控区域', (tester) async {
