@@ -256,6 +256,11 @@ void main() {
   testWidgets('系统内部账号不会暴露给用户且不阻止其他资料保存', (tester) async {
     final controller = (await tester.runAsync(_controller))!;
     addTearDown(controller.dispose);
+    await tester.runAsync(
+      () => controller.repository.updateProfile(
+        handle: 'll_0a72db642113767333c3',
+      ),
+    );
     controller.currentUser = controller.currentUser!.copyWith(
       handle: 'll_0a72db642113767333c3',
       handleChangesRemaining: 2,

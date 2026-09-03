@@ -1166,7 +1166,7 @@ func (x *API) issueUserSession(w http.ResponseWriter, r *http.Request, u *model.
 		handleErr(w, err)
 		return
 	}
-	response := map[string]any{"user": u, "accessToken": a, "refreshToken": refresh, "expiresIn": int(x.cfg.AccessTTL.Seconds())}
+	response := map[string]any{"user": x.ownProfile(u), "accessToken": a, "refreshToken": refresh, "expiresIn": int(x.cfg.AccessTTL.Seconds())}
 	if imSession != nil {
 		response["imSession"] = imSession
 	}
@@ -1706,15 +1706,26 @@ func (x *API) imSession(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, http.StatusOK, map[string]any{"imSession": session})
 }
+
+// Every response used as the current user's profile must include the same
+// derived capabilities. Copy first: in-memory stores may return shared users.
+func (x *API) ownProfile(user *model.User) *model.User {
+	if user == nil {
+		return nil
+	}
+	profile := *user
+	x.signAvatarURL(&profile)
+	x.app.DecorateOwnProfile(&profile)
+	return &profile
+}
+
 func (x *API) me(w http.ResponseWriter, r *http.Request) {
 	u, err := x.app.User(uid(r))
 	if err != nil {
 		handleErr(w, err)
 		return
 	}
-	x.signAvatarURL(u)
-	x.app.DecorateOwnProfile(u)
-	write(w, 200, u)
+	write(w, 200, x.ownProfile(u))
 }
 func (x *API) updateMe(w http.ResponseWriter, r *http.Request) {
 	var p store.UserProfileUpdate
@@ -1735,9 +1746,7 @@ func (x *API) updateMe(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
-	x.signAvatarURL(u)
-	x.app.DecorateOwnProfile(u)
-	write(w, http.StatusOK, u)
+	write(w, http.StatusOK, x.ownProfile(u))
 }
 
 func (x *API) requestAccountDeletionCode(w http.ResponseWriter, r *http.Request) {
@@ -1927,7 +1936,7 @@ func (x *API) updatePhone(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
-	write(w, http.StatusOK, u)
+	write(w, http.StatusOK, x.ownProfile(u))
 }
 func (x *API) userDevices(w http.ResponseWriter, r *http.Request) {
 	items, err := x.app.UserDevices(uid(r))

@@ -597,20 +597,14 @@ class AppController extends ChangeNotifier {
   }
 
   Future<bool> _refreshRestoredProfile() async {
-    try {
-      currentUser = await repository.profile();
-      if (!_disposed) notifyListeners();
-      return false;
-    } catch (_) {
-      // Refresh-token rejection clears the repository identity. Distinguish it
-      // from a transient outage so a revoked session never leaves a stale,
-      // apparently authenticated shell on screen.
-      if (repository.currentUser == null) {
-        await _expireRestoredSession();
-        return true;
-      }
-      return false;
+    final refreshed = await refreshProfile(reportError: false);
+    // Only expire a still-active shell whose repository credentials were
+    // revoked, not an older profile request completing after an account switch.
+    if (!refreshed && authenticated && repository.currentUser == null) {
+      await _expireRestoredSession();
+      return true;
     }
+    return false;
   }
 
   Future<void> _loadAuthPolicy({bool notify = false}) async {
@@ -3768,52 +3762,73 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<bool> refreshProfile() async {
+  Future<bool> refreshProfile({bool reportError = true}) async {
+    final accountId = currentUser?.id;
+    final sessionEpoch = _forwardSessionEpoch;
+    bool isCurrentSession() =>
+        !_disposed &&
+        _forwardSessionEpoch == sessionEpoch &&
+        currentUser?.id == accountId;
     try {
-      currentUser = await repository.profile();
+      final user = await repository.profile();
+      if (!isCurrentSession() || user.id != accountId) return false;
+      currentUser = user;
       notifyListeners();
       return true;
     } catch (exception) {
-      error = _messageFor(exception, fallback: '个人资料加载失败');
-      notifyListeners();
+      if (isCurrentSession() && reportError) {
+        error = _messageFor(exception, fallback: '个人资料加载失败');
+        notifyListeners();
+      }
       return false;
     }
   }
 
   Future<bool> saveProfile({
-    required String name,
-    required String handle,
-    required String signature,
-    required String gender,
+    String? name,
+    String? handle,
+    String? signature,
+    String? gender,
     MediaUpload? avatar,
   }) async {
-    final normalizedName = name.trim();
-    final normalizedHandle = handle.trim().toLowerCase();
-    final normalizedSignature = signature.trim();
-    if (normalizedName.isEmpty) {
+    final normalizedName = name?.trim();
+    final normalizedHandle = handle?.trim().toLowerCase();
+    final normalizedSignature = signature?.trim();
+    if (normalizedName != null && normalizedName.isEmpty) {
       error = '请输入昵称';
       notifyListeners();
       return false;
     }
-    if (normalizedName.runes.length > 40) {
+    if (normalizedName != null && normalizedName.runes.length > 40) {
       error = '昵称不能超过 40 个字符';
       notifyListeners();
       return false;
     }
-    if (!RegExp(r'^[a-z0-9_]{4,24}$').hasMatch(normalizedHandle)) {
+    if (normalizedHandle != null &&
+        !RegExp(r'^[a-z0-9_]{4,24}$').hasMatch(normalizedHandle)) {
       error = '呱呱号需为 4–24 位小写字母、数字或下划线';
       notifyListeners();
       return false;
     }
-    if (normalizedSignature.runes.length > 160) {
+    if (normalizedSignature != null && normalizedSignature.runes.length > 160) {
       error = '个性签名不能超过 160 个字符';
       notifyListeners();
       return false;
     }
-    if (gender != 'unspecified' && gender != 'male' && gender != 'female') {
+    if (gender != null &&
+        gender != 'unspecified' &&
+        gender != 'male' &&
+        gender != 'female') {
       error = '请选择有效的性别展示方式';
       notifyListeners();
       return false;
+    }
+    if (name == null &&
+        handle == null &&
+        signature == null &&
+        gender == null &&
+        avatar == null) {
+      return true;
     }
     error = null;
     try {

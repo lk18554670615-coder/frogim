@@ -107,6 +107,7 @@ class LiveImRepository
   String? _refreshToken;
   String? _userId;
   AppUser? _me;
+  int _profileRevision = 0;
   WukongSession? _imSession;
   final Map<String, WukongChannel> _conversationChannels = {};
   final Map<String, GroupHistoryAccess> _groupHistory = {};
@@ -667,6 +668,7 @@ class LiveImRepository
     }
     _closed = false;
     _handlingSessionReplacement = false;
+    _profileRevision++;
     _me = _user(rawUser);
     await _persistSession();
     return _me!;
@@ -684,7 +686,19 @@ class LiveImRepository
 
   @override
   Future<AppUser> profile() async {
+    final revision = _profileRevision;
+    final accountId = _userId;
     final user = _user(await _get('/v2/users/me'));
+    if (_userId != accountId || user.id != accountId) {
+      throw StateError('个人资料请求对应的登录账号已变更');
+    }
+    // A GET started before a successful edit must not overwrite that edit,
+    // including the encrypted profile restored on the next app launch.
+    if (revision != _profileRevision) {
+      final current = _me;
+      if (current == null) throw StateError('登录状态已变更');
+      return current;
+    }
     _me = user;
     await _persistSession();
     return user;
@@ -710,6 +724,7 @@ class LiveImRepository
       'allowSearchByPhone': ?allowSearchByPhone,
     };
     final user = _user(await _sendRequest('PATCH', '/v2/users/me', payload));
+    _profileRevision++;
     _me = user;
     await _persistSession();
     return user;
@@ -765,6 +780,7 @@ class LiveImRepository
         'code': code,
       }),
     );
+    _profileRevision++;
     _me = user;
     await _persistSession();
     return user;
@@ -4060,6 +4076,7 @@ class LiveImRepository
   };
 
   Future<void> _clearSession() async {
+    _profileRevision++;
     _distrustGroupHistories();
     _historyRequiredVersions.clear();
     _latestHistoryAccess.clear();

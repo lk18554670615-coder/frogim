@@ -196,10 +196,38 @@ class SettingsScreen extends StatelessWidget {
   );
 }
 
-class AccountSecurityScreen extends StatelessWidget {
+class AccountSecurityScreen extends StatefulWidget {
   const AccountSecurityScreen({super.key, required this.controller});
 
   final AppController controller;
+
+  @override
+  State<AccountSecurityScreen> createState() => _AccountSecurityScreenState();
+}
+
+class _AccountSecurityScreenState extends State<AccountSecurityScreen> {
+  AppController get controller => widget.controller;
+  bool profileLoading = true;
+  bool profileUnavailable = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_refreshProfile());
+  }
+
+  Future<void> _refreshProfile() async {
+    setState(() {
+      profileLoading = true;
+      profileUnavailable = false;
+    });
+    final loaded = await controller.refreshProfile(reportError: false);
+    if (!mounted) return;
+    setState(() {
+      profileLoading = false;
+      profileUnavailable = !loaded;
+    });
+  }
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
@@ -209,12 +237,22 @@ class AccountSecurityScreen extends StatelessWidget {
       final publicHandle = publicUserHandle(user?.handle);
       final handleIncomplete = publicHandle == null;
       final canEditHandle =
-          !handleIncomplete && (user?.handleChangesRemaining ?? 0) > 0;
+          !profileLoading &&
+          !profileUnavailable &&
+          !handleIncomplete &&
+          (user?.handleChangesRemaining ?? 0) > 0;
       return Scaffold(
         appBar: const GlassAppBar(title: Text('账号与安全')),
         body: ListView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 36),
           children: [
+            if (profileUnavailable)
+              _SettingsNotice(
+                key: const Key('account-profile-refresh-error'),
+                message: '个人资料暂时无法更新，请重试',
+                actionLabel: '重试',
+                onAction: _refreshProfile,
+              ),
             SectionCard(
               children: [
                 ListTile(
@@ -253,7 +291,11 @@ class AccountSecurityScreen extends StatelessWidget {
                   icon: CupertinoIcons.at,
                   title: '呱呱号',
                   subtitle: publicHandle ?? '由账号服务自动生成',
-                  status: handleIncomplete
+                  status: profileLoading
+                      ? '正在更新'
+                      : profileUnavailable
+                      ? '状态待确认'
+                      : handleIncomplete
                       ? '等待生成'
                       : (user?.handleChangesRemaining ?? 0) > 0
                       ? '还可修改 ${user!.handleChangesRemaining} 次'
@@ -556,12 +598,15 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late final TextEditingController nameController;
   late final TextEditingController handleController;
   late final TextEditingController signatureController;
-  late final String initialName;
-  late final String initialHandle;
-  late final String submittedInitialHandle;
-  late final bool initialHandleIsInternal;
-  late final String initialSignature;
-  late final String initialGender;
+  late String initialName;
+  late String initialHandle;
+  late bool initialHandleIsInternal;
+  late String initialSignature;
+  late String initialGender;
+  AppUser? _lastProfile;
+  bool _syncingDraft = false;
+  bool _profileLoading = true;
+  bool _profileUnavailable = false;
   late String selectedGender;
   Uint8List? avatarBytes;
   String? avatarFileName;
@@ -575,8 +620,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   void initState() {
     super.initState();
     final user = widget.controller.currentUser;
+    _lastProfile = user;
     initialName = user?.name ?? '';
-    submittedInitialHandle = user?.handle.trim() ?? '';
+    final submittedInitialHandle = user?.handle.trim() ?? '';
     initialHandleIsInternal = isInternalUserHandle(submittedInitialHandle);
     initialHandle = publicUserHandle(submittedInitialHandle) ?? '';
     initialSignature = user?.signature ?? user?.presence ?? '';
@@ -592,19 +638,72 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       ..addListener(_onDraftChanged);
     signatureController = TextEditingController(text: initialSignature)
       ..addListener(_onDraftChanged);
+    widget.controller.addListener(_onProfileChanged);
+    unawaited(_refreshProfile());
   }
 
   void _onDraftChanged() {
-    if (!mounted) return;
+    if (!mounted || _syncingDraft) return;
     setState(() => saveError = null);
   }
 
+  Future<void> _refreshProfile() async {
+    setState(() {
+      _profileLoading = true;
+      _profileUnavailable = false;
+    });
+    final loaded = await widget.controller.refreshProfile(reportError: false);
+    if (!mounted) return;
+    setState(() {
+      _profileLoading = false;
+      _profileUnavailable = !loaded;
+    });
+  }
+
+  void _onProfileChanged() {
+    final user = widget.controller.currentUser;
+    if (!mounted ||
+        user == null ||
+        user.id != _lastProfile?.id ||
+        identical(user, _lastProfile)) {
+      return;
+    }
+    final keepName = _nameChanged;
+    final keepHandle = _handleChanged;
+    final keepSignature = _signatureChanged;
+    final keepGender = selectedGender != initialGender;
+    setState(() {
+      _syncingDraft = true;
+      initialName = user.name;
+      initialHandle = publicUserHandle(user.handle) ?? '';
+      initialHandleIsInternal = isInternalUserHandle(user.handle);
+      initialSignature = user.signature ?? user.presence;
+      initialGender = switch (user.gender) {
+        'male' => 'male',
+        'female' => 'female',
+        _ => 'unspecified',
+      };
+      // Refresh untouched fields, but never overwrite a draft already typed.
+      if (!keepName) nameController.text = initialName;
+      if (!keepHandle) handleController.text = initialHandle;
+      if (!keepSignature) signatureController.text = initialSignature;
+      if (!keepGender) selectedGender = initialGender;
+      _lastProfile = user;
+      _syncingDraft = false;
+    });
+  }
+
+  bool get _nameChanged => nameController.text.trim() != initialName.trim();
+  bool get _handleChanged =>
+      handleController.text.trim().toLowerCase() != initialHandle.toLowerCase();
+  bool get _signatureChanged =>
+      signatureController.text.trim() != initialSignature.trim();
+
   bool get _hasChanges =>
       avatarBytes != null ||
-      nameController.text.trim() != initialName.trim() ||
-      handleController.text.trim().toLowerCase() !=
-          initialHandle.trim().toLowerCase() ||
-      signatureController.text.trim() != initialSignature.trim() ||
+      _nameChanged ||
+      _handleChanged ||
+      _signatureChanged ||
       selectedGender != initialGender;
 
   bool get _draftLooksValid {
@@ -612,14 +711,14 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     final handle = handleController.text.trim().toLowerCase();
     final signature = signatureController.text.trim();
     final handleIsValid = RegExp(r'^[a-z0-9_]{4,24}$').hasMatch(handle);
-    return name.isNotEmpty &&
-        name.runes.length <= 40 &&
-        (handleIsValid || (initialHandleIsInternal && handle.isEmpty)) &&
-        signature.runes.length <= 160;
+    return (!_nameChanged || (name.isNotEmpty && name.runes.length <= 40)) &&
+        (!_handleChanged || handleIsValid) &&
+        (!_signatureChanged || signature.runes.length <= 160);
   }
 
   @override
   void dispose() {
+    widget.controller.removeListener(_onProfileChanged);
     nameController.dispose();
     handleController.dispose();
     signatureController.dispose();
@@ -749,7 +848,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 
   Future<void> _save() async {
-    if (!_hasChanges || !_draftLooksValid) return;
+    if (saving || _profileLoading || !_hasChanges || !_draftLooksValid) return;
     if (!(formKey.currentState?.validate() ?? false)) return;
     setState(() {
       saving = true;
@@ -765,12 +864,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
             localPath: avatarPath,
           );
     final success = await widget.controller.saveProfile(
-      name: nameController.text,
-      handle: initialHandleIsInternal && handleController.text.trim().isEmpty
-          ? submittedInitialHandle
-          : handleController.text,
-      signature: signatureController.text,
-      gender: selectedGender,
+      name: _nameChanged ? nameController.text : null,
+      handle: _handleChanged ? handleController.text : null,
+      signature: _signatureChanged ? signatureController.text : null,
+      gender: selectedGender != initialGender ? selectedGender : null,
       avatar: avatar,
     );
     if (!mounted) return;
@@ -819,7 +916,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   @override
   Widget build(BuildContext context) {
     final user = widget.controller.currentUser;
-    final canSave = !saving && _hasChanges && _draftLooksValid;
+    final canSave =
+        !saving && !_profileLoading && _hasChanges && _draftLooksValid;
     return PopScope(
       canPop: allowExit || !_hasChanges,
       onPopInvokedWithResult: (didPop, _) {
@@ -838,6 +936,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         ),
         body: Column(
           children: [
+            if (_profileUnavailable)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: _SettingsNotice(
+                  key: const Key('profile-refresh-error'),
+                  message: '个人资料暂时无法更新，可保留草稿后重试',
+                  actionLabel: '重试',
+                  onAction: saving ? null : _refreshProfile,
+                ),
+              ),
             if (saveError != null)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -938,6 +1046,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       textInputAction: TextInputAction.next,
                       decoration: const InputDecoration(labelText: '昵称'),
                       validator: (value) {
+                        if (!_nameChanged) return null;
                         final text = value?.trim() ?? '';
                         if (text.isEmpty) return '请输入昵称';
                         if (text.runes.length > 40) return '昵称不能超过 40 个字符';
@@ -957,15 +1066,19 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       textCapitalization: TextCapitalization.none,
                       textInputAction: TextInputAction.next,
                       enabled:
+                          !_profileLoading &&
+                          !_profileUnavailable &&
                           !initialHandleIsInternal &&
                           ((user?.handleChangesRemaining ?? 0) > 0 ||
-                              initialHandle.isEmpty),
+                              initialHandle.isEmpty ||
+                              _handleChanged),
                       decoration: const InputDecoration(
                         labelText: '呱呱号',
                         hintText: '请设置 4–24 位呱呱号',
                         prefixText: '@',
                       ),
                       validator: (value) {
+                        if (!_handleChanged) return null;
                         final text = value?.trim().toLowerCase() ?? '';
                         if (initialHandleIsInternal && text.isEmpty) {
                           return null;
@@ -977,7 +1090,11 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       },
                     ),
                     _ProfileFieldMeta(
-                      helper: initialHandleIsInternal
+                      helper: _profileLoading
+                          ? '正在更新呱呱号修改状态'
+                          : _profileUnavailable
+                          ? '修改状态待确认，请重试加载资料'
+                          : initialHandleIsInternal
                           ? '账号服务升级后会自动生成，生成后可修改'
                           : (user?.handleChangesRemaining ?? 0) > 0
                           ? '还可修改 ${user!.handleChangesRemaining} 次 · 4–24 位小写字母、数字或下划线'
@@ -3464,6 +3581,7 @@ class _PageIntro extends StatelessWidget {
 
 class _SettingsNotice extends StatelessWidget {
   const _SettingsNotice({
+    super.key,
     required this.message,
     this.actionLabel,
     this.onAction,

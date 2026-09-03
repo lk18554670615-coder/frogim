@@ -1730,11 +1730,17 @@ func TestPasswordRegistrationLoginAndReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var registered struct{ AccessToken, RefreshToken string }
+	var registered struct {
+		AccessToken, RefreshToken string
+		User                      model.User
+	}
 	_ = json.NewDecoder(res.Body).Decode(&registered)
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusOK || registered.AccessToken == "" || registered.RefreshToken == "" {
 		t.Fatalf("register status=%d response=%+v", res.StatusCode, registered)
+	}
+	if registered.User.HandleChangesRemaining != 2 {
+		t.Fatalf("registration remaining handle changes=%d", registered.User.HandleChangesRemaining)
 	}
 
 	wrong, _ := publicHTTPPost(t, ts.URL+"/v2/auth/password-login", "application/json", strings.NewReader(fmt.Sprintf(`{"phone":%q,"password":"wrong-pass"}`, phone)))
@@ -1750,6 +1756,13 @@ func TestPasswordRegistrationLoginAndReset(t *testing.T) {
 	correct, _ := publicHTTPPost(t, ts.URL+"/v2/auth/password-login", "application/json", strings.NewReader(fmt.Sprintf(`{"phone":%q,"password":"StrongPass123!"}`, phone)))
 	if correct.StatusCode != http.StatusOK {
 		t.Fatalf("password login status=%d", correct.StatusCode)
+	}
+	var passwordSession struct{ User model.User }
+	if err = json.NewDecoder(correct.Body).Decode(&passwordSession); err != nil {
+		t.Fatal(err)
+	}
+	if passwordSession.User.HandleChangesRemaining != 2 {
+		t.Fatalf("password login remaining handle changes=%d", passwordSession.User.HandleChangesRemaining)
 	}
 	_ = correct.Body.Close()
 
@@ -2460,6 +2473,9 @@ func TestWebQRLoginRequiresMobileConfirmationAndConsumesTicketOnce(t *testing.T)
 	claim.Body.Close()
 	if session.AccessToken == "" || session.RefreshToken == "" || session.User.ID == "" {
 		t.Fatalf("incomplete QR login session=%+v", session)
+	}
+	if session.User.HandleChangesRemaining != 2-session.User.HandleChangeCount {
+		t.Fatalf("QR login remaining handle changes=%d", session.User.HandleChangesRemaining)
 	}
 
 	replay := publicPlatformPost(t, ts.URL+"/v2/auth/qr/poll", "web", fmt.Sprintf(`{"id":%q,"pollToken":%q}`, ticket.ID, ticket.PollToken))

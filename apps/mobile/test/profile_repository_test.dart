@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -14,6 +16,74 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
+
+  test('昵称单独提交且迟到的资料读取不能覆盖保存结果与会话缓存', () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    const original = <String, Object?>{
+      'id': 'me',
+      'name': 'Old nickname',
+      'handle': 'exhausted_handle',
+      'handleChangeCount': 2,
+      'handleChangesRemaining': 0,
+    };
+    final getStarted = Completer<void>();
+    final delayedRead = Completer<http.Response>();
+    final client = MockClient((request) async {
+      if (request.url.path == '/v2/auth/login') {
+        return _json({
+          'accessToken': 'access',
+          'refreshToken': 'refresh',
+          'user': original,
+        });
+      }
+      if (request.method == 'GET' && request.url.path == '/v2/users/me') {
+        getStarted.complete();
+        return delayedRead.future;
+      }
+      if (request.method == 'PATCH' && request.url.path == '/v2/users/me') {
+        expect(jsonDecode(request.body), {'name': 'New nickname'});
+        return _json({...original, 'name': 'New nickname'});
+      }
+      return http.Response('{}', 404);
+    });
+    final repository = LiveImRepository(
+      client: client,
+      apiBaseUrl: 'https://api.example',
+    );
+    final controller = AppController(repository)
+      ..currentUser = await repository.login('13800138000', '123456');
+    addTearDown(controller.dispose);
+    final refresh = controller.refreshProfile();
+    await getStarted.future;
+    expect(await controller.saveProfile(name: ' New nickname '), isTrue);
+    delayedRead.complete(_json(original));
+    expect(await refresh, isTrue);
+    expect(controller.currentUser!.name, 'New nickname');
+    expect(repository.currentUser!.name, 'New nickname');
+    final restored = LiveImRepository(
+      client: MockClient((_) async => _json({})),
+      apiBaseUrl: 'https://api.example',
+    );
+    addTearDown(restored.close);
+    expect(await restored.restoreSession(), isTrue);
+    expect(restored.currentUser!.name, 'New nickname');
+  });
+
+  test('资料仅校验提交的字段，空补丁不发送且仍拒绝非法新呱呱号', () async {
+    final repository = _RetryProfileRepository(failuresBeforeSuccess: 0);
+    final controller = AppController(repository)
+      ..currentUser = DemoImRepository.demoUser.copyWith(
+        handle: 'invalid-old-handle',
+        handleChangesRemaining: 0,
+      );
+    addTearDown(controller.dispose);
+    expect(await controller.saveProfile(), isTrue);
+    expect(repository.updateProfileCalls, 0);
+    expect(await controller.saveProfile(name: 'New nickname'), isTrue);
+    expect(repository.updateProfileCalls, 1);
+    expect(await controller.saveProfile(handle: 'invalid-new-handle'), isFalse);
+    expect(repository.updateProfileCalls, 1);
+  });
 
   test('头像先经 presign/PUT/complete 再以 mediaId 更新资料', () async {
     final requests = <String>[];
