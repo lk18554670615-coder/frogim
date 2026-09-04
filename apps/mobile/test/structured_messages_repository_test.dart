@@ -329,6 +329,11 @@ void main() {
             'data': {'items': <Object?>[]},
           });
         }
+        if (request.url.path == '/v2/im/datasource/message-extras') {
+          return _jsonResponse({
+            'data': {'items': <Object?>[]},
+          });
+        }
         if (request.url.path == '/v2/im/datasource/messages') {
           return _jsonResponse({
             'data': {
@@ -352,6 +357,15 @@ void main() {
                   },
                 },
               ],
+            },
+          });
+        }
+        if (request.url.path == '/v2/media/media-video-1/url') {
+          return _jsonResponse({
+            'data': {
+              'url': 'https://cdn.example.com/signed-video',
+              'cover': null,
+              'coverMediaId': null,
             },
           });
         }

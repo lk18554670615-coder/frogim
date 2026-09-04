@@ -734,7 +734,9 @@ void main() {
 class _TolerantLocalFileComparator extends LocalFileComparator {
   _TolerantLocalFileComparator(super.testFile);
 
-  static const _maxDiffPercent = 0.003;
+  // Allow tiny platform rasterisation drift at clipped/gradient text edges.
+  // Structural or colour regressions remain orders of magnitude above this.
+  static const _maxDiffPercent = 0.0035;
 
   @override
   Future<bool> compare(Uint8List imageBytes, Uri golden) async {

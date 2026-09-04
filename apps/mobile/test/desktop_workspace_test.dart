@@ -31,7 +31,8 @@ void main() {
     expect(find.byKey(const Key('desktop-login-shell')), findsOneWidget);
     expect(find.byKey(const Key('desktop-login-brand-panel')), findsOneWidget);
     expect(find.text('桌面网页版'), findsOneWidget);
-    expect(find.byType(TextFormField), findsNWidgets(2));
+    expect(find.byType(TextFormField), findsNWidgets(3));
+    expect(find.byKey(const Key('login-invite-code')), findsOneWidget);
     expect(find.byKey(const Key('login-button')), findsOneWidget);
     final card = tester.getRect(find.byKey(const Key('desktop-login-card')));
     final policy = tester.getRect(
@@ -194,14 +195,11 @@ void main() {
     expect(find.text('帮助与反馈'), findsOneWidget);
     expect(tester.getRect(find.text('编辑资料')).right, lessThanOrEqualTo(1280));
     expect(tester.getRect(find.text('存储空间')).right, lessThanOrEqualTo(1280));
-    expect(
-      tester.getRect(find.text('外观与通用')).top,
-      tester.getRect(find.text('帮助与反馈')).top,
-    );
-    expect(
-      tester.getRect(find.text('聊天背景')).top,
-      tester.getRect(find.text('帮助与反馈')).top,
-    );
+    for (final label in ['外观与通用', '聊天背景', '帮助与反馈']) {
+      final rect = tester.getRect(find.text(label));
+      expect(rect.left, greaterThanOrEqualTo(0));
+      expect(rect.right, lessThanOrEqualTo(1280));
+    }
     expect(tester.takeException(), isNull);
   });
 

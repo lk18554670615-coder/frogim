@@ -97,51 +97,49 @@ void main() {
     await repository.close();
   });
 
-  test('聊天缓存在进程重启后仍可先于网络读取', () async {
+  test('聊天缓存在进程重启并同步删除状态后无需拉取远端历史', () async {
     FlutterSecureStorage.setMockInitialValues({});
-    // Cold-start direct-chat classification is retained separately. Unknown
-    // groups may not paint confirmed history before their policy is fetched.
-    await SecureLocalStore().writeJson('channel.conversation-cache', {
-      'id': 'peer',
-      'type': 1,
+    final requestedPaths = <String>[];
+    http.Client client() => MockClient((request) async {
+      requestedPaths.add(request.url.path);
+      if (request.url.path == '/v2/auth/login') return _loginResponse();
+      if (request.url.path == '/v2/channels/conversations') {
+        return _conversationResponse();
+      }
+      if (request.url.path == '/v2/im/datasource/conversations') {
+        return _jsonResponse({
+          'data': {'items': <Object?>[]},
+        });
+      }
+      return http.Response('{}', 404);
     });
-    var networkRequests = 0;
-    final firstProcess = LiveImRepository(
-      client: MockClient((request) async {
-        networkRequests += 1;
-        return http.Response('{}', 500);
-      }),
-      apiBaseUrl: 'https://api.example.com',
-    );
+    final firstProcess = _repository(client());
+    await firstProcess.login('13800138000', '123456');
+    await firstProcess.conversations();
     final cachedMessage = ChatMessage(
       id: 'cached-message-1',
-      conversationId: 'conversation-cache',
-      senderId: 'peer',
+      conversationId: 'c1',
+      senderId: 'user-2',
       senderName: '林屿',
       text: '本地缓存中的最后一条消息',
       sentAt: DateTime(2026, 8, 16, 10),
       isMine: false,
       conversationSeq: 18,
     );
-    await firstProcess.cachedMessages('conversation-cache');
-    await firstProcess.persistMessages('conversation-cache', [cachedMessage]);
+    await firstProcess.persistMessages('c1', [cachedMessage]);
     await firstProcess.close();
+    requestedPaths.clear();
 
     // 用新 repository 和新 SecureLocalStore 模拟应用进程重启。
-    final restartedProcess = LiveImRepository(
-      client: MockClient((request) async {
-        networkRequests += 1;
-        return http.Response('{}', 500);
-      }),
-      apiBaseUrl: 'https://api.example.com',
-    );
+    final restartedProcess = _repository(client());
+    expect(await restartedProcess.restoreSession(), isTrue);
 
-    final cached = await restartedProcess.cachedMessages('conversation-cache');
+    final cached = await restartedProcess.cachedMessages('c1');
 
     expect(cached, hasLength(1));
     expect(cached.single.text, '本地缓存中的最后一条消息');
     expect(cached.single.conversationSeq, 18);
-    expect(networkRequests, 0);
+    expect(requestedPaths, ['/v2/media/session']);
     await restartedProcess.close();
   });
 
@@ -158,10 +156,10 @@ void main() {
     expect(signedIn.name, '测试用户');
     await firstProcess.close();
 
-    var networkRequests = 0;
+    final requestedPaths = <String>[];
     final restartedProcess = LiveImRepository(
       client: MockClient((request) async {
-        networkRequests += 1;
+        requestedPaths.add(request.url.path);
         return http.Response('{}', 503);
       }),
       apiBaseUrl: 'https://api.example.com',
@@ -170,7 +168,7 @@ void main() {
     expect(await restartedProcess.restoreSession(), isTrue);
     expect(restartedProcess.currentUser?.id, signedIn.id);
     expect(restartedProcess.currentUser?.name, signedIn.name);
-    expect(networkRequests, 0);
+    expect(requestedPaths, ['/v2/media/session']);
     await restartedProcess.close();
   });
 
@@ -238,18 +236,20 @@ void main() {
   test('页面快照与 WuKong 本地缓存并行读取且任一缓存失败不阻断另一份', () async {
     final store = _ParallelMessageStore();
     final repository = LiveImRepository(
-      client: MockClient((request) async {
-        if (request.url.path == '/v2/auth/login') return _loginResponse();
-        if (request.url.path == '/v2/channels/conversations') {
-          return _conversationResponse();
-        }
-        if (request.url.path == '/v2/im/datasource/conversations') {
-          return _jsonResponse({
-            'data': {'items': <Object?>[]},
-          });
-        }
-        return http.Response('{}', 404);
-      }),
+      client: _MessageExtrasClient(
+        MockClient((request) async {
+          if (request.url.path == '/v2/auth/login') return _loginResponse();
+          if (request.url.path == '/v2/channels/conversations') {
+            return _conversationResponse();
+          }
+          if (request.url.path == '/v2/im/datasource/conversations') {
+            return _jsonResponse({
+              'data': {'items': <Object?>[]},
+            });
+          }
+          return http.Response('{}', 404);
+        }),
+      ),
       store: store,
       apiBaseUrl: 'https://api.example.com',
       wukongGateway: FakeWukongGateway(),
@@ -1354,7 +1354,7 @@ void main() {
     expect(gateway.sentMessages.single.payload['mediaId'], 'media-1');
     expect(gateway.sentMessages.single.payload['type'], 2);
     expect(sent.mediaId, 'media-1');
-    expect(sent.mediaUrl, '/tmp/photo.png');
+    expect(sent.mediaUrl, 'https://cdn.example.com/media-1');
     expect(sent.status, MessageStatus.sending);
     expect(progress.first, 0);
     expect(progress.last, 1);
@@ -2189,10 +2189,39 @@ LiveImRepository _repository(
   http.Client client, {
   FakeWukongGateway? gateway,
 }) => LiveImRepository(
-  client: client,
+  client: _MessageExtrasClient(client),
   apiBaseUrl: 'https://api.example.com',
   wukongGateway: gateway ?? FakeWukongGateway(),
 );
+
+class _MessageExtrasClient extends http.BaseClient {
+  _MessageExtrasClient(this._delegate);
+
+  final http.Client _delegate;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    if (request.url.path == '/v2/im/datasource/message-extras') {
+      final bytes = utf8.encode(
+        jsonEncode({
+          'data': {'items': <Object?>[]},
+        }),
+      );
+      return Future.value(
+        http.StreamedResponse(
+          Stream.value(bytes),
+          200,
+          headers: {'content-type': 'application/json'},
+          request: request,
+        ),
+      );
+    }
+    return _delegate.send(request);
+  }
+
+  @override
+  void close() => _delegate.close();
+}
 
 http.Response _loginResponse() => _jsonResponse({
   'data': {
