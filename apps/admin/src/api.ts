@@ -51,6 +51,8 @@ import type {
   StickerItemInput,
   UserRecord,
   UserOverview,
+  InviteCodeRecord,
+  InviteRelationRecord,
   WukongOverview,
   WukongRuntimeSettings,
   WukongNode,
@@ -249,6 +251,7 @@ function adaptUser(value: unknown): UserRecord {
     lastSeenAt: formatDate(latestDeviceRaw.lastSeenAt),
   } : undefined;
   return {
+    canDeleteMessagesForEveryone: boolean(raw.canDeleteMessagesForEveryone),
     id: string(raw.id, 'unknown'), nickname, phone: string(raw.phone, '未提供'), handle: string(raw.handle, '未设置'), remark: string(raw.remark), tags: list(raw.tags).map((tag) => string(tag)).filter(Boolean), gender, handleChangeCount: number(raw.handleChangeCount), bannedUntil: string(raw.bannedUntil) || undefined,
     avatar: string(raw.avatar, initial(nickname)), avatarUrl: string(raw.avatarUrl), status,
     online: boolean(raw.online), onlineConnections: number(raw.onlineConnections), lastOfflineAt,
@@ -294,6 +297,7 @@ function adaptAdminUserBlock(value: unknown): AdminUserBlockRecord {
 function adaptAdminDirectMessage(value: unknown): AdminDirectMessageRecord {
   const raw = object(value);
   return {
+    deletedForEveryoneAt: string(raw.deletedForEveryoneAt) || undefined, deletedForEveryoneBy: string(raw.deletedForEveryoneBy) || undefined,
     id: string(raw.id), clientMsgId: string(raw.clientMsgId), conversationId: string(raw.conversationId),
     conversationSeq: number(raw.conversationSeq), senderId: string(raw.senderId), sender: raw.sender ? adaptUser(raw.sender) : undefined,
     type: string(raw.type, 'unknown'), body: object(raw.body), replyToId: string(raw.replyToId), createdAt: formatDate(raw.createdAt),
@@ -622,6 +626,7 @@ function adaptMessage(value: unknown): MessageRecord {
   const raw = object(value); const body = object(raw.body);
   const preview = string(body.text, string(body.content, string(body.fileName, string(body.caption, Object.keys(body).length ? JSON.stringify(body) : ''))));
   return {
+    deletedForEveryoneAt: string(raw.deletedForEveryoneAt) || undefined, deletedForEveryoneBy: string(raw.deletedForEveryoneBy) || undefined,
     id: string(raw.id), clientMsgId: string(raw.clientMsgId), conversationId: string(raw.conversationId), senderId: string(raw.senderId), sender: raw.sender ? adaptUser(raw.sender) : undefined,
     conversationSeq: number(raw.conversationSeq), type: string(raw.type, 'unknown'), preview: preview || '正文暂不可用', recalled: Boolean(raw.recalledAt),
     recalledAt: string(raw.recalledAt) || undefined, expiresAt: string(raw.expiresAt) || undefined, expiredAt: string(raw.expiredAt) || undefined,
@@ -738,6 +743,7 @@ function adaptSettings(payload: unknown): AdminSettings {
   const status = object(raw.configurationStatus), infrastructure = object(raw.infrastructure);
   return {
     allowRegistration: boolean(raw.allowRegistration, boolean(raw.registrationEnabled, true)),
+    inviteRegistrationMode: raw.inviteRegistrationMode === 'disabled' || raw.inviteRegistrationMode === 'required' ? raw.inviteRegistrationMode : 'optional',
     passwordMinLength: number(raw.passwordMinLength, 8),
     maxMessageTextLength: number(raw.maxMessageTextLength, 5000), messageRecallMinutes: number(raw.messageRecallMinutes, 2), directRecallMinutes: number(raw.directRecallMinutes, 1440), groupRecallMinutes: number(raw.groupRecallMinutes, 1440),
     maxGroupMembers: number(raw.maxGroupMembers, 500),
@@ -814,6 +820,10 @@ function adaptWukongRobotProfile(value: unknown): WukongRobotProfile {
 function adaptUserOverview(value: unknown): UserOverview {
   const raw = object(value);
   const userRaw = object(raw.user);
+  const invitationRaw = object(raw.invitation);
+  const invitedByRaw = object(invitationRaw.invitedBy);
+  const invitationStatus = string(invitationRaw.status);
+  const registrationMethod = string(invitationRaw.registrationMethod);
   const user = adaptUser({
     ...userRaw,
     deviceCount: number(raw.deviceCount, number(userRaw.deviceCount)),
@@ -827,6 +837,38 @@ function adaptUserOverview(value: unknown): UserOverview {
     groupCount: number(raw.groupCount),
     handleChangesUsed: number(raw.handleChangesUsed, user.handleChangeCount),
     handleChangesRemaining: number(raw.handleChangesRemaining, Math.max(0, 2 - user.handleChangeCount)),
+    invitation: invitationRaw.code ? {
+      code: string(invitationRaw.code),
+      status: (['active', 'disabled', 'retired'].includes(invitationStatus) ? invitationStatus : 'active') as 'active' | 'disabled' | 'retired',
+      selfChangesUsed: number(invitationRaw.selfChangesUsed),
+      selfChangesRemaining: number(invitationRaw.selfChangesRemaining, 1),
+      createdAt: formatDate(invitationRaw.createdAt),
+      invitedBy: invitedByRaw.id ? adaptUser(invitedByRaw) : undefined,
+      registrationMethod: registrationMethod === 'password' || registrationMethod === 'otp' ? registrationMethod : undefined,
+      boundAt: invitationRaw.boundAt ? formatDate(invitationRaw.boundAt) : undefined,
+    } : undefined,
+  };
+}
+
+function adaptInviteCode(value: unknown): InviteCodeRecord {
+  const raw = object(value);
+  const status = string(raw.status);
+  const source = string(raw.source);
+  return {
+    id: string(raw.id), userId: string(raw.userId), code: string(raw.code),
+    status: (['active', 'disabled', 'retired'].includes(status) ? status : 'disabled') as InviteCodeRecord['status'],
+    source: (['system', 'user', 'admin'].includes(source) ? source : 'system') as InviteCodeRecord['source'],
+    selfChangesUsed: number(raw.selfChangesUsed), selfChangesRemaining: number(raw.selfChangesRemaining),
+    createdAt: formatDate(raw.createdAt), user: adaptUser(raw.user ?? { id: raw.userId }),
+  };
+}
+
+function adaptInviteRelation(value: unknown): InviteRelationRecord {
+  const raw = object(value);
+  return {
+    invitee: adaptUser(raw.invitee), inviter: adaptUser(raw.inviter), inviteCodeId: string(raw.inviteCodeId),
+    inviteCode: string(raw.inviteCode), registrationMethod: string(raw.registrationMethod) === 'password' ? 'password' : 'otp',
+    createdAt: formatDate(raw.createdAt),
   };
 }
 
@@ -874,6 +916,7 @@ function adaptGroupMember(value: unknown): GroupMemberRecord {
 function adaptAdminGroupMessage(value: unknown): AdminGroupMessageRecord {
   const raw = object(value);
   return {
+    deletedForEveryoneAt: string(raw.deletedForEveryoneAt) || undefined, deletedForEveryoneBy: string(raw.deletedForEveryoneBy) || undefined,
     id: string(raw.id), conversationId: string(raw.conversationId), conversationSeq: number(raw.conversationSeq),
     senderId: string(raw.senderId), sender: raw.sender ? adaptUser(raw.sender) : undefined,
     type: string(raw.type, 'unknown'), body: object(raw.body), createdAt: formatDate(raw.createdAt),
@@ -942,6 +985,7 @@ function adaptOperationsAccess(value: unknown): OperationsStatus['access'] {
 
 function liveApi(token: string): AdminApi {
   return {
+    async setUserMessagePermissions(id, allowed, reason) { await request(`/users/${encodeURIComponent(id)}/message-permissions`, token, {method:'PUT', body:JSON.stringify({canDeleteMessagesForEveryone:allowed,reason,confirmed:true})}); },
     async getCurrentAdmin() { return adaptAdminIdentity(await request('/auth/me', token)); },
     async changeCurrentAdminPassword(currentPassword, newPassword) { await request('/auth/change-password', token, { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }); },
     async getAdministrators(q = '', status = '', page = 1, pageSize = 50, cursor = '') { const payload = await request(`/administrators?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptAdministrator, page, pageSize); },
@@ -971,6 +1015,10 @@ function liveApi(token: string): AdminApi {
       };
     },
     async getUserOverview(id) { return adaptUserOverview(await request(`/users/${encodeURIComponent(id)}`, token)); },
+    async getInviteCodes(q = '', status = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/invite-codes?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptInviteCode, page, pageSize); },
+    async getInviteRelations(q = '', method = '', from = '', to = '', page = 1, pageSize = 20, cursor = '') { const params = new URLSearchParams({ q, method, from, to, cursor, limit: String(pageSize) }); const payload = await request(`/invite-relations?${params}`, token); return serverPage(payload, adaptInviteRelation, page, pageSize); },
+    async setInviteCodeStatus(id, status, reason) { return adaptInviteCode(await request(`/invite-codes/${encodeURIComponent(id)}/status`, token, { method: 'PUT', body: JSON.stringify({ status, reason, confirmed: true }) })); },
+    async resetInviteCode(id, reason) { return adaptInviteCode(await request(`/invite-codes/${encodeURIComponent(id)}/reset`, token, { method: 'POST', body: JSON.stringify({ reason, confirmed: true }) })); },
     async getUserFriends(id) { return unwrapItems(await request(`/users/${encodeURIComponent(id)}/friends`, token)).items.map(adaptAdminUserRelation); },
     async getUserBlockedUsers(id) { return unwrapItems(await request(`/users/${encodeURIComponent(id)}/blocks`, token)).items.map(adaptAdminUserBlock); },
     async getUserDevices(id) { const raw = object(await request(`/users/${encodeURIComponent(id)}/devices`, token)); return { items: list(raw.items).map(adaptAdminClientDevice), pushRegistrations: list(raw.pushRegistrations).map(adaptAdminUserDevice) } satisfies AdminUserDevices; },

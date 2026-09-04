@@ -136,7 +136,7 @@ func (x *API) adminGroupMessages(w http.ResponseWriter, r *http.Request) {
 		if next == 0 || item.Seq < next {
 			next = item.Seq
 		}
-		result = append(result, map[string]any{"id": item.ID, "conversationId": groupID, "conversationSeq": item.Seq, "senderId": item.SenderID, "sender": senders[item.SenderID], "type": item.Type, "body": item.Body, "createdAt": item.CreatedAt, "recalledAt": item.RecalledAt, "expiresAt": item.ExpiresAt, "expiredAt": item.ExpiredAt, "editedAt": item.EditedAt, "adminRecall": item.AdminRecall, "moderatedBy": item.ModeratedBy, "moderationReason": item.ModerationReason})
+		result = append(result, map[string]any{"id": item.ID, "conversationId": groupID, "conversationSeq": item.Seq, "senderId": item.SenderID, "sender": senders[item.SenderID], "type": item.Type, "body": item.Body, "createdAt": item.CreatedAt, "recalledAt": item.RecalledAt, "expiresAt": item.ExpiresAt, "expiredAt": item.ExpiredAt, "editedAt": item.EditedAt, "adminRecall": item.AdminRecall, "moderatedBy": item.ModeratedBy, "moderationReason": item.ModerationReason, "deletedForEveryoneAt": item.DeletedForEveryoneAt, "deletedForEveryoneBy": item.DeletedForEveryoneBy})
 	}
 	if len(items) < limit || next <= 1 {
 		next = 0
@@ -160,6 +160,7 @@ func (x *API) adminMessageWithDownloadURL(ctx context.Context, message *model.Me
 	if mediaID == "" || x.media == nil {
 		return &copy, nil
 	}
+	x.enrichVideoCover(ctx, mediaID, copy.Body)
 	url, err := x.media.DownloadURL(ctx, mediaID)
 	if err != nil {
 		return nil, err

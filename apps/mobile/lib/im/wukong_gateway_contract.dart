@@ -297,7 +297,10 @@ class WukongMessage {
             0,
       ),
       timestamp: timestamp,
-      payload: projection.payload,
+      payload: {
+        ...projection.payload,
+        if (json['is_mutual_deleted'] == 1 || _objectMap(json['message_extra'])['is_mutual_deleted'] == 1) 'is_mutual_deleted': 1,
+      },
       state: WukongMessageState.sent,
       reasonCode:
           (json['reason_code'] as num?)?.toInt() ??
@@ -469,6 +472,10 @@ abstract interface class WukongGateway {
 }
 
 Map<String, Object?> wukongObjectMap(Object? value) => _objectMap(value);
+
+abstract interface class WukongDeletionCache {
+  Future<void> markMessagesDeleted(List<String> messageIds);
+}
 
 Map<String, Object?> _objectMap(Object? value) {
   if (value is Map<String, Object?>) return value;

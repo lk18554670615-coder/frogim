@@ -72,6 +72,24 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
     return null;
   }
 
+  String get friendRequestSource {
+    final source = widget.requestSource.trim().toLowerCase();
+    if (source == 'conversation') {
+      return presenceGroupId == null ? 'contacts' : 'group';
+    }
+    return switch (source) {
+      'search' || 'qr' || 'contacts' || 'group' || 'card' => source,
+      _ => 'search',
+    };
+  }
+
+  String? get friendRequestSourceId {
+    final source = friendRequestSource;
+    if (source == 'group') return presenceGroupId;
+    if (source == 'qr' || source == 'card') return widget.requestSourceId;
+    return null;
+  }
+
   bool get showHandle =>
       (presenceGroupId == null && widget.requestSource != 'group') ||
       widget.controller.canViewGroupMemberHandle(presenceGroupId);
@@ -220,6 +238,12 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
   }
 
   Future<void> _requestFriend() async {
+    final source = friendRequestSource;
+    final sourceId = friendRequestSourceId;
+    if (source == 'group' && sourceId == null) {
+      _feedback('群聊信息未加载完整，请返回群聊后重试');
+      return;
+    }
     final verification = await _FriendVerificationSheet.show(
       context,
       targetName: user.name,
@@ -230,8 +254,8 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
     final success = await widget.controller.sendFriendRequest(
       user,
       verification,
-      source: widget.requestSource,
-      sourceId: widget.requestSourceId,
+      source: source,
+      sourceId: sourceId,
     );
     if (!mounted) return;
     setState(() => busy = false);

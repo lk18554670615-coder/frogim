@@ -256,6 +256,7 @@ func (x *API) routes() {
 	x.mux.HandleFunc("POST /v2/auth/code", x.requestCode)
 	x.mux.HandleFunc("POST /v2/auth/login", x.requireClientPlatform(x.login))
 	x.mux.HandleFunc("POST /v2/auth/register", x.requireClientPlatform(x.register))
+	x.mux.HandleFunc("POST /v2/auth/invite-codes/validate", x.validateInviteCode)
 	x.mux.HandleFunc("POST /v2/auth/password-login", x.requireClientPlatform(x.passwordLogin))
 	x.mux.HandleFunc("POST /v2/auth/qr/create", x.requireClientPlatform(x.createQRLogin))
 	x.mux.HandleFunc("POST /v2/auth/qr/poll", x.requireClientPlatform(x.pollQRLogin))
@@ -287,6 +288,7 @@ func (x *API) routes() {
 	x.mux.Handle("DELETE /v2/messages/pins/{messageId}", x.requireAuth(http.HandlerFunc(x.groupMessagePin)))
 	x.mux.Handle("GET /v2/messages/search", x.requireAuth(http.HandlerFunc(x.searchMessages)))
 	x.mux.Handle("POST /v2/messages/forward", x.requireAuth(http.HandlerFunc(x.forwardMessages)))
+	x.mux.Handle("POST /v2/messages/delete-for-everyone", x.requireAuth(http.HandlerFunc(x.deleteMessagesForEveryone)))
 	x.mux.Handle("POST /v2/messages/conversations/{id}/send", x.requireAuth(http.HandlerFunc(x.sendMessage)))
 	x.mux.Handle("GET /v2/messages/conversations/{id}/history", x.requireAuth(http.HandlerFunc(x.history)))
 	x.mux.Handle("POST /v2/messages/conversations/{id}/streams", x.requireAuth(http.HandlerFunc(x.startMessageStream)))
@@ -301,6 +303,7 @@ func (x *API) routes() {
 	x.mux.Handle("GET /v2/channels/conversations", x.requireAuth(http.HandlerFunc(x.conversations)))
 	x.mux.Handle("POST /v2/channels/direct", x.requireAuth(http.HandlerFunc(x.direct)))
 	x.mux.Handle("PATCH /v2/channels/conversations/{id}/preferences", x.requireAuth(http.HandlerFunc(x.conversationPreferences)))
+	x.mux.Handle("GET /v2/channels/conversations/{id}/peer-login-info", x.requireAuth(http.HandlerFunc(x.conversationPeerLoginInfo)))
 	x.mux.Handle("DELETE /v2/channels/conversations/{id}", x.requireAuth(http.HandlerFunc(x.hideConversation)))
 	x.mux.Handle("PUT /v2/channels/conversations/{id}/read", x.requireAuth(http.HandlerFunc(x.read)))
 	x.mux.Handle("PUT /v2/channels/conversations/{id}/delivered", x.requireAuth(http.HandlerFunc(x.delivered)))
@@ -373,6 +376,8 @@ func (x *API) routes() {
 	x.mux.Handle("POST /v2/users/presence", x.requireAuth(http.HandlerFunc(x.userPresence)))
 	x.mux.Handle("GET /v2/users/me", x.requireAuth(http.HandlerFunc(x.me)))
 	x.mux.Handle("PATCH /v2/users/me", x.requireAuth(http.HandlerFunc(x.updateMe)))
+	x.mux.Handle("GET /v2/users/me/invite-code", x.requireAuth(http.HandlerFunc(x.myInviteCode)))
+	x.mux.Handle("PUT /v2/users/me/invite-code", x.requireAuth(http.HandlerFunc(x.changeMyInviteCode)))
 	x.mux.Handle("POST /v2/users/me/deletion/code", x.requireAuth(http.HandlerFunc(x.requestAccountDeletionCode)))
 	x.mux.Handle("DELETE /v2/users/me", x.requireUserToken(http.HandlerFunc(x.deleteAccount)))
 	x.mux.Handle("POST /v2/users/me/phone/code", x.requireAuth(http.HandlerFunc(x.requestPhoneChangeCode)))
@@ -389,6 +394,9 @@ func (x *API) routes() {
 	x.mux.Handle("POST /v2/link-preview", x.requireAuth(http.HandlerFunc(x.linkPreview)))
 	x.mux.Handle("POST /v2/media/{id}/complete", x.requireAuth(http.HandlerFunc(x.mediaComplete)))
 	x.mux.Handle("GET /v2/media/{id}", x.requireAuth(http.HandlerFunc(x.mediaDownload)))
+	x.mux.Handle("POST /v2/media/session", x.requireAuth(http.HandlerFunc(x.mediaSession)))
+	x.mux.HandleFunc("GET /v2/media/{id}/content", x.mediaContent)
+	x.mux.HandleFunc("GET /v2/media/{id}/cover", x.mediaContent)
 	x.mux.Handle("POST /v2/media/{id}/bind", x.requireAuth(http.HandlerFunc(x.bindWukongMedia)))
 	x.mux.Handle("GET /v2/media/{id}/url", x.requireAuth(http.HandlerFunc(x.wukongMediaURL)))
 	x.mux.Handle("GET /v2/contacts/search", x.requireAuth(http.HandlerFunc(x.searchUsers)))
@@ -422,6 +430,7 @@ func (x *API) routes() {
 	x.mux.Handle("POST /v2/admin/users", x.requireAdmin(http.HandlerFunc(x.createAdminUser)))
 	x.mux.Handle("POST /v2/admin/users/batch", x.requireAdmin(http.HandlerFunc(x.createAdminUsersBatch)))
 	x.mux.Handle("GET /v2/admin/users/{id}", x.requireAdmin(http.HandlerFunc(x.adminUserOverview)))
+	x.mux.Handle("PUT /v2/admin/users/{id}/message-permissions", x.requireAdmin(http.HandlerFunc(x.adminMessagePermissions)))
 	x.mux.Handle("GET /v2/admin/users/{id}/friends", x.requireAdmin(http.HandlerFunc(x.adminUserFriends)))
 	x.mux.Handle("GET /v2/admin/users/{id}/blocks", x.requireAdmin(http.HandlerFunc(x.adminUserBlocks)))
 	x.mux.Handle("GET /v2/admin/users/{id}/devices", x.requireAdmin(http.HandlerFunc(x.adminUserDevices)))
@@ -481,6 +490,10 @@ func (x *API) routes() {
 	x.mux.Handle("DELETE /v2/admin/sensitive-words/{id}", x.requireAdmin(http.HandlerFunc(x.deleteSensitiveWord)))
 	x.mux.Handle("GET /v2/admin/settings", x.requireAdmin(http.HandlerFunc(x.settings)))
 	x.mux.Handle("PUT /v2/admin/settings", x.requireAdmin(http.HandlerFunc(x.updateSettings)))
+	x.mux.Handle("GET /v2/admin/invite-codes", x.requireAdmin(http.HandlerFunc(x.adminInviteCodes)))
+	x.mux.Handle("GET /v2/admin/invite-relations", x.requireAdmin(http.HandlerFunc(x.adminInviteRelations)))
+	x.mux.Handle("PUT /v2/admin/invite-codes/{id}/status", x.requireAdmin(http.HandlerFunc(x.adminInviteCodeStatus)))
+	x.mux.Handle("POST /v2/admin/invite-codes/{id}/reset", x.requireAdmin(http.HandlerFunc(x.adminResetInviteCode)))
 	x.mux.Handle("GET /v2/admin/client-versions", x.requireAdmin(http.HandlerFunc(x.adminClientVersions)))
 	x.mux.Handle("GET /v2/admin/client-versions/{platform}/history", x.requireAdmin(http.HandlerFunc(x.adminClientVersionHistory)))
 	x.mux.Handle("PUT /v2/admin/client-versions/{platform}", x.requireAdmin(http.HandlerFunc(x.updateAdminClientVersion)))
@@ -686,10 +699,12 @@ func (x *API) middleware(next http.Handler) http.Handler {
 		origin := r.Header.Get("Origin")
 		if origin != "" && x.originAllowed(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Vary", "Origin")
 		}
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Client-Platform,X-Request-ID")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Client-Platform,X-Request-ID,Range,If-Range")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Length,Content-Range,Accept-Ranges,ETag")
+		w.Header().Set("Access-Control-Allow-Methods", "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS")
 		if r.Method == http.MethodOptions {
 			if origin != "" && !x.originAllowed(origin) {
 				writeError(w, http.StatusForbidden, "FORBIDDEN_ORIGIN", "origin is not allowed")
@@ -1103,7 +1118,7 @@ func (x *API) requestCode(w http.ResponseWriter, r *http.Request) {
 	write(w, 202, resp)
 }
 func (x *API) login(w http.ResponseWriter, r *http.Request) {
-	var p struct{ Phone, Code, Name string }
+	var p struct{ Phone, Code, Name, InviteCode string }
 	if decode(r, &p) != nil {
 		writeError(w, 400, "INVALID_ARGUMENT", "phone and code are required")
 		return
@@ -1132,9 +1147,9 @@ func (x *API) login(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	u, created, err := x.app.LoginWithCreation(p.Phone, p.Name)
+	u, created, err := x.app.LoginWithCreationAndInvite(p.Phone, p.Name, p.InviteCode)
 	if err != nil {
-		handleErr(w, err)
+		writeInviteError(w, err)
 		return
 	}
 	attempt.entry.UserID = u.ID
@@ -1167,13 +1182,14 @@ func (x *API) issueUserSession(w http.ResponseWriter, r *http.Request, u *model.
 		return
 	}
 	response := map[string]any{"user": x.ownProfile(u), "accessToken": a, "refreshToken": refresh, "expiresIn": int(x.cfg.AccessTTL.Seconds())}
+	x.addMediaSession(w, r, response, refreshClaims)
 	if imSession != nil {
 		response["imSession"] = imSession
 	}
 	write(w, 200, response)
 }
 func (x *API) register(w http.ResponseWriter, r *http.Request) {
-	var p struct{ Phone, Code, Password, Name string }
+	var p struct{ Phone, Code, Password, Name, InviteCode string }
 	if decode(r, &p) != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "phone, code, password and name are required")
 		return
@@ -1198,12 +1214,12 @@ func (x *API) register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "INVALID_CODE", "invalid or expired verification code")
 		return
 	}
-	u, err := x.app.RegisterWithPassword(p.Phone, p.Name, p.Password)
+	u, err := x.app.RegisterWithPasswordAndInvite(p.Phone, p.Name, p.Password, p.InviteCode)
 	if err != nil {
 		if err == app.ErrConflict {
 			writeError(w, http.StatusConflict, "ACCOUNT_EXISTS", "account already exists")
 		} else {
-			handleErr(w, err)
+			writeInviteError(w, err)
 		}
 		return
 	}
@@ -1473,6 +1489,7 @@ func (x *API) passwordReset(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 func (x *API) logout(w http.ResponseWriter, r *http.Request) {
+	x.setMediaCookie(w, r, "", -1)
 	var p struct{ RefreshToken string }
 	if decode(r, &p) != nil || p.RefreshToken == "" {
 		writeError(w, 400, "INVALID_ARGUMENT", "refreshToken is required")
@@ -1605,6 +1622,7 @@ func (x *API) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response := map[string]any{"accessToken": a, "refreshToken": refresh, "expiresIn": int(x.cfg.AccessTTL.Seconds())}
+	x.addMediaSession(w, r, response, newClaims)
 	if imSession != nil {
 		response["imSession"] = imSession
 	}
@@ -1635,6 +1653,7 @@ func (x *API) refreshLegacySession(w http.ResponseWriter, r *http.Request, claim
 		return
 	}
 	response := map[string]any{"accessToken": a, "refreshToken": refresh, "expiresIn": int(x.cfg.AccessTTL.Seconds())}
+	x.addMediaSession(w, r, response, newClaims)
 	if imSession != nil {
 		response["imSession"] = imSession
 	}
@@ -1716,6 +1735,7 @@ func (x *API) ownProfile(user *model.User) *model.User {
 	profile := *user
 	x.signAvatarURL(&profile)
 	x.app.DecorateOwnProfile(&profile)
+	profile.CanDeleteMessagesForEveryone, _ = x.app.MessageDeletionPermission(context.Background(), profile.ID)
 	return &profile
 }
 
@@ -2097,12 +2117,25 @@ func (x *API) linkPreview(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, map[string]any{"preview": preview})
 }
 func (x *API) mediaComplete(w http.ResponseWriter, r *http.Request) {
-	var p struct{ Checksum string }
+	var p struct {
+		Checksum     string
+		CoverMediaID string `json:"coverMediaId"`
+	}
 	if decode(r, &p) != nil {
 		writeError(w, 400, "INVALID_ARGUMENT", "invalid request")
 		return
 	}
-	v, err := x.media.Complete(r.Context(), uid(r), r.PathValue("id"), p.Checksum)
+	var v store.Media
+	var err error
+	if extended, ok := x.media.(interface {
+		CompleteWithCover(context.Context, string, string, string, string) (store.Media, error)
+	}); ok {
+		v, err = extended.CompleteWithCover(r.Context(), uid(r), r.PathValue("id"), p.Checksum, strings.TrimSpace(p.CoverMediaID))
+	} else if p.CoverMediaID == "" {
+		v, err = x.media.Complete(r.Context(), uid(r), r.PathValue("id"), p.Checksum)
+	} else {
+		err = media.ErrInvalid
+	}
 	if err != nil {
 		if err == media.ErrInvalid {
 			writeError(w, 400, "INVALID_MEDIA", err.Error())
@@ -2167,7 +2200,7 @@ func (x *API) bindWukongMedia(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
-	write(w, http.StatusOK, map[string]any{"mediaId": mediaID, "url": url})
+	write(w, http.StatusOK, x.mediaURLResult(r.Context(), mediaID, url))
 }
 
 func (x *API) wukongMediaURL(w http.ResponseWriter, r *http.Request) {
@@ -2182,7 +2215,7 @@ func (x *API) wukongMediaURL(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
-	write(w, http.StatusOK, map[string]any{"mediaId": mediaID, "url": url})
+	write(w, http.StatusOK, x.mediaURLResult(r.Context(), mediaID, url))
 }
 
 func (x *API) messageWithDownloadURL(ctx context.Context, userID string, message *model.Message) (*model.Message, error) {
@@ -2213,6 +2246,7 @@ func (x *API) messageWithDownloadURL(ctx context.Context, userID string, message
 		return nil, err
 	}
 	copy.Body["downloadUrl"] = url
+	x.enrichVideoCover(ctx, mediaID, copy.Body)
 	return &copy, nil
 }
 
@@ -2978,6 +3012,11 @@ func (x *API) adminUserOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if user, ok := item["user"].(*model.User); ok {
+		user.CanDeleteMessagesForEveryone, err = x.app.MessageDeletionPermission(r.Context(), user.ID)
+		if err != nil {
+			handleErr(w, err)
+			return
+		}
 		x.signAvatarURL(user)
 		decorated, err := x.adminAccessUsers(r.Context(), []*model.User{user}, "")
 		if err != nil {
@@ -2985,6 +3024,11 @@ func (x *API) adminUserOverview(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		item["user"] = decorated[0]
+	}
+	if invitation, ok := item["invitation"].(map[string]any); ok {
+		if inviter, ok := invitation["invitedBy"].(*model.User); ok {
+			x.signAvatarURL(inviter)
+		}
 	}
 	x.app.RecordAdminAudit(uid(r), "user.ip.viewed", "user", r.PathValue("id"), "success", x.clientIP(r), map[string]any{"returned": 1})
 	write(w, http.StatusOK, item)

@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import 'image_source_bytes_contract.dart';
+import 'media_access.dart';
 import 'image_source_bytes_stub.dart'
     if (dart.library.io) 'image_source_bytes_native.dart'
     as platform;
@@ -38,8 +39,10 @@ Future<Uint8List> loadImageSourceBytes(
   if (uri?.scheme == 'http' || uri?.scheme == 'https') {
     final client = http.Client();
     try {
+      final request = http.Request('GET', uri!);
+      request.headers.addAll(mediaAccess.headersFor(value));
       final response = await client
-          .send(http.Request('GET', uri!))
+          .send(request)
           .timeout(const Duration(seconds: 45));
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw ImageSourceBytesException('图片下载失败（${response.statusCode}）');
@@ -54,6 +57,10 @@ Future<Uint8List> loadImageSourceBytes(
         builder.add(chunk);
       }
       if (received == 0) throw const ImageSourceBytesException('下载到的图片为空');
+      if (request.headers.containsKey('Authorization') &&
+          !mediaAccess.owns(value)) {
+        throw const ImageSourceBytesException('登录账号已变化');
+      }
       return builder.takeBytes();
     } on TimeoutException {
       throw const ImageSourceBytesException('图片下载超时，请检查网络后重试');

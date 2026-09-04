@@ -3,6 +3,7 @@ import 'dart:convert';
 class AuthPolicy {
   const AuthPolicy({
     this.registrationEnabled = true,
+    this.inviteRegistrationMode = 'optional',
     this.passwordMinLength = 8,
     this.passwordMaxBytes = 72,
     this.messageRecallMinutes = 2,
@@ -11,6 +12,7 @@ class AuthPolicy {
   });
 
   final bool registrationEnabled;
+  final String inviteRegistrationMode;
   final int passwordMinLength;
   final int passwordMaxBytes;
   // Legacy wire key retained for the independent message editing policy.
@@ -32,6 +34,11 @@ class AuthPolicy {
       registrationEnabled: json['registrationEnabled'] is bool
           ? json['registrationEnabled']! as bool
           : true,
+      inviteRegistrationMode: switch (json['inviteRegistrationMode']) {
+        'disabled' => 'disabled',
+        'required' => 'required',
+        _ => 'optional',
+      },
       passwordMinLength: minimum,
       passwordMaxBytes: maximum,
       messageRecallMinutes: recallMinutes,
@@ -49,6 +56,8 @@ class AuthPolicy {
   Duration get messageMutationWindow => Duration(minutes: messageRecallMinutes);
   Duration get directRecallWindow => Duration(minutes: directRecallMinutes);
   Duration get groupRecallWindow => Duration(minutes: groupRecallMinutes);
+  bool get invitationEnabled => inviteRegistrationMode != 'disabled';
+  bool get invitationRequired => inviteRegistrationMode == 'required';
 
   String get passwordHelperText =>
       '至少 $passwordMinLength 个字符，最多 $passwordMaxBytes 字节';

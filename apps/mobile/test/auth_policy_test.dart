@@ -26,6 +26,7 @@ void main() {
       'messageRecallMinutes': 5,
       'directRecallMinutes': 60,
       'groupRecallMinutes': 10080,
+      'inviteRegistrationMode': 'required',
     });
 
     expect(policy.registrationEnabled, isFalse);
@@ -35,6 +36,8 @@ void main() {
     expect(policy.messageMutationWindow, const Duration(minutes: 5));
     expect(policy.directRecallWindow, const Duration(minutes: 60));
     expect(policy.groupRecallWindow, const Duration(days: 7));
+    expect(policy.invitationRequired, isTrue);
+    expect(policy.invitationEnabled, isTrue);
 
     final constrained = AuthPolicy.fromJson({
       'registrationEnabled': 'false',
@@ -59,6 +62,29 @@ void main() {
     expect(fallback.passwordMaxBytes, 72);
     expect(fallback.messageRecallMinutes, 2);
     expect(fallback.directRecallWindow, const Duration(hours: 24));
+    expect(fallback.inviteRegistrationMode, 'optional');
+    expect(
+      AuthPolicy.fromJson({
+        'inviteRegistrationMode': 'disabled',
+      }).invitationEnabled,
+      isFalse,
+    );
+    expect(
+      AuthPolicy.fromJson({
+        'inviteRegistrationMode': 'unexpected',
+      }).inviteRegistrationMode,
+      'optional',
+    );
+  });
+
+  test('邀请码二维码只接受注册深链并规范为大写', () {
+    expect(
+      inviteCodeFromQrPayload('qingwaguagua://register?invite=abc-2026'),
+      'ABC-2026',
+    );
+    expect(inviteCodeFromQrPayload('  invite_88  '), 'INVITE_88');
+    expect(inviteCodeFromQrPayload('https://example.com/?invite=LEAK'), isNull);
+    expect(inviteCodeFromQrPayload('qingwaguagua://register'), isNull);
   });
 
   test('controller 在动态编辑时限后隐藏编辑能力并返回明确提示', () async {
@@ -296,6 +322,63 @@ void main() {
     expect(repository.registerCallCount, 0);
   });
 
+  testWidgets('注册页按邀请码策略显示必填、选填或隐藏', (tester) async {
+    for (final mode in ['required', 'optional', 'disabled']) {
+      final controller = AppController(
+        _PolicyRepository(policy: AuthPolicy(inviteRegistrationMode: mode)),
+      );
+      addTearDown(controller.dispose);
+      await controller.initialize();
+      await _waitForPolicy(controller);
+      await _pump(tester, RegisterScreen(controller: controller));
+
+      final field = find.byKey(const Key('register-invite-code'));
+      if (mode == 'disabled') {
+        expect(field, findsNothing);
+        continue;
+      }
+      expect(field, findsOneWidget);
+      expect(find.text(mode == 'required' ? '邀请码' : '邀请码（选填）'), findsOneWidget);
+    }
+  });
+
+  testWidgets('验证码登录可校验邀请码且不泄露邀请人身份', (tester) async {
+    final controller = AppController(_PolicyRepository());
+    addTearDown(controller.dispose);
+    await controller.initialize();
+    await _waitForPolicy(controller);
+    await _pump(tester, LoginScreen(controller: controller));
+
+    await tester.enterText(
+      find.byKey(const Key('login-invite-code')),
+      'TESTCODE',
+    );
+    await tester.tap(find.byTooltip('校验邀请码'));
+    await tester.pumpAndSettle();
+    expect(find.text('邀请码有效'), findsOneWidget);
+    expect(find.textContaining('邀请人'), findsNothing);
+  });
+
+  test('必填模式在客户端提交前阻止空邀请码', () async {
+    final repository = _PolicyRepository(
+      policy: const AuthPolicy(inviteRegistrationMode: 'required'),
+    );
+    final controller = AppController(repository);
+    addTearDown(controller.dispose);
+    await controller.initialize();
+    await _waitForPolicy(controller);
+
+    final result = await controller.registerAccount(
+      phone: '13800138000',
+      code: '123456',
+      password: 'StrongPass123!',
+      name: '测试用户',
+    );
+    expect(result, isFalse);
+    expect(controller.error, '创建新账号需要填写邀请码');
+    expect(repository.registerCallCount, 0);
+  });
+
   testWidgets('注册和重置页展示动态最小长度并执行 UTF-8 字节上限', (tester) async {
     final controller = AppController(
       _PolicyRepository(policy: const AuthPolicy(passwordMinLength: 12)),
@@ -364,6 +447,7 @@ class _PolicyRepository extends DemoImRepository {
     required String code,
     required String password,
     required String name,
+    String inviteCode = '',
   }) async {
     registerCallCount += 1;
     if (registerFailure) throw const FormatException('测试注册接口失败');
@@ -372,6 +456,7 @@ class _PolicyRepository extends DemoImRepository {
       code: code,
       password: password,
       name: name,
+      inviteCode: inviteCode,
     );
   }
 }

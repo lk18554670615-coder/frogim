@@ -4,8 +4,36 @@ import (
 	"context"
 	"errors"
 	"github.com/linli/im/server/internal/model"
+	"github.com/linli/im/server/internal/netutil"
 	"github.com/linli/im/server/internal/store"
 )
+
+// ConversationPeerLoginIP exposes only the last successful login address of
+// the other participant in an existing direct conversation. It does not create
+// conversations or grant access to registration IPs and authentication logs.
+func (a *App) ConversationPeerLoginIP(ctx context.Context, uid, cid string) (string, string, error) {
+	kind, members, err := a.callConversation(uid, cid)
+	if err != nil {
+		return "", "", err
+	}
+	if kind != "direct" || len(members) != 2 {
+		return "", "", ErrNotFound
+	}
+	peer := ""
+	for _, member := range members {
+		if member != uid {
+			peer = member
+		}
+	}
+	if peer == "" {
+		return "", "", ErrNotFound
+	}
+	profiles, err := a.UserAccessProfiles(ctx, []string{peer}, "")
+	if err != nil {
+		return "", "", err
+	}
+	return peer, netutil.NormalizeIP(profiles[peer].LastLoginIP), nil
+}
 
 func (a *App) RecordUserAccess(ctx context.Context, e store.UserAccessLog) error {
 	if s, ok := a.persistence.(store.UserAccessStore); ok {

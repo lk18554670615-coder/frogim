@@ -13,7 +13,41 @@ external JSObject? get _wkGlobal;
 WukongGateway createWukongGateway({WukongDataSource? dataSource}) =>
     WebWukongGateway(dataSource: dataSource);
 
-class WebWukongGateway implements WukongGateway, WukongHistoryCache {
+class WebWukongGateway
+    implements WukongGateway, WukongHistoryCache, WukongDeletionCache {
+  @override
+  Future<void> markMessagesDeleted(List<String> ids) async {
+    // JS 1.3.5 has no persistent history DB. Purge its preview/reminder caches;
+    // the account-scoped business tombstones also guard late SDK deliveries.
+    final deleted = ids.toSet();
+    final manager = _conversationManager;
+    if (manager != null) {
+      for (final conversation
+          in manager
+              .getProperty<JSArray<JSObject>>('conversations'.toJS)
+              .toDart) {
+        final message = conversation.getProperty<JSObject?>('lastMessage'.toJS);
+        if (message != null &&
+            deleted.contains(_string(message, 'messageID'))) {
+          conversation.setProperty('lastMessage'.toJS, null);
+        }
+      }
+    }
+    final reminders = _reminderManager;
+    if (reminders != null) {
+      final items = reminders
+          .getProperty<JSArray<JSObject>>('reminders'.toJS)
+          .toDart;
+      reminders.setProperty(
+        'reminders'.toJS,
+        items
+            .where((item) => !deleted.contains(_string(item, 'messageID')))
+            .toList()
+            .toJS,
+      );
+    }
+  }
+
   @override
   Future<void> invalidateGroupHistory(
     String channelId,

@@ -28,6 +28,12 @@ func TestAdminRolePermissionsAreServerEnforced(t *testing.T) {
 	}{
 		{"platform_admin", "DELETE", "/v2/admin/announcements/a", true},
 		{"moderator", "POST", "/v2/admin/users/u/ban", true},
+		{"moderator", "PUT", "/v2/admin/users/u/message-permissions", true},
+		{"moderator", "PUT", "/v2/admin/invite-codes/ic/status", true},
+		{"moderator", "POST", "/v2/admin/invite-codes/ic/reset", true},
+		{"support", "PUT", "/v2/admin/users/u/message-permissions", false},
+		{"support", "PUT", "/v2/admin/invite-codes/ic/status", false},
+		{"system_operator", "PUT", "/v2/admin/users/u/message-permissions", false},
 		{"moderator", "POST", "/v2/admin/reports/r/resolve", true},
 		{"moderator", "DELETE", "/v2/admin/sensitive-words/w", true},
 		{"moderator", "POST", "/v2/admin/moments/m/moderate", true},
@@ -73,6 +79,9 @@ func TestEveryRegisteredAdminJSONWriteRequiresConfirmationAndReason(t *testing.T
 
 	routes := []struct{ method, path string }{
 		{http.MethodPost, "/v2/admin/users/u/ban"},
+		{http.MethodPut, "/v2/admin/users/u/message-permissions"},
+		{http.MethodPut, "/v2/admin/invite-codes/ic/status"},
+		{http.MethodPost, "/v2/admin/invite-codes/ic/reset"},
 		{http.MethodPost, "/v2/admin/users/u/unban"},
 		{http.MethodPost, "/v2/admin/reports/r/resolve"},
 		{http.MethodPost, "/v2/admin/announcements"},

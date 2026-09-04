@@ -166,6 +166,26 @@ func TestClientDiagnosticsSchemaIsVersioned(t *testing.T) {
 	}
 }
 
+func TestAccountInvitationSchemaIsVersioned(t *testing.T) {
+	if schemaVersion < 63 {
+		t.Fatalf("account invitation schema requires version 63 or newer, got %d", schemaVersion)
+	}
+	for _, fragment := range []string{
+		"ALTER TABLE im_users ADD COLUMN IF NOT EXISTS invite_code_change_count",
+		"CREATE TABLE IF NOT EXISTS im_user_invite_codes",
+		"disabled_at timestamptz",
+		"disabled_by text NOT NULL DEFAULT ''",
+		"CREATE UNIQUE INDEX IF NOT EXISTS im_user_invite_codes_code_unique_idx ON im_user_invite_codes(upper(code))",
+		"CREATE UNIQUE INDEX IF NOT EXISTS im_user_invite_codes_current_user_idx",
+		"CREATE TABLE IF NOT EXISTS im_user_invite_relations",
+		"CHECK(invitee_user_id<>inviter_user_id)",
+	} {
+		if !strings.Contains(normalizedSchema, fragment) {
+			t.Fatalf("account invitation schema is missing %q", fragment)
+		}
+	}
+}
+
 func TestPublicGuaguaHandleMigrationIsVersioned(t *testing.T) {
 	if schemaVersion < 49 {
 		t.Fatalf("public Guagua handles require schema version 49 or newer, got %d", schemaVersion)

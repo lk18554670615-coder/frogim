@@ -33,6 +33,9 @@ func (p *Postgres) CreateAdminPasswordUser(ctx context.Context, actor, phone, na
 	if err != nil {
 		return nil, err
 	}
+	if _, err = ensureInviteCodeTx(ctx, tx, user.ID, "system", actor, at); err != nil {
+		return nil, err
+	}
 	metadata, _ := json.Marshal(map[string]any{"method": "admin_phone_password", "reason": reason, "gender": gender})
 	if _, err = tx.Exec(ctx, `INSERT INTO im_audits(id,actor_id,action,target_type,target_id,metadata,result,created_at)
 		VALUES($1,$2,'user.created','user',$3,$4,'success',$5)`, "aud_admin_user_"+userID, actor, userID, metadata, at); err != nil {

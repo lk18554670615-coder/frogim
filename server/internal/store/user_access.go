@@ -8,7 +8,8 @@ import (
 
 const UserAccessRetention = 180 * 24 * time.Hour
 
-// These types are admin-only. Never embed them in model.User or an App response.
+// These complete records are admin-only. Never embed them in model.User or an
+// App response; the peer-login-info endpoint projects only the last login IP.
 type UserAccessProfile struct {
 	RegistrationSource string     `json:"registrationSource"`
 	RegistrationIP     string     `json:"registrationIp,omitempty"`

@@ -71,6 +71,7 @@ export interface DashboardData {
 }
 
 export interface UserRecord {
+  canDeleteMessagesForEveryone?: boolean;
   access?: UserAccessProfile;
   id: string;
   nickname: string;
@@ -177,6 +178,8 @@ export interface AdminUserBlockRecord {
 }
 
 export interface AdminDirectMessageRecord {
+  deletedForEveryoneAt?: string;
+  deletedForEveryoneBy?: string;
   id: string;
   clientMsgId: string;
   conversationId: string;
@@ -224,6 +227,37 @@ export interface UserOverview {
   groupCount: number;
   handleChangesUsed: number;
   handleChangesRemaining: number;
+  invitation?: {
+    code: string;
+    status: 'active' | 'disabled' | 'retired';
+    selfChangesUsed: number;
+    selfChangesRemaining: number;
+    createdAt: string;
+    invitedBy?: UserRecord;
+    registrationMethod?: 'password' | 'otp';
+    boundAt?: string;
+  };
+}
+
+export interface InviteCodeRecord {
+  id: string;
+  userId: string;
+  code: string;
+  status: 'active' | 'disabled' | 'retired';
+  source: 'system' | 'user' | 'admin';
+  selfChangesUsed: number;
+  selfChangesRemaining: number;
+  createdAt: string;
+  user: UserRecord;
+}
+
+export interface InviteRelationRecord {
+  invitee: UserRecord;
+  inviter: UserRecord;
+  inviteCodeId: string;
+  inviteCode: string;
+  registrationMethod: 'password' | 'otp';
+  createdAt: string;
 }
 
 export interface GroupRecord {
@@ -326,6 +360,8 @@ export interface AuditLog {
 }
 
 export interface MessageRecord {
+  deletedForEveryoneAt?: string;
+  deletedForEveryoneBy?: string;
   id: string;
   clientMsgId: string;
   conversationId: string;
@@ -432,6 +468,7 @@ export interface CallRecord {
 
 export interface AdminSettings {
   allowRegistration: boolean;
+  inviteRegistrationMode: 'disabled' | 'optional' | 'required';
   passwordMinLength: number;
   maxMessageTextLength: number;
   messageRecallMinutes: number;
@@ -854,6 +891,7 @@ export interface SupportSessionRecord {
 }
 
 export interface AdminApi {
+  setUserMessagePermissions(id: string, allowed: boolean, reason: string): Promise<void>;
   getCurrentAdmin(): Promise<Omit<AdminSession, 'token' | 'expiresAt'>>;
   changeCurrentAdminPassword(currentPassword: string, newPassword: string): Promise<void>;
   getAdministrators(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<AdministratorRecord>>;
@@ -870,6 +908,10 @@ export interface AdminApi {
   createUser(input: { phone: string; name: string; password: string; gender: UserRecord['gender'] }, reason: string): Promise<UserRecord>;
   createUsersBatch(items: AdminUserBatchInput[], reason: string): Promise<AdminUserBatchResult>;
   getUserOverview(id: string): Promise<UserOverview>;
+  getInviteCodes(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<InviteCodeRecord>>;
+  getInviteRelations(query?: string, method?: string, from?: string, to?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<InviteRelationRecord>>;
+  setInviteCodeStatus(id: string, status: 'active' | 'disabled', reason: string): Promise<InviteCodeRecord>;
+  resetInviteCode(id: string, reason: string): Promise<InviteCodeRecord>;
   getUserFriends(id: string): Promise<AdminUserRelationRecord[]>;
   getUserBlockedUsers(id: string): Promise<AdminUserBlockRecord[]>;
   getUserDevices(id: string): Promise<AdminUserDevices>;

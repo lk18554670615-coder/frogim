@@ -109,6 +109,8 @@ class MessageMapper {
       mediaId: payload['mediaId'] as String?,
       mediaWidth: (payload['width'] as num?)?.toInt(),
       mediaHeight: (payload['height'] as num?)?.toInt(),
+      coverMediaId: payload['coverMediaId'] as String?,
+      coverUrl: payload['cover'] as String?,
       stickerId: payload['stickerId'] as String?,
       momentId: payload['momentId'] as String?,
       event: payload['event'] as String?,
@@ -119,7 +121,8 @@ class MessageMapper {
       chatHistoryEntries: chatHistoryEntriesFrom(payload['entries']),
       fileName: payload['fileName'] as String?,
       mimeType: payload['mime'] as String? ?? payload['mimeType'] as String?,
-      durationSeconds: (payload['duration'] as num?)?.toInt(),
+      durationSeconds: ((payload['second'] ?? payload['duration']) as num?)
+          ?.toInt(),
       replyToId: reply['message_id'] as String?,
       replyToText: reply['content'] as String?,
       replyToSeq: (reply['message_seq'] as num?)?.toInt() ?? 0,
@@ -146,6 +149,9 @@ class MessageMapper {
           .toList(),
       editedAt: _date(payload['editedAt']),
       isPinned: payload['isPinned'] as bool? ?? false,
+      deletedForEveryone:
+          payload['deletedForEveryoneAt'] != null ||
+          payload['is_mutual_deleted'] == 1,
       pinnedAt: _date(payload['pinnedAt']),
       pinnedBy: payload['pinnedBy'] as String?,
       expiresAt: expiresAt,
@@ -228,13 +234,20 @@ class MessageMapper {
       if (message.mediaUrl case final url?
           when Uri.tryParse(url)?.hasScheme == true &&
               const {'http', 'https'}.contains(Uri.parse(url).scheme))
-        'url': url,
+        'url': _wireMediaURL(url),
       if (message.mediaId != null) 'mediaId': message.mediaId,
       if (message.mediaWidth != null) 'width': message.mediaWidth,
       if (message.mediaHeight != null) 'height': message.mediaHeight,
       if (message.fileName != null) 'fileName': message.fileName,
       if (message.mimeType != null) 'mime': message.mimeType,
       if (message.durationSeconds != null) 'duration': message.durationSeconds,
+      if (message.kind == MessageContentKind.video) ...{
+        if (message.durationSeconds != null) 'second': message.durationSeconds,
+        if (message.coverMediaId != null) 'coverMediaId': message.coverMediaId,
+        if (message.coverUrl case final url?
+            when const {'http', 'https'}.contains(Uri.tryParse(url)?.scheme))
+          'cover': _wireMediaURL(url),
+      },
     },
     MessageContentKind.contact => {
       'userId': message.contactUserId,
@@ -298,8 +311,8 @@ class MessageMapper {
       return supportEventDisplayText(payload);
     }
     if (contentType == WukongContentType.systemEvent &&
-        payload['event'] == groupAnnouncementUpdatedEvent) {
-      return groupAnnouncementUpdatedText;
+        isGroupSystemEvent(payload)) {
+      return groupSystemEventDisplayText(payload);
     }
     return switch (kind) {
       MessageContentKind.text ||
@@ -322,6 +335,15 @@ class MessageMapper {
       _ => payload['content'] as String? ?? registry.digest(payload),
     };
   }
+}
+
+String _wireMediaURL(String url) {
+  final uri = Uri.parse(url);
+  if (!RegExp(r'^/v2/media/[^/]+/(content|cover)$').hasMatch(uri.path)) {
+    return url;
+  }
+  // The viewer guard is local account state, not shared message metadata.
+  return url.split('?').first.split('#').first;
 }
 
 /// WuKongIMGoProto v1.2.3 (server v2.2.5-20260422), also pinned in

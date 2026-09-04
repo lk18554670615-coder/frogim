@@ -5,21 +5,25 @@ import 'package:http/http.dart' as http;
 
 import 'browser_download_web.dart';
 import 'models.dart';
+import 'media_access.dart';
 
 Future<String?> openMessageMedia(
   ChatMessage message, {
   required int maxBytes,
 }) async {
-  final source = message.mediaUrl?.trim();
+  final source = mediaAccess.source(message.mediaId, message.mediaUrl)?.trim();
   if (source == null || source.isEmpty) return '文件下载地址暂不可用';
   final uri = Uri.tryParse(source);
   if (uri == null || (uri.scheme != 'https' && uri.scheme != 'http')) {
     return '网页端无法打开此本地文件';
   }
   final client = http.Client();
+  final authenticated = mediaAccess.owns(source);
   try {
+    final request = http.Request('GET', uri);
+    request.headers.addAll(mediaAccess.headersFor(source));
     final response = await client
-        .send(http.Request('GET', uri))
+        .send(request)
         .timeout(const Duration(seconds: 45));
     if (response.statusCode < 200 || response.statusCode >= 300) {
       return '文件下载失败（${response.statusCode}）';
@@ -36,6 +40,7 @@ Future<String?> openMessageMedia(
       buffer.add(chunk);
     }
     if (received == 0) return '下载到的文件为空';
+    if (authenticated && !mediaAccess.owns(source)) return '登录账号已变化';
     downloadBytesInBrowser(
       buffer.takeBytes(),
       fileName: _safeDownloadName(message),

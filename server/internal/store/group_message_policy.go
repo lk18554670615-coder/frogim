@@ -31,12 +31,22 @@ func (p *WithRedis) CanPresentPush(ctx context.Context, item OutboxItem) (bool, 
 }
 
 func (p *Postgres) CanPresentPush(ctx context.Context, item OutboxItem) (bool, error) {
+	if item.EventType == "messages.deleted" || item.EventType == "user.message_permissions.updated" {
+		return false, nil
+	}
 	message, ok := item.Payload["message"].(map[string]any)
 	if !ok {
 		return true, nil // Personal invitations and other actionable notifications stay intact.
 	}
 	cid, _ := message["conversationId"].(string)
 	mid, _ := message["id"].(string)
+	var deleted bool
+	if err := p.pool.QueryRow(ctx, `SELECT im_message_is_deleted($1)`, mid).Scan(&deleted); err != nil {
+		return false, err
+	}
+	if deleted {
+		return false, nil
+	}
 	var role string
 	err := p.pool.QueryRow(ctx, `SELECT COALESCE(m.role,'') FROM im_groups g
 		LEFT JOIN im_members m ON m.conversation_id=g.conversation_id AND m.user_id=$2

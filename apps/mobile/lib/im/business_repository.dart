@@ -26,13 +26,17 @@ class BusinessRepository
     required String platform,
     required String? Function() accessToken,
     Future<bool> Function()? refreshAccessToken,
+    String? Function(String)? fixedMediaUrl,
     http.Client? client,
+    http.Client? uploadClient,
   }) => BusinessRepository._(
     apiBaseUrl,
     platform,
     accessToken,
     refreshAccessToken,
     client ?? http.Client(),
+    uploadClient ?? client ?? http.Client(),
+    fixedMediaUrl,
   );
 
   BusinessRepository._(
@@ -41,6 +45,8 @@ class BusinessRepository
     this._accessToken,
     this._refreshAccessToken,
     this._client,
+    this._uploadClient,
+    this._fixedMediaUrl,
   );
 
   final String _apiBaseUrl;
@@ -48,6 +54,8 @@ class BusinessRepository
   final String? Function() _accessToken;
   final Future<bool> Function()? _refreshAccessToken;
   final http.Client _client;
+  final http.Client _uploadClient;
+  final String? Function(String)? _fixedMediaUrl;
 
   Future<WukongSession> issueImSession() async {
     final data = await request('POST', '/v2/auth/im-session', {
@@ -70,10 +78,12 @@ class BusinessRepository
     if (url == null || !Uri.parse(url).hasScheme) {
       throw const FormatException('media binding did not return a URL');
     }
-    return url;
+    return _fixedMediaUrl?.call(mediaId) ?? url;
   }
 
   Future<String> mediaUrl(String mediaId) async {
+    final fixed = _fixedMediaUrl?.call(mediaId);
+    if (fixed != null) return fixed;
     final encoded = Uri.encodeComponent(mediaId);
     final data = await request('GET', '/v2/media/$encoded/url');
     final url = data['url'] as String?;
@@ -82,6 +92,9 @@ class BusinessRepository
     }
     return url;
   }
+
+  Future<Map<String, Object?>> mediaInfo(String mediaId) =>
+      request('GET', '/v2/media/${Uri.encodeComponent(mediaId)}/url');
 
   Future<Map<String, Object?>> startMessageStream({
     required String conversationId,
@@ -471,7 +484,7 @@ class BusinessRepository
     final stream = http.StreamedRequest('PUT', Uri.parse(uploadUrl));
     stream.headers.addAll(uploadHeaders);
     stream.contentLength = upload.bytes.length;
-    final responseFuture = _client
+    final responseFuture = _uploadClient
         .send(stream)
         .timeout(const Duration(seconds: 45));
     const chunkSize = 64 * 1024;
@@ -860,5 +873,8 @@ class BusinessRepository
         : decoded;
   }
 
-  void close() => _client.close();
+  void close() {
+    if (!identical(_uploadClient, _client)) _uploadClient.close();
+    _client.close();
+  }
 }

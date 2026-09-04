@@ -2,6 +2,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getApi, loginAdmin } from './api';
 
 describe('live API adapter', () => {
+  it('全端删除授权使用专用接口，默认关闭，保留审核标记', async () => {
+    const fetchMock=vi.fn(async (_input:RequestInfo|URL, init?:RequestInit)=>({ok:true,status:200,headers:new Headers(),json:async()=>init?.body?JSON.parse(String(init.body)):{items:[{id:'u1',name:'测试',canDeleteMessagesForEveryone:true},{id:'u2',name:'默认关闭'}],total:2}}));
+    vi.stubGlobal('fetch',fetchMock);const api=getApi('token');
+    const users=await api.getUsers();expect(users.items[0].canDeleteMessagesForEveryone).toBe(true);expect(users.items[1].canDeleteMessagesForEveryone).toBe(false);
+    await api.setUserMessagePermissions('u1',false,'撤销授权');
+    expect(String(fetchMock.mock.calls[1][0])).toContain('/users/u1/message-permissions');
+    expect(fetchMock.mock.calls[1][1]?.method).toBe('PUT');
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({canDeleteMessagesForEveryone:false,reason:'撤销授权',confirmed:true});
+  });
   afterEach(() => { vi.unstubAllGlobals(); });
 
   it('IP 筛选与登录日志使用真实接口，保留 IPv6、UTC 时间、游标和失败身份', async () => {
@@ -33,6 +42,30 @@ describe('live API adapter', () => {
     expect(updated.directRecallMinutes).toBe(10080);
     expect(updated.messageRecallMinutes).toBe(7);
     expect(updated.groupRecallMinutes).toBe(60);
+  });
+
+  it('邀请码策略、邀请码分页、邀请关系和治理请求使用真实接口', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/invite-relations')) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ invitee: { id: 'u2', name: '新用户' }, inviter: { id: 'u1', name: '邀请人' }, inviteCodeId: 'ic1', inviteCode: 'ABCDEF23', registrationMethod: 'otp', createdAt: '2026-09-04T00:00:00Z' }], total: 1 }) };
+      if (url.includes('/invite-codes') && !init?.method) return { ok: true, status: 200, headers: new Headers(), json: async () => ({ items: [{ id: 'ic1', userId: 'u1', code: 'ABCDEF23', status: 'active', source: 'system', selfChangesUsed: 0, selfChangesRemaining: 1, createdAt: '2026-09-03T00:00:00Z', user: { id: 'u1', name: '邀请人' } }], total: 21, nextCursor: '20' }) };
+      return { ok: true, status: 200, headers: new Headers(), json: async () => init?.body ? JSON.parse(String(init.body)) : { inviteRegistrationMode: 'required' } };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const api = getApi('token');
+    expect((await api.getSettings()).inviteRegistrationMode).toBe('required');
+    const codes = await api.getInviteCodes('ABC', 'active', 1, 20, '');
+    expect(codes.items[0]).toMatchObject({ code: 'ABCDEF23', status: 'active', user: { nickname: '邀请人' } });
+    expect(codes.nextCursor).toBe('20');
+    const relations = await api.getInviteRelations('邀请人', 'otp', '2026-09-01', '2026-09-05', 1, 20, '');
+    expect(relations.items[0]).toMatchObject({ inviteCode: 'ABCDEF23', registrationMethod: 'otp', inviter: { nickname: '邀请人' }, invitee: { nickname: '新用户' } });
+    await api.setInviteCodeStatus('ic1', 'disabled', '用户申请暂停');
+    await api.resetInviteCode('ic1', '风控重置');
+    const writes = fetchMock.mock.calls.filter(([, init]) => init?.method).map(([input, init]) => ({ url: String(input), method: init?.method, body: JSON.parse(String(init?.body)) }));
+    expect(writes).toEqual([
+      expect.objectContaining({ url: expect.stringContaining('/invite-codes/ic1/status'), method: 'PUT', body: { status: 'disabled', reason: '用户申请暂停', confirmed: true } }),
+      expect.objectContaining({ url: expect.stringContaining('/invite-codes/ic1/reset'), method: 'POST', body: { reason: '风控重置', confirmed: true } }),
+    ]);
   });
 
   it('消费服务端 items/total/nextCursor 而不在本地再切片', async () => {

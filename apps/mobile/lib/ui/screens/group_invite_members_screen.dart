@@ -170,6 +170,17 @@ class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
                     .contains(query),
           )
           .toList();
+      final selectableVisibleIds = {
+        for (final user in visible)
+          if (!existing.contains(user.id) && !_completed.contains(user.id))
+            user.id,
+      };
+      final selectedVisibleCount = selectableVisibleIds
+          .where(_selected.contains)
+          .length;
+      final allVisibleSelected =
+          selectableVisibleIds.isNotEmpty &&
+          selectedVisibleCount == selectableVisibleIds.length;
       final canChoose = !_loading && !_busy && _me != null && _sameAccount;
       return PopScope(
         canPop: !_busy,
@@ -204,12 +215,39 @@ class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
                         horizontal: 16,
                         vertical: 8,
                       ),
-                      child: Text(
-                        _loading
-                            ? '正在确认群成员…'
-                            : _directAdd
-                            ? '勾选好友后点击完成，直接添加到群聊。'
-                            : '勾选好友后点击完成，对方接受邀请后加入。',
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              _loading
+                                  ? '正在确认群成员…'
+                                  : _directAdd
+                                  ? '勾选好友后点击完成，直接添加到群聊。'
+                                  : '勾选好友后点击完成，对方接受邀请后加入。',
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            '已选 ${_selected.length}',
+                            key: const Key('group-invite-selection-count'),
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                          TextButton(
+                            key: const Key('group-invite-select-all'),
+                            onPressed:
+                                canChoose && selectableVisibleIds.isNotEmpty
+                                ? () => setState(() {
+                                    if (allVisibleSelected) {
+                                      _selected.removeAll(selectableVisibleIds);
+                                    } else {
+                                      _selected.addAll(selectableVisibleIds);
+                                    }
+                                  })
+                                : null,
+                            child: Text(allVisibleSelected ? '取消全选' : '全选'),
+                          ),
+                        ],
                       ),
                     ),
                     if (_error != null)

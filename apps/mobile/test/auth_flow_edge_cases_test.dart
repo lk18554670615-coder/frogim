@@ -232,6 +232,7 @@ class _CountingAuthRepository extends DemoImRepository {
     required String code,
     required String password,
     required String name,
+    String inviteCode = '',
   }) async {
     registerRequests += 1;
     return super.register(
@@ -239,6 +240,7 @@ class _CountingAuthRepository extends DemoImRepository {
       code: code,
       password: password,
       name: name,
+      inviteCode: inviteCode,
     );
   }
 

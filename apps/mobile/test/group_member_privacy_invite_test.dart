@@ -216,6 +216,53 @@ void main() {
     }
   }
 
+  testWidgets('邀请成员支持全选当前搜索结果，搜索外选择保持不变', (tester) async {
+    final repo = _Repository('owner');
+    await _open(tester, repo);
+    await tester.tap(find.byKey(const Key('chat-info-invite-members')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('group-invite-select-all')));
+    await tester.pump();
+    expect(find.text('已选 5'), findsOneWidget);
+    expect(find.text('完成 5'), findsOneWidget);
+    expect(find.text('取消全选'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('group-invite-select-all')));
+    await tester.pump();
+    expect(find.text('已选 0'), findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const Key('group-invite-search')),
+      'anran',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('group-invite-select-all')));
+    await tester.pump();
+    expect(find.text('已选 1'), findsOneWidget);
+
+    await tester.enterText(find.byKey(const Key('group-invite-search')), '周末');
+    await tester.pump();
+    expect(find.text('全选'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('group-invite-select-all')));
+    await tester.pump();
+    expect(find.text('已选 2'), findsOneWidget);
+    expect(find.text('取消全选'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('group-invite-select-all')));
+    await tester.pump();
+    expect(find.text('已选 1'), findsOneWidget);
+    expect(find.text('完成 1'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('group-invite-confirm')));
+    await tester.pumpAndSettle();
+    expect(repo.added, [
+      ['u2'],
+    ]);
+    expect(find.byType(GroupInviteMembersScreen), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('原成员列表添加入口复用新选择页；取消不发送', (tester) async {
     final repo = _Repository('member');
     await _open(tester, repo, screen: 'members');

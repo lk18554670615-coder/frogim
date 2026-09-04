@@ -309,9 +309,8 @@ class MessageContentRegistry {
       }
     },
     digest: (payload) =>
-        type == WukongContentType.systemEvent &&
-            payload['event'] == groupAnnouncementUpdatedEvent
-        ? groupAnnouncementUpdatedText
+        type == WukongContentType.systemEvent && isGroupSystemEvent(payload)
+        ? groupSystemEventDisplayText(payload)
         : payload['digest'] as String? ?? fallbackDigest,
   );
 

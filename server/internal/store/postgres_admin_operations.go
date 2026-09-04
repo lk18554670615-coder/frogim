@@ -304,7 +304,36 @@ func (p *Postgres) AdminUserOverview(ctx context.Context, id string) (map[string
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"user": &user, "deviceCount": devices, "friendCount": friends, "groupCount": groups, "handleChangesUsed": user.HandleChangeCount, "handleChangesRemaining": max(0, 2-user.HandleChangeCount)}, nil
+	result := map[string]any{"user": &user, "deviceCount": devices, "friendCount": friends, "groupCount": groups, "handleChangesUsed": user.HandleChangeCount, "handleChangesRemaining": max(0, 2-user.HandleChangeCount)}
+	var code InviteCode
+	err = p.pool.QueryRow(ctx, `SELECT c.id,c.user_id,c.code,c.status,c.source,c.created_at,u.invite_code_change_count
+		FROM im_user_invite_codes c JOIN im_users u ON u.id=c.user_id
+		WHERE c.user_id=$1 AND c.status IN ('active','disabled')`, id).Scan(
+		&code.ID, &code.UserID, &code.Code, &code.Status, &code.Source, &code.CreatedAt, &code.SelfChangesUsed,
+	)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	if err == nil {
+		invitation := map[string]any{"id": code.ID, "code": code.Code, "status": code.Status, "source": code.Source, "selfChangesUsed": code.SelfChangesUsed, "selfChangesRemaining": max(0, 1-code.SelfChangesUsed), "createdAt": code.CreatedAt}
+		var inviter model.User
+		var method string
+		var boundAt time.Time
+		relationErr := p.pool.QueryRow(ctx, `SELECT inviter.id,inviter.phone,inviter.name,COALESCE(inviter.handle,''),inviter.avatar_url,r.registration_method,r.created_at
+			FROM im_user_invite_relations r JOIN im_users inviter ON inviter.id=r.inviter_user_id WHERE r.invitee_user_id=$1`, id).Scan(
+			&inviter.ID, &inviter.Phone, &inviter.Name, &inviter.Handle, &inviter.AvatarURL, &method, &boundAt,
+		)
+		if relationErr != nil && !errors.Is(relationErr, pgx.ErrNoRows) {
+			return nil, relationErr
+		}
+		if relationErr == nil {
+			invitation["invitedBy"] = &inviter
+			invitation["registrationMethod"] = method
+			invitation["boundAt"] = boundAt
+		}
+		result["invitation"] = invitation
+	}
+	return result, nil
 }
 
 func (p *Postgres) AdminGroupOverview(ctx context.Context, id string) (map[string]any, error) {

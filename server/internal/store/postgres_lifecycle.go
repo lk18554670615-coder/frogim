@@ -327,6 +327,7 @@ func (p *Postgres) LeaseMediaCleanup(ctx context.Context, now time.Time, pending
 		SELECT media.id FROM im_media media WHERE (
 			(media.status='pending' AND media.created_at<$2) OR
 			(media.status='ready' AND COALESCE(media.completed_at,media.created_at)<$3 AND
+			 NOT EXISTS(SELECT 1 FROM im_media parent WHERE parent.cover_media_id=media.id) AND
 			 NOT EXISTS(SELECT 1 FROM im_wukong_media_channels binding WHERE binding.media_id=media.id) AND
 			 NOT EXISTS(SELECT 1 FROM im_moments moment WHERE media.id=ANY(moment.media_ids) AND moment.status<>'deleted') AND
 			 NOT EXISTS(SELECT 1 FROM im_sticker_packs pack WHERE pack.cover_media_id=media.id) AND
@@ -374,6 +375,7 @@ func (p *Postgres) MediaCleanupStatus(ctx context.Context, now time.Time, pendin
 	err := p.pool.QueryRow(ctx, `SELECT
 		count(*) FILTER(WHERE status='pending' AND created_at<$1),
 		count(*) FILTER(WHERE status='ready' AND COALESCE(completed_at,created_at)<$2 AND
+		 NOT EXISTS(SELECT 1 FROM im_media parent WHERE parent.cover_media_id=im_media.id) AND
 		 NOT EXISTS(SELECT 1 FROM im_wukong_media_channels binding WHERE binding.media_id=im_media.id) AND
 		 NOT EXISTS(SELECT 1 FROM im_users user_row WHERE user_row.avatar_media_id=im_media.id)),
 		count(*) FILTER(WHERE cleanup_status='processing'),

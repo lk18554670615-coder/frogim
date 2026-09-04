@@ -1953,6 +1953,47 @@ void main() {
     await repository.close();
   });
 
+  test('群头像已由服务端保存后不被无关的本地历史缓存错误误报失败', () async {
+    final client = MockClient((request) async {
+      if (request.url.path == '/v2/auth/login') return _loginResponse();
+      if (request.method == 'PATCH' &&
+          request.url.path == '/v2/channels/groups/group-1') {
+        return _jsonResponse({
+          'data': {
+            'conversationId': 'group-1',
+            'ownerId': 'user-1',
+            'name': '邻里群',
+            'avatarUrl': '/v2/avatars/media-group?expires=1&signature=signed',
+            'joinPolicy': 'invite',
+            'allowMemberAddFriend': true,
+            'historyAccess': {
+              'policyVersion': 1,
+              'historyVisibleToNewMembers': false,
+              'afterSeq': 10,
+            },
+            'updatedAt': '2026-09-04T12:00:00Z',
+          },
+        });
+      }
+      return http.Response('{}', 404);
+    });
+    final repository = LiveImRepository(
+      client: client,
+      store: _FailingGroupCacheStore(),
+      apiBaseUrl: 'https://api.example.com',
+      wukongGateway: FakeWukongGateway(),
+    );
+    await repository.login('13800138000', '123456');
+
+    final profile = await repository.updateGroupProfile(
+      'group-1',
+      avatarMediaId: 'media-group',
+    );
+
+    expect(profile.avatarUrl, contains('/v2/avatars/media-group'));
+    await repository.close();
+  });
+
   test('标记已读同时清除 WuKong SDK 本地会话红点', () async {
     final gateway = FakeWukongGateway();
     Map<String, Object?>? readBody;
@@ -2121,6 +2162,26 @@ class _ParallelMessageStore extends SecureLocalStore {
       ];
     }
     return _values[key];
+  }
+}
+
+class _FailingGroupCacheStore extends SecureLocalStore {
+  final Map<String, Object?> _values = {};
+
+  @override
+  Future<void> writeJson(String key, Object value) async {
+    if (key == 'messages.group-1') {
+      throw StateError('simulated group history cache failure');
+    }
+    _values[key] = value;
+  }
+
+  @override
+  Future<Object?> readJson(String key) async => _values[key];
+
+  @override
+  Future<void> remove(String key) async {
+    _values.remove(key);
   }
 }
 

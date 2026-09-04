@@ -30,6 +30,7 @@ import '../../core/image_send_editor.dart';
 import '../../core/image_source_bytes.dart';
 import '../../core/local_media_path.dart';
 import '../../core/media_opener.dart';
+import '../../core/media_access.dart';
 import '../../core/models.dart';
 import '../../core/screenshot_detection.dart';
 import '../../core/user_identity.dart';
@@ -39,8 +40,11 @@ import '../../im/structured_event_text.dart';
 import '../widgets/linli_widgets.dart';
 import '../widgets/conversation_identity.dart';
 import '../widgets/user_presence.dart';
+import '../widgets/peer_login_info.dart';
 import '../widgets/forward_conversation_sheet.dart';
 import '../widgets/media_send_widgets.dart';
+import '../widgets/video_message_card.dart';
+import '../../core/video_preparation_types.dart';
 import '../widgets/voice_composer_widgets.dart';
 import '../voice_composer_controller.dart';
 import 'moments_screen.dart';
@@ -769,19 +773,20 @@ class _ChatScreenState extends State<ChatScreen> {
     return false;
   }
 
-  Future<void> _openUserProfile(AppUser user) => Navigator.of(context).push(
-    MaterialPageRoute(
-      builder: (_) => FriendProfileScreen(
-        controller: widget.controller,
-        user: user,
-        requestSource: 'conversation',
-        requestSourceId: widget.conversation.id,
-        presenceGroupId: widget.conversation.kind == ConversationKind.group
-            ? widget.conversation.id
-            : null,
+  Future<void> _openUserProfile(AppUser user) {
+    final group = widget.conversation.kind == ConversationKind.group;
+    return Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => FriendProfileScreen(
+          controller: widget.controller,
+          user: user,
+          requestSource: group ? 'group' : 'contacts',
+          requestSourceId: group ? widget.conversation.id : null,
+          presenceGroupId: group ? widget.conversation.id : null,
+        ),
       ),
-    ),
-  );
+    );
+  }
 
   bool _openingSenderProfile = false;
   Future<void> _openMessageSenderProfile(ChatMessage message) async {
@@ -865,6 +870,11 @@ class _ChatScreenState extends State<ChatScreen> {
         onError: _showError,
         child: Scaffold(
           appBar: AppBar(
+            toolbarHeight: showPeerLoginInfoFor(context, widget.conversation)
+                ? 16 +
+                      MediaQuery.textScalerOf(context).scale(24) +
+                      3 * MediaQuery.textScalerOf(context).scale(16)
+                : null,
             systemOverlayStyle: const SystemUiOverlayStyle(
               statusBarColor: Colors.transparent,
               statusBarIconBrightness: Brightness.dark,
@@ -935,6 +945,12 @@ class _ChatScreenState extends State<ChatScreen> {
                           );
                         },
                       ),
+                      if (showPeerLoginInfoFor(context, widget.conversation))
+                        PeerLoginInfoLabel(
+                          key: ValueKey('peer-login-${widget.conversation.id}'),
+                          controller: widget.controller,
+                          conversationId: widget.conversation.id,
+                        ),
                     ],
                   ),
                 ),
@@ -994,6 +1010,29 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                     if (selecting)
                       _SelectionBar(
+                        onDeleteEveryone:
+                            selectedMessageIds.isNotEmpty &&
+                                widget.controller
+                                    .messagesFor(widget.conversation.id)
+                                    .where(
+                                      (m) => selectedMessageIds.contains(
+                                        m.clientMessageId,
+                                      ),
+                                    )
+                                    .every(
+                                      widget.controller.canDeleteForEveryone,
+                                    )
+                            ? () => _confirmDeleteEveryone(
+                                widget.controller
+                                    .messagesFor(widget.conversation.id)
+                                    .where(
+                                      (m) => selectedMessageIds.contains(
+                                        m.clientMessageId,
+                                      ),
+                                    )
+                                    .toList(),
+                              )
+                            : null,
                         count: selectedMessageIds.length,
                         onCancel: () => setState(() {
                           selecting = false;
@@ -1162,6 +1201,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _sendWebFiles(List<WebPickedFile> files) async {
+    if (_selectingAttachment) return;
     if (_effectiveSendRestriction case final restriction?) {
       _showError(restriction);
       return;
@@ -1170,17 +1210,14 @@ class _ChatScreenState extends State<ChatScreen> {
       _showError('一次最多发送 10 个文件');
       return;
     }
+    _selectingAttachment = true;
     try {
       for (final file in files) {
         _validateMediaSize(file.bytes.length);
       }
       final reply = replyingTo;
-      setState(() {
-        replyingTo = null;
-        showAttachments = false;
-        showEmoji = false;
-      });
       for (final file in files) {
+        if (!mounted) return;
         final mime = file.mimeType == 'application/octet-stream'
             ? _mimeFor(file.name)
             : file.mimeType;
@@ -1189,14 +1226,31 @@ class _ChatScreenState extends State<ChatScreen> {
             : mime.startsWith('video/')
             ? MessageContentKind.video
             : MessageContentKind.file;
+        final upload = kind == MessageContentKind.video
+            ? await prepareSelectedVideo(
+                context,
+                file: XFile.fromData(
+                  file.bytes,
+                  name: file.name,
+                  mimeType: mime,
+                ),
+                maxBytes: AppConfig.mediaMaxBytes,
+              )
+            : MediaUpload(
+                bytes: file.bytes,
+                fileName: file.name,
+                mimeType: mime,
+                kind: kind,
+              );
+        if (!mounted || upload == null) return;
+        setState(() {
+          replyingTo = null;
+          showAttachments = false;
+          showEmoji = false;
+        });
         final sent = await widget.controller.sendMedia(
           widget.conversation.id,
-          MediaUpload(
-            bytes: file.bytes,
-            fileName: file.name,
-            mimeType: mime,
-            kind: kind,
-          ),
+          upload,
           replyTo: reply,
         );
         if (sent.status == MessageStatus.failed) {
@@ -1209,6 +1263,8 @@ class _ChatScreenState extends State<ChatScreen> {
       _showError(error.message);
     } catch (_) {
       _showError('文件发送失败，请稍后重试');
+    } finally {
+      _selectingAttachment = false;
     }
   }
 
@@ -1919,7 +1975,18 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  bool _selectingAttachment = false;
   Future<void> _pickAttachment(String label) async {
+    if (_selectingAttachment) return;
+    _selectingAttachment = true;
+    try {
+      await _pickAttachmentImpl(label);
+    } finally {
+      _selectingAttachment = false;
+    }
+  }
+
+  Future<void> _pickAttachmentImpl(String label) async {
     try {
       if (label == '直播互动') {
         await _showLiveInteraction();
@@ -1998,17 +2065,10 @@ class _ChatScreenState extends State<ChatScreen> {
           maxDuration: const Duration(minutes: 5),
         );
         if (!mounted || picked == null) return;
-        final preview = await showVideoSendPreview(
-          context,
-          source: picked.path,
-          title: picked.name,
-        );
-        if (!mounted || preview == null) return;
-        upload = await prepareVideoUploadWithDialog(
+        upload = await prepareSelectedVideo(
           context,
           file: picked,
           maxBytes: AppConfig.mediaMaxBytes,
-          previewDurationSeconds: preview.durationSeconds,
         );
       } else if (label == '文件') {
         final result = await FilePicker.platform.pickFiles(
@@ -2314,6 +2374,7 @@ class _ChatScreenState extends State<ChatScreen> {
       'mp4' => 'video/mp4',
       'mov' => 'video/quicktime',
       'm4v' => 'video/x-m4v',
+      'webm' || 'ogv' || 'mkv' || 'avi' => videoMimeType(name),
       'pdf' => 'application/pdf',
       'txt' => 'text/plain',
       'csv' => 'text/csv',
@@ -2492,6 +2553,8 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!success && mounted) {
           _showError(widget.controller.error ?? '消息删除失败，本机记录未修改');
         }
+      case _MessageMenuAction.deleteEveryone:
+        await _confirmDeleteEveryone([message]);
       case _MessageMenuAction.report:
         await Navigator.of(context).push(
           MaterialPageRoute(
@@ -2700,6 +2763,50 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  bool _deletingEveryone = false;
+  Future<void> _confirmDeleteEveryone(List<ChatMessage> messages) async {
+    if (_deletingEveryone || messages.isEmpty) return;
+    _deletingEveryone = true;
+    try {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => AlertDialog(
+          title: Text('为所有人删除 ${messages.length} 条消息？'),
+          content: Text(
+            '${_isOrdinaryGroup ? '全群成员' : '双方'}所有设备都将无法查看，无法恢复。离线设备将在重新联网后同步删除。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('确认删除'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+      final ok = await widget.controller.deleteForEveryone(
+        widget.conversation.id,
+        messages,
+      );
+      if (!mounted) return;
+      if (!ok) {
+        _showError(widget.controller.error ?? '删除失败');
+        return;
+      }
+      setState(() {
+        selecting = false;
+        selectedMessageIds.clear();
+      });
+    } finally {
+      _deletingEveryone = false;
+    }
+  }
+
   Future<void> _confirmClearLocal() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -2759,6 +2866,7 @@ class _ChatScreenState extends State<ChatScreen> {
 }
 
 enum _MessageMenuAction {
+  deleteEveryone,
   reply,
   react,
   edit,
@@ -2866,6 +2974,13 @@ class _MessageContextMenu extends StatelessWidget {
       ),
     ];
     final secondary = <_ContextActionSpec>[
+      if (controller.canDeleteForEveryone(message))
+        const _ContextActionSpec(
+          action: _MessageMenuAction.deleteEveryone,
+          icon: CupertinoIcons.trash_fill,
+          label: '为所有人删除',
+          destructive: true,
+        ),
       if (canPin)
         _ContextActionSpec(
           action: _MessageMenuAction.pin,
@@ -3383,8 +3498,7 @@ class ChatInfoScreen extends StatelessWidget {
                                   builder: (_) => FriendProfileScreen(
                                     controller: controller,
                                     user: directPeer,
-                                    requestSource: 'conversation',
-                                    requestSourceId: conversation.id,
+                                    requestSource: 'contacts',
                                   ),
                                 ),
                               ),
@@ -4174,24 +4288,31 @@ class MessageBubble extends StatelessWidget {
                         const SizedBox(height: 6),
                         SizedBox(
                           width: 150,
-                          child: Semantics(
-                            label:
-                                '上传 ${(controller!.mediaUploadProgressFor(message.clientMessageId)! * 100).round()}%',
-                            child: LinearProgressIndicator(
-                              key: Key(
-                                'media-upload-progress-${message.clientMessageId}',
-                              ),
-                              value: controller!.mediaUploadProgressFor(
-                                message.clientMessageId,
-                              ),
-                              minHeight: 3,
-                              borderRadius: BorderRadius.circular(999),
-                              color: LinliColors.brandGreen,
-                              backgroundColor: Theme.of(
-                                context,
-                              ).colorScheme.surfaceContainerHighest,
-                            ),
-                          ),
+                          child: message.kind == MessageContentKind.video
+                              ? VideoSendProgress(
+                                  progress: controller!.mediaUploadProgressFor(
+                                    message.clientMessageId,
+                                  )!,
+                                  clientMessageId: message.clientMessageId,
+                                )
+                              : Semantics(
+                                  label:
+                                      '上传 ${(controller!.mediaUploadProgressFor(message.clientMessageId)! * 100).round()}%',
+                                  child: LinearProgressIndicator(
+                                    key: Key(
+                                      'media-upload-progress-${message.clientMessageId}',
+                                    ),
+                                    value: controller!.mediaUploadProgressFor(
+                                      message.clientMessageId,
+                                    ),
+                                    minHeight: 3,
+                                    borderRadius: BorderRadius.circular(999),
+                                    color: LinliColors.brandGreen,
+                                    backgroundColor: Theme.of(
+                                      context,
+                                    ).colorScheme.surfaceContainerHighest,
+                                  ),
+                                ),
                         ),
                       ],
                       if (message.reactions.isNotEmpty) ...[
@@ -4441,7 +4562,7 @@ class _MessageContent extends StatelessWidget {
         : Theme.of(context).colorScheme.onSurface;
 
     if (message.kind == MessageContentKind.image) {
-      final media = message.mediaUrl;
+      final media = mediaAccess.source(message.mediaId, message.mediaUrl);
       if (media != null) {
         return _MessageImageContent(
           message: message,
@@ -4459,7 +4580,7 @@ class _MessageContent extends StatelessWidget {
     }
 
     if (message.kind == MessageContentKind.sticker) {
-      final media = message.mediaUrl;
+      final media = mediaAccess.source(message.mediaId, message.mediaUrl);
       if (media == null || media.isEmpty) {
         return _MediaUnavailable(
           color: bubbleColor,
@@ -4505,9 +4626,12 @@ class _MessageContent extends StatelessWidget {
           message: message,
           color: textColor,
         ),
-        MessageContentKind.video => _VideoMessageContent(
+        MessageContentKind.video => VideoMessageCard(
           message: message,
           color: textColor,
+          resolveMedia: controller?.repository.refreshMessageMedia,
+          visibilityChanges: controller,
+          isVisible: () => controller?.isMessageDeleted(message.id) != true,
         ),
         MessageContentKind.reply => Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -4606,7 +4730,11 @@ class _MessageImageContent extends StatelessWidget {
         .where(
           (item) =>
               item.kind == MessageContentKind.image &&
-              item.mediaUrl?.trim().isNotEmpty == true,
+              mediaAccess
+                      .source(item.mediaId, item.mediaUrl)
+                      ?.trim()
+                      .isNotEmpty ==
+                  true,
         )
         .toList();
     final candidates = images?.isNotEmpty == true ? images! : [message];
@@ -4707,17 +4835,32 @@ class _MessageImagePreviewState extends State<_MessageImagePreview> {
   bool _busy = false;
 
   ChatMessage get _message => widget.messages[_currentIndex];
-  String get _source => _message.mediaUrl!.trim();
+  String get _source =>
+      mediaAccess.source(_message.mediaId, _message.mediaUrl)?.trim() ?? '';
 
   @override
   void initState() {
     super.initState();
     _currentIndex = widget.initialIndex.clamp(0, widget.messages.length - 1);
     _pageController = PageController(initialPage: _currentIndex);
+    widget.controller?.addListener(_checkDeleted);
+  }
+
+  void _checkDeleted() {
+    if (!mounted ||
+        !widget.messages.any(
+          (m) => widget.controller?.isMessageDeleted(m.id) == true,
+        )) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) Navigator.of(context).removeRoute(ModalRoute.of(context)!);
+    });
   }
 
   @override
   void dispose() {
+    widget.controller?.removeListener(_checkDeleted);
     _pageController.dispose();
     super.dispose();
   }
@@ -5129,7 +5272,11 @@ class _ZoomableMessageImageState extends State<_ZoomableMessageImage> {
           width: widget.width,
           height: widget.height,
           child: _messageImage(
-            widget.message.mediaUrl!.trim(),
+            mediaAccess.source(
+                  widget.message.mediaId,
+                  widget.message.mediaUrl,
+                ) ??
+                '',
             key: widget.current
                 ? const Key('message-image-preview-render')
                 : Key('message-image-preview-render-$id'),
@@ -5268,6 +5415,7 @@ Widget _messageImage(
   ImageFrameBuilder? frameBuilder,
   ImageErrorWidgetBuilder? errorBuilder,
 }) {
+  source = mediaAccess.source(cacheKey, source) ?? source;
   if (source.startsWith('assets/')) {
     return Image.asset(
       source,
@@ -5284,7 +5432,8 @@ Widget _messageImage(
     return CachedNetworkImage(
       key: key,
       imageUrl: source,
-      cacheKey: cacheKey,
+      httpHeaders: mediaAccess.headersFor(source),
+      cacheKey: mediaAccess.owns(source) ? source : cacheKey,
       width: width,
       height: height,
       fit: fit,
@@ -5872,75 +6021,6 @@ Future<void> _openMessageUri(BuildContext context, Uri? uri) async {
   )?.showSnackBar(const SnackBar(content: Text('暂时无法打开，请稍后重试')));
 }
 
-class _VideoMessageContent extends StatelessWidget {
-  const _VideoMessageContent({required this.message, required this.color});
-
-  final ChatMessage message;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    final source = message.mediaUrl?.trim();
-    final title = message.fileName?.trim().isNotEmpty == true
-        ? message.fileName!.trim()
-        : '视频消息';
-    final duration = message.durationSeconds;
-    return Semantics(
-      button: source?.isNotEmpty == true,
-      label: source?.isNotEmpty == true ? '播放$title' : '视频暂不可播放',
-      child: InkWell(
-        key: Key('play-video-${message.id}'),
-        onTap: source?.isNotEmpty == true
-            ? () => showMessageVideo(context, source: source!, title: title)
-            : null,
-        borderRadius: BorderRadius.circular(12),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minWidth: 178),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 42,
-                height: 42,
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: .12),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(CupertinoIcons.play_fill, color: color, size: 22),
-              ),
-              const SizedBox(width: 10),
-              Flexible(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: color, fontSize: 15),
-                    ),
-                    Text(
-                      source?.isNotEmpty == true
-                          ? duration == null || duration <= 0
-                                ? '点击播放'
-                                : '$duration 秒 · 点击播放'
-                          : '视频地址暂不可用',
-                      style: TextStyle(
-                        color: color.withValues(alpha: .65),
-                        fontSize: 11,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _OpenableMediaContent extends StatefulWidget {
   const _OpenableMediaContent({
     required this.message,
@@ -6279,13 +6359,26 @@ class _VoiceMessageContentState extends State<_VoiceMessageContent> {
       if (mounted) setState(() => _playing = false);
       return;
     }
-    final source = widget.message.mediaUrl;
+    final source = mediaAccess.source(
+      widget.message.mediaId,
+      widget.message.mediaUrl,
+    );
     if (source == null || source.isEmpty) {
       _showUnavailable();
       return;
     }
     try {
-      if (source.startsWith('http://') || source.startsWith('https://')) {
+      if (mediaAccess.owns(source)) {
+        final bytes = await loadImageSourceBytes(
+          source,
+          maxBytes: AppConfig.mediaMaxBytes,
+        );
+        if (!mounted || !mediaAccess.owns(source)) return;
+        await _player.play(
+          BytesSource(bytes, mimeType: widget.message.mimeType),
+        );
+      } else if (source.startsWith('http://') ||
+          source.startsWith('https://')) {
         await _player.play(
           UrlSource(source, mimeType: widget.message.mimeType),
         );
@@ -6415,12 +6508,14 @@ class _SelectionBar extends StatelessWidget {
     required this.onCancel,
     required this.onDelete,
     required this.onForward,
+    this.onDeleteEveryone,
   });
 
   final int count;
   final VoidCallback onCancel;
   final VoidCallback? onDelete;
   final VoidCallback? onForward;
+  final VoidCallback? onDeleteEveryone;
 
   @override
   Widget build(BuildContext context) => GlassSurface(
@@ -6429,17 +6524,16 @@ class _SelectionBar extends StatelessWidget {
     ),
     child: SafeArea(
       top: false,
-      child: SizedBox(
-        height: 58,
-        child: Row(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             TextButton(onPressed: onCancel, child: const Text('取消')),
-            Expanded(
-              child: Text(
-                '已选择 $count 条',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
+            Text(
+              '已选择 $count 条',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.titleSmall,
             ),
             IconButton(
               tooltip: '转发',
@@ -6449,11 +6543,16 @@ class _SelectionBar extends StatelessWidget {
             TextButton.icon(
               onPressed: onDelete,
               icon: const Icon(CupertinoIcons.trash, size: 18),
-              label: const Text('删除'),
+              label: const Text('删除本机记录'),
               style: TextButton.styleFrom(
                 foregroundColor: LinliColors.systemRed,
               ),
             ),
+            if (onDeleteEveryone != null)
+              TextButton(
+                onPressed: onDeleteEveryone,
+                child: const Text('为所有人删除'),
+              ),
           ],
         ),
       ),

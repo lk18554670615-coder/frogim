@@ -57,7 +57,7 @@ func TestUserAccessPostgresHTTPIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	x := New(config.Config{JWTSecret: strings.Repeat("s", 32), DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}, a)
+	x := New(config.Config{JWTSecret: strings.Repeat("s", 32), DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour, IPRegionDir: os.Getenv("IM_TEST_IP_REGION_DIR")}, a)
 	defer x.Close()
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -132,4 +132,55 @@ func TestUserAccessPostgresHTTPIntegration(t *testing.T) {
 	if audits[0].Metadata["returned"] == nil {
 		t.Fatal("missing query count")
 	}
+	t.Run("ordinary conversation peer receives latest successful IP only", func(t *testing.T) {
+		w := accessRequest(x, "/v2/auth/password-login", `{"phone":"13900008889","password":"StrongPass123!"}`, "web", "1.2.3.4", "")
+		if w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		var peer struct {
+			User        struct{ ID string }
+			AccessToken string
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &peer); err != nil {
+			t.Fatal(err)
+		}
+		waitAccess(t, x)
+		w = accessRequest(x, "/v2/auth/password-login", `{"phone":"13900008889","password":"wrong"}`, "web", "192.168.1.50", "")
+		if w.Code != 401 {
+			t.Fatal(w.Code)
+		}
+		waitAccess(t, x)
+		conversation, err := a.DirectConversation(login.User.ID, peer.User.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := "/v2/channels/conversations/" + conversation.ID + "/peer-login-info"
+		w = get(path, login.AccessToken)
+		var info peerLoginInfo
+		if err := json.Unmarshal(w.Body.Bytes(), &info); err != nil || w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String(), err)
+		}
+		if info.UserID != peer.User.ID || info.LastLoginIP != "1.2.3.4" || strings.Contains(w.Body.String(), "registrationIp") {
+			t.Fatal("wrong peer IP projection", w.Body.String())
+		}
+		if os.Getenv("IM_TEST_IP_REGION_DIR") != "" && (info.Region.Status != "ok" || info.Region.Country == "") {
+			t.Fatal("real offline lookup failed", info.Region)
+		}
+		w = get(path, peer.AccessToken)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"lastLoginIp":"203.0.113.9"`) {
+			t.Fatal("reverse conversation query failed", w.Code, w.Body.String())
+		}
+		// Permission follows the current database relationship, not the JWT or UI.
+		// Cascading triggers resolve their own table names using this connection's search_path.
+		if _, err := connection.Exec(ctx, `SET search_path TO `+pgx.Identifier{schema}.Sanitize()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := connection.Exec(ctx, `DELETE FROM `+pgx.Identifier{schema, "im_members"}.Sanitize()+` WHERE conversation_id=$1 AND user_id=$2`, conversation.ID, login.User.ID); err != nil {
+			t.Fatal(err)
+		}
+		w = get(path, login.AccessToken)
+		if w.Code != 404 || strings.Contains(w.Body.String(), "1.2.3.4") {
+			t.Fatal("former participant still received IP", w.Code, w.Body.String())
+		}
+	})
 }

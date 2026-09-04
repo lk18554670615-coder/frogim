@@ -2,13 +2,15 @@ import '../data/secure_local_store.dart';
 import 'wukong_gateway_contract.dart';
 
 class LocalConversationCache {
-  LocalConversationCache(this._store, {this.isVisible});
+  LocalConversationCache(this._store, {this.isVisible, this.sanitize});
 
   final SecureLocalStore _store;
   final bool Function(WukongMessage)? isVisible;
+  final WukongMessage Function(WukongMessage)? sanitize;
   final Map<String, Object> _recalls = {};
 
   WukongMessage _withRecall(String uid, WukongMessage message) {
+    message = sanitize?.call(message) ?? message;
     final key = '$uid:${message.messageId}';
     final stamp = message.payload['recalledAt'];
     if (stamp != null) _recalls[key] = stamp;

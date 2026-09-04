@@ -67,7 +67,55 @@ func (x *API) wukongConversationSync(w http.ResponseWriter, r *http.Request) {
 	for index := range items {
 		recents = append(recents, items[index].Recents...)
 	}
-	x.enrichWukongExtensions(r.Context(), uid(r), recents)
+	if err = x.enrichWukongExtensions(r.Context(), uid(r), recents); err != nil {
+		handleErr(w, err)
+		return
+	}
+	for index := range items {
+		filtered, e := filterDeletedWireMessages(r.Context(), x.app, uid(r), items[index].Recents)
+		if e != nil {
+			handleErr(w, e)
+			return
+		}
+		visible := make([]wukong.SyncedMessage, 0, len(items[index].Recents))
+		for _, m := range filtered {
+			if m["is_mutual_deleted"] != 1 {
+				visible = append(visible, m)
+			}
+		}
+		removed := len(visible) < len(items[index].Recents)
+		items[index].Recents = visible
+		if removed || (len(visible) == 0 && items[index].LastMsgSeq > 0) {
+			page, err := syncVisibleGroupMessages(r.Context(), x.wukongClient, x.app, wukong.MessageSyncRequest{LoginUID: uid(r), ChannelID: items[index].ChannelID, ChannelType: items[index].ChannelType, Limit: 1, PullMode: 0})
+			if err != nil {
+				handleErr(w, err)
+				return
+			}
+			visible = page.Messages
+			items[index].Recents = visible
+			for _, m := range visible {
+				x.enrichWukongMedia(r.Context(), uid(r), m)
+			}
+			if err = x.enrichWukongExtensions(r.Context(), uid(r), visible); err != nil {
+				handleErr(w, err)
+				return
+			}
+		}
+		if len(visible) == 0 {
+			items[index].LastClientNo = ""
+			items[index].Unread = 0
+		} else {
+			items[index].LastClientNo, _ = visible[len(visible)-1]["client_msg_no"].(string)
+		}
+		if items[index].Unread > 0 {
+			deleted, e := x.app.DeletedUnreadCount(r.Context(), uid(r), items[index].ChannelID, items[index].ChannelType, int64(items[index].LastMsgSeq)-int64(items[index].Unread), int64(items[index].LastMsgSeq))
+			if e != nil {
+				handleErr(w, e)
+				return
+			}
+			items[index].Unread = max(0, items[index].Unread-deleted)
+		}
+	}
 	write(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -111,7 +159,10 @@ func (x *API) wukongMessageSync(w http.ResponseWriter, r *http.Request) {
 		}
 		x.enrichWukongMedia(r.Context(), userID, output.Messages[index])
 	}
-	x.enrichWukongExtensions(r.Context(), userID, output.Messages)
+	if err = x.enrichWukongExtensions(r.Context(), userID, output.Messages); err != nil {
+		handleErr(w, err)
+		return
+	}
 	write(w, http.StatusOK, output)
 }
 
@@ -142,6 +193,9 @@ func (x *API) wukongMessageExtensionSync(w http.ResponseWriter, r *http.Request)
 		handleErr(w, err)
 		return
 	}
+	for id, extra := range items {
+		items[id] = clientDeletionExtra(extra)
+	}
 	write(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -163,6 +217,13 @@ func (x *API) wukongMessageExtraSync(w http.ResponseWriter, r *http.Request) {
 	}
 	result := make([]map[string]any, 0, len(items))
 	for _, item := range items {
+		deleted := item.Extra["deletedForEveryoneAt"] != nil
+		if deleted {
+			item.EditedBody = nil
+			item.Extra = clientDeletionExtra(item.Extra)
+			item.Recalled = false
+			item.Revoker = ""
+		}
 		recalled := 0
 		if item.Recalled {
 			recalled = 1
@@ -173,7 +234,8 @@ func (x *API) wukongMessageExtraSync(w http.ResponseWriter, r *http.Request) {
 		}
 		result = append(result, map[string]any{
 			"message_idstr": item.MessageID, "message_seq": item.MessageSeq,
-			"channel_id": item.ChannelID, "channel_type": item.ChannelType,
+			"is_mutual_deleted": boolToInt(deleted),
+			"channel_id":        item.ChannelID, "channel_type": item.ChannelType,
 			"readed": item.Read, "readed_count": item.ReadCount, "unread_count": item.UnreadCount,
 			"revoke": recalled, "revoker": item.Revoker, "content_edit": wukongEditedPayload(item.EditedBody),
 			"edited_at": item.EditedAt, "extra_version": item.SyncVersion,
@@ -330,7 +392,7 @@ func wukongChannelMemberJSON(item store.WukongChannelMember) map[string]any {
 	}
 }
 
-func (x *API) enrichWukongExtensions(ctx context.Context, userID string, messages []wukong.SyncedMessage) {
+func (x *API) enrichWukongExtensions(ctx context.Context, userID string, messages []wukong.SyncedMessage) error {
 	messageIDs := make([]string, 0, len(messages))
 	for _, message := range messages {
 		if messageID, _ := message["message_idstr"].(string); strings.TrimSpace(messageID) != "" {
@@ -338,16 +400,30 @@ func (x *API) enrichWukongExtensions(ctx context.Context, userID string, message
 		}
 	}
 	if len(messageIDs) == 0 {
-		return
+		return nil
 	}
-	extensions, err := x.app.WukongMessageExtensions(ctx, userID, messageIDs)
-	if err != nil {
-		slog.Warn("WuKongIM business extension enrichment failed", "messages", len(messageIDs), "error", err)
-		return
+	extensions := map[string]map[string]any{}
+	for len(messageIDs) > 0 {
+		n := min(500, len(messageIDs))
+		batch, err := x.app.WukongMessageExtensions(ctx, userID, messageIDs[:n])
+		if err != nil {
+			slog.Warn("WuKongIM business extension enrichment failed", "error", err)
+			return err
+		}
+		for id, extra := range batch {
+			extensions[id] = extra
+		}
+		messageIDs = messageIDs[n:]
 	}
 	for _, message := range messages {
 		messageID, _ := message["message_idstr"].(string)
 		extension := extensions[messageID]
+		if extension["deletedForEveryoneAt"] != nil {
+			message["is_mutual_deleted"] = 1
+			message["payload"] = map[string]any{"type": 99, "deletedForEveryoneAt": extension["deletedForEveryoneAt"]}
+			message["message_extra"] = map[string]any{"message_idstr": messageID, "is_mutual_deleted": 1, "extra_version": extension["version"]}
+			continue
+		}
 		if len(extension) == 0 {
 			continue
 		}
@@ -396,6 +472,7 @@ func (x *API) enrichWukongExtensions(ctx context.Context, userID string, message
 		}
 		message["message_extra"] = extra
 	}
+	return nil
 }
 
 func wukongEditedPayloadValue(value any) map[string]any {
@@ -428,6 +505,7 @@ func (x *API) enrichWukongMedia(ctx context.Context, userID string, message wuko
 	url, err := x.media.DownloadURL(ctx, mediaID)
 	if err == nil {
 		payload["url"] = url
+		x.enrichVideoCover(ctx, mediaID, payload)
 		message["payload"] = payload
 	}
 }

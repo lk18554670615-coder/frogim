@@ -22,6 +22,7 @@ import 'group_member_directory.dart';
 import 'group_send_policy.dart';
 import 'image_dimensions.dart';
 import 'models.dart';
+import 'video_source_lifecycle.dart';
 import 'message_feedback.dart';
 import 'user_presence.dart';
 
@@ -321,6 +322,8 @@ class AppController extends ChangeNotifier {
   }
 
   bool canDisplayMessage(ChatMessage message) =>
+      !isMessageDeleted(message.id) &&
+      !message.deletedForEveryone &&
       canReadMessage(message) &&
       canPresentGroupMessage(
         _currentVersion(message),
@@ -329,6 +332,8 @@ class AppController extends ChangeNotifier {
       );
 
   bool canRecallMessage(ChatMessage message) =>
+      !isMessageDeleted(message.id) &&
+      !message.deletedForEveryone &&
       canReadMessage(message) &&
       canRecallChatMessage(
         _currentVersion(message),
@@ -336,6 +341,88 @@ class AppController extends ChangeNotifier {
         authPolicy,
         roleTrusted: !_untrustedGroupRoles.contains(message.conversationId),
       );
+
+  final Set<String> _deletedMessageIds = {};
+  final Set<String> _deletionInFlight = {};
+  bool isMessageDeleted(String id) =>
+      _deletedMessageIds.contains(id) ||
+      (repository is MessageDeletionRepository &&
+          (repository as MessageDeletionRepository).isMessageDeleted(id));
+
+  bool canDeleteForEveryone(ChatMessage message) {
+    final c = _conversationFor(message.conversationId);
+    if (!authenticated ||
+        currentUser?.canDeleteMessagesForEveryone != true ||
+        repository is! MessageDeletionRepository ||
+        c == null ||
+        c.isBusinessChannel ||
+        !canReadMessage(message) ||
+        isMessageDeleted(message.id) ||
+        message.deletedForEveryone) {
+      return false;
+    }
+    if (message.conversationSeq <= 0 ||
+        message.status == MessageStatus.sending ||
+        message.status == MessageStatus.failed ||
+        message.status == MessageStatus.expired ||
+        message.kind == MessageContentKind.system ||
+        message.expiresAt?.isBefore(DateTime.now()) == true) {
+      return false;
+    }
+    return c.kind == ConversationKind.direct ||
+        (isManagedGroup(c) &&
+            !_untrustedGroupRoles.contains(c.id) &&
+            isGroupManager(c.currentUserRole));
+  }
+
+  void _applyMessageDeletions(String cid, Iterable<String> ids) {
+    _deletedMessageIds.addAll(ids);
+    final list = _messages[cid];
+    list?.removeWhere((m) => isMessageDeleted(m.id));
+    _presentationRevision++;
+    _refreshGroupPreview(cid, force: true);
+    _scheduleConversationRefresh();
+    if (list != null) {
+      unawaited(
+        repository.persistMessages(cid, list).catchError((Object _) {}),
+      );
+    }
+    notifyListeners();
+  }
+
+  Future<bool> deleteForEveryone(String cid, List<ChatMessage> messages) async {
+    if (_deletionInFlight.contains(cid)) return false;
+    if (messages.isEmpty ||
+        messages.length > 100 ||
+        messages.any(
+          (m) => m.conversationId != cid || !canDeleteForEveryone(m),
+        )) {
+      error = '当前无权删除这些消息，或数量超过 100 条';
+      notifyListeners();
+      return false;
+    }
+    _deletionInFlight.add(cid);
+    final account = currentUser?.id;
+    final epoch = _forwardSessionEpoch;
+    bool currentSession() =>
+        !_disposed &&
+        epoch == _forwardSessionEpoch &&
+        currentUser?.id == account;
+    try {
+      final ids = await (repository as MessageDeletionRepository)
+          .deleteMessagesForEveryone(cid, messages.map((m) => m.id).toList());
+      if (currentSession()) _applyMessageDeletions(cid, ids);
+      return true;
+    } catch (exception) {
+      if (currentSession()) {
+        error = _messageFor(exception, fallback: '为所有人删除失败，请检查权限后重试');
+        notifyListeners();
+      }
+      return false;
+    } finally {
+      if (currentSession()) _deletionInFlight.remove(cid);
+    }
+  }
 
   bool canDisplayMessageReceipts(String conversationId) =>
       canPresentMessageReceipts(
@@ -355,6 +442,19 @@ class AppController extends ChangeNotifier {
 
   ChatMessage _displayMessage(ChatMessage message) {
     message = _currentVersion(message);
+    if (message.kind == MessageContentKind.system &&
+        (message.event?.startsWith('group.') ?? false)) {
+      message = message.copyWith(
+        text: groupSystemEventDisplayText({
+          'event': message.event,
+          'data': message.eventData,
+          'digest': message.text,
+        }),
+      );
+    }
+    if (message.replyToId != null && isMessageDeleted(message.replyToId!)) {
+      return message.copyWith(replyToText: '原消息暂不可见');
+    }
     if (message.status == MessageStatus.recalled) {
       return message.copyWith(text: '消息已撤回', replyToText: '原消息暂不可见');
     }
@@ -402,7 +502,7 @@ class AppController extends ChangeNotifier {
     List<ChatMessage> fallbackMessages = const [],
   }) {
     final index = conversations.indexWhere((item) => item.id == cid);
-    if (index < 0 || !isManagedGroup(conversations[index])) return;
+    if (index < 0 || (!force && !isManagedGroup(conversations[index]))) return;
     final current = conversations[index];
     final raw = _messages[cid] ?? fallbackMessages;
     final highest = raw.fold<int>(
@@ -663,7 +763,11 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<void> login(String phone, String code) async {
+  Future<void> login(
+    String phone,
+    String code, {
+    String inviteCode = '',
+  }) async {
     if (!validAuthPhone(phone) || code.trim().isEmpty) {
       error = '请输入有效手机号和验证码';
       notifyListeners();
@@ -674,7 +778,11 @@ class AppController extends ChangeNotifier {
     notifyListeners();
     var enteredShell = false;
     try {
-      final user = await repository.login(phone.trim(), code.trim());
+      final user = await repository.login(
+        phone.trim(),
+        code.trim(),
+        inviteCode: inviteCode.trim(),
+      );
       enteredShell = true;
       _enterAuthenticatedShell(user);
     } catch (exception) {
@@ -774,6 +882,7 @@ class AppController extends ChangeNotifier {
     required String code,
     required String password,
     required String name,
+    String inviteCode = '',
   }) async {
     if (authPolicyAvailable && !authPolicy.registrationEnabled) {
       error = '当前暂未开放新账号注册';
@@ -782,6 +891,11 @@ class AppController extends ChangeNotifier {
     }
     if (!validAuthPhone(phone) || code.trim().isEmpty || name.trim().isEmpty) {
       error = '请完整填写注册信息';
+      notifyListeners();
+      return false;
+    }
+    if (authPolicy.invitationRequired && inviteCode.trim().isEmpty) {
+      error = '创建新账号需要填写邀请码';
       notifyListeners();
       return false;
     }
@@ -801,6 +915,7 @@ class AppController extends ChangeNotifier {
         code: code.trim(),
         password: password,
         name: name.trim(),
+        inviteCode: inviteCode.trim(),
       );
       enteredShell = true;
       _enterAuthenticatedShell(user);
@@ -814,6 +929,35 @@ class AppController extends ChangeNotifier {
         loading = false;
         notifyListeners();
       }
+    }
+  }
+
+  Future<bool> validateInviteCode(String value) async {
+    final code = value.trim();
+    if (code.isEmpty) return false;
+    try {
+      return await repository.validateInviteCode(code);
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '邀请码校验失败，请稍后重试');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<InviteCodeProfile> loadInviteCode() => repository.inviteCode();
+
+  Future<InviteCodeProfile?> changeInviteCode(String value) async {
+    loading = true;
+    error = null;
+    notifyListeners();
+    try {
+      return await repository.changeInviteCode(value.trim());
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '邀请码修改失败');
+      return null;
+    } finally {
+      loading = false;
+      notifyListeners();
     }
   }
 
@@ -1708,20 +1852,47 @@ class AppController extends ChangeNotifier {
     for (final message in incoming) {
       upsert(message);
     }
-    merged.sort((a, b) {
-      final aSequence = a.conversationSeq;
-      final bSequence = b.conversationSeq;
-      if (aSequence > 0 && bSequence > 0) {
-        final bySequence = aSequence.compareTo(bSequence);
-        if (bySequence != 0) return bySequence;
-      } else if (aSequence > 0) {
-        return -1;
-      } else if (bSequence > 0) {
-        return 1;
+    return _orderMessageList(merged);
+  }
+
+  /// Keeps the server sequence authoritative without pinning every local
+  /// sending/failed row below all server messages. A failed row has no server
+  /// sequence, so it is anchored by its original send time between the
+  /// surrounding server messages. Retrying it therefore does not make an old
+  /// message look like the newest message in the conversation.
+  List<ChatMessage> _orderMessageList(Iterable<ChatMessage> source) {
+    int stableCompare(ChatMessage left, ChatMessage right) {
+      final byTime = left.sentAt.compareTo(right.sentAt);
+      if (byTime != 0) return byTime;
+      return left.stableIdentity.compareTo(right.stableIdentity);
+    }
+
+    final server =
+        source.where((message) => message.conversationSeq > 0).toList()
+          ..sort((left, right) {
+            final bySequence = left.conversationSeq.compareTo(
+              right.conversationSeq,
+            );
+            return bySequence != 0 ? bySequence : stableCompare(left, right);
+          });
+    final local =
+        source.where((message) => message.conversationSeq <= 0).toList()
+          ..sort(stableCompare);
+    if (server.isEmpty) return local;
+    if (local.isEmpty) return server;
+
+    final buckets = List.generate(server.length + 1, (_) => <ChatMessage>[]);
+    for (final message in local) {
+      var anchor = 0;
+      for (var i = 0; i < server.length; i++) {
+        if (!server[i].sentAt.isAfter(message.sentAt)) anchor = i + 1;
       }
-      return a.sentAt.compareTo(b.sentAt);
-    });
-    return merged;
+      buckets[anchor].add(message);
+    }
+    return [
+      ...buckets.first,
+      for (var i = 0; i < server.length; i++) ...[server[i], ...buckets[i + 1]],
+    ];
   }
 
   Future<void> loadScheduledMessages(
@@ -1978,7 +2149,7 @@ class AppController extends ChangeNotifier {
     try {
       await repository.persistMessages(conversationId, [...list, pending]);
     } catch (_) {
-      _pendingMedia.remove(clientId);
+      releaseVideoSource(_pendingMedia.remove(clientId)?.localPath);
       _mediaUploadProgress.remove(clientId);
       rethrow;
     }
@@ -2264,6 +2435,11 @@ class AppController extends ChangeNotifier {
       _sendingMediaMessageIds.add(pending.clientMessageId);
     }
     try {
+      if (isMediaMessage &&
+          pending.mediaId == null &&
+          !_pendingMedia.containsKey(pending.clientMessageId)) {
+        pending = await repository.refreshMessageMedia(pending);
+      }
       final alreadyUploaded = pending.mediaId?.isNotEmpty == true;
       var upload = alreadyUploaded
           ? null
@@ -2275,6 +2451,7 @@ class AppController extends ChangeNotifier {
               pending.kind == MessageContentKind.video ||
               pending.kind == MessageContentKind.voice)) {
         final path = pending.mediaUrl;
+        if (kIsWeb) throw const FormatException('页面刷新后本地文件已不可用，请重新选择');
         if (path == null || !await File(path).exists()) {
           throw const FileSystemException('本地文件已不可用，请重新选择');
         }
@@ -2316,7 +2493,9 @@ class AppController extends ChangeNotifier {
       if (sent.mediaId?.isNotEmpty == true ||
           (sent.status != MessageStatus.failed &&
               sent.status != MessageStatus.sending)) {
-        _pendingMedia.remove(pending.clientMessageId);
+        releaseVideoSource(
+          _pendingMedia.remove(pending.clientMessageId)?.localPath,
+        );
       }
       _mediaUploadProgress.remove(pending.clientMessageId);
       _sendingMediaMessageIds.remove(pending.clientMessageId);
@@ -2346,6 +2525,27 @@ class AppController extends ChangeNotifier {
         pending.copyWith(status: MessageStatus.failed),
         exception: exception,
       );
+      // The upload can have completed before a connection/bind/ACK failure.
+      // Preserve the repository's durable checkpoint instead of overwriting
+      // it with the pre-upload row.
+      if (isMediaMessage &&
+          failed.mediaId == null &&
+          repository is CachedMessageRepository) {
+        try {
+          final cached = await (repository as CachedMessageRepository)
+              .cachedMessages(pending.conversationId);
+          for (final item in cached) {
+            if (item.clientMessageId == pending.clientMessageId &&
+                item.mediaId?.isNotEmpty == true) {
+              failed = item.copyWith(
+                status: MessageStatus.failed,
+                sendError: failed.sendError,
+              );
+              break;
+            }
+          }
+        } catch (_) {}
+      }
       if (!isCurrentAttempt()) return failed;
       failed = _preserveConfirmedSend(_queuedMessage(pending)!, failed);
       _replaceMessage(pending.conversationId, pending.clientMessageId, failed);
@@ -2739,7 +2939,7 @@ class AppController extends ChangeNotifier {
       await repository.persistMessages(conversationId, updated);
       _messages[conversationId] = updated;
       for (final id in clientMessageIds) {
-        _pendingMedia.remove(id);
+        releaseVideoSource(_pendingMedia.remove(id)?.localPath);
       }
       notifyListeners();
       return true;
@@ -4099,10 +4299,15 @@ class AppController extends ChangeNotifier {
     _groupSendPolicyRequests.clear();
     groupSendPolicyRevision++;
     _recalledMessageIds.clear();
+    _deletedMessageIds.clear();
+    _deletionInFlight.clear();
     _untrustedGroupRoles.clear();
     _groupRoleEpoch++;
     _messageLoadOperations.clear();
     _messageCacheLoadOperations.clear();
+    for (final upload in _pendingMedia.values) {
+      releaseVideoSource(upload.localPath);
+    }
     _pendingMedia.clear();
     _sendOperations.clear();
     _mediaUploadProgress.clear();
@@ -4148,6 +4353,17 @@ class AppController extends ChangeNotifier {
 
   void _handleEvent(ImEvent event) {
     switch (event.type) {
+      case ImEventType.messagesDeleted:
+        _applyMessageDeletions(
+          event.payload['conversationId'].toString(),
+          (event.payload['messageIds'] as List? ?? const []).map(
+            (id) => id.toString(),
+          ),
+        );
+        return;
+      case ImEventType.messagePermissionsChanged:
+        unawaited(refreshProfile());
+        return;
       case ImEventType.sessionExpired:
         unawaited(_expireRestoredSession());
         break;
@@ -4186,6 +4402,8 @@ class AppController extends ChangeNotifier {
           list.add(message);
         }
         final presented = index >= 0 ? list[index] : message;
+        final ordered = _orderMessageList(list);
+        _messages[message.conversationId] = ordered;
         if (index < 0 && event.payload['realtime'] == true) {
           final userId = currentUser?.id;
           unawaited(
@@ -4235,7 +4453,7 @@ class AppController extends ChangeNotifier {
         }
         _scheduleDelivered(message.conversationId, message.conversationSeq);
         _hydrateLinkPreview(message);
-        unawaited(repository.persistMessages(message.conversationId, list));
+        unawaited(repository.persistMessages(message.conversationId, ordered));
       case ImEventType.messageChanged:
         final raw = event.payload['message'] as Map<String, Object?>?;
         if (raw != null) {
@@ -4261,18 +4479,25 @@ class AppController extends ChangeNotifier {
                     ))) {
               break;
             }
-            list[index] = list[index].status == MessageStatus.recalled
+            final updated = list[index].status == MessageStatus.recalled
                 ? message.copyWith(text: '', status: MessageStatus.recalled)
                 : _preserveConfirmedSend(previous, message);
+            list[index] = updated;
+            final ordered = _orderMessageList(list);
+            _messages[message.conversationId] = ordered;
             if (message.isMine &&
                 message.status != MessageStatus.failed &&
                 message.status != MessageStatus.sending) {
-              _pendingMedia.remove(message.clientMessageId);
+              releaseVideoSource(
+                _pendingMedia.remove(message.clientMessageId)?.localPath,
+              );
             }
             _refreshGroupPreview(message.conversationId);
-            unawaited(repository.persistMessages(message.conversationId, list));
+            unawaited(
+              repository.persistMessages(message.conversationId, ordered),
+            );
             if (message.isMine && message.status == MessageStatus.failed) {
-              unawaited(_explainLateSendFailure(list[index]));
+              unawaited(_explainLateSendFailure(updated));
             }
           }
           break;
@@ -4769,7 +4994,10 @@ class AppController extends ChangeNotifier {
     final index = list.indexWhere(
       (message) => message.clientMessageId == clientMessageId,
     );
-    if (index >= 0) list[index] = replacement;
+    if (index >= 0) {
+      list[index] = replacement;
+      _messages[conversationId] = _orderMessageList(list);
+    }
   }
 
   void _updateConversation(
@@ -4792,7 +5020,10 @@ class AppController extends ChangeNotifier {
           : current.mentionUnreadCount! + (incrementMention ? 1 : 0),
       lastMessageSeq: max(
         current.lastMessageSeq,
-        _messages[id]?.lastOrNull?.conversationSeq ?? 0,
+        (_messages[id] ?? const <ChatMessage>[]).fold<int>(
+          0,
+          (highest, message) => max(highest, message.conversationSeq),
+        ),
       ),
     );
     // A late send ACK must not restore the preview of a recalled group message.

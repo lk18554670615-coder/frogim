@@ -23,17 +23,10 @@ Future<PreparedVideoData> prepareVideoForSending({
     bytes: bytes,
     path: path,
     fileName: fileName,
-    mimeType: _mimeForVideo(fileName),
+    mimeType: videoMimeType(fileName),
     durationSeconds: duration,
     compressed: false,
   );
 }
 
 Future<void> cancelVideoPreparation() async {}
-
-String _mimeForVideo(String fileName) {
-  final lower = fileName.toLowerCase();
-  if (lower.endsWith('.mov')) return 'video/quicktime';
-  if (lower.endsWith('.m4v')) return 'video/x-m4v';
-  return 'video/mp4';
-}

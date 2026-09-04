@@ -62,6 +62,16 @@ func (m Manager) RotateDeviceSession(userID, sessionID, deviceKind string) (stri
 	return m.issueDeviceTokens(userID, sessionID, deviceKind)
 }
 
+// Media credentials are restricted to authenticated media reads. Their lifetime
+// follows the login session, not the short object-store URL or access JWT.
+// Every read still checks that the device session is active in the database.
+func (m Manager) IssueMediaSession(userID, sessionID, deviceKind string) (string, error) {
+	if sessionID == "" || deviceKind == "" {
+		return "", errors.New("device session is required")
+	}
+	return m.sign(userID, "media", m.RefreshTTL, sessionID, deviceKind)
+}
+
 func (m Manager) issueDeviceTokens(userID, sessionID, deviceKind string) (string, string, error) {
 	access, err := m.sign(userID, "access", m.AccessTTL, sessionID, deviceKind)
 	if err != nil {

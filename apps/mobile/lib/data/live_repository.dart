@@ -12,6 +12,9 @@ import '../core/app_config.dart';
 import '../core/auth_validation.dart';
 import '../core/group_message_policy.dart';
 import '../core/models.dart';
+import '../core/media_access.dart';
+import '../core/session_http_client.dart';
+import '../core/peer_login_info.dart';
 import '../core/user_presence.dart';
 import '../im/business_repository.dart';
 import '../im/business_features.dart';
@@ -23,6 +26,7 @@ import '../im/structured_event_text.dart';
 import '../im/wukong_gateway.dart';
 import 'im_repository.dart';
 import 'secure_local_store.dart';
+import 'message_deletion_cache.dart';
 
 String _runtimeClientPlatform() {
   if (kIsWeb) return 'web';
@@ -57,6 +61,7 @@ class ImApiException implements Exception {
 class LiveImRepository
     implements
         ImRepository,
+        MessageDeletionRepository,
         CachedMessageRepository,
         GroupHistoryRepository,
         PaginatedMessageRepository,
@@ -64,12 +69,14 @@ class LiveImRepository
         BusinessFeatureRepository {
   LiveImRepository({
     http.Client? client,
+    http.Client? uploadClient,
     SecureLocalStore? store,
     String? apiBaseUrl,
     String? clientPlatform,
     BusinessRepository? businessRepository,
     WukongGateway? wukongGateway,
-  }) : _client = client ?? http.Client(),
+  }) : _client = client ?? createSessionHttpClient(),
+       _uploadClient = uploadClient ?? client ?? http.Client(),
        _store = store ?? SecureLocalStore(),
        _apiBaseUrl = apiBaseUrl ?? AppConfig.apiBaseUrl,
        _clientPlatform = clientPlatform ?? _runtimeClientPlatform() {
@@ -80,16 +87,204 @@ class LiveImRepository
           platform: _clientPlatform,
           accessToken: () => _token,
           refreshAccessToken: _refreshAccessToken,
+          fixedMediaUrl: (id) =>
+              _mediaToken == null ? null : mediaAccess.url(id),
           client: _client,
+          uploadClient: _uploadClient,
         );
     _wukong = wukongGateway ?? createWukongGateway(dataSource: _business);
     _conversationCache = LocalConversationCache(
       _store,
       isVisible: _canReadWukongMessage,
+      sanitize: _sanitizeDeletedWukongReply,
     );
   }
 
   final http.Client _client;
+
+  /// Presigned object-storage requests must not carry the browser's API
+  /// cookies. Besides avoiding credential leakage, this keeps Web uploads from
+  /// requiring credentialed CORS support from the storage endpoint.
+  final http.Client _uploadClient;
+  late final _deletions = MessageDeletionCache(_store);
+  final Map<String, Future<void>> _deletionSyncs = {};
+  final Map<String, int> _deletionVersions = {};
+  final Set<String> _deletionVerified = {};
+  int _sessionEpoch = 0;
+  @override
+  bool isMessageDeleted(String id) => _deletions.contains(_userId, id);
+
+  WukongMessage _sanitizeDeletedWukongReply(WukongMessage message) {
+    final reply = message.payload['reply'];
+    if (reply is Map && isMessageDeleted('${reply['message_id']}')) {
+      return message.copyWith(payload: {...message.payload}..remove('reply'));
+    }
+    return message;
+  }
+
+  List<Map<String, Object?>> _purgeDeletedCache(String uid, List raw) => raw
+      .whereType<Map>()
+      .where((m) => !_deletions.contains(uid, '${m['id']}'))
+      .map((m) {
+        final clean = Map<String, Object?>.from(m);
+        if (_deletions.contains(uid, '${clean['replyToId']}')) {
+          for (final key
+              in clean.keys.where((k) => k.startsWith('replyTo')).toList()) {
+            clean.remove(key);
+          }
+        }
+        return clean;
+      })
+      .toList();
+
+  Future<void> _syncDeletions(String cid, WukongChannel channel) async {
+    final uid = _userId;
+    final epoch = _sessionEpoch;
+    if (uid == null) return;
+    final key = '$uid:$cid';
+    if (_deletionSyncs[key] case final pending?) {
+      await pending;
+      return;
+    }
+    final task = () async {
+      await _deletions.load(uid);
+      var version = _deletionVersions[key] ?? 0;
+      while (_userId == uid && epoch == _sessionEpoch) {
+        final extras = await _business.syncMessageExtras(
+          channel: channel,
+          version: version,
+          limit: 500,
+        );
+        if (_userId != uid || epoch != _sessionEpoch) return;
+        final ids = extras
+            .where((e) => e['is_mutual_deleted'] == 1)
+            .map((e) => e['message_idstr'].toString())
+            .toList();
+        if (ids.isNotEmpty) await _applyDeletions(uid, cid, ids);
+        if (_userId != uid || epoch != _sessionEpoch) return;
+        var next = version;
+        for (final e in extras) {
+          next = max(next, (e['extra_version'] as num?)?.toInt() ?? 0);
+        }
+        _deletionVersions[key] = next;
+        if (extras.length < 500 || next <= version) break;
+        version = next;
+      }
+    }();
+    _deletionSyncs[key] = task;
+    try {
+      await task;
+      if (_userId == uid && epoch == _sessionEpoch) _deletionVerified.add(key);
+    } finally {
+      if (identical(_deletionSyncs[key], task)) _deletionSyncs.remove(key);
+    }
+  }
+
+  Future<void> _applyDeletions(String uid, String cid, List<String> ids) async {
+    final epoch = _sessionEpoch;
+    bool currentSession() =>
+        !_closed && _userId == uid && epoch == _sessionEpoch;
+    final write = _deletions.mark(uid, ids);
+    if (currentSession()) {
+      _events.add(
+        ImEvent(
+          type: ImEventType.messagesDeleted,
+          payload: {'conversationId': cid, 'messageIds': ids},
+        ),
+      );
+    }
+    await write;
+    if (!currentSession()) return;
+    final favorites = await _store.readJson('favorites');
+    if (!currentSession()) return;
+    if (favorites is List) {
+      await _store.writeJson('favorites', _purgeDeletedCache(uid, favorites));
+    }
+    final channel = _conversationChannels[cid];
+    if (channel != null) {
+      await _conversationCache.writeMessages(
+        uid,
+        channel,
+        await _conversationCache.readMessages(uid, channel),
+      );
+    }
+    final raw = await _store.readJson('messages.$cid');
+    if (!currentSession()) return;
+    if (raw is List) {
+      await _store.writeJson('messages.$cid', _purgeDeletedCache(uid, raw));
+    }
+    if (currentSession() && _wukong is WukongDeletionCache) {
+      await (_wukong as WukongDeletionCache).markMessagesDeleted(ids);
+    }
+  }
+
+  @override
+  Future<List<String>> deleteMessagesForEveryone(
+    String conversationId,
+    List<String> messageIds,
+  ) async {
+    final uid = _userId;
+    final epoch = _sessionEpoch;
+    final result = await _sendRequest(
+      'POST',
+      '/v2/messages/delete-for-everyone',
+      {
+        'conversationId': conversationId,
+        'messageIds': messageIds,
+        'confirmed': true,
+      },
+    );
+    final ids = (result['messageIds'] as List).cast<String>();
+    if (uid != null && _userId == uid && epoch == _sessionEpoch && !_closed) {
+      // A local write failure cannot turn a committed deletion into a failed send.
+      try {
+        await _applyDeletions(uid, conversationId, ids);
+      } catch (_) {}
+    }
+    return ids;
+  }
+
+  @override
+  Future<ChatMessage> refreshMessageMedia(ChatMessage message) async {
+    final account = _userId;
+    var id = message.mediaId;
+    if (id == null || id.isEmpty) {
+      final checkpoint = await _store.readJson(
+        'media-upload-$account-${message.clientMessageId}-body',
+      );
+      if (checkpoint is Map<String, Object?> &&
+          checkpoint['completed'] == true) {
+        id = checkpoint['mediaId'] as String?;
+      }
+    }
+    if (id == null || id.isEmpty) return message;
+    if (account != _userId) throw const FormatException('登录账号已变化');
+    final fixed = mediaAccess.url(id);
+    if (_mediaToken != null && fixed != null) {
+      return ChatMessage.fromJson({
+        ...message.toJson(),
+        'mediaId': id,
+        'mediaUrl': fixed,
+        if (message.kind == MessageContentKind.video)
+          'coverUrl': mediaAccess.url(id, cover: true),
+      });
+    }
+    final data = await _business.mediaInfo(id);
+    if (account != _userId) throw const FormatException('登录账号已变化');
+    final url = data['url'] as String?;
+    if (url == null ||
+        !const {'http', 'https'}.contains(Uri.tryParse(url)?.scheme)) {
+      throw const FormatException('媒体地址暂不可用');
+    }
+    return ChatMessage.fromJson({
+      ...message.toJson(),
+      'mediaId': id,
+      'mediaUrl': url,
+      'coverMediaId': data['coverMediaId'],
+      'coverUrl': data['cover'],
+    });
+  }
+
   final SecureLocalStore _store;
   final String _apiBaseUrl;
   final String _clientPlatform;
@@ -104,6 +299,37 @@ class LiveImRepository
   StreamSubscription<WukongGatewayEvent>? _wukongEventSubscription;
   StreamSubscription<WukongSendResult>? _wukongSendSubscription;
   String? _token;
+  String? _mediaToken;
+
+  void _acceptMediaSession(Object? value) {
+    if (value is! String || value.isEmpty || _userId == null) return;
+    _mediaToken = value;
+    mediaAccess.configure(
+      owner: this,
+      apiBaseUrl: _apiBaseUrl,
+      userId: _userId!,
+      token: value,
+    );
+  }
+
+  Future<void> _restoreMediaSession() async {
+    final account = _userId;
+    try {
+      // Also repairs a missing Web cookie after browser storage cleanup. Only
+      // runs once per restored session, never once per image or video.
+      final result = await _request(
+        'POST',
+        '/v2/media/session',
+      ).timeout(const Duration(seconds: 5));
+      if (_userId != account) return;
+      _acceptMediaSession(result['mediaAccessToken']);
+      await _persistSession();
+    } catch (_) {
+      // Offline restoration remains available; an older server keeps its
+      // existing signed-URL behavior until the server-first rollout finishes.
+    }
+  }
+
   String? _refreshToken;
   String? _userId;
   AppUser? _me;
@@ -116,6 +342,11 @@ class LiveImRepository
   final Map<String, GroupHistoryAccess> _latestHistoryAccess = {};
 
   bool _canReadWukongMessage(WukongMessage message) {
+    if (message.payload['is_mutual_deleted'] == 1 ||
+        isMessageDeleted(message.messageId) ||
+        message.payload['deletedForEveryoneAt'] != null) {
+      return false;
+    }
     if (message.channel.type != 2) return true;
     if (message.messageSeq == 0 &&
         message.fromUid == _userId &&
@@ -132,6 +363,13 @@ class LiveImRepository
 
   @override
   bool canReadCachedMessage(ChatMessage message) {
+    if (message.conversationSeq > 0 &&
+        !_deletionVerified.contains('$_userId:${message.conversationId}')) {
+      return false;
+    }
+    if (message.deletedForEveryone || isMessageDeleted(message.id)) {
+      return false;
+    }
     final channel = _conversationChannels[message.conversationId];
     if (channel != null && channel.type != 2) return true;
     if (message.conversationSeq == 0 &&
@@ -451,6 +689,12 @@ class LiveImRepository
       'HANDLE_TAKEN' => '这个呱呱号已被使用，请换一个',
       'HANDLE_CHANGE_LIMIT' => '呱呱号修改次数已用完',
       'CONFIRMATION_REQUIRED' => '请完成二次确认后再继续',
+      'INVITE_CODE_REQUIRED' => '创建新账号需要填写邀请码',
+      'INVITE_CODE_INVALID' => '邀请码无效、已停用或已失效',
+      'INVITE_CODE_DISABLED' => '邀请码功能当前未启用',
+      'INVITE_CODE_STATUS_DISABLED' => '邀请码已被后台停用，请联系管理员',
+      'INVITE_CODE_DUPLICATE' => '该邀请码已被使用或永久保留',
+      'INVITE_CODE_CHANGE_USED' => '邀请码修改次数已用完',
       'FORBIDDEN' || 'FORBIDDEN_ORIGIN' => '你没有权限执行此操作',
       'NOT_FOUND' || 'CHANNEL_NOT_FOUND' => '请求的内容不存在或已被删除',
       'CONFLICT' => '当前状态已发生变化，请刷新后重试',
@@ -478,6 +722,7 @@ class LiveImRepository
     _token = stored['accessToken'] as String?;
     _refreshToken = stored['refreshToken'] as String?;
     _userId = stored['userId'] as String?;
+    _acceptMediaSession(stored['mediaAccessToken']);
     final storedImSession = stored['imSession'];
     if (storedImSession is Map<String, Object?>) {
       try {
@@ -487,6 +732,7 @@ class LiveImRepository
       }
     }
     if (_token == null || _userId == null) return false;
+    await _restoreMediaSession();
     final storedUser = stored['user'];
     if (storedUser is Map) {
       try {
@@ -531,11 +777,16 @@ class LiveImRepository
   );
 
   @override
-  Future<AppUser> login(String phone, String code) async {
+  Future<AppUser> login(
+    String phone,
+    String code, {
+    String inviteCode = '',
+  }) async {
     final data = await _sendUnprotectedRequest('POST', '/v2/auth/login', {
       'phone': phone,
       'code': code,
       'name': '青蛙用户',
+      if (inviteCode.trim().isNotEmpty) 'inviteCode': inviteCode.trim(),
     });
     return _acceptSession(data);
   }
@@ -627,15 +878,40 @@ class LiveImRepository
     required String code,
     required String password,
     required String name,
+    String inviteCode = '',
   }) async {
     final data = await _sendUnprotectedRequest('POST', '/v2/auth/register', {
       'phone': phone,
       'code': code,
       'password': password,
       'name': name,
+      if (inviteCode.trim().isNotEmpty) 'inviteCode': inviteCode.trim(),
     });
     return _acceptSession(data);
   }
+
+  @override
+  Future<bool> validateInviteCode(String code) async {
+    final data = await _sendUnprotectedRequest(
+      'POST',
+      '/v2/auth/invite-codes/validate',
+      {'code': code.trim()},
+    );
+    return data['valid'] == true;
+  }
+
+  @override
+  Future<InviteCodeProfile> inviteCode() async =>
+      InviteCodeProfile.fromJson(await _get('/v2/users/me/invite-code'));
+
+  @override
+  Future<InviteCodeProfile> changeInviteCode(String code) async =>
+      InviteCodeProfile.fromJson(
+        await _sendRequest('PUT', '/v2/users/me/invite-code', {
+          'code': code.trim(),
+          'confirmed': true,
+        }),
+      );
 
   @override
   Future<void> requestPasswordResetCode(String phone) =>
@@ -655,6 +931,12 @@ class LiveImRepository
   }).then((_) {});
 
   Future<AppUser> _acceptSession(Map<String, Object?> data) async {
+    _sessionEpoch++;
+    _deletionSyncs.clear();
+    _deletionVersions.clear();
+    _deletionVerified.clear();
+    mediaAccess.clear(this);
+    _mediaToken = null;
     _token = data['accessToken'] as String?;
     _refreshToken = data['refreshToken'] as String?;
     final rawUser = data['user'] as Map<String, Object?>?;
@@ -662,6 +944,7 @@ class LiveImRepository
     if (_token == null || _userId == null || rawUser == null) {
       throw const FormatException('登录响应缺少必要凭据');
     }
+    _acceptMediaSession(data['mediaAccessToken']);
     _imSession = _parseImSession(data['imSession']);
     if (_imSession case final session? when session.uid != _userId) {
       throw const FormatException('WuKongIM session user does not match login');
@@ -703,6 +986,15 @@ class LiveImRepository
     await _persistSession();
     return user;
   }
+
+  @override
+  Future<PeerLoginInfo> peerLoginInfo(
+    String conversationId,
+  ) async => PeerLoginInfo.fromJson(
+    await _get(
+      '/v2/channels/conversations/${Uri.encodeComponent(conversationId)}/peer-login-info',
+    ),
+  );
 
   @override
   Future<AppUser> updateProfile({
@@ -748,7 +1040,7 @@ class LiveImRepository
         headers[entry.key] = entry.value.toString();
       }
     }
-    final response = await _client
+    final response = await _uploadClient
         .put(Uri.parse(uploadUrl), headers: headers, body: upload.bytes)
         .timeout(const Duration(seconds: 45));
     if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -979,7 +1271,9 @@ class LiveImRepository
       final data = await _sendUnprotectedRequest('POST', '/v2/auth/refresh', {
         'refreshToken': refresh,
       });
+      if (_refreshToken != refresh) return false;
       _token = data['accessToken'] as String?;
+      _acceptMediaSession(data['mediaAccessToken']);
       _refreshToken = data['refreshToken'] as String? ?? refresh;
       _imSession = _parseImSession(data['imSession']) ?? _imSession;
       await _persistSession();
@@ -1084,6 +1378,7 @@ class LiveImRepository
       _connection.add(available);
       switch (state) {
         case WukongConnectionState.connected:
+          _deletionVerified.clear();
           unawaited(conversations().catchError((Object _) => <Conversation>[]));
           if (_wukongHasConnected && _reconnectReconciliationNeeded) {
             _scheduleReconnectReconciliation();
@@ -1110,8 +1405,13 @@ class LiveImRepository
       }
     });
     _wukongEventSubscription ??= _wukong.events.listen((event) {
+      final epoch = _sessionEpoch;
       _wukongEventSerial = _wukongEventSerial
-          .then((_) => _handleWukongEvent(event))
+          .then((_) async {
+            if (!_closed && epoch == _sessionEpoch) {
+              await _handleWukongEvent(event);
+            }
+          })
           .catchError((Object error, StackTrace stackTrace) {
             debugPrint('WuKong event handling failed: $error');
           });
@@ -1791,15 +2091,34 @@ class LiveImRepository
 
   Future<WukongMessage> _hydrateWukongMedia(WukongMessage message) async {
     final mediaId = message.payload['mediaId'] as String?;
+    if (_mediaToken != null && mediaId?.isNotEmpty == true) {
+      return message.copyWith(
+        payload: {
+          ...message.payload,
+          'url': mediaAccess.url(mediaId),
+          if (message.payload['type'] == 5)
+            'cover': mediaAccess.url(mediaId, cover: true),
+        },
+      );
+    }
     final existingURL = message.payload['url'] as String?;
     if (mediaId == null ||
         mediaId.isEmpty ||
-        (existingURL != null && existingURL.isNotEmpty)) {
+        (existingURL != null &&
+            existingURL.isNotEmpty &&
+            message.payload['type'] != 5)) {
       return message;
     }
     try {
-      final url = await _business.mediaUrl(mediaId);
-      return message.copyWith(payload: {...message.payload, 'url': url});
+      final data = await _business.mediaInfo(mediaId);
+      return message.copyWith(
+        payload: {
+          ...message.payload,
+          'url': data['url'],
+          'cover': data['cover'],
+          'coverMediaId': data['coverMediaId'],
+        },
+      );
     } catch (_) {
       return message;
     }
@@ -1817,6 +2136,21 @@ class LiveImRepository
   void _emitEvent(String rawType, Map<String, Object?> wrapper) {
     final nested = wrapper['payload'];
     final payload = nested is Map ? wukongObjectMap(nested) : wrapper;
+    if (rawType == 'messages.deleted') {
+      final uid = _userId;
+      if (uid != null) {
+        unawaited(
+          _applyDeletions(
+            uid,
+            payload['conversationId'].toString(),
+            (payload['messageIds'] as List? ?? const [])
+                .map((id) => id.toString())
+                .toList(),
+          ).catchError((Object _) {}),
+        );
+      }
+      return;
+    }
     if (rawType == 'message.recalled') {
       final cid = payload['conversationId']?.toString();
       final mid = payload['messageId']?.toString();
@@ -1866,6 +2200,8 @@ class LiveImRepository
       'message.pinned' ||
       'message.unpinned' => ImEventType.messageChanged,
       'message.recalled' => ImEventType.messageRecalled,
+      'user.message_permissions.updated' =>
+        ImEventType.messagePermissionsChanged,
       'message.delivered' => ImEventType.messageDelivered,
       'message.read' || 'conversation.read' => ImEventType.messageRead,
       'message.expired' => ImEventType.messageExpired,
@@ -1954,12 +2290,11 @@ class LiveImRepository
       final result = <Conversation>[];
       for (final conversation in metadata) {
         final channel = _conversationChannels[conversation.id];
+        if (channel != null) await _syncDeletions(conversation.id, channel);
         final item = channel == null ? null : byChannel[channel.key];
         result.add(
           item == null
-              ? (isManagedGroup(conversation)
-                    ? conversation.copyWith(subtitle: '打开会话查看消息')
-                    : conversation)
+              ? conversation.copyWith(subtitle: '打开会话查看消息')
               : await _mergeWukongConversation(conversation, channel!, item),
         );
       }
@@ -1968,11 +2303,7 @@ class LiveImRepository
       // Business metadata remains useful during a transient IM sync outage;
       // message history itself never falls back to the legacy message store.
       return metadata
-          .map(
-            (item) => isManagedGroup(item)
-                ? item.copyWith(subtitle: '打开会话查看消息')
-                : item,
-          )
+          .map((item) => item.copyWith(subtitle: '打开会话查看消息'))
           .toList();
     }
   }
@@ -2562,6 +2893,7 @@ class LiveImRepository
   }
 
   AppUser _user(Map<String, Object?> item) => AppUser(
+    canDeleteMessagesForEveryone: item['canDeleteMessagesForEveryone'] == true,
     id: item['id']! as String,
     name: item['name'] as String? ?? item['id']! as String,
     handle:
@@ -2789,7 +3121,11 @@ class LiveImRepository
           'historyVisibleToNewMembers': ?historyVisibleToNewMembers,
           if (rotateQr) 'rotateQr': true,
         });
-    if (_userId == sessionUserId) {
+    // Avatar/name/profile mutations must not be reported as failed after the
+    // server has committed them merely because an unrelated local history
+    // cache cleanup fails. History-policy changes still require the strict,
+    // fail-closed cache update.
+    if (_userId == sessionUserId && historyVisibleToNewMembers != null) {
       await _applyGroupHistory(conversationId, raw['historyAccess']);
     }
     return _groupProfile(raw);
@@ -3027,6 +3363,7 @@ class LiveImRepository
       );
     }
     try {
+      await _syncDeletions(conversationId, channel);
       if (channel.type == 2 && !_groupHistory.containsKey(channel.id)) {
         await _refreshGroupHistory(conversationId);
       }
@@ -3126,6 +3463,17 @@ class LiveImRepository
           id: raw['id'] as String,
           type: (raw['type'] as num).toInt(),
         );
+      }
+    }
+    final deletionUid = _userId;
+    final deletionChannel = _conversationChannels[conversationId];
+    if (deletionUid != null && deletionChannel != null) {
+      try {
+        await _syncDeletions(conversationId, deletionChannel);
+      } catch (_) {
+        // Offline/failed validation may still return drafts and pending sends,
+        // but never an unverified historical snapshot.
+        _deletionVerified.remove('$deletionUid:$conversationId');
       }
     }
     // Both stores are encrypted local data. On a cold Android start either
@@ -3420,6 +3768,8 @@ class LiveImRepository
       mediaId: body['mediaId'] as String?,
       mediaWidth: (body['width'] as num?)?.toInt(),
       mediaHeight: (body['height'] as num?)?.toInt(),
+      coverMediaId: body['coverMediaId'] as String?,
+      coverUrl: body['cover'] as String?,
       stickerId: body['stickerId'] as String?,
       momentId: body['momentId'] as String?,
       event: body['event'] as String?,
@@ -3434,7 +3784,7 @@ class LiveImRepository
       chatHistoryEntries: chatHistoryEntriesFrom(body['entries']),
       fileName: body['fileName'] as String?,
       mimeType: body['mime'] as String? ?? body['mimeType'] as String?,
-      durationSeconds: (body['duration'] as num?)?.toInt(),
+      durationSeconds: ((body['second'] ?? body['duration']) as num?)?.toInt(),
       replyToId: replyToId?.isEmpty == true ? null : replyToId,
       replyToText:
           body['replyToText'] as String? ?? reply['content'] as String?,
@@ -3539,8 +3889,8 @@ class LiveImRepository
   String _messageText(Map<String, Object?>? item) {
     if (item == null) return '';
     final body = item['body'] as Map<String, Object?>?;
-    if (body?['event'] == groupAnnouncementUpdatedEvent) {
-      return groupAnnouncementUpdatedText;
+    if (body != null && isGroupSystemEvent(body)) {
+      return groupSystemEventDisplayText(body);
     }
     final text = body?['text'] as String? ?? item['text'] as String?;
     if (text != null && text.isNotEmpty) return text;
@@ -3605,6 +3955,9 @@ class LiveImRepository
       // fresh authorised URL, even if the original local file no longer exists.
       final remoteURL = await _business.bindMedia(pending.mediaId!, channel);
       source = pending.copyWith(mediaUrl: remoteURL);
+      if (pending.kind == MessageContentKind.video) {
+        source = await refreshMessageMedia(source);
+      }
     }
     final outgoing = _messageMapper.toOutgoing(source, channel: channel);
     return _dispatchWukongSend(source: source, outgoing: outgoing);
@@ -3726,12 +4079,122 @@ class LiveImRepository
     MediaUpload upload, {
     void Function(double progress)? onProgress,
   }) async {
+    final account = _userId;
+    void checkAccount() {
+      if (account != _userId || account != pending.senderId) {
+        throw const FormatException('登录账号已变化，已停止发送');
+      }
+    }
+
+    checkAccount();
     onProgress?.call(0);
-    final prepared = await _sendRequest('POST', '/v2/media/presign', {
-      'mime': upload.mimeType,
-      'fileName': upload.fileName,
-      'size': upload.bytes.length,
-    });
+    String? coverId;
+    if (upload.kind == MessageContentKind.video && upload.coverBytes != null) {
+      try {
+        coverId = await _uploadMediaPart(
+          pending.clientMessageId,
+          'cover',
+          MediaUpload(
+            bytes: upload.coverBytes!,
+            fileName: 'video-cover.jpg',
+            mimeType: 'image/jpeg',
+            kind: MessageContentKind.image,
+          ),
+        );
+      } catch (error) {
+        if (error is ImApiException && error.statusCode == 401) rethrow;
+      }
+    }
+    checkAccount();
+    final mediaId = await _uploadMediaPart(
+      pending.clientMessageId,
+      'body',
+      upload,
+      coverId: coverId,
+      onProgress: onProgress,
+    );
+    checkAccount();
+    final channel = await _channelForConversation(pending.conversationId);
+    checkAccount();
+    if (channel == null) throw const FormatException('会话不存在');
+    final remoteURL = await _business.bindMedia(mediaId, channel);
+    checkAccount();
+    var wireMessage = pending.copyWith(
+      kind: upload.kind,
+      mediaUrl: remoteURL,
+      mediaId: mediaId,
+      mediaWidth: upload.width,
+      mediaHeight: upload.height,
+      coverMediaId: coverId,
+      fileName: upload.fileName,
+      mimeType: upload.mimeType,
+      durationSeconds: upload.durationSeconds,
+    );
+    if (upload.kind == MessageContentKind.video) {
+      wireMessage = await refreshMessageMedia(wireMessage);
+    }
+    checkAccount();
+    // Persist durable IDs before SDK delivery. A later ACK timeout must not
+    // turn a retry into another media upload.
+    final cached = await cachedMessages(pending.conversationId);
+    checkAccount();
+    await persistMessages(pending.conversationId, [
+      for (final item in cached)
+        if (item.clientMessageId != pending.clientMessageId) item,
+      wireMessage,
+    ]);
+    if (_wukong.connectionState != WukongConnectionState.connected) {
+      await connect();
+    }
+    checkAccount();
+    final base = _messageMapper.toOutgoing(wireMessage, channel: channel);
+    return _dispatchWukongSend(
+      source: wireMessage,
+      outgoing: WukongOutgoingMessage(
+        channel: base.channel,
+        clientMsgNo: base.clientMsgNo,
+        expireSeconds: base.expireSeconds,
+        payload: {
+          ...base.payload,
+          'size': upload.bytes.length,
+          'checksum': sha256.convert(upload.bytes).toString(),
+        },
+      ),
+    );
+  }
+
+  Future<String> _uploadMediaPart(
+    String clientId,
+    String part,
+    MediaUpload upload, {
+    String? coverId,
+    void Function(double)? onProgress,
+  }) async {
+    final account = _userId;
+    final key = 'media-upload-$account-$clientId-$part';
+    void checkAccount() {
+      if (account != _userId) throw const FormatException('登录账号已变化，已停止发送');
+    }
+
+    final cached = await _store.readJson(key);
+    checkAccount();
+    var prepared = cached is Map<String, Object?>
+        ? cached
+        : <String, Object?>{};
+    if (prepared['completed'] == true) return prepared['mediaId'] as String;
+    final expiry = DateTime.tryParse(prepared['expiresAt']?.toString() ?? '');
+    if (prepared.isEmpty ||
+        (prepared['uploaded'] != true &&
+            (expiry == null || expiry.isBefore(DateTime.now())))) {
+      checkAccount();
+      prepared = await _sendRequest('POST', '/v2/media/presign', {
+        'mime': upload.mimeType,
+        'fileName': upload.fileName,
+        'size': upload.bytes.length,
+      });
+      checkAccount();
+      await _store.writeJson(key, prepared);
+    }
     final uploadUrl = prepared['uploadUrl'] as String?;
     final mediaId = prepared['mediaId'] as String?;
     if (uploadUrl == null || mediaId == null) {
@@ -3744,101 +4207,51 @@ class LiveImRepository
         uploadHeaders[entry.key] = entry.value.toString();
       }
     }
-    final request = http.StreamedRequest('PUT', Uri.parse(uploadUrl));
-    request.headers.addAll(uploadHeaders);
-    request.contentLength = upload.bytes.length;
-    final responseFuture = _client
-        .send(request)
-        .timeout(const Duration(seconds: 45));
-    const chunkSize = 64 * 1024;
-    for (var start = 0; start < upload.bytes.length; start += chunkSize) {
-      final end = min(start + chunkSize, upload.bytes.length);
-      request.sink.add(upload.bytes.sublist(start, end));
-      onProgress?.call(end / upload.bytes.length);
-      await Future<void>.delayed(Duration.zero);
-    }
-    await request.sink.close();
-    final uploadResponse = await responseFuture;
-    await uploadResponse.stream.drain<void>();
-    if (uploadResponse.statusCode < 200 || uploadResponse.statusCode >= 300) {
-      throw ImApiException(
-        statusCode: uploadResponse.statusCode,
-        code: 'MEDIA_UPLOAD_FAILED',
-        message: '文件上传失败，请重试',
-      );
+    if (prepared['uploaded'] != true) {
+      checkAccount();
+      final request = http.StreamedRequest('PUT', Uri.parse(uploadUrl));
+      request.headers.addAll(uploadHeaders);
+      request.contentLength = upload.bytes.length;
+      final responseFuture = _uploadClient
+          .send(request)
+          .timeout(const Duration(seconds: 45));
+      const chunkSize = 64 * 1024;
+      for (var start = 0; start < upload.bytes.length; start += chunkSize) {
+        final end = min(start + chunkSize, upload.bytes.length);
+        request.sink.add(upload.bytes.sublist(start, end));
+        onProgress?.call(.95 * end / upload.bytes.length);
+        await Future<void>.delayed(Duration.zero);
+      }
+      await request.sink.close();
+      final uploadResponse = await responseFuture;
+      await uploadResponse.stream.drain<void>();
+      if (uploadResponse.statusCode < 200 || uploadResponse.statusCode >= 300) {
+        throw ImApiException(
+          statusCode: uploadResponse.statusCode,
+          code: 'MEDIA_UPLOAD_FAILED',
+          message: '文件上传失败，请重试',
+        );
+      }
+      checkAccount();
+      prepared = {...prepared, 'uploaded': true};
+      await _store.writeJson(key, prepared);
     }
     final checksum = sha256.convert(upload.bytes).toString();
+    checkAccount();
     await _sendRequest('POST', '/v2/media/$mediaId/complete', {
       'checksum': checksum,
+      'coverMediaId': ?coverId,
     });
-    final channel = await _channelForConversation(pending.conversationId);
-    if (channel == null) {
-      throw const ImApiException(
-        statusCode: 404,
-        code: 'IM_CHANNEL_NOT_FOUND',
-        message: 'Conversation has no WuKongIM channel',
-      );
-    }
-    if (_wukong.connectionState != WukongConnectionState.connected) {
-      await connect();
-    }
-    final remoteURL = await _business.bindMedia(mediaId, channel);
-    final wireMessage = ChatMessage(
-      id: pending.id,
-      clientMessageId: pending.clientMessageId,
-      conversationId: pending.conversationId,
-      senderId: pending.senderId,
-      senderName: pending.senderName,
-      text: pending.text,
-      sentAt: pending.sentAt,
-      isMine: pending.isMine,
-      status: pending.status,
-      kind: upload.kind,
-      mediaUrl: remoteURL,
-      mediaId: mediaId,
-      mediaWidth: upload.width,
-      mediaHeight: upload.height,
-      fileName: upload.fileName,
-      mimeType: upload.mimeType,
-      durationSeconds: upload.durationSeconds,
-      replyToId: pending.replyToId,
-      replyToText: pending.replyToText,
-      replyToSeq: pending.replyToSeq,
-      replyToSenderId: pending.replyToSenderId,
-      replyToSenderName: pending.replyToSenderName,
-    );
-    final base = _messageMapper.toOutgoing(wireMessage, channel: channel);
-    final outgoing = WukongOutgoingMessage(
-      channel: base.channel,
-      payload: {
-        ...base.payload,
-        'size': upload.bytes.length,
-        'checksum': checksum,
-      },
-      clientMsgNo: base.clientMsgNo,
-      expireSeconds: base.expireSeconds,
-    );
-    return _dispatchWukongSend(
-      source: wireMessage,
-      outgoing: outgoing,
-      decorate: (message) => message.copyWith(
-        kind: upload.kind,
-        mediaUrl: upload.localPath,
-        mediaId: mediaId,
-        fileName: upload.fileName,
-        mimeType: upload.mimeType,
-        durationSeconds: upload.durationSeconds,
-        replyToId: pending.replyToId,
-        replyToText: pending.replyToText,
-        replyToSeq: pending.replyToSeq,
-        replyToSenderId: pending.replyToSenderId,
-        replyToSenderName: pending.replyToSenderName,
-      ),
-    );
+    checkAccount();
+    await _store.writeJson(key, {...prepared, 'completed': true});
+    onProgress?.call(1);
+    return mediaId;
   }
 
   @override
   Future<void> saveFavorite(ChatMessage message) async {
+    final uid = _userId;
+    final epoch = _sessionEpoch;
     if (!message.id.startsWith('local-')) {
       await _sendRequest(
         'PUT',
@@ -3846,6 +4259,7 @@ class LiveImRepository
       );
     }
     final stored = await _store.readJson('favorites');
+    if (uid == null || uid != _userId || epoch != _sessionEpoch) return;
     final favorites = stored is List<Object?>
         ? stored.whereType<Map<String, Object?>>().toList()
         : <Map<String, Object?>>[];
@@ -3853,11 +4267,16 @@ class LiveImRepository
       (item) => item['clientMessageId'] == message.clientMessageId,
     );
     favorites.insert(0, message.toJson());
-    await _store.writeJson('favorites', favorites.take(500).toList());
+    await _store.writeJson(
+      'favorites',
+      _purgeDeletedCache(uid, favorites.take(500).toList()),
+    );
   }
 
   @override
   Future<void> removeFavorite(ChatMessage message) async {
+    final uid = _userId;
+    final epoch = _sessionEpoch;
     if (!message.id.startsWith('local-')) {
       await _sendRequest(
         'DELETE',
@@ -3865,6 +4284,7 @@ class LiveImRepository
       );
     }
     final stored = await _store.readJson('favorites');
+    if (uid == null || uid != _userId || epoch != _sessionEpoch) return;
     final favorites = stored is List<Object?>
         ? stored.whereType<Map<String, Object?>>().toList()
         : <Map<String, Object?>>[];
@@ -3873,7 +4293,7 @@ class LiveImRepository
           item['id'] == message.id ||
           item['clientMessageId'] == message.clientMessageId,
     );
-    await _store.writeJson('favorites', favorites);
+    await _store.writeJson('favorites', _purgeDeletedCache(uid, favorites));
   }
 
   @override
@@ -4025,12 +4445,14 @@ class LiveImRepository
         await _conversationCache.markRecalled(uid, channel, message.id);
       }
     }
+    if (_userId != uid) return;
+    final encoded = messages
+        .where(canReadCachedMessage)
+        .map((message) => message.toJson())
+        .toList();
     await _store.writeJson(
       'messages.$conversationId',
-      messages
-          .where(canReadCachedMessage)
-          .map((message) => message.toJson())
-          .toList(),
+      uid == null ? encoded : _purgeDeletedCache(uid, encoded),
     );
   }
 
@@ -4050,6 +4472,7 @@ class LiveImRepository
 
   Future<void> _persistSession() => _store.writeJson('session', {
     'accessToken': _token,
+    if (_mediaToken != null) 'mediaAccessToken': _mediaToken,
     'refreshToken': _refreshToken,
     'userId': _userId,
     if (_imSession != null) 'imSession': _imSession!.toJson(),
@@ -4057,6 +4480,7 @@ class LiveImRepository
   });
 
   Map<String, Object?> _storedUser(AppUser user) => {
+    'canDeleteMessagesForEveryone': user.canDeleteMessagesForEveryone,
     'id': user.id,
     'name': user.name,
     'handle': user.handle,
@@ -4076,6 +4500,12 @@ class LiveImRepository
   };
 
   Future<void> _clearSession() async {
+    _sessionEpoch++;
+    _deletionSyncs.clear();
+    _deletionVersions.clear();
+    _deletionVerified.clear();
+    mediaAccess.clear(this);
+    _mediaToken = null;
     _profileRevision++;
     _distrustGroupHistories();
     _historyRequiredVersions.clear();
@@ -4113,6 +4543,8 @@ class LiveImRepository
 
   @override
   Future<void> close() async {
+    _sessionEpoch++;
+    mediaAccess.clear(this);
     _closed = true;
     _reconnectReconciliationTimer?.cancel();
     _reconnectReconciliationTimer = null;
@@ -4122,6 +4554,7 @@ class LiveImRepository
     await _wukongEventSerial;
     await _wukongSendSubscription?.cancel();
     await _wukong.dispose();
+    if (!identical(_uploadClient, _client)) _uploadClient.close();
     _client.close();
     await _connection.close();
     await _events.close();
@@ -4225,6 +4658,7 @@ class _PendingWukongSend {
 class ResilientImRepository
     implements
         ImRepository,
+        MessageDeletionRepository,
         CachedMessageRepository,
         GroupHistoryRepository,
         PaginatedMessageRepository,
@@ -4237,6 +4671,18 @@ class ResilientImRepository
   );
 
   final ImRepository? live;
+  @override
+  bool isMessageDeleted(String id) =>
+      live is MessageDeletionRepository &&
+      (live as MessageDeletionRepository).isMessageDeleted(id);
+  @override
+  Future<List<String>> deleteMessagesForEveryone(
+    String cid,
+    List<String> ids,
+  ) => (_active as MessageDeletionRepository).deleteMessagesForEveryone(
+    cid,
+    ids,
+  );
   @override
   bool canReadCachedMessage(ChatMessage message) =>
       live is! GroupHistoryRepository ||
@@ -4652,8 +5098,8 @@ class ResilientImRepository
   @override
   Future<String?> requestCode(String phone) => _active.requestCode(phone);
   @override
-  Future<AppUser> login(String phone, String code) =>
-      _active.login(phone, code);
+  Future<AppUser> login(String phone, String code, {String inviteCode = ''}) =>
+      _active.login(phone, code, inviteCode: inviteCode);
   @override
   Future<AppUser> passwordLogin(String phone, String password) =>
       _active.passwordLogin(phone, password);
@@ -4674,12 +5120,22 @@ class ResilientImRepository
     required String code,
     required String password,
     required String name,
+    String inviteCode = '',
   }) => _active.register(
     phone: phone,
     code: code,
     password: password,
     name: name,
+    inviteCode: inviteCode,
   );
+  @override
+  Future<bool> validateInviteCode(String code) =>
+      _active.validateInviteCode(code);
+  @override
+  Future<InviteCodeProfile> inviteCode() => _active.inviteCode();
+  @override
+  Future<InviteCodeProfile> changeInviteCode(String code) =>
+      _active.changeInviteCode(code);
   @override
   Future<void> requestPasswordResetCode(String phone) =>
       _active.requestPasswordResetCode(phone);
@@ -4693,6 +5149,13 @@ class ResilientImRepository
   Future<void> logout() => _active.logout();
   @override
   Future<AppUser> profile() => _active.profile();
+  @override
+  Future<PeerLoginInfo> peerLoginInfo(String conversationId) =>
+      _active.peerLoginInfo(conversationId);
+
+  @override
+  Future<ChatMessage> refreshMessageMedia(ChatMessage message) =>
+      _active.refreshMessageMedia(message);
   @override
   Future<AppUser> updateProfile({
     String? name,

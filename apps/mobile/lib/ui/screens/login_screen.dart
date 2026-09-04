@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../core/app_controller.dart';
@@ -13,6 +14,21 @@ import '../legal_documents.dart';
 import '../widgets/linli_widgets.dart';
 
 enum _LoginMode { code, password, qr }
+
+String? inviteCodeFromQrPayload(String raw) {
+  final value = raw.trim();
+  final uri = Uri.tryParse(value);
+  if (uri != null &&
+      const {'qingwaguagua', 'linlitong'}.contains(uri.scheme) &&
+      uri.host == 'register') {
+    final code = uri.queryParameters['invite']?.trim();
+    if (code != null && code.isNotEmpty) return code.toUpperCase();
+  }
+  if (RegExp(r'^[A-Za-z0-9_-]{6,20}$').hasMatch(value)) {
+    return value.toUpperCase();
+  }
+  return null;
+}
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key, required this.controller});
@@ -28,11 +44,14 @@ class _LoginScreenState extends State<LoginScreen> {
   final phoneFieldKey = GlobalKey<FormFieldState<String>>();
   final phone = TextEditingController();
   final credential = TextEditingController();
+  final inviteCode = TextEditingController();
   _LoginMode mode = _LoginMode.code;
   bool obscurePassword = true;
   bool agreedToPolicies = false;
   bool codeRequested = false;
   String? codeRequestedPhone;
+  bool inviteChecking = false;
+  bool? inviteValid;
   QrLoginTicket? qrTicket;
   Timer? qrPollTimer;
   bool qrPolling = false;
@@ -55,6 +74,7 @@ class _LoginScreenState extends State<LoginScreen> {
     qrPollTimer?.cancel();
     phone.dispose();
     credential.dispose();
+    inviteCode.dispose();
     super.dispose();
   }
 
@@ -78,6 +98,30 @@ class _LoginScreenState extends State<LoginScreen> {
     widget.controller.clearError();
   }
 
+  Future<void> _validateLoginInviteCode() async {
+    if (inviteCode.text.trim().isEmpty) {
+      setState(() => inviteValid = null);
+      return;
+    }
+    setState(() => inviteChecking = true);
+    final valid = await widget.controller.validateInviteCode(inviteCode.text);
+    if (!mounted) return;
+    setState(() {
+      inviteChecking = false;
+      inviteValid = valid;
+    });
+  }
+
+  Future<void> _scanLoginInviteCode() async {
+    final result = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => const InviteCodeScannerScreen()),
+    );
+    if (!mounted || result == null) return;
+    inviteCode.text = result;
+    inviteValid = null;
+    await _validateLoginInviteCode();
+  }
+
   void _submit() {
     if (mode == _LoginMode.qr) return;
     if (!(formKey.currentState?.validate() ?? false)) return;
@@ -88,7 +132,11 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
     if (mode == _LoginMode.code) {
-      widget.controller.login(phone.text, credential.text);
+      widget.controller.login(
+        phone.text,
+        credential.text,
+        inviteCode: inviteCode.text,
+      );
     } else {
       widget.controller.passwordLogin(phone.text, credential.text);
     }
@@ -396,6 +444,55 @@ class _LoginScreenState extends State<LoginScreen> {
                 return text.isNotEmpty ? null : '请输入密码';
               },
             ),
+            if (effectiveMode == _LoginMode.code &&
+                widget.controller.authPolicy.invitationEnabled) ...[
+              const SizedBox(height: 12),
+              TextFormField(
+                key: const Key('login-invite-code'),
+                controller: inviteCode,
+                textCapitalization: TextCapitalization.characters,
+                onChanged: (_) {
+                  setState(() => inviteValid = null);
+                  widget.controller.clearError();
+                },
+                decoration: InputDecoration(
+                  labelText: widget.controller.authPolicy.invitationRequired
+                      ? '邀请码（新用户必填）'
+                      : '邀请码（选填）',
+                  helperText: inviteValid == true
+                      ? '邀请码有效'
+                      : inviteValid == false
+                      ? '邀请码无效、已停用或已失效'
+                      : '仅首次登录创建账号时使用，已有账号可留空',
+                  errorText: inviteValid == false ? '请检查邀请码' : null,
+                  prefixIcon: const Icon(CupertinoIcons.ticket),
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: '校验邀请码',
+                        onPressed: inviteChecking
+                            ? null
+                            : _validateLoginInviteCode,
+                        icon: inviteChecking
+                            ? const SizedBox.square(
+                                dimension: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(CupertinoIcons.check_mark_circled),
+                      ),
+                      IconButton(
+                        tooltip: '扫描邀请码',
+                        onPressed: _scanLoginInviteCode,
+                        icon: const Icon(CupertinoIcons.qrcode_viewfinder),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
             if (effectiveMode == _LoginMode.password)
               Align(
                 alignment: Alignment.centerRight,
@@ -692,6 +789,80 @@ class RegisterScreen extends StatefulWidget {
   State<RegisterScreen> createState() => _RegisterScreenState();
 }
 
+class InviteCodeScannerScreen extends StatefulWidget {
+  const InviteCodeScannerScreen({super.key});
+
+  @override
+  State<InviteCodeScannerScreen> createState() =>
+      _InviteCodeScannerScreenState();
+}
+
+class _InviteCodeScannerScreenState extends State<InviteCodeScannerScreen> {
+  final scanner = MobileScannerController(
+    formats: const [BarcodeFormat.qrCode],
+    detectionSpeed: DetectionSpeed.noDuplicates,
+  );
+  bool handling = false;
+  String? error;
+
+  @override
+  void dispose() {
+    scanner.dispose();
+    super.dispose();
+  }
+
+  void _detected(BarcodeCapture capture) {
+    if (handling) return;
+    for (final barcode in capture.barcodes) {
+      final code = inviteCodeFromQrPayload(barcode.rawValue ?? '');
+      if (code == null) continue;
+      handling = true;
+      Navigator.of(context).pop(code);
+      return;
+    }
+    if (mounted) setState(() => error = '这不是有效的邀请码二维码');
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: Colors.black,
+    appBar: AppBar(
+      title: const Text('扫描邀请码'),
+      backgroundColor: Colors.black,
+      foregroundColor: Colors.white,
+    ),
+    body: Stack(
+      fit: StackFit.expand,
+      children: [
+        MobileScanner(controller: scanner, onDetect: _detected),
+        Center(
+          child: Container(
+            width: 250,
+            height: 250,
+            decoration: BoxDecoration(
+              border: Border.all(color: LinliColors.brandGreen, width: 3),
+              borderRadius: BorderRadius.circular(24),
+            ),
+          ),
+        ),
+        Positioned(
+          left: 24,
+          right: 24,
+          bottom: 42,
+          child: Text(
+            error ?? '将邀请码二维码放入框内',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: error == null ? Colors.white : Colors.redAccent,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 class _RegisterScreenState extends State<RegisterScreen> {
   final formKey = GlobalKey<FormState>();
   final phoneFieldKey = GlobalKey<FormFieldState<String>>();
@@ -700,6 +871,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final name = TextEditingController();
   final password = TextEditingController();
   final confirmPassword = TextEditingController();
+  final inviteCode = TextEditingController();
+  bool? inviteValid;
+  bool inviteChecking = false;
   bool agreedToPolicies = false;
   bool codeRequested = false;
   String? codeRequestedPhone;
@@ -723,6 +897,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     name.dispose();
     password.dispose();
     confirmPassword.dispose();
+    inviteCode.dispose();
     super.dispose();
   }
 
@@ -734,15 +909,46 @@ class _RegisterScreenState extends State<RegisterScreen> {
       ).showSnackBar(const SnackBar(content: Text('请先阅读并同意用户协议和隐私政策')));
       return;
     }
+    if (inviteCode.text.trim().isNotEmpty && inviteValid != true) {
+      final valid = await _validateInviteCode();
+      if (!valid) return;
+    }
     await widget.controller.registerAccount(
       phone: phone.text,
       code: code.text,
       password: password.text,
       name: name.text,
+      inviteCode: inviteCode.text,
     );
     if (mounted && widget.controller.authenticated) {
       Navigator.of(context).pop();
     }
+  }
+
+  Future<bool> _validateInviteCode() async {
+    if (inviteCode.text.trim().isEmpty) {
+      setState(() => inviteValid = null);
+      return !widget.controller.authPolicy.invitationRequired;
+    }
+    setState(() => inviteChecking = true);
+    final valid = await widget.controller.validateInviteCode(inviteCode.text);
+    if (mounted) {
+      setState(() {
+        inviteChecking = false;
+        inviteValid = valid;
+      });
+    }
+    return valid;
+  }
+
+  Future<void> _scanInviteCode() async {
+    final result = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => const InviteCodeScannerScreen()),
+    );
+    if (!mounted || result == null) return;
+    inviteCode.text = result;
+    setState(() => inviteValid = null);
+    await _validateInviteCode();
   }
 
   Future<void> _requestCode() async {
@@ -833,6 +1039,56 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 validator: (value) =>
                     (value?.trim().isNotEmpty ?? false) ? null : '请输入昵称',
               ),
+              if (widget.controller.authPolicy.invitationEnabled) ...[
+                const SizedBox(height: 14),
+                TextFormField(
+                  key: const Key('register-invite-code'),
+                  controller: inviteCode,
+                  textCapitalization: TextCapitalization.characters,
+                  onChanged: (_) => setState(() => inviteValid = null),
+                  decoration: InputDecoration(
+                    labelText: widget.controller.authPolicy.invitationRequired
+                        ? '邀请码'
+                        : '邀请码（选填）',
+                    helperText: inviteValid == true
+                        ? '邀请码有效'
+                        : inviteValid == false
+                        ? '邀请码无效、已停用或已失效'
+                        : '邀请码不区分大小写',
+                    errorText: inviteValid == false ? '请检查邀请码' : null,
+                    prefixIcon: const Icon(CupertinoIcons.ticket),
+                    suffixIcon: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: '校验邀请码',
+                          onPressed: inviteChecking
+                              ? null
+                              : _validateInviteCode,
+                          icon: inviteChecking
+                              ? const SizedBox.square(
+                                  dimension: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(CupertinoIcons.check_mark_circled),
+                        ),
+                        IconButton(
+                          tooltip: '扫描邀请码',
+                          onPressed: _scanInviteCode,
+                          icon: const Icon(CupertinoIcons.qrcode_viewfinder),
+                        ),
+                      ],
+                    ),
+                  ),
+                  validator: (value) =>
+                      widget.controller.authPolicy.invitationRequired &&
+                          (value?.trim().isEmpty ?? true)
+                      ? '请输入邀请码'
+                      : null,
+                ),
+              ],
               const SizedBox(height: 14),
               _AuthPasswordField(
                 fieldKey: const Key('register-password'),

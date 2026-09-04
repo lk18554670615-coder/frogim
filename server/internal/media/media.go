@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -195,6 +196,9 @@ func (s *Service) Prepare(ctx context.Context, uid, mime, name string, size int6
 	return Prepared{MediaID: mid, ObjectKey: key, UploadURL: url.String(), Method: "PUT", Headers: map[string]string{"Content-Type": mime}, ExpiresAt: time.Now().Add(expires)}, nil
 }
 func (s *Service) Complete(ctx context.Context, uid, id, checksum string) (store.Media, error) {
+	return s.CompleteWithCover(ctx, uid, id, checksum, "")
+}
+func (s *Service) CompleteWithCover(ctx context.Context, uid, id, checksum, cover string) (store.Media, error) {
 	m, err := s.metadata.GetMedia(id)
 	if err != nil {
 		return m, err
@@ -202,8 +206,20 @@ func (s *Service) Complete(ctx context.Context, uid, id, checksum string) (store
 	if m.OwnerID != uid {
 		return m, ErrForbidden
 	}
-	if m.Status != "pending" {
+	if m.Status == "ready" {
+		if m.CoverMediaID != cover {
+			return m, ErrInvalid
+		}
 		return m, nil
+	}
+	if m.Status != "pending" {
+		return m, ErrForbidden
+	}
+	if cover != "" {
+		c, coverErr := s.metadata.GetMedia(cover)
+		if coverErr != nil || c.OwnerID != uid || c.Status != "ready" || c.MIME != "image/jpeg" || !strings.HasPrefix(m.MIME, "video/") || cover == id {
+			return m, ErrInvalid
+		}
 	}
 	if err = s.ensure(ctx); err != nil {
 		return m, err
@@ -227,9 +243,19 @@ func (s *Service) Complete(ctx context.Context, uid, id, checksum string) (store
 	if err != nil {
 		return m, err
 	}
-	if err = s.metadata.CompleteMedia(id, uid, stat.Size, computedChecksum); err != nil {
+	if extended, ok := s.metadata.(interface {
+		CompleteMediaWithCover(string, string, int64, string, string) error
+	}); ok {
+		err = extended.CompleteMediaWithCover(id, uid, stat.Size, computedChecksum, cover)
+	} else if cover == "" {
+		err = s.metadata.CompleteMedia(id, uid, stat.Size, computedChecksum)
+	} else {
+		err = ErrInvalid
+	}
+	if err != nil {
 		return m, err
 	}
+	m.CoverMediaID = cover
 	m.Size = stat.Size
 	m.Status = "ready"
 	m.Checksum = computedChecksum
@@ -312,7 +338,12 @@ func (s *Service) DownloadURL(ctx context.Context, id string) (string, error) {
 	if err = s.ensure(ctx); err != nil {
 		return "", err
 	}
-	url, err := s.signerFor(ctx).PresignedGetObject(ctx, s.bucket, m.ObjectKey, 15*time.Minute, nil)
+	params := url.Values{}
+	if strings.HasPrefix(m.MIME, "video/") {
+		params.Set("response-content-type", m.MIME)
+		params.Set("response-content-disposition", "inline")
+	}
+	url, err := s.signerFor(ctx).PresignedGetObject(ctx, s.bucket, m.ObjectKey, 15*time.Minute, params)
 	if err != nil {
 		return "", err
 	}

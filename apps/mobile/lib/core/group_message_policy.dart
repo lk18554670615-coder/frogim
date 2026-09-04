@@ -45,6 +45,7 @@ bool canPresentGroupMessage(
   Conversation? conversation, {
   bool roleTrusted = true,
 }) {
+  if (message.deletedForEveryone) return false;
   if (!isGroupManagementNotice(message)) return true;
   if (conversation == null) return false;
   if (!isManagedGroup(conversation)) return true;
@@ -55,8 +56,12 @@ String messagePreviewText(ChatMessage message) =>
     message.status == MessageStatus.recalled
     ? '消息已撤回'
     : message.kind == MessageContentKind.system &&
-          message.event == groupAnnouncementUpdatedEvent
-    ? groupAnnouncementUpdatedText
+          (message.event?.startsWith('group.') ?? false)
+    ? groupSystemEventDisplayText({
+        'event': message.event,
+        'data': message.eventData,
+        'digest': message.text,
+      })
     : message.text;
 
 bool canRecallChatMessage(

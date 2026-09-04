@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/models.dart';
+import '../../core/media_access.dart';
 
 class LinliNetworkImage extends StatelessWidget {
   const LinliNetworkImage({
@@ -42,7 +43,8 @@ class LinliNetworkImage extends StatelessWidget {
         : trimmed;
     return CachedNetworkImage(
       imageUrl: resolved,
-      cacheKey: cacheKey,
+      httpHeaders: mediaAccess.headersFor(resolved),
+      cacheKey: mediaAccess.owns(resolved) ? resolved : cacheKey,
       width: width,
       height: height,
       fit: fit,

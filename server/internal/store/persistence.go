@@ -158,6 +158,17 @@ type PasswordAuthStore interface {
 	PasswordCredentials(context.Context, string) (*model.User, string, error)
 	UpdatePassword(context.Context, string, string, time.Time) error
 }
+type InvitationStore interface {
+	RegisterPasswordUserWithInvite(context.Context, string, string, string, string, time.Time, string, string) (*model.User, error)
+	LoginOrCreateUserWithInvite(context.Context, string, string, string, time.Time, bool, string, string) (*model.User, bool, error)
+	ValidateInviteCode(context.Context, string) (bool, error)
+	UserInviteCode(context.Context, string) (*InviteCode, error)
+	ChangeUserInviteCode(context.Context, string, string, time.Time) (*InviteCode, error)
+	ListAdminInviteCodes(context.Context, string, string, string, int) (InviteCodePage, error)
+	ListAdminInviteRelations(context.Context, string, string, string, string, string, int) (InviteRelationPage, error)
+	SetAdminInviteCodeStatus(context.Context, string, string, string, string, time.Time) (*InviteCode, error)
+	ResetAdminInviteCode(context.Context, string, string, string, time.Time) (*InviteCode, error)
+}
 type AdminAccount struct {
 	ID                string     `json:"id"`
 	Username          string     `json:"username"`
@@ -468,6 +479,60 @@ func (p *WithRedis) LoginOrCreateUser(ctx context.Context, phone, name, id strin
 func (p *WithRedis) RegisterPasswordUser(ctx context.Context, phone, name, id, hash string, created time.Time) (*model.User, error) {
 	if s, ok := p.base.(PasswordAuthStore); ok {
 		return s.RegisterPasswordUser(ctx, phone, name, id, hash, created)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) RegisterPasswordUserWithInvite(ctx context.Context, phone, name, id, hash string, created time.Time, mode, code string) (*model.User, error) {
+	if s, ok := p.base.(InvitationStore); ok {
+		return s.RegisterPasswordUserWithInvite(ctx, phone, name, id, hash, created, mode, code)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) LoginOrCreateUserWithInvite(ctx context.Context, phone, name, id string, created time.Time, allowCreate bool, mode, code string) (*model.User, bool, error) {
+	if s, ok := p.base.(InvitationStore); ok {
+		return s.LoginOrCreateUserWithInvite(ctx, phone, name, id, created, allowCreate, mode, code)
+	}
+	return nil, false, ErrUnsupported
+}
+func (p *WithRedis) ValidateInviteCode(ctx context.Context, code string) (bool, error) {
+	if s, ok := p.base.(InvitationStore); ok {
+		return s.ValidateInviteCode(ctx, code)
+	}
+	return false, ErrUnsupported
+}
+func (p *WithRedis) UserInviteCode(ctx context.Context, uid string) (*InviteCode, error) {
+	if s, ok := p.base.(InvitationStore); ok {
+		return s.UserInviteCode(ctx, uid)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) ChangeUserInviteCode(ctx context.Context, uid, code string, at time.Time) (*InviteCode, error) {
+	if s, ok := p.base.(InvitationStore); ok {
+		return s.ChangeUserInviteCode(ctx, uid, code, at)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) ListAdminInviteCodes(ctx context.Context, q, status, cursor string, limit int) (InviteCodePage, error) {
+	if s, ok := p.base.(InvitationStore); ok {
+		return s.ListAdminInviteCodes(ctx, q, status, cursor, limit)
+	}
+	return InviteCodePage{}, ErrUnsupported
+}
+func (p *WithRedis) ListAdminInviteRelations(ctx context.Context, q, method, from, to, cursor string, limit int) (InviteRelationPage, error) {
+	if s, ok := p.base.(InvitationStore); ok {
+		return s.ListAdminInviteRelations(ctx, q, method, from, to, cursor, limit)
+	}
+	return InviteRelationPage{}, ErrUnsupported
+}
+func (p *WithRedis) SetAdminInviteCodeStatus(ctx context.Context, actor, id, status, reason string, at time.Time) (*InviteCode, error) {
+	if s, ok := p.base.(InvitationStore); ok {
+		return s.SetAdminInviteCodeStatus(ctx, actor, id, status, reason, at)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) ResetAdminInviteCode(ctx context.Context, actor, id, reason string, at time.Time) (*InviteCode, error) {
+	if s, ok := p.base.(InvitationStore); ok {
+		return s.ResetAdminInviteCode(ctx, actor, id, reason, at)
 	}
 	return nil, ErrUnsupported
 }
@@ -1151,6 +1216,17 @@ type MediaChannelBinding struct {
 	ChannelType uint8
 	SenderID    string
 }
+type VideoMediaStore interface {
+	CompleteMediaWithCover(context.Context, string, string, int64, string, string) error
+}
+
+func (p *WithRedis) CompleteMediaWithCover(ctx context.Context, id, uid string, size int64, sum, cover string) error {
+	if s, ok := p.base.(VideoMediaStore); ok {
+		return s.CompleteMediaWithCover(ctx, id, uid, size, sum, cover)
+	}
+	return ErrUnsupported
+}
+
 type MediaChannelBindingStore interface {
 	BindMediaChannel(context.Context, MediaChannelBinding) error
 }
@@ -1354,13 +1430,14 @@ func (p *WithRedis) DeleteAnnouncement(ctx context.Context, id, actor string, at
 }
 
 type Media struct {
-	ID        string `json:"id"`
-	OwnerID   string `json:"ownerId"`
-	ObjectKey string `json:"objectKey"`
-	MIME      string `json:"mime"`
-	Status    string `json:"status"`
-	Checksum  string `json:"checksum,omitempty"`
-	Size      int64  `json:"size"`
+	CoverMediaID string `json:"coverMediaId,omitempty"`
+	ID           string `json:"id"`
+	OwnerID      string `json:"ownerId"`
+	ObjectKey    string `json:"objectKey"`
+	MIME         string `json:"mime"`
+	Status       string `json:"status"`
+	Checksum     string `json:"checksum,omitempty"`
+	Size         int64  `json:"size"`
 }
 type OutboxItem struct {
 	ID        int64          `json:"id"`

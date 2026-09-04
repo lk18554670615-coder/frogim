@@ -1,6 +1,15 @@
 import '../core/auth_validation.dart';
 import '../core/models.dart';
+import '../core/peer_login_info.dart';
 import '../core/user_presence.dart';
+
+abstract interface class MessageDeletionRepository {
+  Future<List<String>> deleteMessagesForEveryone(
+    String conversationId,
+    List<String> messageIds,
+  );
+  bool isMessageDeleted(String messageId);
+}
 
 abstract interface class ImRepository {
   Stream<bool> get connectionChanges;
@@ -13,7 +22,7 @@ abstract interface class ImRepository {
   Future<bool> restoreSession();
   Future<String?> requestCode(String phone);
   Future<void> enterDemo();
-  Future<AppUser> login(String phone, String code);
+  Future<AppUser> login(String phone, String code, {String inviteCode = ''});
   Future<AppUser> passwordLogin(String phone, String password);
   Future<QrLoginTicket> createQrLoginTicket({required String clientName});
   Future<AppUser?> pollQrLoginTicket(QrLoginTicket ticket);
@@ -24,7 +33,11 @@ abstract interface class ImRepository {
     required String code,
     required String password,
     required String name,
+    String inviteCode = '',
   });
+  Future<bool> validateInviteCode(String code);
+  Future<InviteCodeProfile> inviteCode();
+  Future<InviteCodeProfile> changeInviteCode(String code);
   Future<void> requestPasswordResetCode(String phone);
   Future<void> resetPassword({
     required String phone,
@@ -33,6 +46,8 @@ abstract interface class ImRepository {
   });
   Future<void> logout();
   Future<AppUser> profile();
+  Future<ChatMessage> refreshMessageMedia(ChatMessage message);
+  Future<PeerLoginInfo> peerLoginInfo(String conversationId);
   Future<List<UserPresenceSnapshot>> userPresence(
     List<String> userIds, {
     String? groupId,

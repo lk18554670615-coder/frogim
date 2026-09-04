@@ -3,9 +3,11 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../core/app_controller.dart';
 import '../../core/app_theme.dart';
@@ -19,6 +21,198 @@ import '../legal_documents.dart';
 import '../widgets/linli_widgets.dart';
 import 'chat_screen.dart';
 import 'settings_preferences.dart';
+
+class MyInviteCodeScreen extends StatefulWidget {
+  const MyInviteCodeScreen({super.key, required this.controller});
+  final AppController controller;
+
+  @override
+  State<MyInviteCodeScreen> createState() => _MyInviteCodeScreenState();
+}
+
+class _MyInviteCodeScreenState extends State<MyInviteCodeScreen> {
+  InviteCodeProfile? profile;
+  Object? loadError;
+  bool loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      loading = true;
+      loadError = null;
+    });
+    try {
+      final value = await widget.controller.loadInviteCode();
+      if (mounted) setState(() => profile = value);
+    } catch (error) {
+      if (mounted) setState(() => loadError = error);
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  Future<void> _copy() async {
+    final code = profile?.code;
+    if (code == null) return;
+    await Clipboard.setData(ClipboardData(text: code));
+    if (mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('邀请码已复制')));
+    }
+  }
+
+  Future<void> _change() async {
+    final current = profile;
+    if (current == null || current.selfChangesRemaining <= 0) return;
+    final input = TextEditingController();
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('修改邀请码'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('仅能自行修改一次。修改后旧邀请码立即失效且不能恢复。'),
+            const SizedBox(height: 14),
+            TextField(
+              key: const Key('custom-invite-code'),
+              controller: input,
+              autofocus: true,
+              maxLength: 20,
+              textCapitalization: TextCapitalization.characters,
+              decoration: const InputDecoration(
+                labelText: '新邀请码',
+                helperText: '6–20 位字母、数字、下划线或短横线',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, input.text),
+            child: const Text('确认修改'),
+          ),
+        ],
+      ),
+    );
+    input.dispose();
+    if (value == null) return;
+    final normalized = value.trim().toUpperCase();
+    if (!RegExp(
+      r'^[A-Z0-9](?:[A-Z0-9_-]{4,18})[A-Z0-9]$',
+    ).hasMatch(normalized)) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('邀请码格式不正确')));
+      }
+      return;
+    }
+    final updated = await widget.controller.changeInviteCode(normalized);
+    if (!mounted) return;
+    if (updated == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(widget.controller.error ?? '邀请码修改失败')),
+      );
+      return;
+    }
+    setState(() => profile = updated);
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('邀请码已修改，旧邀请码已失效')));
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: const GlassAppBar(title: Text('我的邀请码')),
+    body: loading
+        ? const Center(child: CircularProgressIndicator())
+        : loadError != null || profile == null
+        ? Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('邀请码暂时无法加载'),
+                const SizedBox(height: 12),
+                OutlinedButton(onPressed: _load, child: const Text('重试')),
+              ],
+            ),
+          )
+        : ListView(
+            padding: const EdgeInsets.all(24),
+            children: [
+              Center(
+                child: Container(
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(22),
+                  ),
+                  child: QrImageView(
+                    data: profile!.qrPayload,
+                    size: 230,
+                    backgroundColor: Colors.white,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 22),
+              Text(
+                profile!.code,
+                key: const Key('my-invite-code'),
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 2,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                profile!.status == 'active' ? '邀请码有效' : '邀请码已被停用',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: profile!.status == 'active'
+                      ? LinliColors.brandGreen
+                      : Theme.of(context).colorScheme.error,
+                ),
+              ),
+              const SizedBox(height: 22),
+              FilledButton.icon(
+                onPressed: _copy,
+                icon: const Icon(CupertinoIcons.doc_on_doc),
+                label: const Text('复制邀请码'),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                key: const Key('change-invite-code'),
+                onPressed: profile!.selfChangesRemaining > 0 ? _change : null,
+                icon: const Icon(CupertinoIcons.pencil),
+                label: Text(
+                  profile!.selfChangesRemaining > 0
+                      ? '修改邀请码（剩余 1 次）'
+                      : '邀请码修改次数已用完',
+                ),
+              ),
+              const SizedBox(height: 18),
+              Text(
+                '对方注册时填写或扫描此邀请码即可记录邀请关系。不会自动添加好友，也不会展示对方账号信息。',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+  );
+}
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({
@@ -731,17 +925,22 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       context: context,
       builder: (sheetContext) => CupertinoActionSheet(
         title: const Text('更换头像'),
-        message: const Text('选择照片后可以裁剪和旋转，头像会按正方形保存。'),
+        message: Text(
+          kIsWeb
+              ? '选择 JPG、PNG 或 WebP 图片，保存后会作为新头像。'
+              : '选择照片后可以裁剪和旋转，头像会按正方形保存。',
+        ),
         actions: [
-          CupertinoActionSheetAction(
-            key: const Key('profile-avatar-camera'),
-            onPressed: () => Navigator.pop(sheetContext, ImageSource.camera),
-            child: const Text('拍照'),
-          ),
+          if (!kIsWeb)
+            CupertinoActionSheetAction(
+              key: const Key('profile-avatar-camera'),
+              onPressed: () => Navigator.pop(sheetContext, ImageSource.camera),
+              child: const Text('拍照'),
+            ),
           CupertinoActionSheetAction(
             key: const Key('profile-avatar-gallery'),
             onPressed: () => Navigator.pop(sheetContext, ImageSource.gallery),
-            child: const Text('从手机相册选择'),
+            child: Text(kIsWeb ? '从电脑选择图片' : '从手机相册选择'),
           ),
         ],
         cancelButton: CupertinoActionSheetAction(
@@ -754,55 +953,80 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 
   Future<void> _pickAvatar(ImageSource source) async {
+    XFile? file;
     try {
-      final file = await ImagePicker().pickImage(
+      file = await ImagePicker().pickImage(
         source: source,
         imageQuality: 88,
         maxWidth: 1600,
         maxHeight: 1600,
       );
       if (file == null) return;
-      final bytes = await file.readAsBytes();
-      if (!mounted) return;
-      if (bytes.length > 8 * 1024 * 1024) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('头像不能超过 8 MB')));
-        return;
-      }
-      final mimeType = avatarImageMimeType(bytes);
-      if (mimeType == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('请选择 JPG、PNG 或 WebP 格式的图片')),
-        );
-        return;
-      }
-      final editedBytes = await editAvatarImage(context, bytes);
-      if (!mounted || editedBytes == null) return;
-      final editedMime = avatarImageMimeType(editedBytes);
-      if (editedMime == null || editedBytes.length > 8 * 1024 * 1024) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('头像处理失败，请重新选择图片')));
-        return;
-      }
-      setState(() {
-        avatarBytes = editedBytes;
-        avatarFileName = editedMime == 'image/png'
-            ? 'avatar.png'
-            : editedMime == 'image/webp'
-            ? 'avatar.webp'
-            : 'avatar.jpg';
-        avatarPath = null;
-        avatarMime = editedMime;
-        saveError = null;
-      });
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('无法读取头像图片，请检查相册权限后重试')));
+      return;
     }
+    final selectedFile = file;
+    Uint8List bytes;
+    try {
+      bytes = await selectedFile.readAsBytes();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(kIsWeb ? '无法读取所选图片，请重新选择' : '无法读取头像图片，请检查相册权限后重试'),
+        ),
+      );
+      return;
+    }
+    if (!mounted) return;
+    if (bytes.length > 8 * 1024 * 1024) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('头像不能超过 8 MB')));
+      return;
+    }
+    final mimeType = avatarImageMimeType(bytes);
+    if (mimeType == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请选择 JPG、PNG 或 WebP 格式的图片')));
+      return;
+    }
+    Uint8List? editedBytes = bytes;
+    if (!kIsWeb) {
+      try {
+        editedBytes = await editAvatarImage(context, bytes);
+      } catch (_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('头像处理失败，请重新选择图片')));
+        return;
+      }
+    }
+    if (!mounted || editedBytes == null) return;
+    final editedMime = avatarImageMimeType(editedBytes);
+    if (editedMime == null || editedBytes.length > 8 * 1024 * 1024) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('头像处理失败，请重新选择图片')));
+      return;
+    }
+    setState(() {
+      avatarBytes = editedBytes;
+      avatarFileName = editedMime == 'image/png'
+          ? 'avatar.png'
+          : editedMime == 'image/webp'
+          ? 'avatar.webp'
+          : 'avatar.jpg';
+      avatarPath = null;
+      avatarMime = editedMime;
+      saveError = null;
+    });
   }
 
   Future<void> _chooseGender() async {

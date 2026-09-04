@@ -48,7 +48,7 @@ func accessTestDatabase(t *testing.T) string {
 }
 
 func TestUserAccessSchema(t *testing.T) {
-	if schemaVersion != 60 {
+	if schemaVersion < 60 {
 		t.Fatalf("version %d", schemaVersion)
 	}
 	for _, v := range []string{"im_user_access_profiles", "im_user_access_logs", "registration_ip inet", "last_login_ip inet", "im_user_access_logs_ip_time_idx", "im_user_access_logs_time_idx"} {
@@ -207,7 +207,7 @@ func TestPostgresUserAccessMigrationFrom59(t *testing.T) {
 		var version int
 		var hash string
 		err = p.pool.QueryRow(ctx, `SELECT max(version) FROM im_schema_migrations`).Scan(&version)
-		if err != nil || version != 60 {
+		if err != nil || version != schemaVersion {
 			t.Fatal(version, err)
 		}
 		err = p.pool.QueryRow(ctx, `SELECT password_hash FROM im_users WHERE id='legacy-ip-user'`).Scan(&hash)

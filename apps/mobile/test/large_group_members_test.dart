@@ -121,6 +121,26 @@ void main() {
     });
   }
 
+  testWidgets('从群消息头像添加好友提交 group 来源和真实群 ID', (tester) async {
+    final repo = _Repository();
+    await _open(tester, repo);
+
+    await tester.tap(find.byKey(const Key('message-avatar-msg10')));
+    await tester.pumpAndSettle();
+    expect(find.byType(FriendProfileScreen), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('friend-primary-action')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('发送好友申请'));
+    await tester.pumpAndSettle();
+
+    expect(repo.friendRequestTarget, 'g10');
+    expect(repo.friendRequestSource, 'group');
+    expect(repo.friendRequestSourceId, 'c-team');
+    expect(find.text('好友申请已发送'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('成员资料加载失败后点击头像重试，不永久禁用；返回后普通刷新不覆盖完整缓存', (tester) async {
     final repo = _Repository()..fail = true;
     final controller = await _open(tester, repo);
@@ -271,6 +291,9 @@ class _Repository extends DemoImRepository {
   bool fail = false;
   Completer<List<GroupMember>>? blockedRead;
   int memberCalls = 0;
+  String? friendRequestTarget;
+  String? friendRequestSource;
+  String? friendRequestSourceId;
   @override
   Stream<ImEvent> get events => updates.stream;
   @override
@@ -306,6 +329,18 @@ class _Repository extends DemoImRepository {
     allowMemberAddFriend: true,
     updatedAt: DateTime(2026),
   );
+  @override
+  Future<void> sendFriendRequest(
+    String userId,
+    String note, {
+    String source = 'search',
+    String? sourceId,
+  }) async {
+    friendRequestTarget = userId;
+    friendRequestSource = source;
+    friendRequestSourceId = sourceId;
+  }
+
   @override
   Future<List<ChatMessage>> messages(String id) async => List.of(chat);
 }

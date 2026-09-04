@@ -76,6 +76,34 @@ void main() {
     );
   });
 
+  test('旧版通用群系统消息按结构化事件显示具体操作', () {
+    const payload = <String, Object?>{
+      'type': 1002,
+      'schemaVersion': 1,
+      'event': 'group.mute_all.updated',
+      'digest': '[群系统消息]',
+      'data': {'muted': true},
+    };
+    final message = MessageMapper().toChatMessage(
+      WukongMessage(
+        messageId: 'mute-all',
+        messageSeq: 2,
+        clientMsgNo: 'mute-all',
+        clientSeq: 0,
+        fromUid: 'owner',
+        channel: const WukongChannel(id: 'c-team', type: 2),
+        timestamp: DateTime(2026),
+        payload: payload,
+        state: WukongMessageState.sent,
+      ),
+      currentUserId: 'member',
+      conversationId: 'c-team',
+    );
+    expect(message.text, '已开启全员禁言');
+    expect(MessageContentRegistry.standard().digest(payload), '已开启全员禁言');
+    expect(messagePreviewText(message), '已开启全员禁言');
+  });
+
   for (final role in ['owner', 'admin', 'member']) {
     for (final width in [390.0, 1280.0]) {
       testWidgets('$role / $width 聊天顶部及旧公告提示可查看全文', (tester) async {

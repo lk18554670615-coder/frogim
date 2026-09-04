@@ -28,7 +28,7 @@ type Postgres struct {
 	historyBoundary GroupHistoryBoundaryReader
 }
 
-const schemaVersion = 60
+const schemaVersion = 63
 
 type PostgresOptions struct {
 	MaxConns          int32
@@ -149,6 +149,11 @@ func (p *Postgres) migrate(ctx context.Context) error {
 			// schema 57. Invalidate every existing administrator JWT exactly once
 			// after normalizedSchema has backfilled and constrained usernames.
 			if _, err = tx.Exec(ctx, `UPDATE im_admin_accounts SET auth_version=auth_version+1,updated_at=now()`); err != nil {
+				return err
+			}
+		}
+		if current < 63 {
+			if err = p.backfillInviteCodes(ctx, tx); err != nil {
 				return err
 			}
 		}
@@ -473,40 +478,11 @@ func (p *Postgres) GetUser(ctx context.Context, id string) (*model.User, error) 
 }
 
 func (p *Postgres) LoginOrCreateUser(ctx context.Context, phone, name, id string, created time.Time) (*model.User, error) {
-	u := &model.User{}
-	err := p.pool.QueryRow(ctx, `INSERT INTO im_users(id,phone,name,handle,created_at) VALUES($1,$2,$3,'gg_'||left(md5($1),20),$4) ON CONFLICT(phone) DO UPDATE SET phone=excluded.phone RETURNING id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,allow_search_by_handle,allow_search_by_phone,gender,banned,created_at`, id, phone, name, created).Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.AllowSearchByHandle, &u.AllowSearchByPhone, &u.Gender, &u.Banned, &u.CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-	if u.Banned {
-		return nil, ErrForbidden
-	}
-	return u, nil
+	u, _, err := p.LoginOrCreateUserWithInvite(ctx, phone, name, id, created, true, "disabled", "")
+	return u, err
 }
 func (p *Postgres) RegisterPasswordUser(ctx context.Context, phone, name, id, hash string, created time.Time) (*model.User, error) {
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-	u := &model.User{}
-	err = tx.QueryRow(ctx, `INSERT INTO im_users(id,phone,name,handle,password_hash,password_updated_at,created_at) VALUES($1,$2,$3,'gg_'||left(md5($1),20),$4,$5,$5)
-		RETURNING id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,allow_search_by_handle,allow_search_by_phone,gender,banned,created_at`, id, phone, name, hash, created).Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.AllowSearchByHandle, &u.AllowSearchByPhone, &u.Gender, &u.Banned, &u.CreatedAt)
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-		return nil, ErrConflict
-	}
-	if err != nil {
-		return nil, err
-	}
-	metadata, _ := json.Marshal(map[string]any{"method": "phone_password"})
-	if _, err = tx.Exec(ctx, `INSERT INTO im_audits(id,actor_id,action,target_type,target_id,metadata,created_at) VALUES($1,$2,'auth.register','user',$2,$3,$4)`, "aud_register_"+id, id, metadata, created); err != nil {
-		return nil, err
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return u, nil
+	return p.RegisterPasswordUserWithInvite(ctx, phone, name, id, hash, created, "disabled", "")
 }
 
 func (p *Postgres) PasswordCredentials(ctx context.Context, phone string) (*model.User, string, error) {
@@ -904,7 +880,7 @@ func (p *Postgres) listAdminUsers(ctx context.Context, q, status, cursor string,
 	rows, err := p.pool.Query(ctx, `SELECT u.id,u.phone,u.name,COALESCE(u.handle,''),u.handle_change_count,u.avatar_url,u.gender,
 		(u.banned AND (u.banned_until IS NULL OR u.banned_until>now())),u.banned_until,u.created_at,
 		COALESCE(presence.online,false),COALESCE(presence.total_online_count,0),presence.last_offline_at,
-		latest.installation_id,latest.platform,latest.device_name,latest.device_model,latest.os_version,latest.app_version,latest.last_seen_at
+		latest.installation_id,latest.platform,latest.device_name,latest.device_model,latest.os_version,latest.app_version,latest.last_seen_at,u.can_delete_messages_for_everyone
 		FROM im_users u LEFT JOIN im_wukong_presence presence ON presence.user_id=u.id
 		LEFT JOIN LATERAL (SELECT installation_id,platform,device_name,device_model,os_version,app_version,last_seen_at
 			FROM im_client_devices device WHERE device.user_id=u.id ORDER BY last_seen_at DESC,installation_id LIMIT 1) latest ON true
@@ -922,7 +898,7 @@ func (p *Postgres) listAdminUsers(ctx context.Context, q, status, cursor string,
 		var installationID, platform, deviceName, deviceModel, osVersion, appVersion *string
 		var deviceLastSeen *time.Time
 		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.AvatarURL, &u.Gender, &u.Banned, &u.BannedUntil, &u.CreatedAt, &u.Online, &u.OnlineConnections, &u.LastOfflineAt,
-			&installationID, &platform, &deviceName, &deviceModel, &osVersion, &appVersion, &deviceLastSeen); err != nil {
+			&installationID, &platform, &deviceName, &deviceModel, &osVersion, &appVersion, &deviceLastSeen, &u.CanDeleteMessagesForEveryone); err != nil {
 			return nil, 0, "", err
 		}
 		if installationID != nil {
@@ -1364,15 +1340,11 @@ func (p *Postgres) CreateMedia(ctx context.Context, m Media) error {
 	return err
 }
 func (p *Postgres) CompleteMedia(ctx context.Context, id, uid string, size int64, sum string) error {
-	tag, err := p.pool.Exec(ctx, `UPDATE im_media SET status='ready',size=$3,checksum=$4,completed_at=now() WHERE id=$1 AND owner_id=$2 AND status='pending'`, id, uid, size, sum)
-	if err == nil && tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return err
+	return p.CompleteMediaWithCover(ctx, id, uid, size, sum, "")
 }
 func (p *Postgres) GetMedia(ctx context.Context, id string) (Media, error) {
 	var m Media
-	err := p.pool.QueryRow(ctx, `SELECT id,owner_id,object_key,mime,size,status,checksum FROM im_media WHERE id=$1`, id).Scan(&m.ID, &m.OwnerID, &m.ObjectKey, &m.MIME, &m.Size, &m.Status, &m.Checksum)
+	err := p.pool.QueryRow(ctx, `SELECT id,owner_id,object_key,mime,size,status,checksum,COALESCE(cover_media_id,'') FROM im_media WHERE id=$1`, id).Scan(&m.ID, &m.OwnerID, &m.ObjectKey, &m.MIME, &m.Size, &m.Status, &m.Checksum, &m.CoverMediaID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return m, ErrNotFound
 	}
@@ -1382,19 +1354,25 @@ func (p *Postgres) GetMedia(ctx context.Context, id string) (Media, error) {
 func (p *Postgres) CanAccessMedia(ctx context.Context, uid, id string) (bool, error) {
 	var allowed bool
 	err := p.pool.QueryRow(ctx, `SELECT EXISTS(
-		SELECT 1 FROM im_media media WHERE media.id=$2 AND (
-			media.owner_id=$1 OR EXISTS(
+		SELECT 1 FROM im_media media WHERE (media.id=$2 OR media.cover_media_id=$2) AND (
+			(media.owner_id=$1 AND NOT EXISTS(SELECT 1 FROM im_wukong_message_index own_i WHERE (own_i.media_id=media.id OR own_i.media_id IN(SELECT parent.id FROM im_media parent WHERE parent.cover_media_id=media.id)) AND im_message_is_deleted(own_i.message_id::text))) OR EXISTS(
 				SELECT 1 FROM im_wukong_media_channels binding
-				WHERE binding.media_id=$2 AND (
+				WHERE binding.media_id=media.id AND (
+					NOT EXISTS(SELECT 1 FROM im_wukong_message_index mi WHERE mi.media_id=media.id AND mi.conversation_id IS NOT NULL) OR
+					EXISTS(SELECT 1 FROM im_wukong_message_index mi WHERE mi.media_id=media.id AND mi.channel_type=binding.channel_type AND NOT im_message_is_deleted(mi.message_id::text) AND (
+						(mi.channel_type=2 AND mi.conversation_id=binding.channel_id) OR
+						(mi.channel_type=1 AND EXISTS(SELECT 1 FROM im_members a JOIN im_members b ON b.conversation_id=a.conversation_id WHERE a.conversation_id=mi.conversation_id AND a.user_id=binding.sender_id AND b.user_id=binding.channel_id))
+					))
+				) AND (
 					(binding.channel_type=1 AND (binding.sender_id=$1 OR binding.channel_id=$1)) OR
 					(binding.channel_type=2 AND EXISTS(
 						SELECT 1 FROM im_members member
 						WHERE member.conversation_id=binding.channel_id AND member.user_id=$1
-						AND EXISTS(SELECT 1 FROM im_wukong_message_index i WHERE i.media_id=$2 AND i.conversation_id=binding.channel_id AND im_can_read_group_message($1,i.conversation_id,i.message_seq,i.message_timestamp))
+						AND EXISTS(SELECT 1 FROM im_wukong_message_index i WHERE i.media_id=media.id AND i.conversation_id=binding.channel_id AND NOT im_message_is_deleted(i.message_id::text) AND im_can_read_group_message($1,i.conversation_id,i.message_seq,i.message_timestamp))
 					))
 				)
 			) OR EXISTS(
-				SELECT 1 FROM im_moments moment WHERE $2=ANY(moment.media_ids) AND moment.status<>'deleted' AND (
+				SELECT 1 FROM im_moments moment WHERE media.id=ANY(moment.media_ids) AND moment.status<>'deleted' AND (
 					moment.author_id=$1 OR (moment.status='published' AND (
 						moment.visibility='public' OR
 						(moment.visibility IN ('friends','excluded') AND EXISTS(
@@ -1418,10 +1396,17 @@ func (p *Postgres) CanAccessMedia(ctx context.Context, uid, id string) (bool, er
 }
 
 func (p *Postgres) BindMediaChannel(ctx context.Context, binding MediaChannelBinding) error {
+	allowed, err := p.CanAccessMedia(ctx, binding.SenderID, binding.MediaID)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return ErrForbidden
+	}
 	result, err := p.pool.Exec(ctx, `
 		INSERT INTO im_wukong_media_channels(media_id,channel_id,channel_type,sender_id)
 		SELECT media.id,$2,$3,$4 FROM im_media media
-		WHERE media.id=$1 AND media.owner_id=$4 AND media.status='ready'
+		WHERE media.id=$1 AND media.status='ready'
 		ON CONFLICT(media_id,channel_id,channel_type) DO NOTHING
 	`, binding.MediaID, binding.ChannelID, binding.ChannelType, binding.SenderID)
 	if err == nil && result.RowsAffected() == 0 {
@@ -3067,11 +3052,8 @@ func groupActor(ctx context.Context, tx pgx.Tx, cid, uid string) (string, string
 	return role, owner, dissolved, err
 }
 func emitGroupSystem(ctx context.Context, tx pgx.Tx, cid, actor, event string, data map[string]any, at time.Time) error {
-	payload, _ := json.Marshal(map[string]any{"conversationId": cid, "event": event, "actorId": actor, "data": data})
-	digest := "[群系统消息]"
-	if event == "group.announcement.updated" {
-		digest = "群公告已更新，点击查看"
-	}
+	digest := groupSystemDigest(event, data)
+	payload, _ := json.Marshal(map[string]any{"conversationId": cid, "event": event, "actorId": actor, "data": data, "digest": digest})
 	var actorExists bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_users WHERE id=$1)`, actor).Scan(&actorExists); err != nil {
 		return err
@@ -3555,7 +3537,15 @@ func (p *Postgres) ApplyGroupMemberAction(ctx context.Context, a GroupMemberActi
 	if err != nil {
 		return err
 	}
-	if err = emitGroupSystem(ctx, tx, a.ConversationID, a.ActorID, "group.member."+a.Action, map[string]any{"userId": a.TargetID, "role": a.Role}, a.At); err != nil {
+	eventData := map[string]any{"userId": a.TargetID, "role": a.Role}
+	if a.Action == "mute" {
+		eventData["muted"] = a.MutedUntil != nil && a.MutedUntil.After(a.At)
+		eventData["mutedUntil"] = a.MutedUntil
+	}
+	if a.Action == "nickname" {
+		eventData["nickname"] = a.Nickname
+	}
+	if err = emitGroupSystem(ctx, tx, a.ConversationID, a.ActorID, "group.member."+a.Action, eventData, a.At); err != nil {
 		return err
 	}
 	if a.Action == "leave" || a.Action == "remove" || a.Action == "role" || a.Action == "transfer" {
@@ -3606,6 +3596,9 @@ func (p *Postgres) AdminApplyGroupMemberAction(ctx context.Context, a AdminGroup
 		return err
 	}
 	eventData := map[string]any{"userId": a.TargetID, "role": a.Role, "mutedUntil": a.MutedUntil, "reason": a.Reason, "source": "admin"}
+	if a.Action == "mute" {
+		eventData["muted"] = a.MutedUntil != nil && a.MutedUntil.After(a.At)
+	}
 	if err = emitGroupSystem(ctx, tx, a.ConversationID, a.ActorID, "group.member."+a.Action, eventData, a.At); err != nil {
 		return err
 	}

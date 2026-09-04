@@ -6,6 +6,97 @@ Map<String, Object?> _objectMap(Object? value) {
 const groupAnnouncementUpdatedEvent = 'group.announcement.updated';
 const groupAnnouncementUpdatedText = '群公告已更新，点击查看';
 
+bool isGroupSystemEvent(Map<String, Object?> payload) =>
+    (_eventValue(payload, 'event')?.toString() ?? '').startsWith('group.');
+
+/// Returns a readable operation summary for group system events.
+///
+/// Older messages used a generic `[群系统消息]` digest. Those placeholders are
+/// deliberately ignored so their structured event and data can still be
+/// rendered without rewriting message history.
+String groupSystemEventDisplayText(Map<String, Object?> payload) {
+  final explicit = _explicitDigest(
+    payload,
+    placeholders: const {'[群系统消息]', '[系统消息]', '群系统消息', '系统消息'},
+  );
+  if (explicit.isNotEmpty) return explicit;
+
+  final event = (_eventValue(payload, 'event')?.toString() ?? '').trim();
+  final data = _objectMap(payload['data']);
+  return switch (event) {
+    groupAnnouncementUpdatedEvent => groupAnnouncementUpdatedText,
+    'group.created' => '群聊已创建',
+    'group.profile.updated' => '群资料已更新',
+    'group.history.updated' =>
+      _asBool(data['historyVisibleToNewMembers']) == true
+          ? '已允许新成员查看入群前消息'
+          : _asBool(data['historyVisibleToNewMembers']) == false
+          ? '已关闭新成员查看入群前消息'
+          : '群历史消息可见范围已更新',
+    'group.invite.accepted' => '有成员接受邀请并加入群聊',
+    'group.invite.rejected' => '有成员拒绝了群聊邀请',
+    'group.invite.cancelled' => '群聊邀请已取消',
+    'group.member.joined' =>
+      data['source'] == 'qr' ? '有成员通过二维码加入群聊' : '有成员加入群聊',
+    'group.members.added' ||
+    'group.member_added' => _memberAddedText(data['userIds']),
+    'group.member.leave' => '有成员退出群聊',
+    'group.member.remove' => '有成员被移出群聊',
+    'group.member.role' => switch (data['role']) {
+      'admin' => '已设置一名群管理员',
+      'member' => '已取消一名群管理员',
+      _ => '群成员角色已更新',
+    },
+    'group.member.transfer' => '群主已转让',
+    'group.member.mute' => _memberMuteText(data),
+    'group.member.nickname' => '群昵称已更新',
+    'group.blacklist.added' => '有成员被加入群黑名单',
+    'group.blacklist.removed' => '有成员已移出群黑名单',
+    'group.mute_all.updated' =>
+      _asBool(data['muted']) == true
+          ? '已开启全员禁言'
+          : _asBool(data['muted']) == false
+          ? '已解除全员禁言'
+          : '全员禁言设置已更新',
+    'group.ban.updated' =>
+      _asBool(data['banned']) == true
+          ? '群聊已封禁'
+          : _asBool(data['banned']) == false
+          ? '群聊已解除封禁'
+          : '群聊封禁状态已更新',
+    'group.message.pinned' => '已置顶一条群消息',
+    'group.message.unpinned' => '已取消一条群消息置顶',
+    'group.disbanded' => '群聊已解散',
+    _ => '[群系统消息]',
+  };
+}
+
+String _memberAddedText(Object? value) {
+  final count = value is List ? value.length : 0;
+  return count > 1 ? '$count 位成员已加入群聊' : '有成员加入群聊';
+}
+
+String _memberMuteText(Map<String, Object?> data) {
+  final muted = _asBool(data['muted']);
+  if (muted == true) return '已禁言一名群成员';
+  if (muted == false) return '已解除一名群成员的禁言';
+  if (data.containsKey('mutedUntil')) {
+    final until = data['mutedUntil'];
+    return until == null || until.toString().trim().isEmpty
+        ? '已解除一名群成员的禁言'
+        : '已禁言一名群成员';
+  }
+  return '群成员禁言设置已更新';
+}
+
+bool? _asBool(Object? value) => switch (value) {
+  bool result => result,
+  num result => result != 0,
+  String result when result.toLowerCase() == 'true' || result == '1' => true,
+  String result when result.toLowerCase() == 'false' || result == '0' => false,
+  _ => null,
+};
+
 Object? _eventValue(Map<String, Object?> payload, String key) {
   final data = _objectMap(payload['data']);
   final call = _objectMap(payload['call']);

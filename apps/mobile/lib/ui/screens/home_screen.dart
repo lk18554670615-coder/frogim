@@ -802,6 +802,16 @@ class _DesktopAccountWorkspace extends StatelessWidget {
                 onTap: () =>
                     _push(context, DevicesScreen(controller: controller)),
               ),
+              if (controller.authPolicy.invitationEnabled)
+                _DesktopAction(
+                  icon: CupertinoIcons.ticket_fill,
+                  title: '我的邀请码',
+                  subtitle: '查看、复制或修改个人邀请码',
+                  onTap: () => _push(
+                    context,
+                    MyInviteCodeScreen(controller: controller),
+                  ),
+                ),
               _DesktopAction(
                 icon: CupertinoIcons.bookmark_fill,
                 title: '我的收藏',
@@ -2993,6 +3003,19 @@ class MeTab extends StatelessWidget {
           const SectionHeader('常用'),
           SectionCard(
             children: [
+              if (controller.authPolicy.invitationEnabled)
+                SettingTile(
+                  key: const Key('profile-invite-code'),
+                  icon: CupertinoIcons.ticket_fill,
+                  title: '我的邀请码',
+                  subtitle: '查看、复制或修改个人邀请码',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          MyInviteCodeScreen(controller: controller),
+                    ),
+                  ),
+                ),
               SettingTile(
                 key: const Key('profile-favorites'),
                 icon: CupertinoIcons.bookmark_fill,

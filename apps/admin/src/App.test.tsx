@@ -42,7 +42,7 @@ async function liveFixture(input: RequestInfo | URL, init?: RequestInit) {
   if (url.includes('/users')) {
     const query = new URL(url, 'http://localhost').searchParams.get('q') ?? '';
     const users = [
-      { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia', status: 'active', online: true, onlineConnections: 2, createdAt: '2026-08-01T08:00:00Z' },
+      { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia', status: 'active', online: true, onlineConnections: 2, createdAt: '2026-08-01T08:00:00Z', access: { registrationSource: 'app', registrationIp: '113.210.105.80', lastLoginIp: '150.228.145.1', lastLoginAt: '2026-09-03T02:21:00Z', registrationRegion: { status: 'ok', country: '马来西亚', province: '吉隆坡', city: '吉隆坡', isp: 'Binariang Berhad' }, lastLoginRegion: { status: 'ok', country: '马来西亚', province: '吉隆坡', city: '吉隆坡', isp: 'SpaceX' } } },
       { id: 'u_10288', name: '江宁', phone: '13800001002', handle: 'jiangning', status: 'active', online: false, lastOfflineAt: '2026-08-16T08:00:00Z', createdAt: '2026-08-02T08:00:00Z' },
     ].filter((item) => !query || `${item.name}${item.id}${item.phone}`.includes(query));
     return response({ items: users, total: users.length });
@@ -222,6 +222,20 @@ describe('青蛙呱呱管理后台', () => {
     fireEvent.change(input, { target: { value: '江宁' } });
     await waitFor(() => expect(screen.queryByText('林夏')).not.toBeInTheDocument());
     expect(await screen.findByText('江宁')).toBeInTheDocument();
+  });
+
+  it('用户列表将注册和登录 IP 及归属地拆为两列', async () => {
+    window.history.replaceState({}, '', '/users');
+    render(<App />);
+    await screen.findByText('林夏');
+
+    expect(screen.getByRole('columnheader', { name: '注册 IP / 地址' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: '登录 IP / 地址' })).toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: '注册时间 / IP' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '113.210.105.80' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '150.228.145.1' })).toBeInTheDocument();
+    expect(screen.getByText('马来西亚 · 吉隆坡 · 吉隆坡 · Binariang Berhad')).toBeInTheDocument();
+    expect(screen.getByText('马来西亚 · 吉隆坡 · 吉隆坡 · SpaceX')).toBeInTheDocument();
   });
 
   it('用户反馈分类始终展示中文而不是服务端枚举', async () => {

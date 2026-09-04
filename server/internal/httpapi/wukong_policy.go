@@ -71,6 +71,17 @@ func (x *API) wukongSendPolicy(w http.ResponseWriter, r *http.Request) {
 			write(w, http.StatusOK, wukongPolicySendResponse{ReasonCode: wukong.ReasonNotAllowSend, Code: "MEDIA_TYPE_MISMATCH"})
 			return
 		}
+		if input.ContentType == wukong.ContentTypeVideo {
+			var video struct {
+				CoverMediaID   string `json:"coverMediaId"`
+				LocalPath      string `json:"localPath"`
+				CoverLocalPath string `json:"coverLocalPath"`
+			}
+			if json.Unmarshal(request.Payload, &video) != nil || (video.CoverMediaID != "" && video.CoverMediaID != media.CoverMediaID) || video.LocalPath != "" || video.CoverLocalPath != "" {
+				write(w, http.StatusOK, wukongPolicySendResponse{ReasonCode: wukong.ReasonNotAllowSend, Code: "INVALID_VIDEO_COVER"})
+				return
+			}
+		}
 		if err = x.app.BindMediaChannel(store.MediaChannelBinding{
 			MediaID: mediaID, ChannelID: route.ChannelID,
 			ChannelType: route.ChannelType, SenderID: request.FromUID,

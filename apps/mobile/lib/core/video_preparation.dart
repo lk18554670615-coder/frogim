@@ -1,5 +1,6 @@
 import 'video_preparation_stub.dart'
     if (dart.library.io) 'video_preparation_native.dart'
+    if (dart.library.js_interop) 'video_preparation_web.dart'
     as platform;
 import 'video_preparation_types.dart';
 

@@ -11,6 +11,9 @@ class PreparedVideoData {
     required this.mimeType,
     required this.durationSeconds,
     required this.compressed,
+    this.width,
+    this.height,
+    this.coverBytes,
   });
 
   final Uint8List bytes;
@@ -19,6 +22,9 @@ class PreparedVideoData {
   final String mimeType;
   final int durationSeconds;
   final bool compressed;
+  final int? width;
+  final int? height;
+  final Uint8List? coverBytes;
 }
 
 class VideoPreparationCancelled implements Exception {
@@ -54,6 +60,19 @@ void validatePreparedVideo({
   }
   if (byteLength > maxBytes) {
     final maxMB = maxBytes ~/ (1024 * 1024);
-    throw FormatException('压缩后的视频仍超过 $maxMB MB');
+    throw FormatException('视频文件超过 $maxMB MB');
   }
+  if (byteLength <= 0) throw const FormatException('视频文件为空');
 }
+
+String videoMimeType(String fileName) =>
+    switch (fileName.toLowerCase().split('.').last) {
+      'mp4' => 'video/mp4',
+      'mov' => 'video/quicktime',
+      'm4v' => 'video/x-m4v',
+      'webm' => 'video/webm',
+      'ogv' || 'ogg' => 'video/ogg',
+      'avi' => 'video/x-msvideo',
+      'mkv' => 'video/x-matroska',
+      _ => 'application/octet-stream',
+    };

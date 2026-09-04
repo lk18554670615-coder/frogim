@@ -136,6 +136,9 @@ void main() {
             });
           }
           if (offline) return http.Response('{}', 503);
+          if (request.url.path == '/v2/im/datasource/message-extras') {
+            return reply({'items': []});
+          }
           if (request.url.path == '/v2/channels/conversations') {
             return reply({
               'items': [

@@ -383,48 +383,58 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
   }
 
   Future<void> _pickAvatar() async {
+    XFile? file;
     try {
-      final file = await ImagePicker().pickImage(
+      file = await ImagePicker().pickImage(
         source: ImageSource.gallery,
         imageQuality: 88,
         maxWidth: 1600,
         maxHeight: 1600,
       );
       if (file == null) return;
-      final Uint8List bytes = await file.readAsBytes();
-      if (!mounted) return;
-      if (bytes.length > 8 * 1024 * 1024) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('群头像不能超过 8 MB')));
-        return;
-      }
-      final mimeType = avatarImageMimeType(bytes);
-      if (mimeType == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('请选择 JPG、PNG 或 WebP 格式的图片')),
-        );
-        return;
-      }
-      await _runProfileUpdate(
-        () => widget.controller.updateGroupProfile(
-          widget.conversation.id,
-          avatar: MediaUpload(
-            bytes: bytes,
-            fileName: file.name,
-            mimeType: mimeType,
-            kind: MessageContentKind.image,
-            localPath: file.path,
-          ),
-        ),
-      );
     } catch (_) {
       if (!mounted) return;
-      setState(() => busy = false);
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('无法读取群头像，请检查相册权限后重试')));
+      return;
     }
+    final selectedFile = file;
+    Uint8List bytes;
+    try {
+      bytes = await selectedFile.readAsBytes();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('无法读取群头像，请检查相册权限后重试')));
+      return;
+    }
+    if (!mounted) return;
+    if (bytes.length > 8 * 1024 * 1024) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('群头像不能超过 8 MB')));
+      return;
+    }
+    final mimeType = avatarImageMimeType(bytes);
+    if (mimeType == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请选择 JPG、PNG 或 WebP 格式的图片')));
+      return;
+    }
+    await _runProfileUpdate(
+      () => widget.controller.updateGroupProfile(
+        widget.conversation.id,
+        avatar: MediaUpload(
+          bytes: bytes,
+          fileName: selectedFile.name,
+          mimeType: mimeType,
+          kind: MessageContentKind.image,
+        ),
+      ),
+    );
   }
 
   Future<void> _openGroupQr() async {

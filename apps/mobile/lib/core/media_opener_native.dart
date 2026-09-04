@@ -6,13 +6,15 @@ import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'models.dart';
+import 'media_access.dart';
 
 Future<String?> openMessageMedia(
   ChatMessage message, {
   required int maxBytes,
 }) async {
-  final source = message.mediaUrl?.trim();
+  final source = mediaAccess.source(message.mediaId, message.mediaUrl)?.trim();
   if (source == null || source.isEmpty) return '文件下载地址暂不可用';
+  final authenticated = mediaAccess.owns(source);
   var path = source;
   if (source.startsWith('https://') || source.startsWith('http://')) {
     final uri = Uri.tryParse(source);
@@ -22,6 +24,7 @@ Future<String?> openMessageMedia(
     final client = http.Client();
     try {
       final request = http.Request('GET', uri);
+      request.headers.addAll(mediaAccess.headersFor(source));
       final response = await client
           .send(request)
           .timeout(const Duration(seconds: 45));
@@ -70,6 +73,7 @@ Future<String?> openMessageMedia(
     }
   }
   final file = File(path);
+  if (authenticated && !mediaAccess.owns(source)) return '登录账号已变化';
   if (!await file.exists()) return '本地文件已不可用';
   final result = await OpenFilex.open(path, type: message.mimeType);
   return result.type == ResultType.done ? null : result.message;

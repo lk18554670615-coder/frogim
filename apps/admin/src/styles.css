@@ -165,16 +165,16 @@ td strong { color: var(--ink); font-weight: 620; }
 .row-action:hover { background: var(--primary-soft); }
 .row-actions { display: flex; align-items: center; gap: 6px; }
 .row-actions.wrap { flex-wrap: wrap; }
-.users-table { min-width: 970px; table-layout: fixed; }
-.users-table th:nth-child(1) { width: 172px; }
-.users-table th:nth-child(2) { width: 124px; }
-.users-table th:nth-child(3) { width: 76px; }
-.users-table th:nth-child(4) { width: 136px; }
-.users-table th:nth-child(5) { width: 157px; }
-.users-table th:nth-child(6) { width: 145px; }
-.users-table th:nth-child(7) { width: 160px; }
+.users-table { min-width: 1180px; table-layout: fixed; }
+.users-table th:nth-child(1) { width: 200px; }
+.users-table th:nth-child(2) { width: 100px; }
+.users-table th:nth-child(3) { width: 150px; }
+.users-table th:nth-child(4) { width: 180px; }
+.users-table th:nth-child(5) { width: 190px; }
+.users-table th:nth-child(6) { width: 190px; }
+.users-table th:nth-child(7) { width: 170px; }
 .users-table .identity > div, .users-table td:nth-child(2) > div { min-width: 0; overflow: hidden; }
-.users-table .identity strong, .users-table .identity small, .users-table td:nth-child(2) strong, .users-table td:nth-child(5) strong, .users-table td:nth-child(5) small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.users-table .identity strong, .users-table .identity small, .users-table td:nth-child(2) strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table-actions-heading, .table-actions-cell { text-align: right; }
 .table-actions-cell > .row-actions { justify-content: flex-end; }
 .user-actions { min-width: 0; gap: 2px; flex-wrap: nowrap; }
@@ -1685,16 +1685,17 @@ tbody tr:focus-within {
 }
 
 .users-table {
-  min-width: 1040px;
+  min-width: 1280px;
   table-layout: fixed;
 }
 
-.users-table th:nth-child(1) { width: 230px; }
-.users-table th:nth-child(2) { width: 110px; }
-.users-table th:nth-child(3) { width: 175px; }
-.users-table th:nth-child(4) { width: 225px; }
-.users-table th:nth-child(5) { width: 150px; }
-.users-table th:nth-child(6) { width: 190px; }
+.users-table th:nth-child(1) { width: 215px; }
+.users-table th:nth-child(2) { width: 105px; }
+.users-table th:nth-child(3) { width: 155px; }
+.users-table th:nth-child(4) { width: 200px; }
+.users-table th:nth-child(5) { width: 200px; }
+.users-table th:nth-child(6) { width: 200px; }
+.users-table th:nth-child(7) { width: 190px; }
 .users-table .identity > span,
 .users-table .device-summary {
   min-width: 0;
@@ -1712,6 +1713,17 @@ tbody tr:focus-within {
 .device-summary strong {
   color: var(--color-ink);
   font-weight: 620;
+}
+.user-ip-table-cell {
+  vertical-align: top;
+}
+.user-ip-table-cell .ip-value {
+  width: 100%;
+  max-width: 100%;
+}
+.user-ip-table-cell > small {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .user-actions { min-width: 190px; gap: 2px; }
 .user-actions .row-action { min-height: 32px; padding-inline: 9px; }

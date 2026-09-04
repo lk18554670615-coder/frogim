@@ -188,6 +188,71 @@ void main() {
     expect(controller.messagesFor('c-team').single.sendError, isNull);
   });
 
+  test('旧失败消息按原发送时间显示，重发成功后不会跳到列表底部', () async {
+    final repository = _MuteRepository();
+    final controller = AppController(repository);
+    await controller.loginAsDemo();
+    addTearDown(controller.dispose);
+    final senderId = controller.currentUser!.id;
+    final base = DateTime(2026, 9, 2, 10);
+    repository.history = [
+      ChatMessage(
+        id: 'new-server',
+        conversationId: 'c-team',
+        senderId: 'other',
+        senderName: '群成员',
+        text: '较新的消息',
+        sentAt: base.add(const Duration(hours: 2)),
+        isMine: false,
+        conversationSeq: 20,
+      ),
+      ChatMessage(
+        id: 'old-failed',
+        clientMessageId: 'old-failed-client',
+        conversationId: 'c-team',
+        senderId: senderId,
+        senderName: '我',
+        text: '较早发送失败的视频',
+        sentAt: base.add(const Duration(hours: 1)),
+        isMine: true,
+        status: MessageStatus.failed,
+        kind: MessageContentKind.video,
+        mediaId: 'uploaded-video',
+        sendError: '消息发送失败，请稍后重试',
+      ),
+      ChatMessage(
+        id: 'old-server',
+        conversationId: 'c-team',
+        senderId: 'other',
+        senderName: '群成员',
+        text: '较早的消息',
+        sentAt: base,
+        isMine: false,
+        conversationSeq: 10,
+      ),
+    ];
+
+    await controller.loadMessages('c-team', force: true);
+    expect(controller.messagesFor('c-team').map((message) => message.id), [
+      'old-server',
+      'old-failed',
+      'new-server',
+    ]);
+
+    repository
+      ..sendStatus = MessageStatus.sent
+      ..sentSequence = 12;
+    await controller.retryMessage(controller.messagesFor('c-team')[1]);
+    final messages = controller.messagesFor('c-team');
+    expect(messages.map((message) => message.id), [
+      'old-server',
+      'old-failed',
+      'new-server',
+    ]);
+    expect(messages[1].status, MessageStatus.sent);
+    expect(messages[1].conversationSeq, 12);
+  });
+
   for (final kind in [
     MessageContentKind.image,
     MessageContentKind.voice,
@@ -500,6 +565,7 @@ class _MuteRepository extends DemoImRepository {
   bool failPolicy = false;
   bool throwOnSend = false;
   MessageStatus sendStatus = MessageStatus.failed;
+  int? sentSequence;
   int sendCalls = 0;
   int mediaCalls = 0;
   int policyLoads = 0;
@@ -547,7 +613,7 @@ class _MuteRepository extends DemoImRepository {
     sendCalls++;
     if (sendBarrier != null) return sendBarrier!.future;
     if (throwOnSend) throw const FormatException('forbidden');
-    return pending.copyWith(status: sendStatus);
+    return pending.copyWith(status: sendStatus, conversationSeq: sentSequence);
   }
 
   @override

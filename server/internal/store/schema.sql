@@ -525,6 +525,8 @@ ALTER TABLE im_push_outbox ADD COLUMN IF NOT EXISTS last_error text NOT NULL DEF
 CREATE INDEX IF NOT EXISTS im_push_outbox_pending_idx ON im_push_outbox(status,available_at) WHERE status='pending';
 CREATE INDEX IF NOT EXISTS im_push_outbox_retention_idx ON im_push_outbox(COALESCE(sent_at,available_at),id) WHERE status IN ('sent','failed');
 ALTER TABLE im_media ADD COLUMN IF NOT EXISTS cleanup_status text NOT NULL DEFAULT '';
+ALTER TABLE im_media ADD COLUMN IF NOT EXISTS cover_media_id text REFERENCES im_media(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS im_media_cover_idx ON im_media(cover_media_id) WHERE cover_media_id IS NOT NULL;
 ALTER TABLE im_media ADD COLUMN IF NOT EXISTS cleanup_locked_at timestamptz;
 ALTER TABLE im_media ADD COLUMN IF NOT EXISTS cleanup_attempts integer NOT NULL DEFAULT 0;
 ALTER TABLE im_media ADD COLUMN IF NOT EXISTS cleanup_last_error text NOT NULL DEFAULT '';
@@ -883,3 +885,42 @@ DROP TABLE IF EXISTS im_sync_events;
 DROP TABLE IF EXISTS im_user_cursors;
 DROP TABLE IF EXISTS im_messages;
 DROP TABLE IF EXISTS im_message_fanout;
+-- Schema 62: a capability granted only through administrator user management.
+ALTER TABLE im_users ADD COLUMN IF NOT EXISTS can_delete_messages_for_everyone boolean NOT NULL DEFAULT false;
+CREATE OR REPLACE FUNCTION im_message_is_deleted(mid text) RETURNS boolean LANGUAGE sql STABLE AS $$
+ SELECT EXISTS(SELECT 1 FROM im_wukong_message_extensions
+ WHERE message_id = CASE
+   WHEN mid ~ '^[0-9]{1,19}$' AND (length(mid)<19 OR mid COLLATE "C"<='9223372036854775807')
+   THEN mid::bigint ELSE NULL END
+ AND payload ? 'deletedForEveryoneAt');
+$$;
+
+-- Schema 63: personal account-registration invitation codes.
+ALTER TABLE im_users ADD COLUMN IF NOT EXISTS invite_code_change_count integer NOT NULL DEFAULT 0 CHECK(invite_code_change_count BETWEEN 0 AND 1);
+CREATE TABLE IF NOT EXISTS im_user_invite_codes(
+ id text PRIMARY KEY,
+ user_id text NOT NULL REFERENCES im_users(id) ON DELETE RESTRICT,
+ code text NOT NULL,
+ status text NOT NULL CHECK(status IN ('active','disabled','retired')),
+ source text NOT NULL CHECK(source IN ('system','user','admin')),
+ created_by text NOT NULL,
+ created_at timestamptz NOT NULL,
+ disabled_at timestamptz,
+ disabled_by text NOT NULL DEFAULT '',
+ retired_at timestamptz,
+ retired_by text NOT NULL DEFAULT '',
+ reason text NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS im_user_invite_codes_code_unique_idx ON im_user_invite_codes(upper(code));
+CREATE UNIQUE INDEX IF NOT EXISTS im_user_invite_codes_current_user_idx ON im_user_invite_codes(user_id) WHERE status IN ('active','disabled');
+CREATE INDEX IF NOT EXISTS im_user_invite_codes_status_time_idx ON im_user_invite_codes(status,created_at DESC,id DESC);
+CREATE TABLE IF NOT EXISTS im_user_invite_relations(
+ invitee_user_id text PRIMARY KEY REFERENCES im_users(id) ON DELETE RESTRICT,
+ inviter_user_id text NOT NULL REFERENCES im_users(id) ON DELETE RESTRICT,
+ invite_code_id text NOT NULL REFERENCES im_user_invite_codes(id) ON DELETE RESTRICT,
+ registration_method text NOT NULL CHECK(registration_method IN ('password','otp')),
+ created_at timestamptz NOT NULL,
+ CHECK(invitee_user_id<>inviter_user_id)
+);
+CREATE INDEX IF NOT EXISTS im_user_invite_relations_inviter_time_idx ON im_user_invite_relations(inviter_user_id,created_at DESC,invitee_user_id DESC);
+CREATE INDEX IF NOT EXISTS im_user_invite_relations_time_idx ON im_user_invite_relations(created_at DESC,invitee_user_id DESC);

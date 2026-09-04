@@ -1012,12 +1012,13 @@ func (a *App) validPassword(password string) bool {
 }
 
 type PublicAuthPolicy struct {
-	RegistrationEnabled  bool `json:"registrationEnabled"`
-	PasswordMinLength    int  `json:"passwordMinLength"`
-	PasswordMaxBytes     int  `json:"passwordMaxBytes"`
-	MessageRecallMinutes int  `json:"messageRecallMinutes"`
-	DirectRecallMinutes  int  `json:"directRecallMinutes"`
-	GroupRecallMinutes   int  `json:"groupRecallMinutes"`
+	RegistrationEnabled    bool   `json:"registrationEnabled"`
+	InviteRegistrationMode string `json:"inviteRegistrationMode"`
+	PasswordMinLength      int    `json:"passwordMinLength"`
+	PasswordMaxBytes       int    `json:"passwordMaxBytes"`
+	MessageRecallMinutes   int    `json:"messageRecallMinutes"`
+	DirectRecallMinutes    int    `json:"directRecallMinutes"`
+	GroupRecallMinutes     int    `json:"groupRecallMinutes"`
 }
 
 func (a *App) AuthPolicy() PublicAuthPolicy {
@@ -1041,12 +1042,13 @@ func (a *App) AuthPolicy() PublicAuthPolicy {
 		minimum = 16
 	}
 	return PublicAuthPolicy{
-		RegistrationEnabled:  registrationEnabled,
-		PasswordMinLength:    minimum,
-		PasswordMaxBytes:     72,
-		MessageRecallMinutes: a.settingInt("messageRecallMinutes", 2),
-		DirectRecallMinutes:  a.settingInt("directRecallMinutes", 1440),
-		GroupRecallMinutes:   a.settingInt("groupRecallMinutes", 1440),
+		RegistrationEnabled:    registrationEnabled,
+		InviteRegistrationMode: inviteMode(settings),
+		PasswordMinLength:      minimum,
+		PasswordMaxBytes:       72,
+		MessageRecallMinutes:   a.settingInt("messageRecallMinutes", 2),
+		DirectRecallMinutes:    a.settingInt("directRecallMinutes", 1440),
+		GroupRecallMinutes:     a.settingInt("groupRecallMinutes", 1440),
 	}
 }
 
@@ -3236,6 +3238,12 @@ func applyModelMessageExtension(message *model.Message, extension map[string]any
 	if message == nil || len(extension) == 0 {
 		return
 	}
+	if value, ok := extension["deletedForEveryoneAt"].(string); ok {
+		if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+			message.DeletedForEveryoneAt = &parsed
+		}
+		message.DeletedForEveryoneBy, _ = extension["deletedForEveryoneBy"].(string)
+	}
 	if value, ok := extension["recalledAt"].(string); ok {
 		if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
 			message.RecalledAt = &parsed
@@ -5208,6 +5216,13 @@ func (a *App) UpdateSettings(actor string, settings map[string]any) error {
 			}
 			continue
 		}
+		if key == "inviteRegistrationMode" {
+			mode, ok := value.(string)
+			if !ok || (mode != "disabled" && mode != "optional" && mode != "required") {
+				return ErrInvalid
+			}
+			continue
+		}
 		return ErrInvalid
 	}
 	if policies, ok := a.persistence.(store.PolicyStore); ok {
@@ -5302,7 +5317,26 @@ func (a *App) CreateMedia(m store.Media) error {
 	return nil
 }
 func (a *App) CompleteMedia(id, uid string, size int64, checksum string) error {
+	return a.CompleteMediaWithCover(id, uid, size, checksum, "")
+}
+func (a *App) CompleteMediaWithCover(id, uid string, size int64, checksum, cover string) error {
+	if ms, ok := a.persistence.(store.VideoMediaStore); ok {
+		if err := ms.CompleteMediaWithCover(context.Background(), id, uid, size, checksum, cover); err != nil {
+			return err
+		}
+		return nil
+	}
+	if cover != "" {
+		c, err := a.GetMedia(cover)
+		m, mediaErr := a.GetMedia(id)
+		if err != nil || mediaErr != nil || c.OwnerID != uid || c.MIME != "image/jpeg" || c.Status != "ready" || !strings.HasPrefix(m.MIME, "video/") || cover == id {
+			return ErrForbidden
+		}
+	}
 	if ms, ok := a.persistence.(store.MediaStore); ok {
+		if cover != "" {
+			return store.ErrUnsupported
+		}
 		if err := ms.CompleteMedia(context.Background(), id, uid, size, checksum); err != nil {
 			if err == store.ErrNotFound {
 				return ErrNotFound
@@ -5319,6 +5353,13 @@ func (a *App) CompleteMedia(id, uid string, size int64, checksum string) error {
 	if m.OwnerID != uid {
 		return ErrForbidden
 	}
+	if m.Status == "ready" {
+		if m.CoverMediaID != cover {
+			return ErrConflict
+		}
+		return nil
+	}
+	m.CoverMediaID = cover
 	m.Status = "ready"
 	m.Size = size
 	m.Checksum = checksum
@@ -5341,7 +5382,7 @@ func (a *App) GetMedia(id string) (store.Media, error) {
 	if m == nil {
 		return store.Media{}, ErrNotFound
 	}
-	return store.Media{ID: m.ID, OwnerID: m.OwnerID, ObjectKey: m.ObjectKey, MIME: m.MIME, Status: m.Status, Checksum: m.Checksum, Size: m.Size}, nil
+	return store.Media{ID: m.ID, OwnerID: m.OwnerID, ObjectKey: m.ObjectKey, MIME: m.MIME, Status: m.Status, Checksum: m.Checksum, Size: m.Size, CoverMediaID: m.CoverMediaID}, nil
 }
 
 func (a *App) BindMediaChannel(binding store.MediaChannelBinding) error {
@@ -5410,15 +5451,23 @@ func (a *App) CanAccessMedia(uid, id string) (bool, error) {
 	if m.OwnerID == uid {
 		return true, nil
 	}
-	for _, binding := range a.mediaBindings[id] {
-		switch binding.ChannelType {
-		case 1:
-			if binding.SenderID == uid || binding.ChannelID == uid {
-				return true, nil
-			}
-		case 2:
-			if a.state.Members[binding.ChannelID][uid] != nil {
-				return true, nil
+	ids := []string{id}
+	for _, parent := range a.state.Media {
+		if parent.CoverMediaID == id {
+			ids = append(ids, parent.ID)
+		}
+	}
+	for _, mediaID := range ids {
+		for _, binding := range a.mediaBindings[mediaID] {
+			switch binding.ChannelType {
+			case 1:
+				if binding.SenderID == uid || binding.ChannelID == uid {
+					return true, nil
+				}
+			case 2:
+				if a.state.Members[binding.ChannelID][uid] != nil {
+					return true, nil
+				}
 			}
 		}
 	}

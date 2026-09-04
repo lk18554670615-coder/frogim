@@ -2,11 +2,14 @@ import 'dart:async';
 
 import '../core/auth_validation.dart';
 import '../core/models.dart';
+import '../core/peer_login_info.dart';
 import '../core/user_presence.dart';
 import 'im_repository.dart';
 import 'secure_local_store.dart';
 
 class DemoImRepository implements ImRepository {
+  @override
+  Future<ChatMessage> refreshMessageMedia(ChatMessage message) async => message;
   @override
   Future<List<UserPresenceSnapshot>> userPresence(
     List<String> userIds, {
@@ -156,7 +159,11 @@ class DemoImRepository implements ImRepository {
   }
 
   @override
-  Future<AppUser> login(String phone, String code) async {
+  Future<AppUser> login(
+    String phone,
+    String code, {
+    String inviteCode = '',
+  }) async {
     await Future<void>.delayed(latency);
     if (!validAuthPhone(phone) || code != '123456') {
       throw const FormatException('请输入有效手机号和验证码');
@@ -195,6 +202,7 @@ class DemoImRepository implements ImRepository {
     required String code,
     required String password,
     required String name,
+    String inviteCode = '',
   }) async {
     if (!validAuthPhone(phone) ||
         code != '123456' ||
@@ -205,6 +213,33 @@ class DemoImRepository implements ImRepository {
     _profile = _profile.copyWith(name: name.trim(), phone: phone.trim());
     return _profile;
   }
+
+  @override
+  Future<bool> validateInviteCode(String code) async => code == 'TESTCODE';
+
+  @override
+  Future<InviteCodeProfile> inviteCode() async => InviteCodeProfile(
+    id: 'ic_demo',
+    code: 'TESTCODE',
+    status: 'active',
+    selfChangesUsed: 0,
+    selfChangesRemaining: 1,
+    qrPayload: 'qingwaguagua://register?invite=TESTCODE',
+    createdAt: DateTime.now(),
+  );
+
+  @override
+  Future<InviteCodeProfile> changeInviteCode(String code) async =>
+      InviteCodeProfile(
+        id: 'ic_demo_changed',
+        code: code.trim().toUpperCase(),
+        status: 'active',
+        selfChangesUsed: 1,
+        selfChangesRemaining: 0,
+        qrPayload:
+            'qingwaguagua://register?invite=${code.trim().toUpperCase()}',
+        createdAt: DateTime.now(),
+      );
 
   @override
   Future<void> requestPasswordResetCode(String phone) async {
@@ -226,6 +261,10 @@ class DemoImRepository implements ImRepository {
 
   @override
   Future<AppUser> profile() async => _profile;
+
+  @override
+  Future<PeerLoginInfo> peerLoginInfo(String conversationId) async =>
+      const PeerLoginInfo(userId: '');
 
   @override
   Future<AppUser> updateProfile({

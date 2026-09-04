@@ -7,6 +7,8 @@ import (
 
 	"github.com/linli/im/server/internal/app"
 	"github.com/linli/im/server/internal/model"
+	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/wukong"
 )
 
 func (x *API) createAdminUser(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +88,31 @@ func (x *API) adminUserFriendMessages(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
+	// Admin audit reads deliberately bypass ordinary-client deletion filtering.
+	if x.wukongClient != nil {
+		start := uint64(0)
+		if before > 0 {
+			start = uint64(before - 1)
+		}
+		page, e := x.wukongClient.SyncMessages(r.Context(), wukong.MessageSyncRequest{LoginUID: userID, ChannelID: friendID, ChannelType: 1, StartMessageSeq: start, Limit: limit, PullMode: 0})
+		if e != nil {
+			writeError(w, 503, "IM_UNAVAILABLE", "message history unavailable")
+			return
+		}
+		items = nil
+		for _, raw := range page.Messages {
+			message, e := wukongForwardSource(raw, store.WukongMessageRef{MessageID: wukongMessageID(raw), ConversationID: conversation.ID, ChannelID: friendID, ChannelType: 1})
+			if e != nil {
+				handleErr(w, e)
+				return
+			}
+			items = append(items, message)
+		}
+		if e = x.app.EnrichWukongMessages(r.Context(), userID, items); e != nil {
+			handleErr(w, e)
+			return
+		}
+	}
 	participants := map[string]*model.User{}
 	for _, participantID := range []string{userID, friendID} {
 		participant, lookupErr := x.app.UserContext(r.Context(), participantID)
@@ -99,7 +126,7 @@ func (x *API) adminUserFriendMessages(w http.ResponseWriter, r *http.Request) {
 	result := make([]map[string]any, 0, len(items))
 	nextBeforeSeq := int64(0)
 	for _, item := range items {
-		item, err = x.messageWithDownloadURL(r.Context(), userID, item)
+		item, err = x.adminMessageWithDownloadURL(r.Context(), item)
 		if err != nil {
 			handleErr(w, err)
 			return
@@ -108,6 +135,7 @@ func (x *API) adminUserFriendMessages(w http.ResponseWriter, r *http.Request) {
 			nextBeforeSeq = item.Seq
 		}
 		result = append(result, map[string]any{
+			"deletedForEveryoneAt": item.DeletedForEveryoneAt, "deletedForEveryoneBy": item.DeletedForEveryoneBy,
 			"id": item.ID, "clientMsgId": item.ClientMsgID, "conversationId": item.ConversationID,
 			"conversationSeq": item.Seq, "senderId": item.SenderID, "sender": participants[item.SenderID],
 			"type": item.Type, "body": item.Body, "replyToId": item.ReplyToID, "createdAt": item.CreatedAt,

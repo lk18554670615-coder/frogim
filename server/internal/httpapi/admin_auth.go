@@ -43,6 +43,8 @@ func adminPermission(method, path string) string {
 		return "channels.write"
 	case strings.Contains(path, "/settings"):
 		return "settings.write"
+	case strings.Contains(path, "/invite-codes") || strings.Contains(path, "/invite-relations"):
+		return "users.write"
 	case strings.Contains(path, "/users"):
 		return "users.write"
 	case strings.Contains(path, "/reports/"):

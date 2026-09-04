@@ -173,6 +173,86 @@ void main() {
     );
   });
 
+  test('Web 预签名头像上传使用独立无会话上传通道', () async {
+    final apiRequests = <String>[];
+    final uploadRequests = <String>[];
+    final apiClient = MockClient((request) async {
+      apiRequests.add('${request.method} ${request.url.path}');
+      if (request.url.host == 'upload.example') {
+        fail('预签名对象上传不应复用业务 API 客户端');
+      }
+      if (request.url.path == '/v2/auth/login') {
+        return _json({
+          'accessToken': 'access',
+          'refreshToken': 'refresh',
+          'user': {
+            'id': 'me',
+            'phone': '13800138000',
+            'name': '旧昵称',
+            'handle': 'old_name',
+          },
+        });
+      }
+      if (request.url.path == '/v2/media/presign') {
+        return _json({
+          'uploadUrl': 'https://upload.example/avatar',
+          'mediaId': 'media-web-avatar',
+          'headers': {'content-type': 'image/png'},
+        });
+      }
+      if (request.url.path == '/v2/media/media-web-avatar/complete') {
+        return _json({});
+      }
+      if (request.url.path == '/v2/users/me' && request.method == 'PATCH') {
+        return _json({
+          'id': 'me',
+          'phone': '13800138000',
+          'name': '旧昵称',
+          'handle': 'old_name',
+          'avatarMediaId': 'media-web-avatar',
+          'avatarUrl': '/v2/avatars/media-web-avatar',
+        });
+      }
+      return http.Response('{}', 404);
+    });
+    final uploadClient = MockClient((request) async {
+      uploadRequests.add('${request.method} ${request.url}');
+      expect(request.headers['authorization'], isNull);
+      expect(request.bodyBytes, Uint8List.fromList([1, 2, 3]));
+      return http.Response('', 200);
+    });
+    final repository = LiveImRepository(
+      client: apiClient,
+      uploadClient: uploadClient,
+      apiBaseUrl: 'https://api.example',
+    );
+    final controller = AppController(repository);
+    addTearDown(controller.dispose);
+    controller.currentUser = await repository.login('13800138000', '123456');
+
+    expect(
+      await controller.saveProfile(
+        avatar: MediaUpload(
+          bytes: Uint8List.fromList([1, 2, 3]),
+          fileName: 'avatar.png',
+          mimeType: 'image/png',
+          kind: MessageContentKind.image,
+        ),
+      ),
+      isTrue,
+    );
+    expect(uploadRequests, ['PUT https://upload.example/avatar']);
+    expect(
+      apiRequests,
+      containsAllInOrder([
+        'POST /v2/auth/login',
+        'POST /v2/media/presign',
+        'POST /v2/media/media-web-avatar/complete',
+        'PATCH /v2/users/me',
+      ]),
+    );
+  });
+
   test('资料绑定失败后重试复用已上传头像，不产生重复媒体', () async {
     final repository = _RetryProfileRepository();
     final controller = AppController(repository)

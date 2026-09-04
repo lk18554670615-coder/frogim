@@ -36,6 +36,8 @@ enum ImEventType {
   messageCreated,
   messageChanged,
   messageRecalled,
+  messagesDeleted,
+  messagePermissionsChanged,
   messageDelivered,
   messageRead,
   messageExpired,
@@ -46,6 +48,38 @@ enum ImEventType {
   scheduledChanged,
   typing,
   unknown,
+}
+
+class InviteCodeProfile {
+  const InviteCodeProfile({
+    required this.id,
+    required this.code,
+    required this.status,
+    required this.selfChangesUsed,
+    required this.selfChangesRemaining,
+    required this.qrPayload,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String code;
+  final String status;
+  final int selfChangesUsed;
+  final int selfChangesRemaining;
+  final String qrPayload;
+  final DateTime createdAt;
+
+  factory InviteCodeProfile.fromJson(Map<String, Object?> json) =>
+      InviteCodeProfile(
+        id: json['id'] as String? ?? '',
+        code: json['code'] as String? ?? '',
+        status: json['status'] as String? ?? 'disabled',
+        selfChangesUsed: (json['selfChangesUsed'] as num?)?.toInt() ?? 0,
+        selfChangesRemaining:
+            (json['selfChangesRemaining'] as num?)?.toInt() ?? 0,
+        qrPayload: json['qrPayload'] as String? ?? '',
+        createdAt: tryParseLocalDateTime(json['createdAt']) ?? DateTime.now(),
+      );
 }
 
 class MessageMention {
@@ -165,6 +199,7 @@ class AppUser {
     this.handleChangesRemaining = 0,
     this.allowSearchByHandle = true,
     this.allowSearchByPhone = false,
+    this.canDeleteMessagesForEveryone = false,
   });
 
   final String id;
@@ -186,6 +221,7 @@ class AppUser {
   final int handleChangesRemaining;
   final bool allowSearchByHandle;
   final bool allowSearchByPhone;
+  final bool canDeleteMessagesForEveryone;
 
   AppUser copyWith({
     String? name,
@@ -203,6 +239,7 @@ class AppUser {
     int? handleChangesRemaining,
     bool? allowSearchByHandle,
     bool? allowSearchByPhone,
+    bool? canDeleteMessagesForEveryone,
   }) => AppUser(
     id: id,
     name: name ?? this.name,
@@ -221,6 +258,8 @@ class AppUser {
         handleChangesRemaining ?? this.handleChangesRemaining,
     allowSearchByHandle: allowSearchByHandle ?? this.allowSearchByHandle,
     allowSearchByPhone: allowSearchByPhone ?? this.allowSearchByPhone,
+    canDeleteMessagesForEveryone:
+        canDeleteMessagesForEveryone ?? this.canDeleteMessagesForEveryone,
   );
 }
 
@@ -369,6 +408,8 @@ class ChatMessage {
     this.mediaId,
     this.mediaWidth,
     this.mediaHeight,
+    this.coverMediaId,
+    this.coverUrl,
     this.stickerId,
     this.momentId,
     this.event,
@@ -395,6 +436,7 @@ class ChatMessage {
     this.reactions = const [],
     this.editedAt,
     this.isPinned = false,
+    this.deletedForEveryone = false,
     this.pinnedAt,
     this.pinnedBy,
     this.expiresAt,
@@ -421,6 +463,8 @@ class ChatMessage {
   final String? mediaId;
   final int? mediaWidth;
   final int? mediaHeight;
+  final String? coverMediaId;
+  final String? coverUrl;
   final String? stickerId;
   final String? momentId;
   final String? event;
@@ -447,6 +491,7 @@ class ChatMessage {
   final List<MessageReaction> reactions;
   final DateTime? editedAt;
   final bool isPinned;
+  final bool deletedForEveryone;
   final DateTime? pinnedAt;
   final String? pinnedBy;
   final DateTime? expiresAt;
@@ -469,6 +514,8 @@ class ChatMessage {
     String? mediaId,
     int? mediaWidth,
     int? mediaHeight,
+    String? coverMediaId,
+    String? coverUrl,
     String? stickerId,
     String? momentId,
     String? event,
@@ -495,6 +542,7 @@ class ChatMessage {
     List<MessageReaction>? reactions,
     DateTime? editedAt,
     bool? isPinned,
+    bool? deletedForEveryone,
     DateTime? pinnedAt,
     String? pinnedBy,
     DateTime? expiresAt,
@@ -520,6 +568,8 @@ class ChatMessage {
     mediaId: mediaId ?? this.mediaId,
     mediaWidth: mediaWidth ?? this.mediaWidth,
     mediaHeight: mediaHeight ?? this.mediaHeight,
+    coverMediaId: coverMediaId ?? this.coverMediaId,
+    coverUrl: coverUrl ?? this.coverUrl,
     stickerId: stickerId ?? this.stickerId,
     momentId: momentId ?? this.momentId,
     event: event ?? this.event,
@@ -546,6 +596,7 @@ class ChatMessage {
     reactions: reactions ?? this.reactions,
     editedAt: editedAt ?? this.editedAt,
     isPinned: isPinned ?? this.isPinned,
+    deletedForEveryone: deletedForEveryone ?? this.deletedForEveryone,
     pinnedAt: pinnedAt ?? this.pinnedAt,
     pinnedBy: pinnedBy ?? this.pinnedBy,
     expiresAt: expiresAt ?? this.expiresAt,
@@ -571,6 +622,8 @@ class ChatMessage {
     'mediaId': mediaId,
     'mediaWidth': mediaWidth,
     'mediaHeight': mediaHeight,
+    'coverMediaId': coverMediaId,
+    'coverUrl': coverUrl,
     'stickerId': stickerId,
     'momentId': momentId,
     'event': event,
@@ -599,6 +652,7 @@ class ChatMessage {
     'reactions': reactions.map((reaction) => reaction.toJson()).toList(),
     'editedAt': editedAt?.toIso8601String(),
     'isPinned': isPinned,
+    'deletedForEveryone': deletedForEveryone,
     'pinnedAt': pinnedAt?.toIso8601String(),
     'pinnedBy': pinnedBy,
     'expiresAt': expiresAt?.toIso8601String(),
@@ -627,6 +681,8 @@ class ChatMessage {
     mediaId: json['mediaId'] as String?,
     mediaWidth: (json['mediaWidth'] as num?)?.toInt(),
     mediaHeight: (json['mediaHeight'] as num?)?.toInt(),
+    coverMediaId: json['coverMediaId'] as String?,
+    coverUrl: json['coverUrl'] as String?,
     stickerId: json['stickerId'] as String?,
     momentId: json['momentId'] as String?,
     event: json['event'] as String?,
@@ -661,6 +717,9 @@ class ChatMessage {
         .toList(),
     editedAt: tryParseLocalDateTime(json['editedAt']),
     isPinned: json['isPinned'] as bool? ?? false,
+    deletedForEveryone:
+        json['deletedForEveryone'] == true ||
+        json['deletedForEveryoneAt'] != null,
     pinnedAt: tryParseLocalDateTime(json['pinnedAt']),
     pinnedBy: json['pinnedBy'] as String?,
     expiresAt: tryParseLocalDateTime(json['expiresAt']),
@@ -749,6 +808,7 @@ class MediaUpload {
     this.durationSeconds,
     this.width,
     this.height,
+    this.coverBytes,
   });
 
   final Uint8List bytes;
@@ -759,6 +819,7 @@ class MediaUpload {
   final int? durationSeconds;
   final int? width;
   final int? height;
+  final Uint8List? coverBytes;
 
   MediaUpload copyWith({int? width, int? height}) => MediaUpload(
     bytes: bytes,
@@ -769,6 +830,7 @@ class MediaUpload {
     durationSeconds: durationSeconds,
     width: width ?? this.width,
     height: height ?? this.height,
+    coverBytes: coverBytes,
   );
 }
 

@@ -3,16 +3,21 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:video_player/video_player.dart';
 
 import '../../core/models.dart';
-import '../../core/video_player_controller_factory.dart';
 import '../../core/video_preparation.dart';
+import '../../core/video_source_lifecycle.dart';
+import 'video_player_screen.dart';
+export 'video_player_screen.dart';
 
 class VideoPreviewResult {
-  const VideoPreviewResult({required this.durationSeconds});
+  const VideoPreviewResult({
+    required this.durationSeconds,
+    this.asFile = false,
+  });
 
   final int durationSeconds;
+  final bool asFile;
 }
 
 Future<ImageSource?> chooseVideoSource(BuildContext context) =>
@@ -38,7 +43,11 @@ Future<ImageSource?> chooseVideoSource(BuildContext context) =>
               key: const Key('choose-gallery-video'),
               leading: const Icon(CupertinoIcons.photo_on_rectangle),
               title: const Text('从相册选择'),
-              subtitle: const Text('发送前自动压缩为兼容格式'),
+              subtitle: Text(
+                supportsNativeVideoCompression
+                    ? '发送前预览并压缩视频'
+                    : '预览后按原格式发送，不进行转码',
+              ),
               onTap: () => Navigator.pop(context, ImageSource.gallery),
             ),
           ],
@@ -52,7 +61,6 @@ Future<VideoPreviewResult?> showVideoSendPreview(
   required String title,
 }) => Navigator.of(context).push<VideoPreviewResult>(
   MaterialPageRoute(
-    fullscreenDialog: true,
     builder: (_) =>
         VideoPlayerScreen(source: source, title: title, sendMode: true),
   ),
@@ -62,10 +70,18 @@ Future<void> showMessageVideo(
   BuildContext context, {
   required String source,
   required String title,
+  Future<String> Function()? resolveSource,
+  Listenable? visibilityChanges,
+  bool Function()? isVisible,
 }) => Navigator.of(context).push<void>(
   MaterialPageRoute(
-    fullscreenDialog: true,
-    builder: (_) => VideoPlayerScreen(source: source, title: title),
+    builder: (_) => VideoPlayerScreen(
+      source: source,
+      title: title,
+      resolveSource: resolveSource,
+      visibilityChanges: visibilityChanges,
+      isVisible: isVisible,
+    ),
   ),
 );
 
@@ -74,6 +90,7 @@ Future<MediaUpload?> prepareVideoUploadWithDialog(
   required XFile file,
   required int maxBytes,
   required int previewDurationSeconds,
+  bool asFile = false,
 }) => showDialog<MediaUpload>(
   context: context,
   barrierDismissible: false,
@@ -81,6 +98,7 @@ Future<MediaUpload?> prepareVideoUploadWithDialog(
     file: file,
     maxBytes: maxBytes,
     previewDurationSeconds: previewDurationSeconds,
+    asFile: asFile,
   ),
 );
 
@@ -89,11 +107,13 @@ class _VideoPreparationDialog extends StatefulWidget {
     required this.file,
     required this.maxBytes,
     required this.previewDurationSeconds,
+    required this.asFile,
   });
 
   final XFile file;
   final int maxBytes;
   final int previewDurationSeconds;
+  final bool asFile;
 
   @override
   State<_VideoPreparationDialog> createState() =>
@@ -103,15 +123,29 @@ class _VideoPreparationDialog extends StatefulWidget {
 class _VideoPreparationDialogState extends State<_VideoPreparationDialog> {
   double progress = 0;
   bool cancelling = false;
+  bool busy = false;
+  String? errorText;
+  bool retryAsFile = false;
 
   @override
   void initState() {
     super.initState();
-    unawaited(_prepare());
+    unawaited(_prepare(asFile: widget.asFile));
   }
 
-  Future<void> _prepare() async {
+  Future<void> _prepare({bool asFile = false}) async {
+    if (busy) return;
+    retryAsFile = asFile;
+    setState(() {
+      busy = true;
+      errorText = null;
+    });
     try {
+      if (asFile) {
+        final upload = await originalVideoFile(widget.file, widget.maxBytes);
+        if (mounted && !cancelling) Navigator.pop(context, upload);
+        return;
+      }
       final prepared = await prepareVideoForSending(
         path: widget.file.path,
         fileName: widget.file.name,
@@ -122,7 +156,10 @@ class _VideoPreparationDialogState extends State<_VideoPreparationDialog> {
           if (mounted && !cancelling) setState(() => progress = value);
         },
       );
-      if (!mounted || cancelling) return;
+      if (!mounted || cancelling) {
+        releaseVideoSource(prepared.path);
+        return;
+      }
       Navigator.of(context).pop(
         MediaUpload(
           bytes: prepared.bytes,
@@ -131,6 +168,9 @@ class _VideoPreparationDialogState extends State<_VideoPreparationDialog> {
           kind: MessageContentKind.video,
           localPath: prepared.path,
           durationSeconds: prepared.durationSeconds,
+          width: prepared.width,
+          height: prepared.height,
+          coverBytes: prepared.coverBytes,
         ),
       );
     } catch (error) {
@@ -139,245 +179,108 @@ class _VideoPreparationDialogState extends State<_VideoPreparationDialog> {
           .toString()
           .replaceFirst('FormatException: ', '')
           .replaceFirst('VideoPreparationCancelled: ', '');
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(message)));
-      Navigator.of(context).pop();
+      setState(() => errorText = message);
+    } finally {
+      if (mounted) setState(() => busy = false);
     }
   }
 
   Future<void> _cancel() async {
     if (cancelling) return;
     setState(() => cancelling = true);
-    await cancelVideoPreparation();
+    try {
+      await cancelVideoPreparation().timeout(const Duration(seconds: 3));
+    } catch (_) {}
     if (mounted) Navigator.of(context).pop();
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: Text(supportsNativeVideoCompression ? '正在压缩视频' : '正在准备视频'),
-    content: Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        LinearProgressIndicator(value: progress == 0 ? null : progress),
-        const SizedBox(height: 12),
-        Text(
-          cancelling
-              ? '正在取消…'
-              : supportsNativeVideoCompression
-              ? '${(progress * 100).round()}% · 保留声音，最长 5 分钟'
-              : '当前平台不提供原生压缩，将检查文件大小后发送',
+  Widget build(BuildContext context) => PopScope(
+    canPop: !busy || cancelling,
+    child: AlertDialog(
+      title: Text(
+        errorText != null
+            ? '视频处理失败'
+            : supportsNativeVideoCompression
+            ? '正在压缩视频'
+            : '正在准备视频',
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (errorText == null)
+            LinearProgressIndicator(value: progress == 0 ? null : progress),
+          const SizedBox(height: 12),
+          Text(
+            errorText ??
+                (cancelling
+                    ? '正在取消…'
+                    : supportsNativeVideoCompression
+                    ? '${(progress * 100).round()}% · 保留声音，最长 5 分钟'
+                    : '准备视频与封面，最长 5 分钟'),
+          ),
+        ],
+      ),
+      actions: [
+        if (errorText != null) ...[
+          TextButton(
+            onPressed: busy ? null : () => _prepare(asFile: true),
+            child: const Text('作为文件发送'),
+          ),
+          FilledButton(
+            onPressed: busy ? null : () => _prepare(asFile: retryAsFile),
+            child: const Text('重试'),
+          ),
+        ],
+        TextButton(
+          key: const Key('cancel-video-compression'),
+          onPressed: cancelling ? null : _cancel,
+          child: const Text('取消'),
         ),
       ],
     ),
-    actions: [
-      TextButton(
-        key: const Key('cancel-video-compression'),
-        onPressed: cancelling ? null : _cancel,
-        child: const Text('取消'),
-      ),
-    ],
   );
 }
 
-class VideoPlayerScreen extends StatefulWidget {
-  const VideoPlayerScreen({
-    super.key,
-    required this.source,
-    required this.title,
-    this.sendMode = false,
-  });
-
-  final String source;
-  final String title;
-  final bool sendMode;
-
-  @override
-  State<VideoPlayerScreen> createState() => _VideoPlayerScreenState();
-}
-
-class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
-  late final VideoPlayerController player;
-  Object? error;
-
-  @override
-  void initState() {
-    super.initState();
-    player = createVideoPlayerController(widget.source);
-    unawaited(_initialize());
+Future<MediaUpload> originalVideoFile(XFile file, int maxBytes) async {
+  final bytes = await file.readAsBytes().timeout(const Duration(seconds: 30));
+  if (bytes.isEmpty || bytes.length > maxBytes) {
+    throw const FormatException('文件为空或超过大小限制');
   }
-
-  Future<void> _initialize() async {
-    try {
-      await player.initialize();
-      await player.setLooping(true);
-      if (mounted) setState(() {});
-    } catch (cause) {
-      if (mounted) setState(() => error = cause);
-    }
-  }
-
-  @override
-  void dispose() {
-    unawaited(player.dispose());
-    super.dispose();
-  }
-
-  int get _durationSeconds => player.value.isInitialized
-      ? player.value.duration.inMilliseconds / 1000 == 0
-            ? 0
-            : (player.value.duration.inMilliseconds / 1000).ceil()
-      : 0;
-
-  String _time(Duration duration) {
-    final seconds = duration.inSeconds.clamp(0, 35999);
-    final minutes = seconds ~/ 60;
-    final remainder = seconds % 60;
-    return '$minutes:${remainder.toString().padLeft(2, '0')}';
-  }
-
-  Future<void> _toggle() async {
-    if (!player.value.isInitialized) return;
-    player.value.isPlaying ? await player.pause() : await player.play();
-    if (mounted) setState(() {});
-  }
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    backgroundColor: Colors.black,
-    appBar: AppBar(
-      backgroundColor: Colors.black,
-      foregroundColor: Colors.white,
-      title: Text(widget.sendMode ? '预览视频' : widget.title),
-    ),
-    body: SafeArea(
-      child: Column(
-        children: [
-          Expanded(
-            child: Center(
-              child: error != null
-                  ? const _VideoLoadFailure()
-                  : !player.value.isInitialized
-                  ? const CircularProgressIndicator(color: Colors.white)
-                  : GestureDetector(
-                      key: const Key('video-player-surface'),
-                      onTap: _toggle,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          AspectRatio(
-                            aspectRatio: player.value.aspectRatio == 0
-                                ? 16 / 9
-                                : player.value.aspectRatio,
-                            child: VideoPlayer(player),
-                          ),
-                          if (!player.value.isPlaying)
-                            Container(
-                              width: 64,
-                              height: 64,
-                              decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: .55),
-                                shape: BoxShape.circle,
-                              ),
-                              child: const Icon(
-                                CupertinoIcons.play_fill,
-                                size: 32,
-                                color: Colors.white,
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-            ),
-          ),
-          if (player.value.isInitialized)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
-              child: Row(
-                children: [
-                  IconButton(
-                    color: Colors.white,
-                    onPressed: _toggle,
-                    icon: Icon(
-                      player.value.isPlaying
-                          ? CupertinoIcons.pause_fill
-                          : CupertinoIcons.play_fill,
-                    ),
-                  ),
-                  Expanded(
-                    child: VideoProgressIndicator(
-                      player,
-                      allowScrubbing: true,
-                      colors: const VideoProgressColors(
-                        playedColor: Colors.white,
-                        bufferedColor: Colors.white38,
-                        backgroundColor: Colors.white24,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    '${_time(player.value.position)} / '
-                    '${_time(player.value.duration)}',
-                    style: const TextStyle(color: Colors.white70),
-                  ),
-                ],
-              ),
-            ),
-          if (widget.sendMode)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 6, 16, 18),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      key: const Key('cancel-video-send'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        side: const BorderSide(color: Colors.white38),
-                      ),
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('取消'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: FilledButton(
-                      key: const Key('confirm-video-send'),
-                      onPressed: error != null || !player.value.isInitialized
-                          ? null
-                          : () => Navigator.pop(
-                              context,
-                              VideoPreviewResult(
-                                durationSeconds: _durationSeconds,
-                              ),
-                            ),
-                      child: const Text('使用视频'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-        ],
-      ),
-    ),
+  return MediaUpload(
+    bytes: bytes,
+    fileName: file.name,
+    // The explicit fallback preserves bytes without claiming they are a
+    // decodable video (even a damaged container can be shared as a file).
+    mimeType: 'application/octet-stream',
+    kind: MessageContentKind.file,
+    localPath: file.path,
   );
 }
 
-class _VideoLoadFailure extends StatelessWidget {
-  const _VideoLoadFailure();
-
-  @override
-  Widget build(BuildContext context) => const Padding(
-    padding: EdgeInsets.all(28),
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(CupertinoIcons.exclamationmark_triangle, color: Colors.white),
-        SizedBox(height: 12),
-        Text('视频无法播放，请重新选择', style: TextStyle(color: Colors.white)),
-      ],
-    ),
-  );
+Future<MediaUpload?> prepareSelectedVideo(
+  BuildContext context, {
+  required XFile file,
+  required int maxBytes,
+}) async {
+  MediaUpload? result;
+  try {
+    final preview = await showVideoSendPreview(
+      context,
+      source: file.path,
+      title: file.name,
+    );
+    if (!context.mounted || preview == null) return null;
+    result = await prepareVideoUploadWithDialog(
+      context,
+      file: file,
+      maxBytes: maxBytes,
+      previewDurationSeconds: preview.durationSeconds,
+      asFile: preview.asFile,
+    );
+    return result;
+  } finally {
+    if (result == null) releaseVideoSource(file.path);
+  }
 }

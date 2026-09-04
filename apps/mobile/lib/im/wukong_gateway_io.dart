@@ -24,7 +24,21 @@ WukongGateway createWukongGateway({WukongDataSource? dataSource}) =>
     ? MacOSWukongGateway(dataSource: dataSource)
     : IoWukongGateway(dataSource: dataSource);
 
-class IoWukongGateway implements WukongGateway, WukongHistoryCache {
+class IoWukongGateway
+    implements WukongGateway, WukongHistoryCache, WukongDeletionCache {
+  @override
+  Future<void> markMessagesDeleted(List<String> ids) async {
+    await WKIM.shared.messageManager.saveRemoteExtraMsg(
+      ids
+          .map(
+            (id) => full.WKMsgExtra()
+              ..messageID = id
+              ..isMutualDeleted = 1,
+          )
+          .toList(),
+    );
+  }
+
   @override
   Future<void> invalidateGroupHistory(
     String channelId,
@@ -313,6 +327,27 @@ class IoWukongGateway implements WukongGateway, WukongHistoryCache {
       final existing = await manager.getWithClientMsgNo(requestedClientMsgNo);
       if (existing != null) {
         if (existing.status != full.WKSendMsgResult.sendSuccess) {
+          // Keep the durable clientMsgNo/clientSeq for idempotency, but send
+          // the current payload. Reusing the SDK row verbatim made messages
+          // rejected before a media/schema fix resend obsolete bytes forever.
+          final content = _RawFullContent(outgoing.payload);
+          existing
+            ..messageContent = content
+            ..contentType = content.contentType
+            ..channelID = outgoing.channel.id
+            ..channelType = outgoing.channel.type
+            ..topicID = outgoing.topic ?? ''
+            ..expireTime = outgoing.expireSeconds;
+          existing.header
+            ..noPersist = outgoing.noPersist
+            ..redDot = outgoing.redDot
+            ..syncOnce = outgoing.syncOnce;
+          final encodedContent = content.encodeJson()
+            ..['type'] = content.contentType;
+          existing.content = jsonEncode(encodedContent);
+          existing.setChannelInfo(
+            full.WKChannel(outgoing.channel.id, outgoing.channel.type),
+          );
           existing.status = full.WKSendMsgResult.sendLoading;
           await manager.saveMsg(existing);
           manager.setRefreshMsg(existing);
@@ -725,6 +760,7 @@ class IoWukongGateway implements WukongGateway, WukongHistoryCache {
       message.messageExtra = full.WKSyncExtraMsg()
         ..messageIdStr = _string(extra['message_idstr'])
         ..revoke = _int(extra['revoke'])
+        ..isMutualDeleted = _int(extra['is_mutual_deleted'])
         ..revoker = _string(extra['revoker'])
         ..extraVersion = _int(extra['extra_version'])
         ..unreadCount = _int(extra['unread_count'])
