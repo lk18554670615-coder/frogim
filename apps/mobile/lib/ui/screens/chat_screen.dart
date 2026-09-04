@@ -549,11 +549,11 @@ class _ChatScreenState extends State<ChatScreen> {
     final dark = Theme.of(context).brightness == Brightness.dark;
     return switch (_chatBackground) {
       ChatBackgroundStyle.followSystem =>
-        dark ? LinliColors.darkBackground : LinliColors.pinnedSurface,
+        dark ? LinliColors.darkBackground : LinliColors.background,
       ChatBackgroundStyle.softMint =>
-        dark ? const Color(0xFF092019) : LinliColors.brandMint,
+        dark ? LinliColors.darkSurfaceElevated : LinliColors.brandYellowSoft,
       ChatBackgroundStyle.cleanPaper =>
-        dark ? LinliColors.navySoft : LinliColors.surface,
+        dark ? LinliColors.brandInkSoft : LinliColors.surface,
     };
   }
 
@@ -870,6 +870,8 @@ class _ChatScreenState extends State<ChatScreen> {
         onError: _showError,
         child: Scaffold(
           appBar: AppBar(
+            backgroundColor: LinliColors.brandYellow,
+            foregroundColor: LinliColors.brandInk,
             toolbarHeight: showPeerLoginInfoFor(context, widget.conversation)
                 ? 16 +
                       MediaQuery.textScalerOf(context).scale(24) +
@@ -896,6 +898,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         name: widget.controller.displayConversationName(
                           widget.conversation,
                         ),
+                        color: LinliColors.brandInk,
                       ),
                       AnimatedBuilder(
                         animation: widget.controller,
@@ -940,7 +943,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 ?.copyWith(
                                   color: typing != null
                                       ? LinliColors.systemGreen
-                                      : LinliColors.preview,
+                                      : LinliColors.brandInk,
                                 ),
                           );
                         },
@@ -1369,7 +1372,7 @@ class _ChatScreenState extends State<ChatScreen> {
         curve: Curves.easeOutCubic,
         decoration: BoxDecoration(
           color: _highlightedMessageId == message.id
-              ? LinliColors.brandGreen.withValues(alpha: .16)
+              ? LinliColors.brandYellow.withValues(alpha: .16)
               : Colors.transparent,
           borderRadius: BorderRadius.circular(14),
         ),
@@ -3022,7 +3025,7 @@ class _MessageContextMenu extends StatelessWidget {
         child: Material(
           color: Theme.of(context).colorScheme.surfaceContainer,
           elevation: 10,
-          shadowColor: LinliColors.navy.withValues(alpha: .22),
+          shadowColor: LinliColors.brandInk.withValues(alpha: .22),
           borderRadius: BorderRadius.circular(16),
           clipBehavior: Clip.antiAlias,
           child: ConstrainedBox(
@@ -3335,8 +3338,8 @@ class _ContextActionButton extends StatelessWidget {
                 spec.icon,
                 size: 21,
                 color: Theme.of(context).brightness == Brightness.dark
-                    ? LinliColors.brandGreen
-                    : LinliColors.navy,
+                    ? LinliColors.brandYellow
+                    : LinliColors.brandInk,
               ),
               const SizedBox(height: 5),
               Text(
@@ -4169,14 +4172,14 @@ class MessageBubble extends StatelessWidget {
             key: Key('live-event-${message.clientMessageId}'),
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
             decoration: BoxDecoration(
-              color: LinliColors.brandGreen.withValues(alpha: .16),
+              color: LinliColors.brandYellow.withValues(alpha: .16),
               borderRadius: BorderRadius.circular(999),
             ),
             child: Text(
               '${message.isMine ? '我' : resolvedSenderName} ${message.text}',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                color: LinliColors.navy,
+                color: LinliColors.brandInk,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -4224,7 +4227,7 @@ class MessageBubble extends StatelessWidget {
                         ? CupertinoIcons.checkmark_circle_fill
                         : CupertinoIcons.circle,
                     color: selected
-                        ? LinliColors.navy
+                        ? LinliColors.brandInk
                         : LinliColors.tertiaryLabel,
                   ),
                 ),
@@ -4307,7 +4310,7 @@ class MessageBubble extends StatelessWidget {
                                     ),
                                     minHeight: 3,
                                     borderRadius: BorderRadius.circular(999),
-                                    color: LinliColors.brandGreen,
+                                    color: LinliColors.brandYellow,
                                     backgroundColor: Theme.of(
                                       context,
                                     ).colorScheme.surfaceContainerHighest,
@@ -4504,39 +4507,91 @@ class _MessageReactionBar extends StatelessWidget {
               '${reaction.emoji}，${reaction.count} 个回应${reaction.reactedByMe ? '，我已回应' : ''}',
           child: InkWell(
             key: Key('reaction-${reaction.emoji}'),
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(999),
             onTap: onReactionTap == null
                 ? null
                 : () => onReactionTap!(reaction.emoji),
             child: ConstrainedBox(
               constraints: const BoxConstraints(minHeight: 44, minWidth: 44),
-              child: Container(
-                alignment: Alignment.center,
-                padding: const EdgeInsets.symmetric(horizontal: 9),
-                decoration: BoxDecoration(
-                  color: reaction.reactedByMe
-                      ? LinliColors.brandGreen.withValues(alpha: .18)
-                      : Theme.of(context).colorScheme.surfaceContainerHigh,
-                  borderRadius: BorderRadius.circular(12),
-                  border: reaction.reactedByMe
-                      ? Border.all(
-                          color: LinliColors.brandGreen.withValues(alpha: .55),
-                        )
-                      : null,
+              child: Center(
+                widthFactor: 1,
+                heightFactor: 1,
+                child: AnimatedContainer(
+                  key: Key('reaction-chip-${reaction.emoji}'),
+                  duration: nexaMotionDuration(context),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 5,
+                  ),
+                  decoration: BoxDecoration(
+                    color: reaction.reactedByMe
+                        ? LinliColors.brandYellow
+                        : Theme.of(context).colorScheme.surfaceContainerHigh,
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: reaction.reactedByMe
+                          ? LinliColors.brandYellowPressed
+                          : Theme.of(context).colorScheme.outline,
+                      width: reaction.reactedByMe ? 1.2 : .75,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        '${reaction.emoji} ${reaction.count}',
+                        style: Theme.of(context).textTheme.labelMedium
+                            ?.copyWith(
+                              color: reaction.reactedByMe
+                                  ? LinliColors.brandInk
+                                  : Theme.of(context).colorScheme.onSurface,
+                              fontWeight: FontWeight.w600,
+                              fontFamilyFallback: const ['NotoColorEmoji'],
+                              height: 1.15,
+                            ),
+                      ),
+                      if (reaction.reactedByMe) ...[
+                        const SizedBox(width: 4),
+                        const Icon(
+                          CupertinoIcons.checkmark,
+                          size: 12,
+                          color: LinliColors.brandInk,
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
-                child: Text('${reaction.emoji} ${reaction.count}'),
               ),
             ),
           ),
         ),
       if (onAddReaction != null)
-        IconButton(
-          key: const Key('add-message-reaction'),
-          tooltip: '添加回应',
-          onPressed: onAddReaction,
-          icon: const Icon(CupertinoIcons.add, size: 17),
-          style: IconButton.styleFrom(
-            backgroundColor: Theme.of(context).colorScheme.surfaceContainerHigh,
+        Tooltip(
+          message: '添加回应',
+          child: InkWell(
+            key: const Key('add-message-reaction'),
+            borderRadius: BorderRadius.circular(999),
+            onTap: onAddReaction,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 44, minWidth: 44),
+              child: Center(
+                widthFactor: 1,
+                heightFactor: 1,
+                child: Container(
+                  width: 30,
+                  height: 30,
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: Theme.of(context).colorScheme.outline,
+                      width: .75,
+                    ),
+                  ),
+                  child: const Icon(CupertinoIcons.add, size: 15),
+                ),
+              ),
+            ),
           ),
         ),
     ],
@@ -4553,12 +4608,12 @@ class _MessageContent extends StatelessWidget {
     final mine = message.isMine;
     final dark = Theme.of(context).brightness == Brightness.dark;
     final bubbleColor = mine
-        ? LinliColors.navy
+        ? LinliColors.brandYellow
         : dark
         ? LinliColors.darkSurfaceElevated
-        : const Color(0xFFEEF2F7);
+        : LinliColors.surface;
     final textColor = mine
-        ? Colors.white
+        ? LinliColors.brandInk
         : Theme.of(context).colorScheme.onSurface;
 
     if (message.kind == MessageContentKind.image) {
@@ -4645,7 +4700,7 @@ class _MessageContent extends StatelessWidget {
                   border: Border(
                     left: BorderSide(
                       color: mine
-                          ? LinliColors.brandGreen
+                          ? LinliColors.brandInk.withValues(alpha: .72)
                           : LinliColors.preview,
                       width: 2,
                     ),
@@ -5196,7 +5251,7 @@ class _MessageImagePreviewState extends State<_MessageImagePreview> {
           if (_busy)
             const Center(
               child: CircularProgressIndicator(
-                color: LinliColors.brandGreen,
+                color: LinliColors.brandYellow,
                 strokeWidth: 2.5,
               ),
             ),
@@ -5287,7 +5342,7 @@ class _ZoomableMessageImageState extends State<_ZoomableMessageImage> {
             filterQuality: FilterQuality.high,
             errorBuilder: (_, _, _) => const Center(
               child: _MediaUnavailable(
-                color: Color(0xFF161B19),
+                color: LinliColors.brandInkSoft,
                 textColor: Colors.white70,
                 label: '图片加载失败',
               ),
@@ -5613,8 +5668,8 @@ class _ChatHistoryDetailScreen extends StatelessWidget {
                 vertical: 5,
               ),
               leading: CircleAvatar(
-                backgroundColor: LinliColors.brandGreen.withValues(alpha: .22),
-                foregroundColor: LinliColors.navy,
+                backgroundColor: LinliColors.brandYellow.withValues(alpha: .22),
+                foregroundColor: LinliColors.brandInk,
                 child: Icon(_chatHistoryIcon(entry.type), size: 18),
               ),
               title: Row(
@@ -5955,7 +6010,7 @@ class _MentionedMessageTextState extends State<_MentionedMessageText> {
           TextSpan(
             text: token,
             style: TextStyle(
-              color: widget.mine ? LinliColors.brandGreen : LinliColors.navy,
+              color: LinliColors.brandInk,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -5969,14 +6024,10 @@ class _MentionedMessageTextState extends State<_MentionedMessageText> {
             text: token,
             semanticsLabel: '${_messageTokenLabel(uri)}：$token',
             style: TextStyle(
-              color: widget.mine
-                  ? LinliColors.brandGreen
-                  : LinliColors.brandGreenDeep,
+              color: LinliColors.brandInk,
               fontWeight: FontWeight.w600,
               decoration: TextDecoration.underline,
-              decorationColor: widget.mine
-                  ? LinliColors.brandGreen
-                  : LinliColors.brandGreenDeep,
+              decorationColor: LinliColors.brandInk,
             ),
             recognizer: recognizer,
             mouseCursor: SystemMouseCursors.click,
@@ -7361,7 +7412,7 @@ class _ChatComposerState extends State<ChatComposer> {
                               ? CupertinoIcons.xmark_circle_fill
                               : CupertinoIcons.add_circled,
                           color: canSendText
-                              ? LinliColors.navy
+                              ? LinliColors.brandInk
                               : Theme.of(context).colorScheme.onSurface,
                           size: 28,
                         ),
@@ -7567,7 +7618,7 @@ class _AttachmentPanel extends StatelessWidget {
                             ).colorScheme.surfaceContainer,
                             borderRadius: BorderRadius.circular(14),
                           ),
-                          child: Icon(item.$2, color: LinliColors.navy),
+                          child: Icon(item.$2, color: LinliColors.brandInk),
                         ),
                       ],
                     ),
@@ -7905,12 +7956,12 @@ class _MentionPickerSheetState extends State<_MentionPickerSheet> {
                       height: 44,
                       alignment: Alignment.center,
                       decoration: BoxDecoration(
-                        color: LinliColors.brandGreen.withValues(alpha: .18),
+                        color: LinliColors.brandYellow.withValues(alpha: .18),
                         shape: BoxShape.circle,
                       ),
                       child: const Icon(
                         CupertinoIcons.person_3_fill,
-                        color: LinliColors.navy,
+                        color: LinliColors.brandInk,
                       ),
                     ),
                     title: const Text('所有人'),

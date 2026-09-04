@@ -4018,8 +4018,27 @@ class LiveImRepository
     );
     return (data['items'] as List<Object?>? ?? const [])
         .whereType<Map<String, Object?>>()
-        .map((item) => _message(item, conversationId).copyWith(isPinned: true))
+        .map((item) => _pinnedMessage(item, conversationId))
         .toList();
+  }
+
+  ChatMessage _pinnedMessage(Map<String, Object?> item, String conversationId) {
+    // The server returns MessagePin records whose canonical message is nested
+    // under `message`. Keep accepting the older flattened response so a client
+    // upgrade remains compatible while servers are rolled out independently.
+    final nested = item['message'];
+    final raw = nested is Map
+        ? Map<String, Object?>.from(nested)
+        : Map<String, Object?>.from(item);
+    raw['conversationId'] ??= item['conversationId'] ?? conversationId;
+    raw['isPinned'] = true;
+    raw['pinnedAt'] ??= item['pinnedAt'];
+    raw['pinnedBy'] ??= item['pinnedBy'];
+    return _message(raw, conversationId).copyWith(
+      isPinned: true,
+      pinnedAt: _tryDate(raw['pinnedAt']),
+      pinnedBy: raw['pinnedBy'] as String?,
+    );
   }
 
   @override

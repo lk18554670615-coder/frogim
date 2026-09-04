@@ -56,6 +56,7 @@ void main() {
     }
     await Future.wait([
       _loadFont('NotoSansSC', 'assets/fonts/NotoSansSC-Regular.otf'),
+      _loadFont('NotoColorEmoji', 'assets/fonts/NotoColorEmoji.ttf'),
       _loadFont('.SF Pro Text', 'assets/fonts/NotoSansSC-Regular.otf'),
       _loadFont('.SF Pro Display', 'assets/fonts/NotoSansSC-Regular.otf'),
       _loadFont('CupertinoSystemText', 'assets/fonts/NotoSansSC-Regular.otf'),
@@ -541,6 +542,43 @@ void main() {
     await expectLater(
       find.byKey(_surfaceKey),
       matchesGoldenFile('goldens/windows/mobile-group-chat-brand.png'),
+    );
+  }, skip: !Platform.isWindows);
+
+  testWidgets('message reaction chips visual baseline', (tester) async {
+    await _pumpSurface(
+      tester,
+      size: const Size(390, 240),
+      child: Scaffold(
+        body: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: MessageBubble(
+              message: ChatMessage(
+                id: 'reaction-preview',
+                conversationId: 'group-preview',
+                senderId: 'friend-1',
+                senderName: '呱呱',
+                text: '这条消息有多个回应',
+                sentAt: DateTime(2026, 9, 4, 11),
+                isMine: false,
+                reactions: const [
+                  MessageReaction(emoji: '❤️', count: 1, reactedByMe: false),
+                  MessageReaction(emoji: '👍', count: 3, reactedByMe: true),
+                ],
+              ),
+              onReactionTap: (_) {},
+              onAddReaction: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await expectLater(
+      find.byKey(_surfaceKey),
+      matchesGoldenFile('goldens/windows/message-reaction-chips.png'),
     );
   }, skip: !Platform.isWindows);
 

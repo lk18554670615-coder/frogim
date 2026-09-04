@@ -539,7 +539,7 @@ class _RequestStatusBanner extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: pending
-            ? LinliColors.brandMint
+            ? LinliColors.brandYellowSoft
             : Theme.of(context).colorScheme.surfaceContainerHigh,
         borderRadius: BorderRadius.circular(14),
       ),
@@ -547,7 +547,7 @@ class _RequestStatusBanner extends StatelessWidget {
         children: [
           Icon(
             pending ? CupertinoIcons.hourglass : CupertinoIcons.checkmark_seal,
-            color: pending ? LinliColors.navy : LinliColors.preview,
+            color: pending ? LinliColors.brandInk : LinliColors.preview,
           ),
           const SizedBox(width: 12),
           Expanded(

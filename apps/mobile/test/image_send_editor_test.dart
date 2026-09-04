@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:linli_im/core/app_theme.dart';
 import 'package:linli_im/core/image_send_editor.dart';
 import 'package:pro_image_editor/pro_image_editor.dart';
 
@@ -75,7 +76,7 @@ void main() {
     }
     final editorTheme = editor.configs.theme!;
     expect(editorTheme.appBarTheme.foregroundColor, Colors.white);
-    expect(editorTheme.appBarTheme.backgroundColor, const Color(0xFF121715));
+    expect(editorTheme.appBarTheme.backgroundColor, LinliColors.brandInk);
     final progress = editor
         .configs
         .progressIndicatorConfigs
@@ -84,7 +85,7 @@ void main() {
     expect(progress, isA<CircularProgressIndicator>());
     expect(
       (progress! as CircularProgressIndicator).color,
-      const Color(0xFF42D982),
+      LinliColors.brandYellow,
     );
     expect(tester.takeException(), isNull);
   });

@@ -251,7 +251,7 @@ void main() {
     expect(conversationDecoration.border?.bottom.width, .75);
     expect(
       conversationDecoration.border?.bottom.color,
-      const Color(0xFFD7E0DB),
+      const Color(0xFFE4DFD1),
     );
     final conversationTitle = tester.widget<Text>(
       find.byKey(const ValueKey('conversation-title-c-team')),
@@ -1080,7 +1080,7 @@ void main() {
     );
   });
 
-  testWidgets('四个一级页面使用一致的深色标题区和圆角内容面', (tester) async {
+  testWidgets('四个一级页面使用一致的黄色标题区和圆角内容面', (tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -1379,7 +1379,7 @@ void main() {
     await tester.tap(find.text('多选'));
     await tester.pumpAndSettle();
     expect(find.text('已选择 1 条'), findsOneWidget);
-    expect(find.text('删除'), findsOneWidget);
+    expect(find.text('删除本机记录'), findsOneWidget);
   });
 
   testWidgets('群成员提醒插入后光标稳定停在昵称末尾', (tester) async {
@@ -2114,11 +2114,32 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  test('浅色和深色主题保持品牌色与可读对比', () {
+  test('浅色和深色主题保持黄黑品牌层级与语义状态色', () {
     final light = buildLinliTheme(Brightness.light);
     final dark = buildLinliTheme(Brightness.dark);
-    expect(light.colorScheme.primary, LinliColors.brandGreen);
+    expect(LinliColors.brandYellow, const Color(0xFFFFD633));
+    expect(LinliColors.brandInk, const Color(0xFF171714));
+    expect(light.colorScheme.primary, LinliColors.brandYellow);
+    expect(light.colorScheme.onPrimary, LinliColors.brandInk);
     expect(light.scaffoldBackgroundColor, LinliColors.background);
+    expect(dark.scaffoldBackgroundColor, LinliColors.darkBackground);
+    expect(
+      light.filledButtonTheme.style?.backgroundColor?.resolve({}),
+      LinliColors.brandInk,
+    );
+    expect(
+      light.filledButtonTheme.style?.foregroundColor?.resolve({}),
+      LinliColors.brandYellow,
+    );
+    expect(
+      dark.filledButtonTheme.style?.backgroundColor?.resolve({}),
+      LinliColors.brandYellow,
+    );
+    expect(
+      dark.filledButtonTheme.style?.foregroundColor?.resolve({}),
+      LinliColors.brandInk,
+    );
+    expect(LinliColors.systemGreen, isNot(LinliColors.brandYellow));
     expect(light.textTheme.headlineLarge?.fontSize, 32);
     expect(light.textTheme.titleLarge?.fontSize, 17);
     expect(light.textTheme.titleMedium?.fontSize, 16);

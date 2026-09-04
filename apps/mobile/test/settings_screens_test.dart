@@ -619,7 +619,7 @@ void main() {
     final surface = tester.widget<ColoredBox>(
       find.byKey(const Key('chat-background-surface')),
     );
-    expect(surface.color, LinliColors.brandMint);
+    expect(surface.color, LinliColors.brandYellowSoft);
   });
 
   testWidgets('通知偏好写入本机且通用外观操作生效', (tester) async {

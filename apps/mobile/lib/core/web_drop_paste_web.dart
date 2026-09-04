@@ -146,7 +146,7 @@ class _WebDropPasteRegionState extends State<WebDropPasteRegion> {
           duration: const Duration(milliseconds: 160),
           opacity: _dragging || _reading ? 1 : 0,
           child: ColoredBox(
-            color: LinliColors.navy.withValues(alpha: .88),
+            color: LinliColors.brandInk.withValues(alpha: .88),
             child: SafeArea(
               child: Center(
                 child: Container(
@@ -159,7 +159,7 @@ class _WebDropPasteRegionState extends State<WebDropPasteRegion> {
                     color: Colors.white.withValues(alpha: .10),
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(
-                      color: LinliColors.brandGreen.withValues(alpha: .75),
+                      color: LinliColors.brandYellow.withValues(alpha: .75),
                       width: 2,
                     ),
                   ),
@@ -171,7 +171,7 @@ class _WebDropPasteRegionState extends State<WebDropPasteRegion> {
                       else
                         const Icon(
                           CupertinoIcons.cloud_upload,
-                          color: LinliColors.brandGreen,
+                          color: LinliColors.brandYellow,
                           size: 34,
                         ),
                       const SizedBox(height: 12),

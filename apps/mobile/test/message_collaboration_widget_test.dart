@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:linli_im/core/app_theme.dart';
@@ -24,6 +25,12 @@ void main() {
               editedAt: DateTime(2026, 8, 1, 8, 5),
               reactions: const [
                 MessageReaction(
+                  emoji: '❤️',
+                  count: 1,
+                  reactedByMe: false,
+                  userIds: ['friend-1'],
+                ),
+                MessageReaction(
                   emoji: '👍',
                   count: 3,
                   reactedByMe: true,
@@ -39,7 +46,21 @@ void main() {
     );
 
     expect(find.byKey(const Key('edited-label-message-1')), findsOneWidget);
+    expect(find.text('❤️ 1'), findsOneWidget);
     expect(find.text('👍 3'), findsOneWidget);
+    final heartChip = find.byKey(const Key('reaction-chip-❤️'));
+    final thumbChip = find.byKey(const Key('reaction-chip-👍'));
+    expect(
+      tester.getCenter(heartChip).dy,
+      closeTo(tester.getCenter(thumbChip).dy, .5),
+    );
+    expect(tester.getSize(heartChip).width, lessThan(100));
+    expect(tester.getSize(thumbChip).width, lessThan(100));
+    expect(
+      tester.getSize(find.byKey(const Key('reaction-👍'))).height,
+      greaterThanOrEqualTo(44),
+    );
+    expect(find.byIcon(CupertinoIcons.checkmark), findsOneWidget);
     await tester.tap(find.byKey(const Key('reaction-👍')));
     expect(selectedEmoji, '👍');
     await tester.tap(find.byKey(const Key('add-message-reaction')));

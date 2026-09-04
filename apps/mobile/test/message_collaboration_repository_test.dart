@@ -201,12 +201,16 @@ void main() {
           return _jsonResponse({
             'data': {
               'items': [
-                _message(
-                  id: 'pinned-1',
-                  conversationId: 'group-1',
-                  body: {'text': '群规'},
-                  pinnedAt: '2026-08-01T08:00:00Z',
-                ),
+                {
+                  'conversationId': 'group-1',
+                  'message': _message(
+                    id: 'pinned-1',
+                    conversationId: 'group-1',
+                    body: {'text': '群规'},
+                  ),
+                  'pinnedBy': 'owner-1',
+                  'pinnedAt': '2026-08-01T08:00:00Z',
+                },
               ],
             },
           });
@@ -241,6 +245,12 @@ void main() {
     final results = await repository.searchMessages('group-1', '群规', limit: 20);
 
     expect(pinned.single.isPinned, isTrue);
+    expect(pinned.single.text, '群规');
+    expect(pinned.single.pinnedBy, 'owner-1');
+    expect(
+      pinned.single.pinnedAt,
+      DateTime.parse('2026-08-01T08:00:00Z').toLocal(),
+    );
     expect(results.single.id, 'pinned-1');
     expect(paths, [
       'GET /v2/messages/pins',

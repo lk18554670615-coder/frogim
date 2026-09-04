@@ -6,35 +6,34 @@
 :root {
   color-scheme: light;
 
-  --color-paper: oklch(1 0 0);
-  /* TailAdmin Free 的灰阶保持原值；只把原模板 brand-blue 映射为青蛙品牌绿。 */
-  --color-paper-subtle: #f9fafb;
-  --color-canvas: #f9fafb;
-  --color-ink: #101828;
-  --color-ink-secondary: #475467;
-  --color-ink-tertiary: #667085;
-  --color-rule: #e4e7ec;
-  --color-rule-strong: #d0d5dd;
+  --color-paper: #fffdf8;
+  --color-paper-subtle: #f0ede3;
+  --color-canvas: #f7f5ee;
+  --color-ink: #171714;
+  --color-ink-secondary: #68655c;
+  --color-ink-tertiary: #8b877c;
+  --color-rule: #e4dfd1;
+  --color-rule-strong: #cbc4b3;
   --color-brand-logo: #24e66d;
-  --color-brand: #12b76a;
-  --color-brand-strong: #039855;
-  --color-brand-deep: #027a48;
-  --color-brand-soft: #ecfdf3;
-  --color-brand-line: #a6f4c5;
-  --color-brand-shadow: rgb(3 152 85 / 0.14);
-  --color-primary: #039855;
-  --color-primary-hover: #027a48;
-  --color-primary-ink: #ffffff;
-  --color-focus: #12b76a;
-  --color-focus-soft: rgb(18 183 106 / 0.12);
+  --color-brand: #ffd633;
+  --color-brand-strong: #171714;
+  --color-brand-deep: #2b2a25;
+  --color-brand-soft: #fff1a6;
+  --color-brand-line: #e6b900;
+  --color-brand-shadow: rgb(23 23 20 / 0.14);
+  --color-primary: #171714;
+  --color-primary-hover: #2b2a25;
+  --color-primary-ink: #ffd633;
+  --color-focus: #e6b900;
+  --color-focus-soft: rgb(255 214 51 / 0.28);
   --color-info: #0ba5ec;
   --color-info-soft: #f0f9ff;
   --color-warning: #f79009;
   --color-warning-soft: #fffaeb;
   --color-danger: #d92d20;
   --color-danger-soft: #fef3f2;
-  --color-success: #039855;
-  --color-success-soft: #ecfdf3;
+  --color-success: #168f47;
+  --color-success-soft: #eaf8ee;
   --color-overlay: rgb(16 24 40 / 0.48);
   --color-shadow: rgb(16 24 40 / 0.06);
   --color-shadow-strong: rgb(16 24 40 / 0.14);
@@ -92,5 +91,5 @@
   --danger-soft: var(--color-danger-soft);
   --success: var(--color-success);
   --success-soft: var(--color-success-soft);
-  --sidebar: var(--color-paper);
+  --sidebar: #171714;
 }

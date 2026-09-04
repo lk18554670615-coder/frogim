@@ -11,7 +11,7 @@ void main() {
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
-  testWidgets('消息页快捷菜单使用白色表面、绿色图标和易读主文字', (tester) async {
+  testWidgets('消息页快捷菜单使用暖白表面、黄色图标和易读主文字', (tester) async {
     final controller = await _pumpConversations(tester);
     addTearDown(controller.dispose);
 
@@ -42,7 +42,7 @@ void main() {
         find.byKey(Key('header-menu-icon-$label')),
       );
       final decoration = iconContainer.decoration! as BoxDecoration;
-      expect(decoration.color, LinliColors.brandMintStrong);
+      expect(decoration.color, LinliColors.brandYellowStrong);
 
       final text = tester.widget<Text>(find.text(label));
       expect(text.style?.color, LinliColors.label);

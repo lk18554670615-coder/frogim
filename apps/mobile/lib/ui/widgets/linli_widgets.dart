@@ -453,8 +453,8 @@ class SettingTile extends StatelessWidget {
               color: destructive
                   ? LinliColors.systemRed.withValues(alpha: .1)
                   : Theme.of(context).brightness == Brightness.dark
-                  ? LinliColors.brandGreen.withValues(alpha: .14)
-                  : LinliColors.brandMintStrong,
+                  ? LinliColors.brandYellow.withValues(alpha: .14)
+                  : LinliColors.brandYellowStrong,
               borderRadius: BorderRadius.circular(10),
             ),
             alignment: Alignment.center,
@@ -464,8 +464,8 @@ class SettingTile extends StatelessWidget {
               color: destructive
                   ? LinliColors.systemRed
                   : Theme.of(context).brightness == Brightness.dark
-                  ? LinliColors.brandGreen
-                  : LinliColors.navy,
+                  ? LinliColors.brandYellow
+                  : LinliColors.brandInk,
             ),
           )
         : Icon(
@@ -531,22 +531,22 @@ class StatePanel extends StatelessWidget {
             height: 56,
             decoration: BoxDecoration(
               color: Theme.of(context).brightness == Brightness.dark
-                  ? LinliColors.brandGreen.withValues(alpha: .1)
-                  : LinliColors.brandMint,
+                  ? LinliColors.brandYellow.withValues(alpha: .1)
+                  : LinliColors.brandYellowSoft,
               shape: BoxShape.circle,
             ),
             alignment: Alignment.center,
             child: loading
                 ? CupertinoActivityIndicator(
                     color: Theme.of(context).brightness == Brightness.dark
-                        ? LinliColors.brandGreen
-                        : LinliColors.brandGreenDeep,
+                        ? LinliColors.brandYellow
+                        : LinliColors.brandInk,
                   )
                 : Icon(
                     icon,
                     color: Theme.of(context).brightness == Brightness.dark
-                        ? LinliColors.brandGreen
-                        : LinliColors.brandGreenDeep,
+                        ? LinliColors.brandYellow
+                        : LinliColors.brandInk,
                     size: 26,
                   ),
           ),

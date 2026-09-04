@@ -57,7 +57,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: Colors.black,
     appBar: AppBar(
-      backgroundColor: LinliColors.navy,
+      backgroundColor: LinliColors.brandInk,
       foregroundColor: Colors.white,
       surfaceTintColor: Colors.transparent,
       iconTheme: const IconThemeData(color: Colors.white),
@@ -128,7 +128,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
                     vertical: 8,
                   ),
                   decoration: BoxDecoration(
-                    color: LinliColors.navy.withValues(alpha: .94),
+                    color: LinliColors.brandInk.withValues(alpha: .94),
                     borderRadius: BorderRadius.circular(20),
                     border: Border.all(
                       color: Colors.white.withValues(alpha: .18),
@@ -327,12 +327,12 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
           width: 52,
           height: 52,
           decoration: BoxDecoration(
-            color: LinliColors.brandMintStrong,
+            color: LinliColors.brandYellowStrong,
             borderRadius: BorderRadius.circular(16),
           ),
           child: const Icon(
             CupertinoIcons.device_laptop,
-            color: LinliColors.navy,
+            color: LinliColors.brandInk,
             size: 27,
           ),
         ),
@@ -452,7 +452,7 @@ class MyQrCodeScreen extends StatelessWidget {
               borderRadius: BorderRadius.circular(24),
               boxShadow: [
                 BoxShadow(
-                  color: LinliColors.navy.withValues(alpha: .08),
+                  color: LinliColors.brandInk.withValues(alpha: .08),
                   blurRadius: 30,
                   offset: const Offset(0, 12),
                 ),
@@ -497,11 +497,11 @@ class MyQrCodeScreen extends StatelessWidget {
                     backgroundColor: Colors.white,
                     eyeStyle: const QrEyeStyle(
                       eyeShape: QrEyeShape.square,
-                      color: LinliColors.navy,
+                      color: LinliColors.brandInk,
                     ),
                     dataModuleStyle: const QrDataModuleStyle(
                       dataModuleShape: QrDataModuleShape.square,
-                      color: LinliColors.navy,
+                      color: LinliColors.brandInk,
                     ),
                   ),
                 ),
@@ -600,11 +600,11 @@ class GroupQrCodeScreen extends StatelessWidget {
                     backgroundColor: Colors.white,
                     eyeStyle: const QrEyeStyle(
                       eyeShape: QrEyeShape.square,
-                      color: LinliColors.navy,
+                      color: LinliColors.brandInk,
                     ),
                     dataModuleStyle: const QrDataModuleStyle(
                       dataModuleShape: QrDataModuleShape.square,
-                      color: LinliColors.navy,
+                      color: LinliColors.brandInk,
                     ),
                   ),
                 ),
@@ -709,7 +709,7 @@ Future<Uint8List?> _renderQrShareCard(
     maxWidth: 500,
     fontSize: 34,
     fontWeight: FontWeight.w700,
-    color: LinliColors.navy,
+    color: LinliColors.brandInk,
   );
   _paintShareText(
     canvas,
@@ -751,11 +751,11 @@ Future<Uint8List?> _renderQrShareCard(
     gapless: true,
     eyeStyle: const QrEyeStyle(
       eyeShape: QrEyeShape.square,
-      color: LinliColors.navy,
+      color: LinliColors.brandInk,
     ),
     dataModuleStyle: const QrDataModuleStyle(
       dataModuleShape: QrDataModuleShape.square,
-      color: LinliColors.navy,
+      color: LinliColors.brandInk,
     ),
   ).paint(canvas, ui.Size.square(qrRect.width));
   canvas.restore();
@@ -766,7 +766,7 @@ Future<Uint8List?> _renderQrShareCard(
     maxWidth: 940,
     fontSize: 27,
     fontWeight: FontWeight.w600,
-    color: LinliColors.brandGreenDeep,
+    color: LinliColors.brandInk,
     centered: true,
   );
   _paintShareText(

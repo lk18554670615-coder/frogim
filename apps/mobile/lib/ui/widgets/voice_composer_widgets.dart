@@ -34,8 +34,8 @@ class VoiceRecordingOverlay extends StatelessWidget {
               ? const Color(0xFFFF758B)
               : LinliColors.systemRed)
         : Theme.of(context).brightness == Brightness.dark
-        ? LinliColors.brandGreen
-        : LinliColors.brandGreenDeep;
+        ? LinliColors.brandYellow
+        : LinliColors.brandInk;
     final title = switch (phase) {
       VoiceComposerPhase.preparing => '正在准备录音',
       VoiceComposerPhase.processing => '正在处理语音',
@@ -239,7 +239,7 @@ class VoiceRecordingButton extends StatelessWidget {
             color: canceling
                 ? LinliColors.systemRed.withValues(alpha: .12)
                 : recording
-                ? LinliColors.brandGreen.withValues(alpha: .16)
+                ? LinliColors.brandYellow.withValues(alpha: .16)
                 : Theme.of(context).colorScheme.surfaceContainerHigh,
             borderRadius: BorderRadius.circular(14),
           ),
@@ -377,8 +377,8 @@ class _VoiceSendButtonState extends State<_VoiceSendButton> {
             : Icon(
                 CupertinoIcons.arrow_up_circle_fill,
                 color: Theme.of(context).brightness == Brightness.dark
-                    ? LinliColors.brandGreen
-                    : LinliColors.brandGreenDeep,
+                    ? LinliColors.brandYellow
+                    : LinliColors.brandInk,
                 size: 28,
               ),
       ),
@@ -464,7 +464,7 @@ class VoiceUploadProgress extends StatelessWidget {
                     value: progress,
                     minHeight: 3,
                     borderRadius: BorderRadius.circular(999),
-                    color: LinliColors.brandGreen,
+                    color: LinliColors.brandYellow,
                     backgroundColor: Theme.of(
                       context,
                     ).colorScheme.surfaceContainerHighest,

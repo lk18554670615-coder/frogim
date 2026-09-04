@@ -182,7 +182,7 @@ class _MyInviteCodeScreenState extends State<MyInviteCodeScreen> {
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: profile!.status == 'active'
-                      ? LinliColors.brandGreen
+                      ? LinliColors.systemGreen
                       : Theme.of(context).colorScheme.error,
                 ),
               ),
@@ -1229,8 +1229,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                                     color:
                                         Theme.of(context).brightness ==
                                             Brightness.dark
-                                        ? LinliColors.brandGreen
-                                        : LinliColors.navy,
+                                        ? LinliColors.brandYellow
+                                        : LinliColors.brandInk,
                                     shape: BoxShape.circle,
                                     border: Border.all(
                                       color: Theme.of(
@@ -1245,7 +1245,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                                     color:
                                         Theme.of(context).brightness ==
                                             Brightness.dark
-                                        ? LinliColors.navy
+                                        ? LinliColors.brandInk
                                         : Colors.white,
                                   ),
                                 ),
@@ -2872,11 +2872,11 @@ class _ChatBackgroundSettingsScreenState
     final dark = Theme.of(context).brightness == Brightness.dark;
     return switch (style) {
       ChatBackgroundStyle.followSystem =>
-        dark ? LinliColors.darkBackground : LinliColors.pinnedSurface,
+        dark ? LinliColors.darkBackground : LinliColors.background,
       ChatBackgroundStyle.softMint =>
-        dark ? const Color(0xFF092019) : LinliColors.brandMint,
+        dark ? LinliColors.darkSurfaceElevated : LinliColors.brandYellowSoft,
       ChatBackgroundStyle.cleanPaper =>
-        dark ? LinliColors.navySoft : LinliColors.surface,
+        dark ? LinliColors.brandInkSoft : LinliColors.surface,
     };
   }
 
@@ -2931,7 +2931,7 @@ class _ChatBackgroundSettingsScreenState
                         ? CupertinoIcons.check_mark_circled_solid
                         : CupertinoIcons.circle,
                     color: selected == style
-                        ? LinliColors.brandGreenDeep
+                        ? LinliColors.brandInk
                         : Theme.of(
                             context,
                           ).colorScheme.onSurface.withValues(alpha: .25),
@@ -3699,8 +3699,8 @@ class _SettingsRow extends StatelessWidget {
     final color = destructive
         ? LinliColors.systemRed
         : dark
-        ? LinliColors.brandGreen
-        : LinliColors.navy;
+        ? LinliColors.brandYellow
+        : LinliColors.brandInk;
     return Semantics(
       button: onTap != null,
       enabled: onTap != null,
@@ -3860,8 +3860,8 @@ class _FaqRow extends StatelessWidget {
     leading: Icon(
       CupertinoIcons.question_circle,
       color: Theme.of(context).brightness == Brightness.dark
-          ? LinliColors.brandGreen
-          : LinliColors.navy,
+          ? LinliColors.brandYellow
+          : LinliColors.brandInk,
     ),
     title: Text(question, style: Theme.of(context).textTheme.bodyLarge),
     children: [

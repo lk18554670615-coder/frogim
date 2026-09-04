@@ -275,7 +275,7 @@ class _LaunchScreen extends StatelessWidget {
                   child: const SizedBox.square(
                     dimension: 22,
                     child: CircularProgressIndicator(
-                      color: LinliColors.brandGreenDeep,
+                      color: LinliColors.brandInk,
                       strokeWidth: 2,
                     ),
                   ),

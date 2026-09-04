@@ -15,14 +15,19 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
-  test('iOS notification tone is packaged as a short PCM WAV asset', () async {
-    final bytes = await rootBundle.load('assets/sounds/message.wav');
-    expect(String.fromCharCodes(bytes.buffer.asUint8List(0, 4)), 'RIFF');
-    expect(String.fromCharCodes(bytes.buffer.asUint8List(8, 4)), 'WAVE');
-    expect(bytes.getUint16(20, Endian.little), 1);
-    expect(bytes.getUint32(24, Endian.little), 22050);
-    expect(bytes.lengthInBytes, 10628);
-  });
+  test(
+    'foreground notification tone is packaged as a short PCM WAV asset',
+    () async {
+      final bytes = await rootBundle.load(
+        'assets/${MessageFeedback.webSoundAsset}',
+      );
+      expect(String.fromCharCodes(bytes.buffer.asUint8List(0, 4)), 'RIFF');
+      expect(String.fromCharCodes(bytes.buffer.asUint8List(8, 4)), 'WAVE');
+      expect(bytes.getUint16(20, Endian.little), 1);
+      expect(bytes.getUint32(24, Endian.little), 22050);
+      expect(bytes.lengthInBytes, 10628);
+    },
+  );
 
   test(
     'notification preferences default on and reuse the existing keys',

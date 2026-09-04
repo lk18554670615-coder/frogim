@@ -354,8 +354,8 @@ class _ForwardConversationSheetState extends State<ForwardConversationSheet> {
               ),
               selected: selected,
               selectedTileColor: theme.brightness == Brightness.dark
-                  ? LinliColors.brandGreen.withValues(alpha: .10)
-                  : LinliColors.brandMint,
+                  ? LinliColors.brandYellow.withValues(alpha: .10)
+                  : LinliColors.brandYellowSoft,
               leading: PersonAvatar(
                 name: widget.controller.displayConversationName(item),
                 size: 44,
@@ -379,7 +379,7 @@ class _ForwardConversationSheetState extends State<ForwardConversationSheet> {
                       ? CupertinoIcons.check_mark_circled_solid
                       : CupertinoIcons.circle,
                   color: selected
-                      ? LinliColors.brandGreen
+                      ? LinliColors.brandYellow
                       : theme.colorScheme.outlineVariant,
                 ),
               ),
@@ -441,7 +441,7 @@ class _ForwardConversationSheetState extends State<ForwardConversationSheet> {
               : target.status == ForwardTargetStatus.succeeded
               ? const Icon(
                   CupertinoIcons.check_mark_circled,
-                  color: LinliColors.brandGreen,
+                  color: LinliColors.brandYellow,
                 )
               : null,
         );

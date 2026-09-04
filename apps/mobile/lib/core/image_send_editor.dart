@@ -3,9 +3,11 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:pro_image_editor/pro_image_editor.dart';
 
+import 'app_theme.dart';
+
 const _editorBackground = Color(0xFF080B0A);
-const _editorBarBackground = Color(0xFF121715);
-const _editorAccent = Color(0xFF42D982);
+const _editorBarBackground = LinliColors.brandInk;
+const _editorAccent = LinliColors.brandYellow;
 const _editorToolbarText = TextStyle(
   color: Colors.white,
   fontSize: 15,
@@ -110,10 +112,8 @@ ReactiveAppbar _buildMainEditorAppBar(
             minimumSize: const Size(64, 44),
             padding: const EdgeInsets.symmetric(horizontal: 16),
             backgroundColor: _editorAccent,
-            foregroundColor: const Color(0xFF082113),
-            textStyle: _editorToolbarText.copyWith(
-              color: const Color(0xFF082113),
-            ),
+            foregroundColor: LinliColors.brandInk,
+            textStyle: _editorToolbarText.copyWith(color: LinliColors.brandInk),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(10),
             ),

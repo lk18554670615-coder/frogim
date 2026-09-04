@@ -1,6 +1,6 @@
 /* Hallmark · genre: enterprise-workbench · macrostructure: TailAdmin shell · design-system: DESIGN.md · designed-as-app
  * studied-DNA: TailAdmin Free React (MIT) · source: https://github.com/TailAdmin/free-react-tailwind-admin-dashboard
- * brand adaptation: Qingwa green highlight + neutral operational canvas
+ * brand adaptation: yellow/black emphasis + warm operational canvas
  * pre-emit critique: P5 H5 E5 S5 R5 V5
  */
 
@@ -53,9 +53,9 @@ textarea:focus-visible {
   flex-direction: column;
   padding: 0 20px 20px;
   overflow: hidden;
-  border-right: 1px solid var(--color-rule);
-  background: var(--color-paper);
-  color: var(--color-ink);
+  border-right: 1px solid #2b2a25;
+  background: var(--sidebar);
+  color: #fff8de;
   transition: width var(--dur-medium) var(--ease-out), transform var(--dur-medium) var(--ease-out);
 }
 
@@ -94,7 +94,7 @@ textarea:focus-visible {
 
 .tailadmin-shell .brand strong {
   display: block;
-  color: var(--color-ink);
+  color: #fff8de;
   font-family: var(--font-display);
   font-size: 18px;
   font-weight: 650;
@@ -106,7 +106,7 @@ textarea:focus-visible {
 .tailadmin-shell .brand span {
   display: block;
   margin-top: 4px;
-  color: var(--color-ink-tertiary);
+  color: #c8c2ae;
   font-size: 12px;
   line-height: 1;
   white-space: nowrap;
@@ -121,14 +121,14 @@ textarea:focus-visible {
   padding: 0 3px 16px 0;
   overflow-x: hidden;
   overflow-y: auto;
-  scrollbar-color: var(--color-rule-strong) transparent;
+  scrollbar-color: #514d41 transparent;
   scrollbar-width: thin;
 }
 
 .sidebar-nav-label {
   margin: 0 0 12px;
   padding: 0 12px;
-  color: var(--color-ink-tertiary);
+  color: #8f8a79;
   font-size: 11px;
   font-weight: 600;
   line-height: 1.4;
@@ -147,7 +147,7 @@ textarea:focus-visible {
   padding: 0 12px;
   border: 0;
   border-radius: 8px;
-  color: var(--color-ink-secondary);
+  color: #c8c2ae;
   background: transparent;
   font-size: 14px;
   font-weight: 500;
@@ -160,24 +160,24 @@ textarea:focus-visible {
 .tailadmin-shell .nav-item svg,
 .tailadmin-shell .nav-section-toggle svg {
   flex: 0 0 auto;
-  color: var(--color-ink-tertiary);
+  color: #8f8a79;
   transition: color var(--dur-short) var(--ease-out), transform var(--dur-short) var(--ease-out);
 }
 
 .tailadmin-shell .nav-item:hover,
 .tailadmin-shell .nav-section-toggle:hover {
-  background: var(--color-paper-subtle);
-  color: var(--color-ink);
+  background: #2b2a25;
+  color: #fff8de;
 }
 
 .tailadmin-shell .nav-item:hover svg,
 .tailadmin-shell .nav-section-toggle:hover svg {
-  color: var(--color-brand-strong);
+  color: var(--color-brand);
 }
 
 .tailadmin-shell .nav-item.active,
 .tailadmin-shell .nav-section-toggle.has-active {
-  background: var(--color-brand-soft);
+  background: var(--color-brand);
   color: var(--color-brand-strong);
   font-weight: 600;
 }
@@ -238,7 +238,7 @@ textarea:focus-visible {
   gap: 10px;
   padding: 15px 8px 0;
   margin-top: auto;
-  border-top: 1px solid var(--color-rule);
+  border-top: 1px solid #3b382e;
 }
 
 .admin-avatar,
@@ -249,7 +249,7 @@ textarea:focus-visible {
   place-items: center;
   flex: 0 0 38px;
   border-radius: 10px;
-  background: var(--color-brand-soft);
+  background: var(--color-brand);
   color: var(--color-brand-strong);
   font-size: 14px;
   font-weight: 700;
@@ -269,14 +269,14 @@ textarea:focus-visible {
 }
 
 .tailadmin-shell .sidebar-foot strong {
-  color: var(--color-ink);
+  color: #fff8de;
   font-size: 13px;
   font-weight: 600;
 }
 
 .tailadmin-shell .sidebar-foot span {
   margin-top: 4px;
-  color: var(--color-ink-tertiary);
+  color: #8f8a79;
   font-size: 11px;
 }
 
@@ -289,12 +289,12 @@ textarea:focus-visible {
 .tailadmin-shell .sidebar-logout {
   width: 32px;
   height: 32px;
-  color: var(--color-ink-tertiary);
+  color: #8f8a79;
 }
 
 .tailadmin-shell .sidebar-logout:hover {
-  background: var(--color-paper-subtle);
-  color: var(--color-ink);
+  background: #2b2a25;
+  color: var(--color-brand);
 }
 
 .tailadmin-shell .workspace {
@@ -314,8 +314,8 @@ textarea:focus-visible {
   justify-content: space-between;
   gap: 24px;
   padding: 0 32px;
-  border-bottom: 1px solid var(--color-rule);
-  background: oklch(1 0 0 / 0.96);
+  border-bottom: 1px solid var(--color-brand-line);
+  background: rgb(255 214 51 / 0.96);
   box-shadow: none;
   backdrop-filter: blur(12px);
 }
@@ -621,9 +621,9 @@ textarea:focus-visible {
 
 .tailadmin-shell .button.primary,
 .login-card .button.primary {
-  border-color: var(--color-brand-strong);
-  background: var(--color-brand-strong);
-  color: white;
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: var(--color-primary-ink);
   box-shadow: 0 1px 2px var(--color-brand-shadow);
 }
 
@@ -709,8 +709,8 @@ textarea:focus-visible {
   flex: 0 0 48px;
   border: 1px solid var(--color-rule);
   border-radius: 10px;
-  background: #f2f4f7;
-  color: #1d2939;
+  background: var(--color-brand-soft);
+  color: var(--color-brand-strong);
 }
 
 .tailadmin-shell .metric > strong {
@@ -1156,8 +1156,8 @@ textarea:focus-visible {
   display: grid;
   place-items: center;
   padding: 48px;
-  background: #054f31;
-  color: white;
+  background: var(--color-brand);
+  color: var(--color-brand-strong);
 }
 
 .login-brand-panel > div {

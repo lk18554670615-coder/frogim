@@ -32,11 +32,11 @@ class SystemNotificationTile extends StatelessWidget {
           label: '系统通知${unread > 0 ? '，$unread 条未读' : ''}，$subtitle',
           child: Material(
             key: const Key('system-notification-surface'),
-            color: dark ? LinliColors.darkPinnedSurface : LinliColors.brandMint,
+            color: dark ? LinliColors.darkPinnedSurface : LinliColors.brandYellowSoft,
             child: InkWell(
               key: const Key('system-notifications-entry'),
               overlayColor: WidgetStatePropertyAll(
-                LinliColors.brandGreen.withValues(alpha: .12),
+                LinliColors.brandYellow.withValues(alpha: .12),
               ),
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute(
@@ -54,7 +54,7 @@ class SystemNotificationTile extends StatelessWidget {
                         width: 48,
                         height: 48,
                         decoration: BoxDecoration(
-                          color: LinliColors.brandGreen,
+                          color: LinliColors.brandYellow,
                           borderRadius: BorderRadius.circular(14),
                         ),
                         alignment: Alignment.center,
@@ -74,8 +74,8 @@ class SystemNotificationTile extends StatelessWidget {
                           border: Border(
                             bottom: BorderSide(
                               color: dark
-                                  ? const Color(0xFF29443A)
-                                  : const Color(0xFFD7E0DB),
+                                  ? LinliColors.darkSeparator
+                                  : LinliColors.separator,
                               width: .75,
                             ),
                           ),
@@ -203,7 +203,7 @@ class SystemNotificationsScreen extends StatelessWidget {
         ),
         body: RefreshIndicator(
           onRefresh: controller.refreshAnnouncements,
-          color: LinliColors.navy,
+          color: LinliColors.brandInk,
           child: ListView.builder(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.only(top: 8, bottom: 32),
@@ -305,8 +305,8 @@ class _SystemNotificationRow extends StatelessWidget {
                   : CupertinoIcons.speaker_2_fill,
               size: 19,
               color: Theme.of(context).brightness == Brightness.dark
-                  ? LinliColors.brandGreen
-                  : LinliColors.navy,
+                  ? LinliColors.brandYellow
+                  : LinliColors.brandInk,
             ),
           ),
           const SizedBox(width: 12),
@@ -422,8 +422,8 @@ class AnnouncementTicker extends StatelessWidget {
                           : CupertinoIcons.speaker_2_fill,
                       size: 17,
                       color: Theme.of(context).brightness == Brightness.dark
-                          ? LinliColors.brandGreen
-                          : LinliColors.navy,
+                          ? LinliColors.brandYellow
+                          : LinliColors.brandInk,
                     ),
                     const SizedBox(width: 10),
                     Expanded(

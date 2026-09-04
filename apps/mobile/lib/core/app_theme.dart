@@ -3,30 +3,32 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 abstract final class LinliColors {
-  static const navy = Color(0xFF123B32);
-  static const navySoft = Color(0xFF1B4A3E);
-  static const brandGreen = Color(0xFF35CC70);
-  static const brandGreenPressed = Color(0xFF28B862);
-  static const brandGreenDeep = Color(0xFF178A4A);
-  static const brandMint = Color(0xFFEFF9F2);
-  static const brandMintStrong = Color(0xFFDCF3E3);
-  static const background = Color(0xFFF5F8F6);
-  static const surface = Color(0xFFFFFFFF);
-  static const pinnedSurface = Color(0xFFF7FAF8);
-  static const label = Color(0xFF142B24);
-  static const preview = Color(0xFF61756B);
-  static const tertiaryLabel = Color(0xFF91A198);
-  static const separator = Color(0xFFDDE8E1);
+  static const brandYellow = Color(0xFFFFD633);
+  static const brandYellowPressed = Color(0xFFE6B900);
+  static const brandYellowSoft = Color(0xFFFFF1A6);
+  static const brandYellowStrong = Color(0xFFFFE36B);
+  static const brandInk = Color(0xFF171714);
+  static const brandInkSoft = Color(0xFF2B2A25);
+  static const background = Color(0xFFF7F5EE);
+  static const surface = Color(0xFFFFFDF8);
+  static const surfaceElevated = Color(0xFFF0EDE3);
+  static const pinnedSurface = Color(0xFFFFF8D8);
+  static const label = Color(0xFF171714);
+  static const preview = Color(0xFF68655C);
+  static const tertiaryLabel = Color(0xFF8B877C);
+  static const separator = Color(0xFFE4DFD1);
   static const unread = Color(0xFFD92343);
   static const systemGreen = Color(0xFF22C55E);
   static const systemOrange = Color(0xFFD66A23);
   static const systemRed = Color(0xFFD92343);
-  static const darkBackground = Color(0xFF0A1511);
-  static const darkSurface = Color(0xFF10231B);
-  static const darkSurfaceElevated = Color(0xFF193027);
-  static const darkPinnedSurface = Color(0xFF14281F);
-  static const darkLabel = Color(0xFFF8FAFC);
-  static const darkPreview = Color(0xFFC8D8D0);
+  static const darkBackground = Color(0xFF0F0F0D);
+  static const darkSurface = Color(0xFF191815);
+  static const darkSurfaceElevated = Color(0xFF24221C);
+  static const darkPinnedSurface = Color(0xFF2B281C);
+  static const darkLabel = Color(0xFFFFF8DE);
+  static const darkPreview = Color(0xFFC8C2AE);
+  static const darkSeparator = Color(0xFF3B382E);
+
 }
 
 Duration nexaMotionDuration(BuildContext context) =>
@@ -45,15 +47,15 @@ ThemeData buildLinliTheme(Brightness brightness, {String? fontFamily}) {
   final surface = dark ? LinliColors.darkSurface : LinliColors.surface;
   final elevated = dark
       ? LinliColors.darkSurfaceElevated
-      : const Color(0xFFEDF4F0);
+      : LinliColors.surfaceElevated;
   final preview = dark ? LinliColors.darkPreview : LinliColors.preview;
-  final separator = dark ? const Color(0xFF315044) : LinliColors.separator;
+  final separator = dark ? LinliColors.darkSeparator : LinliColors.separator;
   final scheme = ColorScheme(
     brightness: brightness,
-    primary: LinliColors.brandGreen,
-    onPrimary: LinliColors.navy,
-    secondary: dark ? LinliColors.brandGreen : LinliColors.navy,
-    onSecondary: dark ? LinliColors.navy : Colors.white,
+    primary: LinliColors.brandYellow,
+    onPrimary: LinliColors.brandInk,
+    secondary: dark ? LinliColors.brandYellow : LinliColors.brandInk,
+    onSecondary: dark ? LinliColors.brandInk : LinliColors.brandYellow,
     error: LinliColors.systemRed,
     onError: Colors.white,
     surface: background,
@@ -135,12 +137,12 @@ ThemeData buildLinliTheme(Brightness brightness, {String? fontFamily}) {
     textTheme: textTheme,
     cupertinoOverrideTheme: CupertinoThemeData(
       brightness: brightness,
-      primaryColor: dark ? LinliColors.brandGreen : LinliColors.brandGreenDeep,
+      primaryColor: dark ? LinliColors.brandYellow : LinliColors.brandInk,
       scaffoldBackgroundColor: background,
       barBackgroundColor: surface.withValues(alpha: .92),
     ),
     splashFactory: NoSplash.splashFactory,
-    highlightColor: LinliColors.brandGreen.withValues(alpha: .12),
+    highlightColor: LinliColors.brandYellow.withValues(alpha: .2),
     visualDensity: VisualDensity.standard,
     appBarTheme: AppBarTheme(
       elevation: 0,
@@ -149,13 +151,13 @@ ThemeData buildLinliTheme(Brightness brightness, {String? fontFamily}) {
       toolbarHeight: 48,
       backgroundColor: Colors.transparent,
       surfaceTintColor: Colors.transparent,
-      foregroundColor: dark ? LinliColors.brandGreen : LinliColors.navy,
+      foregroundColor: dark ? LinliColors.brandYellow : LinliColors.brandInk,
       iconTheme: IconThemeData(
-        color: dark ? LinliColors.brandGreen : LinliColors.navy,
+        color: dark ? LinliColors.brandYellow : LinliColors.brandInk,
         size: 22,
       ),
       actionsIconTheme: IconThemeData(
-        color: dark ? LinliColors.brandGreen : LinliColors.navy,
+        color: dark ? LinliColors.brandYellow : LinliColors.brandInk,
         size: 22,
       ),
       titleTextStyle: textTheme.titleLarge,
@@ -169,7 +171,7 @@ ThemeData buildLinliTheme(Brightness brightness, {String? fontFamily}) {
     ),
     listTileTheme: ListTileThemeData(
       tileColor: surface,
-      iconColor: dark ? LinliColors.brandGreen : LinliColors.navy,
+      iconColor: dark ? LinliColors.brandYellow : LinliColors.brandInk,
       textColor: label,
       titleTextStyle: textTheme.bodyLarge,
       subtitleTextStyle: textTheme.bodySmall,
@@ -182,7 +184,7 @@ ThemeData buildLinliTheme(Brightness brightness, {String? fontFamily}) {
       labelStyle: textTheme.bodyMedium,
       prefixIconColor: WidgetStateColor.resolveWith(
         (states) => states.contains(WidgetState.focused)
-            ? LinliColors.brandGreenDeep
+            ? (dark ? LinliColors.brandYellow : LinliColors.brandInk)
             : preview,
       ),
       suffixIconColor: preview,
@@ -197,8 +199,8 @@ ThemeData buildLinliTheme(Brightness brightness, {String? fontFamily}) {
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
-        borderSide: const BorderSide(
-          color: LinliColors.brandGreenDeep,
+        borderSide: BorderSide(
+          color: dark ? LinliColors.brandYellow : LinliColors.brandInk,
           width: 1.5,
         ),
       ),
@@ -213,10 +215,14 @@ ThemeData buildLinliTheme(Brightness brightness, {String? fontFamily}) {
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
-        backgroundColor: LinliColors.brandGreen,
-        foregroundColor: LinliColors.navy,
-        disabledBackgroundColor: LinliColors.brandGreen.withValues(alpha: .35),
-        disabledForegroundColor: LinliColors.navy.withValues(alpha: .45),
+        backgroundColor: dark ? LinliColors.brandYellow : LinliColors.brandInk,
+        foregroundColor: dark ? LinliColors.brandInk : LinliColors.brandYellow,
+        disabledBackgroundColor: dark
+            ? LinliColors.brandYellow.withValues(alpha: .28)
+            : LinliColors.brandInk.withValues(alpha: .28),
+        disabledForegroundColor: dark
+            ? LinliColors.brandInk.withValues(alpha: .58)
+            : LinliColors.brandYellow.withValues(alpha: .62),
         minimumSize: const Size(44, 50),
         padding: const EdgeInsets.symmetric(horizontal: 20),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -227,8 +233,8 @@ ThemeData buildLinliTheme(Brightness brightness, {String? fontFamily}) {
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
         minimumSize: const Size(44, 50),
-        foregroundColor: dark ? LinliColors.brandGreen : LinliColors.navy,
-        side: BorderSide(color: dark ? separator : const Color(0xFFBFD0C5)),
+        foregroundColor: dark ? LinliColors.brandYellow : LinliColors.brandInk,
+        side: BorderSide(color: separator),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         textStyle: textTheme.labelLarge,
       ),
@@ -236,37 +242,36 @@ ThemeData buildLinliTheme(Brightness brightness, {String? fontFamily}) {
     textButtonTheme: TextButtonThemeData(
       style: TextButton.styleFrom(
         minimumSize: const Size(44, 44),
-        foregroundColor: dark
-            ? LinliColors.brandGreen
-            : LinliColors.brandGreenDeep,
+        foregroundColor: dark ? LinliColors.brandYellow : LinliColors.brandInk,
         textStyle: textTheme.bodyLarge,
       ),
     ),
     iconButtonTheme: IconButtonThemeData(
       style: IconButton.styleFrom(
         minimumSize: const Size(44, 44),
-        foregroundColor: dark ? LinliColors.brandGreen : LinliColors.navy,
+        foregroundColor: dark ? LinliColors.brandYellow : LinliColors.brandInk,
       ),
     ),
     dividerTheme: DividerThemeData(color: separator, thickness: .5, space: .5),
     switchTheme: SwitchThemeData(
       trackColor: WidgetStateProperty.resolveWith(
         (states) => states.contains(WidgetState.selected)
-            ? LinliColors.brandGreen
+            ? LinliColors.brandYellow
             : separator,
       ),
       thumbColor: WidgetStateProperty.resolveWith(
         (states) => states.contains(WidgetState.selected)
-            ? LinliColors.navy
+            ? LinliColors.brandInk
             : Colors.white,
       ),
       trackOutlineColor: const WidgetStatePropertyAll(Colors.transparent),
     ),
     snackBarTheme: SnackBarThemeData(
-      backgroundColor: dark
-          ? LinliColors.darkSurfaceElevated
-          : LinliColors.navy,
-      contentTextStyle: const TextStyle(color: Colors.white, fontSize: 15),
+      backgroundColor: dark ? LinliColors.brandYellow : LinliColors.brandInk,
+      contentTextStyle: TextStyle(
+        color: dark ? LinliColors.brandInk : LinliColors.brandYellow,
+        fontSize: 15,
+      ),
       behavior: SnackBarBehavior.floating,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
     ),

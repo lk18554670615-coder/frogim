@@ -92,12 +92,12 @@ class _ForcedUpgradeScreenState extends State<ForcedUpgradeScreen> {
                   width: 78,
                   height: 78,
                   decoration: BoxDecoration(
-                    color: LinliColors.brandGreen.withValues(alpha: .22),
+                    color: LinliColors.brandYellow.withValues(alpha: .22),
                     borderRadius: BorderRadius.circular(24),
                   ),
                   child: const Icon(
                     CupertinoIcons.arrow_down_circle_fill,
-                    color: LinliColors.navy,
+                    color: LinliColors.brandInk,
                     size: 42,
                   ),
                 ),

@@ -1,5 +1,6 @@
 import 'dart:collection';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -41,6 +42,8 @@ class MessageFeedback {
        _now = now ?? DateTime.now;
 
   static const _channel = MethodChannel('com.fd.kuailiao/message_feedback');
+  static const webSoundAsset = 'sounds/message.wav';
+  static AudioPlayer? _webPlayer;
   final Future<MessageFeedbackPreferences> Function() _preferences;
   final MessageFeedbackPlayer _play;
   final DateTime Function() _now;
@@ -107,11 +110,21 @@ class MessageFeedback {
     required bool sound,
     required bool vibration,
   }) async {
-    if (kIsWeb ||
-        !{
-          TargetPlatform.android,
-          TargetPlatform.iOS,
-        }.contains(defaultTargetPlatform)) {
+    if (kIsWeb) {
+      if (!sound) return;
+      final player = _webPlayer ??= AudioPlayer(playerId: 'message-feedback');
+      await player.stop();
+      await player.play(
+        AssetSource(webSoundAsset),
+        volume: .82,
+        mode: PlayerMode.lowLatency,
+      );
+      return;
+    }
+    if (!{
+      TargetPlatform.android,
+      TargetPlatform.iOS,
+    }.contains(defaultTargetPlatform)) {
       return;
     }
     await _channel.invokeMethod<void>('play', {

@@ -241,7 +241,7 @@ class _LoginScreenState extends State<LoginScreen> {
     final outerPadding = compactHeight ? 20.0 : 40.0;
     return ColoredBox(
       key: const Key('desktop-login-shell'),
-      color: dark ? const Color(0xFF101613) : const Color(0xFFE9EDF1),
+      color: dark ? LinliColors.darkBackground : LinliColors.background,
       child: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -348,7 +348,7 @@ class _LoginScreenState extends State<LoginScreen> {
             groupValue: effectiveMode,
             backgroundColor: Theme.of(context).brightness == Brightness.dark
                 ? LinliColors.darkSurfaceElevated
-                : LinliColors.brandMintStrong,
+                : LinliColors.brandYellowStrong,
             thumbColor: Theme.of(context).colorScheme.surfaceContainer,
             children: {
               _LoginMode.code: _LoginModeLabel(
@@ -579,7 +579,7 @@ class _LoginScreenState extends State<LoginScreen> {
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: const Color(0xFFDCE6E1)),
+            border: Border.all(color: LinliColors.separator),
             boxShadow: const [
               BoxShadow(
                 color: Color(0x160F172A),
@@ -599,11 +599,11 @@ class _LoginScreenState extends State<LoginScreen> {
                     version: QrVersions.auto,
                     eyeStyle: const QrEyeStyle(
                       eyeShape: QrEyeShape.square,
-                      color: LinliColors.navy,
+                      color: LinliColors.brandInk,
                     ),
                     dataModuleStyle: const QrDataModuleStyle(
                       dataModuleShape: QrDataModuleShape.square,
-                      color: LinliColors.navy,
+                      color: LinliColors.brandInk,
                     ),
                     padding: EdgeInsets.zero,
                   ),
@@ -620,7 +620,7 @@ class _LoginScreenState extends State<LoginScreen> {
               size: 17,
               color: canRefresh
                   ? LinliColors.systemRed
-                  : LinliColors.brandGreenDeep,
+                  : LinliColors.brandInk,
             ),
             const SizedBox(width: 7),
             Flexible(
@@ -735,7 +735,7 @@ class _DesktopLoginBrandPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ColoredBox(
     key: const Key('desktop-login-brand-panel'),
-    color: LinliColors.navy,
+    color: LinliColors.brandYellow,
     child: Padding(
       padding: const EdgeInsets.all(36),
       child: Column(
@@ -752,7 +752,7 @@ class _DesktopLoginBrandPanel extends StatelessWidget {
           const Text(
             '青蛙呱呱',
             style: TextStyle(
-              color: Colors.white,
+              color: LinliColors.brandInk,
               fontSize: 24,
               height: 1.2,
               fontWeight: FontWeight.w700,
@@ -763,7 +763,7 @@ class _DesktopLoginBrandPanel extends StatelessWidget {
           const Text(
             '桌面网页版',
             style: TextStyle(
-              color: Color(0xFFAEC4BA),
+              color: LinliColors.preview,
               fontSize: 13,
               height: 1.4,
               letterSpacing: .6,
@@ -840,7 +840,7 @@ class _InviteCodeScannerScreenState extends State<InviteCodeScannerScreen> {
             width: 250,
             height: 250,
             decoration: BoxDecoration(
-              border: Border.all(color: LinliColors.brandGreen, width: 3),
+              border: Border.all(color: LinliColors.brandYellow, width: 3),
               borderRadius: BorderRadius.circular(24),
             ),
           ),
@@ -1567,7 +1567,7 @@ class _AuthCodeSentNotice extends StatelessWidget {
     child: Text(
       '验证码已发送，5 分钟内有效',
       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-        color: LinliColors.brandGreenDeep,
+        color: LinliColors.brandInk,
         fontWeight: FontWeight.w500,
       ),
     ),
@@ -1586,7 +1586,7 @@ class _RegistrationClosedNotice extends StatelessWidget {
     decoration: BoxDecoration(
       color: Theme.of(context).brightness == Brightness.dark
           ? LinliColors.darkSurfaceElevated
-          : LinliColors.brandMint,
+          : LinliColors.brandYellowSoft,
       borderRadius: BorderRadius.circular(14),
       border: Border.all(color: Theme.of(context).colorScheme.outline),
     ),
@@ -1595,7 +1595,7 @@ class _RegistrationClosedNotice extends StatelessWidget {
         const Icon(
           CupertinoIcons.info_circle,
           size: 18,
-          color: LinliColors.brandGreenDeep,
+          color: LinliColors.brandInk,
         ),
         const SizedBox(width: 10),
         Expanded(

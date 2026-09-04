@@ -57,7 +57,7 @@ class ConversationAvatar extends StatelessWidget {
                   width: markSize,
                   height: markSize,
                   decoration: BoxDecoration(
-                    color: LinliColors.brandGreenDeep,
+                    color: LinliColors.brandInk,
                     shape: BoxShape.circle,
                     border: Border.all(
                       color: Theme.of(context).colorScheme.surfaceContainer,
@@ -87,7 +87,7 @@ class ConversationTypeBadge extends StatelessWidget {
     return ExcludeSemantics(
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: dark ? LinliColors.navySoft : LinliColors.brandMintStrong,
+          color: dark ? LinliColors.brandInkSoft : LinliColors.brandYellowStrong,
           borderRadius: BorderRadius.circular(4),
         ),
         child: Padding(
@@ -101,8 +101,8 @@ class ConversationTypeBadge extends StatelessWidget {
               height: 1.2,
               fontWeight: FontWeight.w600,
               color: dark
-                  ? LinliColors.brandMintStrong
-                  : LinliColors.brandGreenDeep,
+                  ? LinliColors.brandYellowStrong
+                  : LinliColors.brandInk,
             ),
           ),
         ),
@@ -119,12 +119,14 @@ class ConversationTitle extends StatelessWidget {
     required this.name,
     this.textKey,
     this.announceType = true,
+    this.color,
   });
 
   final Conversation conversation;
   final String name;
   final Key? textKey;
   final bool announceType;
+  final Color? color;
 
   @override
   Widget build(BuildContext context) {
@@ -136,7 +138,9 @@ class ConversationTitle extends StatelessWidget {
             key: textKey,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.titleMedium,
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(color: color),
           ),
         ),
         if (isOrdinaryGroupConversation(conversation)) ...[
