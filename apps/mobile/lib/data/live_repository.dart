@@ -64,6 +64,8 @@ class LiveImRepository
         MessageDeletionRepository,
         CachedMessageRepository,
         GroupHistoryRepository,
+        GroupInvitePolicyRepository,
+        GroupJoinReviewRepository,
         PaginatedMessageRepository,
         CallRepository,
         BusinessFeatureRepository {
@@ -686,6 +688,9 @@ class LiveImRepository
       'MEDIA_UNAVAILABLE' || 'INVALID_MEDIA' => '媒体文件暂时不可用，请稍后重试',
       'DEVICE_STATE_UNAVAILABLE' => '设备状态暂时无法获取，请稍后重试',
       'GROUP_OWNERSHIP_REQUIRED' => '请先转让群主或解散所管理的群聊',
+      'FRIENDSHIP_REQUIRED' => '只能邀请自己的好友加入群聊',
+      'GROUP_JOIN_POLICY_RESTRICTED' => '当前入群方式不允许此操作',
+      'GROUP_JOIN_REQUEST_EXPIRED' => '入群审核申请已过期，请重新发起',
       'HANDLE_TAKEN' => '这个呱呱号已被使用，请换一个',
       'HANDLE_CHANGE_LIMIT' => '呱呱号修改次数已用完',
       'CONFIRMATION_REQUIRED' => '请完成二次确认后再继续',
@@ -2225,7 +2230,9 @@ class LiveImRepository
       'friend.account_deleted' ||
       'block.updated' => ImEventType.friendChanged,
       'group.invite' ||
-      'group.invite.updated' => ImEventType.groupInvitationChanged,
+      'group.invite.updated' ||
+      'group.join.request.created' ||
+      'group.join.request.updated' => ImEventType.groupInvitationChanged,
       'announcement.published' ||
       'announcement.updated' ||
       'announcement.withdrawn' => ImEventType.announcementChanged,
@@ -3091,6 +3098,12 @@ class LiveImRepository
     announcementVersion: (item['announcementVersion'] as num?)?.toInt() ?? 0,
     announcementReadAt: _tryDate(item['announcementReadAt']),
     joinPolicy: item['joinPolicy'] as String? ?? 'invite',
+    joinPolicyVersion: (item['joinPolicyVersion'] as num?)?.toInt() ?? 1,
+    canDirectInvite: item['canDirectInvite'] == true,
+    canSubmitJoinRequest: item['canSubmitJoinRequest'] == true,
+    canReviewJoinRequests: item['canReviewJoinRequests'] == true,
+    pendingJoinRequestCount:
+        (item['pendingJoinRequestCount'] as num?)?.toInt() ?? 0,
     allowMemberAddFriend: item['allowMemberAddFriend'] as bool? ?? true,
     allMutedUntil: _tryDate(item['allMutedUntil']),
     qrToken: item['qrToken'] as String?,
@@ -3232,10 +3245,79 @@ class LiveImRepository
       }).then((_) {});
 
   @override
-  Future<void> inviteGroupMember(String conversationId, String userId) =>
-      _sendRequest('POST', '/v2/channels/groups/$conversationId/invites', {
-        'userId': userId,
-      }).then((_) {});
+  Future<void> inviteGroupMember(String conversationId, String userId) async {
+    await inviteGroupMemberWithOutcome(conversationId, userId);
+  }
+
+  @override
+  Future<GroupInviteOutcome> inviteGroupMemberWithOutcome(
+    String conversationId,
+    String userId,
+  ) async {
+    final data = await _sendRequest(
+      'POST',
+      '/v2/channels/groups/$conversationId/invites',
+      {'userId': userId},
+    );
+    return GroupInviteOutcome(
+      action: data['action'] as String? ?? 'pending_approval',
+      duplicate: data['duplicate'] == true,
+      alreadyInGroup: data['alreadyInGroup'] == true,
+      request: data['request'] is Map<String, Object?>
+          ? _groupJoinRequest(data['request']! as Map<String, Object?>)
+          : null,
+    );
+  }
+
+  GroupJoinRequest _groupJoinRequest(Map<String, Object?> item) =>
+      GroupJoinRequest(
+        id: item['id']! as String,
+        conversationId: item['conversationId']! as String,
+        groupName: item['groupName'] as String? ?? '',
+        requesterId: item['requesterId']! as String,
+        inviteeId: item['inviteeId']! as String,
+        policyVersion: (item['policyVersion'] as num?)?.toInt() ?? 1,
+        status: item['status'] as String? ?? 'pending',
+        createdAt: _tryDate(item['createdAt']) ?? DateTime.now(),
+        expiresAt: _tryDate(item['expiresAt']) ?? DateTime.now(),
+        updatedAt: _tryDate(item['updatedAt']) ?? DateTime.now(),
+        reviewedBy: item['reviewedBy'] as String? ?? '',
+        resolutionReason: item['resolutionReason'] as String? ?? '',
+        requester: item['requester'] is Map<String, Object?>
+            ? _user(item['requester']! as Map<String, Object?>)
+            : null,
+        invitee: item['invitee'] is Map<String, Object?>
+            ? _user(item['invitee']! as Map<String, Object?>)
+            : null,
+      );
+
+  @override
+  Future<List<GroupJoinRequest>> groupJoinRequests(
+    String conversationId, {
+    String status = 'pending',
+  }) async {
+    final encodedStatus = Uri.encodeQueryComponent(status);
+    final data = await _get(
+      '/v2/channels/groups/$conversationId/join-requests?status=$encodedStatus&limit=100',
+    );
+    return (data['items'] as List<Object?>? ?? const [])
+        .whereType<Map<String, Object?>>()
+        .map(_groupJoinRequest)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<GroupJoinRequest> respondGroupJoinRequest(
+    String conversationId,
+    String requestId,
+    String action,
+  ) async {
+    final data = await _sendRequest(
+      'POST',
+      '/v2/channels/groups/$conversationId/join-requests/$requestId/$action',
+    );
+    return _groupJoinRequest(data['request']! as Map<String, Object?>);
+  }
 
   @override
   Future<List<GroupInvitation>> groupInvitations() async {
@@ -4680,6 +4762,8 @@ class ResilientImRepository
         MessageDeletionRepository,
         CachedMessageRepository,
         GroupHistoryRepository,
+        GroupInvitePolicyRepository,
+        GroupJoinReviewRepository,
         PaginatedMessageRepository,
         CallRepository,
         BusinessFeatureRepository {
@@ -5401,6 +5485,32 @@ class ResilientImRepository
   @override
   Future<void> inviteGroupMember(String conversationId, String userId) =>
       _active.inviteGroupMember(conversationId, userId);
+  @override
+  Future<GroupInviteOutcome> inviteGroupMemberWithOutcome(
+    String conversationId,
+    String userId,
+  ) => (_active as GroupInvitePolicyRepository).inviteGroupMemberWithOutcome(
+    conversationId,
+    userId,
+  );
+  @override
+  Future<List<GroupJoinRequest>> groupJoinRequests(
+    String conversationId, {
+    String status = 'pending',
+  }) => (_active as GroupJoinReviewRepository).groupJoinRequests(
+    conversationId,
+    status: status,
+  );
+  @override
+  Future<GroupJoinRequest> respondGroupJoinRequest(
+    String conversationId,
+    String requestId,
+    String action,
+  ) => (_active as GroupJoinReviewRepository).respondGroupJoinRequest(
+    conversationId,
+    requestId,
+    action,
+  );
   @override
   Future<List<GroupInvitation>> groupInvitations() =>
       _active.groupInvitations();

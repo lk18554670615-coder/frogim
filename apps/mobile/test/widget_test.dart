@@ -814,8 +814,9 @@ void main() {
       find.byKey(const Key('wide-conversation-workspace')),
       findsOneWidget,
     );
-    expect(find.byKey(const ValueKey('wide-chat-c-team')), findsOneWidget);
-    expect(find.byKey(const Key('desktop-chat-details-panel')), findsOneWidget);
+    expect(find.text('选择一个对话'), findsOneWidget);
+    expect(find.byKey(const ValueKey('wide-chat-c-team')), findsNothing);
+    expect(find.byKey(const Key('desktop-chat-details-panel')), findsNothing);
     await tester.tap(
       find.byKey(const ValueKey('conversation-slidable-c-linyu')),
     );
@@ -1345,6 +1346,14 @@ void main() {
     expect(find.text('聊天信息'), findsOneWidget);
     expect(find.byKey(const Key('chat-info-list')), findsOneWidget);
     expect(find.text('查找聊天内容'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('清空本地记录'),
+      260,
+      scrollable: find.descendant(
+        of: find.byKey(const Key('chat-info-list')),
+        matching: find.byType(Scrollable),
+      ),
+    );
     expect(find.text('清空本地记录'), findsOneWidget);
     expect(find.text('群聊资料与管理'), findsOneWidget);
     expect(find.text('加入黑名单'), findsNothing);

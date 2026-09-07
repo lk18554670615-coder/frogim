@@ -741,7 +741,19 @@ func (p *Postgres) LoadWukongMessageExtensions(ctx context.Context, userID strin
 	}
 	rows, err := p.pool.Query(ctx, `
 		SELECT i.message_id::text,COALESCE(ext.version,0),COALESCE(ext.payload,'{}'::jsonb),
-			pin.pinned_by,pin.pinned_at
+			pin.pinned_by,pin.pinned_at,
+			CASE WHEN (i.channel_type=1 AND i.sender_id=$1) OR (i.channel_type=2 AND member.role IN ('owner','admin')) THEN
+				COALESCE((SELECT count(*) FROM im_members reader
+					WHERE reader.conversation_id=i.conversation_id
+						AND reader.user_id<>i.sender_id
+						AND reader.last_read_seq>=i.message_seq),0)
+			ELSE 0 END AS read_count,
+			CASE WHEN (i.channel_type=1 AND i.sender_id=$1) OR (i.channel_type=2 AND member.role IN ('owner','admin')) THEN
+				COALESCE((SELECT count(*) FROM im_members recipient
+					WHERE recipient.conversation_id=i.conversation_id
+						AND recipient.user_id<>i.sender_id
+						AND GREATEST(recipient.last_delivered_seq,recipient.last_read_seq)>=i.message_seq),0)
+			ELSE 0 END AS delivered_count
 		FROM im_wukong_message_index i
 		JOIN im_members member ON member.conversation_id=i.conversation_id AND member.user_id=$1
 		LEFT JOIN im_wukong_message_extensions ext ON ext.message_id=i.message_id AND ext.channel_id=i.channel_id AND ext.channel_type=i.channel_type
@@ -758,7 +770,8 @@ func (p *Postgres) LoadWukongMessageExtensions(ctx context.Context, userID strin
 		var raw []byte
 		var pinnedBy *string
 		var pinnedAt *time.Time
-		if err = rows.Scan(&messageID, &version, &raw, &pinnedBy, &pinnedAt); err != nil {
+		var readCount, deliveredCount int
+		if err = rows.Scan(&messageID, &version, &raw, &pinnedBy, &pinnedAt, &readCount, &deliveredCount); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -768,6 +781,8 @@ func (p *Postgres) LoadWukongMessageExtensions(ctx context.Context, userID strin
 			return nil, err
 		}
 		extension["version"] = version
+		extension["readCount"] = readCount
+		extension["deliveredCount"] = deliveredCount
 		if pinnedBy != nil {
 			extension["isPinned"], extension["pinnedBy"], extension["pinnedAt"] = true, *pinnedBy, pinnedAt.UTC().Format(time.RFC3339Nano)
 		}
@@ -824,14 +839,24 @@ func (p *Postgres) SyncWukongMessageExtras(ctx context.Context, userID, channelI
 	}
 	rows, err := p.pool.Query(ctx, `SELECT extension.message_id::text,message_index.message_seq,
 		extension.sync_version,extension.payload,
-		COALESCE((SELECT count(*) FROM im_members reader WHERE reader.conversation_id=message_index.conversation_id
-			AND reader.user_id<>message_index.sender_id AND reader.last_read_seq>=message_index.message_seq),0),
-		GREATEST((SELECT count(*)-1 FROM im_members member_count WHERE member_count.conversation_id=message_index.conversation_id),0),
+		CASE WHEN (message_index.channel_type=1 AND message_index.sender_id=$2) OR (message_index.channel_type=2 AND viewer.role IN ('owner','admin')) THEN
+			COALESCE((SELECT count(*) FROM im_members reader WHERE reader.conversation_id=message_index.conversation_id
+				AND reader.user_id<>message_index.sender_id AND reader.last_read_seq>=message_index.message_seq),0)
+		ELSE 0 END,
+		CASE WHEN (message_index.channel_type=1 AND message_index.sender_id=$2) OR (message_index.channel_type=2 AND viewer.role IN ('owner','admin')) THEN
+			COALESCE((SELECT count(*) FROM im_members recipient WHERE recipient.conversation_id=message_index.conversation_id
+				AND recipient.user_id<>message_index.sender_id
+				AND GREATEST(recipient.last_delivered_seq,recipient.last_read_seq)>=message_index.message_seq),0)
+		ELSE 0 END,
+		CASE WHEN (message_index.channel_type=1 AND message_index.sender_id=$2) OR (message_index.channel_type=2 AND viewer.role IN ('owner','admin')) THEN
+			GREATEST((SELECT count(*)-1 FROM im_members member_count WHERE member_count.conversation_id=message_index.conversation_id),0)
+		ELSE 0 END,
 		COALESCE((SELECT own.last_read_seq>=message_index.message_seq FROM im_members own
 			WHERE own.conversation_id=message_index.conversation_id AND own.user_id=$2),false)
 		FROM im_wukong_message_extensions extension
 		JOIN im_wukong_message_index message_index ON message_index.message_id=extension.message_id
 			AND message_index.channel_id=extension.channel_id AND message_index.channel_type=extension.channel_type
+		JOIN im_members viewer ON viewer.conversation_id=message_index.conversation_id AND viewer.user_id=$2
 		WHERE message_index.conversation_id=$1 AND extension.sync_version>$3
 		AND im_can_read_group_message($2,message_index.conversation_id,message_index.message_seq,message_index.message_timestamp)
 		ORDER BY extension.sync_version LIMIT $4`, conversationID, userID, version, limit)
@@ -846,7 +871,7 @@ func (p *Postgres) SyncWukongMessageExtras(ctx context.Context, userID, channelI
 		var recipientCount int
 		var read bool
 		if err = rows.Scan(&item.MessageID, &item.MessageSeq, &item.SyncVersion, &raw,
-			&item.ReadCount, &recipientCount, &read); err != nil {
+			&item.ReadCount, &item.DeliveredCount, &recipientCount, &read); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -857,6 +882,8 @@ func (p *Postgres) SyncWukongMessageExtras(ctx context.Context, userID, channelI
 			rows.Close()
 			return nil, err
 		}
+		item.Extra["readCount"] = item.ReadCount
+		item.Extra["deliveredCount"] = item.DeliveredCount
 		item.UnreadCount = max(0, recipientCount-item.ReadCount)
 		item.Recalled = item.Extra["recalledAt"] != nil
 		item.Revoker = wukongStringValue(item.Extra["revoker"])

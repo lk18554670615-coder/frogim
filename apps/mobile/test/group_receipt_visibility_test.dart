@@ -362,6 +362,36 @@ void main() {
     expect(find.byKey(const Key('group-receipt-summary')), findsNothing);
     expect(find.text('已发送'), findsNWidgets(2));
   });
+
+  testWidgets('群主收到不含人数的真实读回执后刷新权威人数', (tester) async {
+    final repo = _ReceiptRepository()..role = 'owner';
+    final c = AppController(repo);
+    addTearDown(c.dispose);
+    await tester.runAsync(c.loginAsDemo);
+    await showPage(
+      tester,
+      ChatScreen(controller: c, conversation: c.conversations.single),
+    );
+    expect(find.text('已送达 12 · 已读 7'), findsOneWidget);
+    final initialLoads = repo.messageLoads;
+    repo
+      ..authoritativeDeliveredCount = 14
+      ..authoritativeReadCount = 9;
+
+    repo.bus.add(
+      const ImEvent(
+        type: ImEventType.messageRead,
+        payload: {'conversationId': 'receipt-chat', 'userId': 'u1', 'seq': 2},
+      ),
+    );
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 260));
+    });
+    await tester.pumpAndSettle();
+
+    expect(repo.messageLoads, greaterThan(initialLoads));
+    expect(find.text('已送达 14 · 已读 9'), findsOneWidget);
+  });
 }
 
 Future<void> showPage(
@@ -386,17 +416,30 @@ class _ReceiptRepository extends DemoImRepository {
   _ReceiptRepository() : super(latency: Duration.zero, store: _MemoryStore());
   String role = 'member';
   bool voice = false;
+  int messageLoads = 0;
+  int authoritativeDeliveredCount = 12;
+  int authoritativeReadCount = 7;
   final bus = StreamController<ImEvent>.broadcast(sync: true);
   @override
   Stream<ImEvent> get events => bus.stream;
   @override
   Future<List<Conversation>> conversations() async => [conversation(role)];
   @override
-  Future<List<ChatMessage>> messages(String conversationId) async => [
-    message(1),
-    message(2, voice: voice),
-    message(3, mine: false),
-  ];
+  Future<List<ChatMessage>> messages(String conversationId) async {
+    messageLoads++;
+    return [
+      message(1).copyWith(
+        deliveredCount: authoritativeDeliveredCount,
+        readCount: authoritativeReadCount,
+      ),
+      message(2, voice: voice).copyWith(
+        deliveredCount: authoritativeDeliveredCount,
+        readCount: authoritativeReadCount,
+      ),
+      message(3, mine: false),
+    ];
+  }
+
   @override
   Future<void> persistMessages(
     String conversationId,

@@ -200,8 +200,8 @@ void main() {
         await tester.tap(find.byKey(const Key('group-invite-confirm')));
         await tester.pumpAndSettle();
         if (role == 'member') {
-          expect(repo.invited, ['u2', 'u3']);
           expect(repo.added, isEmpty);
+          expect(repo.invited, ['u2', 'u3']);
         } else {
           expect(repo.added, [
             ['u2', 'u3'],
@@ -278,7 +278,8 @@ void main() {
   });
 
   testWidgets('部分邀请失败只重试失败者，成功者不重复邀请', (tester) async {
-    final repo = _Repository('member')..failInvite.add('u3');
+    final repo = _Repository('member', joinPolicy: 'member_approval')
+      ..failInvite.add('u3');
     await _open(tester, repo);
     await tester.tap(find.byKey(const Key('chat-info-invite-members')));
     await tester.pumpAndSettle();
@@ -338,7 +339,8 @@ void main() {
   });
 
   testWidgets('成员信息失败可重试，退出登录后停止后续邀请', (tester) async {
-    final repo = _Repository('member')..failRead = true;
+    final repo = _Repository('member', joinPolicy: 'member_approval')
+      ..failRead = true;
     final controller = await _open(tester, repo);
     await tester.tap(find.byKey(const Key('chat-info-invite-members')));
     await tester.pumpAndSettle();
@@ -368,6 +370,42 @@ void main() {
     expect(repo.invited, ['u2']);
     expect(find.text('登录状态已变化，请返回重试'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
+  });
+
+  for (final policy in ['manager_invite', 'qr', 'closed']) {
+    testWidgets('$policy 下普通成员不显示邀请加号', (tester) async {
+      final repo = _Repository('member', joinPolicy: policy);
+      await _open(tester, repo);
+      expect(find.byKey(const Key('chat-info-invite-members')), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
+
+  testWidgets('暂停加入时群管理员仍可直接添加好友', (tester) async {
+    final repo = _Repository('admin', joinPolicy: 'closed');
+    await _open(tester, repo);
+    expect(find.byKey(const Key('chat-info-invite-members')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('chat-info-invite-members')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('group-invite-user-u2')));
+    await tester.pump();
+    expect(find.text('完成 1'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('group-invite-confirm')));
+    await tester.pumpAndSettle();
+    expect(repo.added, [
+      ['u2'],
+    ]);
+    expect(repo.invited, isEmpty);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test('五种入群方式提供明确文案', () {
+    expect(groupJoinPolicyLabel('invite'), '仅成员邀请');
+    expect(groupJoinPolicyLabel('manager_invite'), '仅群主/管理员邀请');
+    expect(groupJoinPolicyLabel('member_approval'), '成员邀请需管理员验证');
+    expect(groupJoinPolicyLabel('qr'), '二维码加入');
+    expect(groupJoinPolicyLabel('closed'), '暂停加入');
   });
 }
 
@@ -424,8 +462,10 @@ Future<AppController> _open(
 }
 
 class _Repository extends DemoImRepository {
-  _Repository(this.role) : super(latency: Duration.zero, store: _MemoryStore());
+  _Repository(this.role, {this.joinPolicy = 'invite'})
+    : super(latency: Duration.zero, store: _MemoryStore());
   String role;
+  final String joinPolicy;
   final joined = <String>{'u1'};
   final added = <List<String>>[];
   final invited = <String>[];
@@ -442,7 +482,12 @@ class _Repository extends DemoImRepository {
         name: '群成员测试群',
         announcement: '',
         announcementVersion: 0,
-        joinPolicy: 'invite',
+        joinPolicy: joinPolicy,
+        canDirectInvite:
+            role == 'owner' || role == 'admin' || joinPolicy == 'invite',
+        canSubmitJoinRequest:
+            role == 'member' && joinPolicy == 'member_approval',
+        canReviewJoinRequests: role == 'owner' || role == 'admin',
         allowMemberAddFriend: true,
         updatedAt: DateTime(2026),
       );
@@ -496,6 +541,17 @@ class _Repository extends DemoImRepository {
     invited.add(userId);
     await pendingInvite?.future;
     if (failInvite.contains(userId)) throw const FormatException('邀请失败，请稍后再试');
+  }
+
+  @override
+  Future<GroupInviteOutcome> inviteGroupMemberWithOutcome(
+    String conversationId,
+    String userId,
+  ) async {
+    await inviteGroupMember(conversationId, userId);
+    return GroupInviteOutcome(
+      action: joinPolicy == 'invite' ? 'added' : 'pending_approval',
+    );
   }
 }
 

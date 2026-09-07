@@ -2452,6 +2452,14 @@ func TestWukongGroupMessagePinUsesMetadataAndExtensionOnly(t *testing.T) {
 	if err != nil || readSequence != 7 {
 		t.Fatalf("WuKong read sequence=%d err=%v", readSequence, err)
 	}
+	memberExtensions, err := p.LoadWukongMessageExtensions(ctx, member, []string{messageIDText})
+	if err != nil || memberExtensions[messageIDText]["readCount"] != 0 || memberExtensions[messageIDText]["deliveredCount"] != 0 {
+		t.Fatalf("ordinary member receipt counts must stay hidden: extension=%#v err=%v", memberExtensions[messageIDText], err)
+	}
+	ownerExtensions, err := p.LoadWukongMessageExtensions(ctx, owner, []string{messageIDText})
+	if err != nil || ownerExtensions[messageIDText]["readCount"] != 1 || ownerExtensions[messageIDText]["deliveredCount"] != 1 {
+		t.Fatalf("group manager receipt counts=%#v err=%v", ownerExtensions[messageIDText], err)
+	}
 	reportID := "wk_pin_report_" + suffix
 	report := &model.Report{ID: reportID, ReporterID: member, TargetType: "message", TargetID: messageIDText, Reason: "abuse", Status: "pending", CreatedAt: now, UpdatedAt: now}
 	audit := &model.AuditEntry{ID: "wk_pin_report_create_" + suffix, ActorID: member, Action: "report.created", TargetType: "message", TargetID: messageIDText, Metadata: map[string]any{"reportId": reportID}, CreatedAt: now}
@@ -2924,8 +2932,11 @@ func TestPostgresGroupManagementPermissionsInvitesQRAndAudit(t *testing.T) {
 		t.Fatalf("group conversation projection missing: %+v", groupConversations)
 	}
 	allMuted := now.Add(time.Hour)
-	if _, err = p.UpdateGroupProfile(ctx, users[0], cid, GroupProfileUpdate{AllMutedUntil: &allMuted}, now.Add(11*time.Second)); err != nil {
-		t.Fatal(err)
+	if _, err = p.UpdateGroupProfile(ctx, users[1], cid, GroupProfileUpdate{AllMutedUntil: &allMuted}, now.Add(11*time.Second)); err != nil {
+		t.Fatalf("group admin mute all=%v", err)
+	}
+	if _, err = p.UpdateGroupProfile(ctx, users[1], cid, GroupProfileUpdate{JoinPolicy: &policy}, now.Add(12*time.Second)); err != ErrForbidden {
+		t.Fatalf("group admin changed owner-only join policy=%v", err)
 	}
 	if _, err = p.AuthorizeWukongMessage(ctx, WukongMessageRouteInput{UserID: users[3], ConversationID: cid, Type: "text", Text: "no"}); err != ErrForbidden {
 		t.Fatalf("mute send=%v", err)

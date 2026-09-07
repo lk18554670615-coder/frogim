@@ -39,7 +39,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int index = 0;
   bool handlingPushNavigation = false;
   String? selectedConversationId;
-  bool desktopDetailsVisible = true;
+  bool desktopDetailsVisible = false;
 
   @override
   Widget build(BuildContext context) => CallbackShortcuts(
@@ -193,11 +193,11 @@ class _HomeScreenState extends State<HomeScreen> {
     final available = widget.controller.conversations
         .where((item) => !item.archived)
         .toList();
-    final selected =
-        widget.controller.conversations
-            .where((item) => item.id == selectedConversationId)
-            .firstOrNull ??
-        available.firstOrNull;
+    final selected = selectedConversationId == null
+        ? null
+        : available
+              .where((item) => item.id == selectedConversationId)
+              .firstOrNull;
     final showDetails = desktopDetailsVisible && width >= 1200;
     return Row(
       key: const Key('wide-conversation-workspace'),
@@ -211,7 +211,10 @@ class _HomeScreenState extends State<HomeScreen> {
             selectedConversationId: selected?.id,
             onConversationSelected: (conversation) {
               widget.controller.markRead(conversation.id);
-              setState(() => selectedConversationId = conversation.id);
+              setState(() {
+                selectedConversationId = conversation.id;
+                desktopDetailsVisible = false;
+              });
             },
           ),
         ),
@@ -225,6 +228,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   conversation: selected,
                   chatBackgroundOverride: widget.chatBackgroundOverride,
                   showDesktopDetails: showDetails,
+                  onCloseDesktopConversation: () => setState(() {
+                    selectedConversationId = null;
+                    desktopDetailsVisible = false;
+                  }),
                   onToggleDesktopDetails: width >= 1200
                       ? () => setState(
                           () => desktopDetailsVisible = !desktopDetailsVisible,
@@ -251,6 +258,7 @@ class _HomeScreenState extends State<HomeScreen> {
             setState(() {
               index = 0;
               selectedConversationId = conversation.id;
+              desktopDetailsVisible = false;
             });
           },
         ),
@@ -281,6 +289,7 @@ class _HomeScreenState extends State<HomeScreen> {
           setState(() {
             index = 0;
             selectedConversationId = conversation!.id;
+            desktopDetailsVisible = false;
           });
           return;
         }
@@ -1967,6 +1976,53 @@ class ConversationTile extends StatelessWidget {
     final draft = controller.draftFor(conversation.id);
     final subtitle = draft.isEmpty ? conversation.subtitle : '[草稿] $draft';
     final directPeer = conversation.directPeerFor(controller.currentUser?.id);
+    final presenceUserId =
+        conversation.kind == ConversationKind.direct &&
+            !conversation.isBusinessChannel
+        ? (directPeer?.id ?? conversation.channelId ?? '')
+        : '';
+    if (presenceUserId.isEmpty) {
+      return _buildTile(
+        context,
+        dark: dark,
+        draft: draft,
+        subtitle: subtitle,
+        directPeer: directPeer,
+        presenceUserId: presenceUserId,
+        presenceStatus: UserPresenceStatus.hidden,
+      );
+    }
+    return UserPresence(
+      controller: controller,
+      userId: presenceUserId,
+      builder: (context, presenceStatus) => _buildTile(
+        context,
+        dark: dark,
+        draft: draft,
+        subtitle: subtitle,
+        directPeer: directPeer,
+        presenceUserId: presenceUserId,
+        presenceStatus: presenceStatus,
+      ),
+    );
+  }
+
+  Widget _buildTile(
+    BuildContext context, {
+    required bool dark,
+    required String draft,
+    required String subtitle,
+    required AppUser? directPeer,
+    required String presenceUserId,
+    required UserPresenceStatus presenceStatus,
+  }) {
+    final presenceSnapshot = controller.presence.snapshot(presenceUserId);
+    final presenceText = presenceLabelText(
+      presenceStatus,
+      lastOfflineAt: presenceSnapshot.lastOfflineAt,
+      checkedAt: presenceSnapshot.checkedAt,
+    );
+    final presenceSemantics = presenceText.isEmpty ? '' : '，$presenceText';
     return Slidable(
       key: ValueKey('conversation-slidable-${conversation.id}'),
       endActionPane: ActionPane(
@@ -2031,7 +2087,7 @@ class ConversationTile extends StatelessWidget {
       child: Semantics(
         button: true,
         label:
-            '${conversationTypeLabel(conversation)}，${conversation.archived ? '已归档，' : ''}${highlighted ? '已置顶，' : ''}${controller.displayConversationName(conversation)}，$subtitle${(conversation.mentionUnreadCount ?? 0) > 0 ? '，${conversation.mentionUnreadCount}条提到我' : ''}${conversation.unread > 0 ? '，${conversation.unread}条未读' : ''}',
+            '${conversationTypeLabel(conversation)}，${conversation.archived ? '已归档，' : ''}${highlighted ? '已置顶，' : ''}${controller.displayConversationName(conversation)}$presenceSemantics，$subtitle${(conversation.mentionUnreadCount ?? 0) > 0 ? '，${conversation.mentionUnreadCount}条提到我' : ''}${conversation.unread > 0 ? '，${conversation.unread}条未读' : ''}',
         child: Material(
           color: highlighted
               ? (dark
@@ -2070,6 +2126,7 @@ class ConversationTile extends StatelessWidget {
                       size: 48,
                       avatarUrl:
                           conversation.avatarUrl ?? directPeer?.avatarUrl,
+                      online: presenceStatus == UserPresenceStatus.online,
                     ),
                   ),
                   Expanded(
@@ -2158,6 +2215,18 @@ class ConversationTile extends StatelessWidget {
                                   color: LinliColors.tertiaryLabel,
                                 ),
                                 const SizedBox(width: 4),
+                              ],
+                              if (presenceUserId.isNotEmpty) ...[
+                                PresenceLabel(
+                                  presenceStatus,
+                                  key: ValueKey(
+                                    'conversation-presence-${conversation.id}',
+                                  ),
+                                  lastOfflineAt: presenceSnapshot.lastOfflineAt,
+                                  checkedAt: presenceSnapshot.checkedAt,
+                                ),
+                                if (presenceStatus != UserPresenceStatus.hidden)
+                                  const SizedBox(width: 8),
                               ],
                               Expanded(
                                 child: Text(
@@ -2749,35 +2818,42 @@ class _ContactListTile extends StatelessWidget {
   Widget build(BuildContext context) => UserPresence(
     controller: controller,
     userId: user.id,
-    builder: (context, status) => ListTile(
-      key: Key('contact-${user.id}'),
-      minTileHeight: 68,
-      contentPadding: const EdgeInsets.only(left: 16, right: 36),
-      leading: PersonAvatar(
-        name: user.displayName,
-        avatarUrl: user.avatarUrl,
-        online: status == UserPresenceStatus.online,
-      ),
-      title: Text(
-        user.displayName,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: Row(
-        children: [
-          PresenceLabel(status),
-          if (status != UserPresenceStatus.hidden) const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              user.presence,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+    builder: (context, status) {
+      final snapshot = controller.presence.snapshot(user.id);
+      return ListTile(
+        key: Key('contact-${user.id}'),
+        minTileHeight: 68,
+        contentPadding: const EdgeInsets.only(left: 16, right: 36),
+        leading: PersonAvatar(
+          name: user.displayName,
+          avatarUrl: user.avatarUrl,
+          online: status == UserPresenceStatus.online,
+        ),
+        title: Text(
+          user.displayName,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Row(
+          children: [
+            PresenceLabel(
+              status,
+              lastOfflineAt: snapshot.lastOfflineAt,
+              checkedAt: snapshot.checkedAt,
             ),
-          ),
-        ],
-      ),
-      onTap: onTap,
-    ),
+            if (status != UserPresenceStatus.hidden) const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                user.presence,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        onTap: onTap,
+      );
+    },
   );
 }
 

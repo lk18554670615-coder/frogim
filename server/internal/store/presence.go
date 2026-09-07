@@ -1,9 +1,18 @@
 package store
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type PresencePermissionStore interface {
 	AllowedPresenceTargets(context.Context, string, []string, string) (map[string]bool, error)
+}
+
+// PresenceLastOfflineStore exposes only the timestamp needed by the authorized
+// presence endpoint. Callers must still apply relationship/group permissions.
+type PresenceLastOfflineStore interface {
+	PresenceLastOfflineAt(context.Context, []string) (map[string]time.Time, error)
 }
 
 func (p *WithRedis) AllowedPresenceTargets(ctx context.Context, actor string, ids []string, groupID string) (map[string]bool, error) {
@@ -11,6 +20,33 @@ func (p *WithRedis) AllowedPresenceTargets(ctx context.Context, actor string, id
 		return s.AllowedPresenceTargets(ctx, actor, ids, groupID)
 	}
 	return nil, ErrUnsupported
+}
+
+func (p *WithRedis) PresenceLastOfflineAt(ctx context.Context, ids []string) (map[string]time.Time, error) {
+	if s, ok := p.base.(PresenceLastOfflineStore); ok {
+		return s.PresenceLastOfflineAt(ctx, ids)
+	}
+	return nil, ErrUnsupported
+}
+
+func (p *Postgres) PresenceLastOfflineAt(ctx context.Context, ids []string) (map[string]time.Time, error) {
+	rows, err := p.pool.Query(ctx, `SELECT user_id,last_offline_at
+		FROM im_wukong_presence
+		WHERE user_id=ANY($1::text[]) AND online=false AND last_offline_at IS NOT NULL`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]time.Time, len(ids))
+	for rows.Next() {
+		var id string
+		var at time.Time
+		if err := rows.Scan(&id, &at); err != nil {
+			return nil, err
+		}
+		result[id] = at.UTC()
+	}
+	return result, rows.Err()
 }
 func (p *Postgres) AllowedPresenceTargets(ctx context.Context, actor string, ids []string, groupID string) (map[string]bool, error) {
 	rows, err := p.pool.Query(ctx, `SELECT u.id FROM im_users u

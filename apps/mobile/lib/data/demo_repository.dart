@@ -7,7 +7,11 @@ import '../core/user_presence.dart';
 import 'im_repository.dart';
 import 'secure_local_store.dart';
 
-class DemoImRepository implements ImRepository {
+class DemoImRepository
+    implements
+        ImRepository,
+        GroupInvitePolicyRepository,
+        GroupJoinReviewRepository {
   @override
   Future<ChatMessage> refreshMessageMedia(ChatMessage message) async => message;
   @override
@@ -31,6 +35,7 @@ class DemoImRepository implements ImRepository {
   final Map<String, List<MessageEditRevision>> _messageEditRevisions = {};
   final Map<String, List<ScheduledMessage>> _scheduledMessages = {};
   final Map<String, GroupProfile> _groupProfiles = {};
+  final Map<String, List<GroupJoinRequest>> _groupJoinRequests = {};
   final Map<String, List<GroupMember>> _groupMemberState = {};
   final List<AppAnnouncement> _announcements = [
     AppAnnouncement(
@@ -593,6 +598,8 @@ class DemoImRepository implements ImRepository {
         announcement: '欢迎友好、真诚地交流。',
         announcementVersion: 1,
         joinPolicy: 'invite',
+        canDirectInvite: true,
+        canReviewJoinRequests: true,
         allowMemberAddFriend: true,
         updatedAt: DateTime.now(),
       );
@@ -623,6 +630,16 @@ class DemoImRepository implements ImRepository {
       announcementVersion: old.announcementVersion,
       announcementReadAt: old.announcementReadAt,
       joinPolicy: joinPolicy ?? old.joinPolicy,
+      joinPolicyVersion:
+          old.joinPolicyVersion +
+          (joinPolicy == null || joinPolicy == old.joinPolicy ? 0 : 1),
+      canDirectInvite: true,
+      canReviewJoinRequests: true,
+      pendingJoinRequestCount:
+          _groupJoinRequests[conversationId]
+              ?.where((request) => request.pending)
+              .length ??
+          0,
       allowMemberAddFriend: allowMemberAddFriend ?? old.allowMemberAddFriend,
       historyVisibleToNewMembers:
           historyVisibleToNewMembers ?? old.historyVisibleToNewMembers,
@@ -654,6 +671,11 @@ class DemoImRepository implements ImRepository {
       announcement: content,
       announcementVersion: old.announcementVersion + 1,
       joinPolicy: old.joinPolicy,
+      joinPolicyVersion: old.joinPolicyVersion,
+      canDirectInvite: old.canDirectInvite,
+      canSubmitJoinRequest: old.canSubmitJoinRequest,
+      canReviewJoinRequests: old.canReviewJoinRequests,
+      pendingJoinRequestCount: old.pendingJoinRequestCount,
       allowMemberAddFriend: old.allowMemberAddFriend,
       historyVisibleToNewMembers: old.historyVisibleToNewMembers,
       historyPolicyVersion: old.historyPolicyVersion,
@@ -676,6 +698,11 @@ class DemoImRepository implements ImRepository {
       announcementVersion: old.announcementVersion,
       announcementReadAt: DateTime.now(),
       joinPolicy: old.joinPolicy,
+      joinPolicyVersion: old.joinPolicyVersion,
+      canDirectInvite: old.canDirectInvite,
+      canSubmitJoinRequest: old.canSubmitJoinRequest,
+      canReviewJoinRequests: old.canReviewJoinRequests,
+      pendingJoinRequestCount: old.pendingJoinRequestCount,
       allowMemberAddFriend: old.allowMemberAddFriend,
       historyVisibleToNewMembers: old.historyVisibleToNewMembers,
       historyPolicyVersion: old.historyPolicyVersion,
@@ -734,7 +761,92 @@ class DemoImRepository implements ImRepository {
 
   @override
   Future<void> inviteGroupMember(String conversationId, String userId) async {
+    await inviteGroupMemberWithOutcome(conversationId, userId);
+  }
+
+  @override
+  Future<GroupInviteOutcome> inviteGroupMemberWithOutcome(
+    String conversationId,
+    String userId,
+  ) async {
     await Future<void>.delayed(latency);
+    final profile = await groupProfile(conversationId);
+    if (profile.joinPolicy == 'invite') {
+      await addGroupMembers(conversationId, [userId]);
+      return const GroupInviteOutcome(action: 'added');
+    }
+    final existing = (_groupJoinRequests[conversationId] ?? const [])
+        .where(
+          (request) =>
+              request.inviteeId == userId && request.status == 'pending',
+        )
+        .firstOrNull;
+    if (existing != null) {
+      return GroupInviteOutcome(
+        action: 'pending_approval',
+        duplicate: true,
+        request: existing,
+      );
+    }
+    final now = DateTime.now();
+    final request = GroupJoinRequest(
+      id: 'gjr_demo_${now.microsecondsSinceEpoch}',
+      conversationId: conversationId,
+      requesterId: currentUser?.id ?? '',
+      inviteeId: userId,
+      status: 'pending',
+      createdAt: now,
+      expiresAt: now.add(const Duration(days: 7)),
+      updatedAt: now,
+    );
+    _groupJoinRequests.putIfAbsent(conversationId, () => []).add(request);
+    return GroupInviteOutcome(action: 'pending_approval', request: request);
+  }
+
+  @override
+  Future<List<GroupJoinRequest>> groupJoinRequests(
+    String conversationId, {
+    String status = 'pending',
+  }) async {
+    await Future<void>.delayed(latency);
+    return List.of(
+      (_groupJoinRequests[conversationId] ?? const <GroupJoinRequest>[]).where(
+        (request) => status == 'all' || request.status == status,
+      ),
+    );
+  }
+
+  @override
+  Future<GroupJoinRequest> respondGroupJoinRequest(
+    String conversationId,
+    String requestId,
+    String action,
+  ) async {
+    await Future<void>.delayed(latency);
+    final requests = _groupJoinRequests[conversationId] ?? const [];
+    final index = requests.indexWhere((request) => request.id == requestId);
+    if (index < 0) throw const FormatException('入群审核申请不存在');
+    final old = requests[index];
+    final updated = GroupJoinRequest(
+      id: old.id,
+      conversationId: old.conversationId,
+      requesterId: old.requesterId,
+      inviteeId: old.inviteeId,
+      status: switch (action) {
+        'approve' => 'approved',
+        'reject' => 'rejected',
+        _ => 'cancelled',
+      },
+      createdAt: old.createdAt,
+      expiresAt: old.expiresAt,
+      updatedAt: DateTime.now(),
+      groupName: old.groupName,
+      policyVersion: old.policyVersion,
+      requester: old.requester,
+      invitee: old.invitee,
+    );
+    requests[index] = updated;
+    return updated;
   }
 
   @override
@@ -843,6 +955,11 @@ class DemoImRepository implements ImRepository {
       announcementVersion: old.announcementVersion,
       announcementReadAt: old.announcementReadAt,
       joinPolicy: old.joinPolicy,
+      joinPolicyVersion: old.joinPolicyVersion,
+      canDirectInvite: old.canDirectInvite,
+      canSubmitJoinRequest: old.canSubmitJoinRequest,
+      canReviewJoinRequests: old.canReviewJoinRequests,
+      pendingJoinRequestCount: old.pendingJoinRequestCount,
       allowMemberAddFriend: old.allowMemberAddFriend,
       historyVisibleToNewMembers: old.historyVisibleToNewMembers,
       historyPolicyVersion: old.historyPolicyVersion,

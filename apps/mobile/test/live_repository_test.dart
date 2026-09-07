@@ -1953,6 +1953,140 @@ void main() {
     await repository.close();
   });
 
+  test('群资料解析入群能力和待审核数量', () async {
+    final client = MockClient(
+      (_) async => _jsonResponse({
+        'data': {
+          'conversationId': 'group-1',
+          'ownerId': 'user-1',
+          'name': '审核群',
+          'joinPolicy': 'member_approval',
+          'joinPolicyVersion': 4,
+          'canDirectInvite': true,
+          'canSubmitJoinRequest': false,
+          'canReviewJoinRequests': true,
+          'pendingJoinRequestCount': 3,
+          'allowMemberAddFriend': true,
+          'updatedAt': '2026-09-07T12:00:00Z',
+        },
+      }),
+    );
+    final repository = _repository(client);
+
+    final profile = await repository.groupProfile('group-1');
+
+    expect(profile.joinPolicy, 'member_approval');
+    expect(profile.joinPolicyVersion, 4);
+    expect(profile.canDirectInvite, isTrue);
+    expect(profile.canSubmitJoinRequest, isFalse);
+    expect(profile.canReviewJoinRequests, isTrue);
+    expect(profile.pendingJoinRequestCount, 3);
+    await repository.close();
+  });
+
+  test('入群审核列表和同意操作使用群级接口', () async {
+    final requests = <http.Request>[];
+    Map<String, Object?> requestBody(String status) => {
+      'id': 'request-1',
+      'conversationId': 'group-1',
+      'requesterId': 'user-2',
+      'inviteeId': 'user-3',
+      'policyVersion': 2,
+      'status': status,
+      'createdAt': '2026-09-07T10:00:00Z',
+      'expiresAt': '2026-09-14T10:00:00Z',
+      'updatedAt': '2026-09-07T10:00:00Z',
+      'requester': {'id': 'user-2', 'name': '申请人'},
+      'invitee': {'id': 'user-3', 'name': '待加入用户'},
+    };
+    final client = MockClient((request) async {
+      requests.add(request);
+      if (request.method == 'GET') {
+        return _jsonResponse({
+          'data': {
+            'items': [requestBody('pending')],
+          },
+        });
+      }
+      return _jsonResponse({
+        'data': {'request': requestBody('approved'), 'duplicate': false},
+      });
+    });
+    final repository = _repository(client);
+
+    final pending = await repository.groupJoinRequests('group-1');
+    final approved = await repository.respondGroupJoinRequest(
+      'group-1',
+      pending.single.id,
+      'approve',
+    );
+
+    expect(pending.single.invitee?.name, '待加入用户');
+    expect(approved.status, 'approved');
+    expect(
+      requests.first.url.path,
+      '/v2/channels/groups/group-1/join-requests',
+    );
+    expect(requests.last.method, 'POST');
+    expect(
+      requests.last.url.path,
+      '/v2/channels/groups/group-1/join-requests/request-1/approve',
+    );
+    await repository.close();
+  });
+
+  test('成员邀请保留服务端的直接加入和重复审核结果', () async {
+    var call = 0;
+    final client = MockClient((request) async {
+      expect(request.method, 'POST');
+      expect(request.url.path, '/v2/channels/groups/group-1/invites');
+      call++;
+      if (call == 1) {
+        return _jsonResponse({
+          'data': {
+            'action': 'added',
+            'duplicate': false,
+            'alreadyInGroup': false,
+          },
+        });
+      }
+      return _jsonResponse({
+        'data': {
+          'action': 'pending_approval',
+          'duplicate': true,
+          'request': {
+            'id': 'request-2',
+            'conversationId': 'group-1',
+            'requesterId': 'user-1',
+            'inviteeId': 'user-3',
+            'policyVersion': 2,
+            'status': 'pending',
+            'createdAt': '2026-09-07T10:00:00Z',
+            'expiresAt': '2026-09-14T10:00:00Z',
+            'updatedAt': '2026-09-07T10:00:00Z',
+          },
+        },
+      });
+    });
+    final repository = _repository(client);
+
+    final added = await repository.inviteGroupMemberWithOutcome(
+      'group-1',
+      'user-2',
+    );
+    final pending = await repository.inviteGroupMemberWithOutcome(
+      'group-1',
+      'user-3',
+    );
+
+    expect(added.action, 'added');
+    expect(added.duplicate, isFalse);
+    expect(pending.action, 'pending_approval');
+    expect(pending.duplicate, isTrue);
+    expect(pending.request?.id, 'request-2');
+    await repository.close();
+  });
+
   test('群头像已由服务端保存后不被无关的本地历史缓存错误误报失败', () async {
     final client = MockClient((request) async {
       if (request.url.path == '/v2/auth/login') return _loginResponse();

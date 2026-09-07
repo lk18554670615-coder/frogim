@@ -5,10 +5,16 @@ import 'package:flutter/foundation.dart';
 enum UserPresenceStatus { online, offline, unknown, hidden }
 
 class UserPresenceSnapshot {
-  const UserPresenceSnapshot(this.userId, this.status, {this.checkedAt});
+  const UserPresenceSnapshot(
+    this.userId,
+    this.status, {
+    this.checkedAt,
+    this.lastOfflineAt,
+  });
   final String userId;
   final UserPresenceStatus status;
   final DateTime? checkedAt;
+  final DateTime? lastOfflineAt;
 
   factory UserPresenceSnapshot.fromJson(Map<String, Object?> json) =>
       UserPresenceSnapshot(
@@ -18,6 +24,9 @@ class UserPresenceSnapshot {
                 .firstOrNull ??
             UserPresenceStatus.unknown,
         checkedAt: DateTime.tryParse(json['checkedAt']?.toString() ?? ''),
+        lastOfflineAt: DateTime.tryParse(
+          json['lastOfflineAt']?.toString() ?? '',
+        ),
       );
 }
 
@@ -50,9 +59,12 @@ class PresenceCoordinator extends ChangeNotifier {
   bool _scheduled = false;
   Timer? _timer;
 
+  UserPresenceSnapshot snapshot(String id, {String? groupId}) =>
+      _watches[(userId: id, groupId: groupId)]?.value ??
+      UserPresenceSnapshot(id, UserPresenceStatus.hidden);
+
   UserPresenceStatus status(String id, {String? groupId}) =>
-      _watches[(userId: id, groupId: groupId)]?.value?.status ??
-      UserPresenceStatus.hidden;
+      snapshot(id, groupId: groupId).status;
 
   void setAccount(String? account) {
     if (_disposed || _account == account) return;

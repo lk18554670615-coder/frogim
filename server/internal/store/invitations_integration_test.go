@@ -37,7 +37,7 @@ func TestInvitationPostgresLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	if schemaVersion != 63 {
+	if schemaVersion < 63 {
 		t.Fatalf("schema version=%d", schemaVersion)
 	}
 

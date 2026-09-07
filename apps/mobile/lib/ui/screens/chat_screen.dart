@@ -50,6 +50,7 @@ import '../voice_composer_controller.dart';
 import 'moments_screen.dart';
 import 'group_management_screens.dart';
 import 'group_invite_members_screen.dart';
+import 'group_remove_members_screen.dart';
 import 'people_screens.dart';
 import 'relationship_screens.dart';
 import 'settings_preferences.dart';
@@ -157,6 +158,7 @@ class ChatScreen extends StatefulWidget {
     required Conversation conversation,
     this.initialMessageId,
     this.showDesktopDetails = false,
+    this.onCloseDesktopConversation,
     this.onToggleDesktopDetails,
     this.settingsStore = const LocalSettingsStore(),
     this.chatBackgroundOverride,
@@ -166,6 +168,7 @@ class ChatScreen extends StatefulWidget {
   final Conversation _initialConversation;
   final String? initialMessageId;
   final bool showDesktopDetails;
+  final VoidCallback? onCloseDesktopConversation;
   final VoidCallback? onToggleDesktopDetails;
   final LocalSettingsStore settingsStore;
   final ChatBackgroundStyle? chatBackgroundOverride;
@@ -884,6 +887,14 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             titleSpacing: 0,
             centerTitle: false,
+            leading: widget.onCloseDesktopConversation == null
+                ? null
+                : IconButton(
+                    key: const Key('desktop-close-conversation'),
+                    tooltip: '返回会话列表',
+                    onPressed: widget.onCloseDesktopConversation,
+                    icon: const Icon(CupertinoIcons.back),
+                  ),
             title: Row(
               children: [
                 _buildConversationAvatar(),
@@ -911,27 +922,33 @@ class _ChatScreenState extends State<ChatScreen> {
                             return UserPresence(
                               controller: widget.controller,
                               userId: peer?.id ?? '',
-                              builder: (context, status) => typing != null
-                                  ? Text(
-                                      typing,
-                                      key: Key(
-                                        'chat-presence-${widget.conversation.id}',
-                                      ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .labelSmall
-                                          ?.copyWith(
-                                            color: LinliColors.systemGreen,
-                                          ),
-                                    )
-                                  : PresenceLabel(
-                                      status,
-                                      key: Key(
-                                        'chat-presence-${widget.conversation.id}',
-                                      ),
-                                    ),
+                              builder: (context, status) {
+                                final snapshot = widget.controller.presence
+                                    .snapshot(peer?.id ?? '');
+                                return typing != null
+                                    ? Text(
+                                        typing,
+                                        key: Key(
+                                          'chat-presence-${widget.conversation.id}',
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .labelSmall
+                                            ?.copyWith(
+                                              color: LinliColors.systemGreen,
+                                            ),
+                                      )
+                                    : PresenceLabel(
+                                        status,
+                                        key: Key(
+                                          'chat-presence-${widget.conversation.id}',
+                                        ),
+                                        lastOfflineAt: snapshot.lastOfflineAt,
+                                        checkedAt: snapshot.checkedAt,
+                                      );
+                              },
                             );
                           }
                           return Text(
@@ -1200,7 +1217,11 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     final navigator = Navigator.of(context);
-    if (navigator.canPop()) navigator.maybePop();
+    if (navigator.canPop()) {
+      navigator.maybePop();
+      return;
+    }
+    widget.onCloseDesktopConversation?.call();
   }
 
   Future<void> _sendWebFiles(List<WebPickedFile> files) async {
@@ -3795,6 +3816,7 @@ class _GroupMembersPreview extends StatefulWidget {
 class _GroupMembersPreviewState extends State<_GroupMembersPreview> {
   bool _failed = false;
   bool _loading = false;
+  GroupProfile? _profile;
   int _request = 0;
   late int _policyRevision;
 
@@ -3820,14 +3842,17 @@ class _GroupMembersPreviewState extends State<_GroupMembersPreview> {
   Future<void> _load({bool force = true}) async {
     final request = ++_request;
     _loading = true;
-    final members = await widget.controller.loadGroupMembers(
-      widget.conversation.id,
-      force: force,
-    );
+    final results = await Future.wait<Object?>([
+      widget.controller.loadGroupProfile(widget.conversation.id),
+      widget.controller.loadGroupMembers(widget.conversation.id, force: force),
+    ]);
+    final profile = results[0] as GroupProfile?;
+    final members = results[1] as List<GroupMember>?;
     if (!mounted || request != _request) return;
     setState(() {
       _loading = false;
-      _failed = members == null;
+      _profile = profile;
+      _failed = members == null || profile == null;
     });
   }
 
@@ -3836,6 +3861,16 @@ class _GroupMembersPreviewState extends State<_GroupMembersPreview> {
     final loaded = widget.controller.cachedGroupMembers(widget.conversation.id);
     final people = widget.controller.conversationUsers(widget.conversation);
     final count = loaded?.length ?? widget.conversation.memberCount;
+    final accountId = widget.controller.currentUser?.id;
+    final memberRole = loaded
+        ?.where((member) => member.user.id == accountId)
+        .firstOrNull
+        ?.role;
+    final role = widget.conversation.currentUserRole ?? memberRole;
+    final canRemoveMembers = role == 'owner' || role == 'admin';
+    final canInviteMembers =
+        _profile?.canDirectInvite == true ||
+        _profile?.canSubmitJoinRequest == true;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -3845,6 +3880,8 @@ class _GroupMembersPreviewState extends State<_GroupMembersPreview> {
           members: people,
           fallbackName: widget.conversation.title,
           fallbackAvatar: widget.conversation.avatarUrl,
+          canRemoveMembers: canRemoveMembers,
+          canInviteMembers: canInviteMembers,
         ),
         if (count > 9 || count > people.length)
           TextButton(
@@ -3882,6 +3919,8 @@ class _ChatMemberMatrix extends StatelessWidget {
     required this.members,
     required this.fallbackName,
     this.fallbackAvatar,
+    this.canRemoveMembers = false,
+    this.canInviteMembers = true,
   });
 
   final AppController controller;
@@ -3889,6 +3928,8 @@ class _ChatMemberMatrix extends StatelessWidget {
   final List<AppUser> members;
   final String fallbackName;
   final String? fallbackAvatar;
+  final bool canRemoveMembers;
+  final bool canInviteMembers;
 
   @override
   Widget build(BuildContext context) {
@@ -3902,7 +3943,15 @@ class _ChatMemberMatrix extends StatelessWidget {
               avatarUrl: fallbackAvatar,
             ),
           ]
-        : members.take(groupId == null ? 10 : 9).toList();
+        : members
+              .take(
+                groupId == null
+                    ? 10
+                    : 10 -
+                          (canInviteMembers ? 1 : 0) -
+                          (canRemoveMembers ? 1 : 0),
+              )
+              .toList();
     return LayoutBuilder(
       builder: (context, constraints) {
         final scale = MediaQuery.textScalerOf(context).scale(1);
@@ -3912,7 +3961,13 @@ class _ChatMemberMatrix extends StatelessWidget {
             .clamp(2, scale >= 1.6 ? 3 : 5);
         final columns = math.max(
           1,
-          math.min(people.length + (groupId == null ? 0 : 1), fittingColumns),
+          math.min(
+            people.length +
+                (groupId == null
+                    ? 0
+                    : (canInviteMembers ? 1 : 0) + (canRemoveMembers ? 1 : 0)),
+            fittingColumns,
+          ),
         );
         final width = constraints.maxWidth / columns;
         return Wrap(
@@ -3965,10 +4020,18 @@ class _ChatMemberMatrix extends StatelessWidget {
                   ),
                 ),
               ),
-            if (groupId != null)
+            if (groupId != null && canInviteMembers)
               SizedBox(
                 width: width,
                 child: _GroupInviteTile(
+                  controller: controller,
+                  groupId: groupId!,
+                ),
+              ),
+            if (groupId != null && canRemoveMembers)
+              SizedBox(
+                width: width,
+                child: _GroupRemoveTile(
                   controller: controller,
                   groupId: groupId!,
                 ),
@@ -4024,6 +4087,58 @@ class _GroupInviteTileState extends State<_GroupInviteTile> {
       ),
       const SizedBox(height: 6),
       Text('邀请', style: Theme.of(context).textTheme.labelSmall),
+    ],
+  );
+}
+
+class _GroupRemoveTile extends StatefulWidget {
+  const _GroupRemoveTile({required this.controller, required this.groupId});
+
+  final AppController controller;
+  final String groupId;
+
+  @override
+  State<_GroupRemoveTile> createState() => _GroupRemoveTileState();
+}
+
+class _GroupRemoveTileState extends State<_GroupRemoveTile> {
+  bool _opening = false;
+
+  Future<void> _open() async {
+    if (_opening) return;
+    setState(() => _opening = true);
+    try {
+      await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => GroupRemoveMembersScreen(
+            controller: widget.controller,
+            conversationId: widget.groupId,
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _opening = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      IconButton.outlined(
+        key: const Key('chat-info-remove-members'),
+        tooltip: '移除群成员',
+        onPressed: _opening ? null : _open,
+        style: IconButton.styleFrom(
+          fixedSize: const Size(50, 50),
+          foregroundColor: LinliColors.systemRed,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+        icon: const Icon(CupertinoIcons.minus, size: 28),
+      ),
+      const SizedBox(height: 6),
+      Text('移除', style: Theme.of(context).textTheme.labelSmall),
     ],
   );
 }

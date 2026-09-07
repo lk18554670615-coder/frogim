@@ -24,9 +24,11 @@ class GroupInviteMembersScreen extends StatefulWidget {
 class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
   late final String? _accountId;
   List<GroupMember> _members = [];
+  GroupProfile? _profile;
   final _selected = <String>{};
   final _completed = <String>{};
   final _failures = <String, String>{};
+  final _resultLabels = <String, String>{};
   String _query = '';
   String? _error;
   bool _loading = true;
@@ -38,7 +40,10 @@ class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
       widget.controller.currentUser?.id == _accountId;
   GroupMember? get _me =>
       _members.where((m) => m.user.id == _accountId).firstOrNull;
-  bool get _directAdd => _me?.isOwner == true || _me?.isAdmin == true;
+  bool get _manager => _me?.isOwner == true || _me?.isAdmin == true;
+  bool get _directAdd => _profile?.canDirectInvite == true;
+  bool get _requiresApproval => _profile?.canSubmitJoinRequest == true;
+  bool get _canInvite => _directAdd || _requiresApproval;
   Set<String> get _existing => {for (final m in _members) m.user.id};
 
   @override
@@ -49,21 +54,29 @@ class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
   }
 
   Future<bool> _load() async {
-    final members = await widget.controller.loadGroupMembers(
-      widget.conversationId,
-    );
+    final results = await Future.wait<Object?>([
+      widget.controller.loadGroupProfile(widget.conversationId),
+      widget.controller.loadGroupMembers(widget.conversationId),
+    ]);
+    final profile = results[0] as GroupProfile?;
+    final members = results[1] as List<GroupMember>?;
     if (!_sameAccount) return false;
     setState(() {
       _loading = false;
-      if (members == null) {
+      if (members == null || profile == null) {
         _error = widget.controller.error ?? '群成员加载失败，请重试';
       } else {
+        _profile = profile;
         _members = members;
-        _error = _me == null ? '你已不在本群，无法邀请成员' : null;
+        _error = _me == null
+            ? '你已不在本群，无法邀请成员'
+            : _canInvite
+            ? null
+            : '当前入群方式不允许普通成员邀请好友';
         _selected.removeAll(_existing);
       }
     });
-    return members != null && _me != null;
+    return members != null && profile != null && _me != null && _canInvite;
   }
 
   Future<void> _submit() async {
@@ -94,7 +107,7 @@ class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
       }
       _failures.clear();
       final directAdd = _directAdd;
-      if (directAdd) {
+      if (_manager) {
         final success = await widget.controller.addGroupMembers(
           widget.conversationId,
           targets,
@@ -102,6 +115,9 @@ class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
         if (!_sameAccount) return;
         if (success) {
           _completed.addAll(targets.map((u) => u.id));
+          for (final target in targets) {
+            _resultLabels[target.id] = '已加入';
+          }
           _selected.removeAll(_completed);
         } else {
           for (final target in targets) {
@@ -113,14 +129,21 @@ class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
         // submitted again when retrying the remaining selection.
         for (final target in targets) {
           if (!_sameAccount) return;
-          final success = await widget.controller.inviteGroupMember(
+          final outcome = await widget.controller.inviteGroupMemberWithOutcome(
             widget.conversationId,
             target,
           );
           if (!_sameAccount) return;
-          if (success) {
+          if (outcome != null) {
             _completed.add(target.id);
             _selected.remove(target.id);
+            _resultLabels[target.id] = outcome.alreadyInGroup
+                ? '已在群内'
+                : outcome.action == 'added'
+                ? '已加入'
+                : outcome.duplicate
+                ? '已有待审核'
+                : '已提交审核';
           } else {
             _failures[target.id] = widget.controller.error ?? '邀请发送失败，请重试';
           }
@@ -136,7 +159,7 @@ class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
             content: Text(
               directAdd
                   ? '已添加 ${targets.length} 位群成员'
-                  : '已向 ${targets.length} 位好友发送邀请',
+                  : '已提交 ${targets.length} 条入群审核申请',
             ),
           ),
         );
@@ -181,7 +204,8 @@ class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
       final allVisibleSelected =
           selectableVisibleIds.isNotEmpty &&
           selectedVisibleCount == selectableVisibleIds.length;
-      final canChoose = !_loading && !_busy && _me != null && _sameAccount;
+      final canChoose =
+          !_loading && !_busy && _me != null && _sameAccount && _canInvite;
       return PopScope(
         canPop: !_busy,
         child: Scaffold(
@@ -223,8 +247,8 @@ class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
                               _loading
                                   ? '正在确认群成员…'
                                   : _directAdd
-                                  ? '勾选好友后点击完成，直接添加到群聊。'
-                                  : '勾选好友后点击完成，对方接受邀请后加入。',
+                                  ? '勾选好友后点击完成，好友将直接加入群聊。'
+                                  : '勾选好友后点击完成，提交给群主或管理员审核。',
                             ),
                           ),
                           const SizedBox(width: 12),
@@ -316,7 +340,7 @@ class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
                                     joined
                                         ? '已在群内'
                                         : done
-                                        ? '已完成'
+                                        ? _resultLabels[user.id] ?? '已完成'
                                         : _failures[user.id] ??
                                               publicUserHandleLabel(
                                                 user.handle,

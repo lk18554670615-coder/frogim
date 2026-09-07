@@ -46,12 +46,27 @@ func (x *API) userPresence(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
+	offlineIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if allowed[id] && values[id].Status == "offline" {
+			offlineIDs = append(offlineIDs, id)
+		}
+	}
+	lastOffline, err := x.app.PresenceLastOfflineAt(r.Context(), offlineIDs)
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
 	items := make([]wukong.Presence, 0, len(ids))
 	for _, id := range ids {
 		value := wukong.Presence{UserID: id, Status: "hidden", CheckedAt: time.Now().UTC()}
 		if allowed[id] {
 			if v, ok := values[id]; ok {
 				value = v
+				if at, exists := lastOffline[id]; exists && value.Status == "offline" {
+					at = at.UTC()
+					value.LastOfflineAt = &at
+				}
 			} else {
 				value.Status = "unknown"
 			}

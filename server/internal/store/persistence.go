@@ -773,14 +773,14 @@ type WukongReminder struct {
 }
 
 type WukongMessageExtra struct {
-	MessageID, ChannelID, Revoker string
-	ChannelType                   uint8
-	MessageSeq                    int64
-	Read, ReadCount, UnreadCount  int
-	Recalled, Pinned              bool
-	EditedAt                      int64
-	SyncVersion                   int64
-	EditedBody, Extra             map[string]any
+	MessageID, ChannelID, Revoker                string
+	ChannelType                                  uint8
+	MessageSeq                                   int64
+	Read, ReadCount, UnreadCount, DeliveredCount int
+	Recalled, Pinned                             bool
+	EditedAt                                     int64
+	SyncVersion                                  int64
+	EditedBody, Extra                            map[string]any
 }
 
 type WukongChannelInfo struct {
@@ -1276,6 +1276,12 @@ type GroupStore interface {
 	AddGroupMembers(context.Context, string, string, []string, time.Time) error
 	ApplyGroupMemberAction(context.Context, GroupMemberAction) error
 	DisbandGroupRecord(context.Context, string, string, string, time.Time) error
+}
+type GroupJoinPolicyStore interface {
+	AddGroupMembersByPolicy(context.Context, string, string, []string, int, time.Time) error
+	InviteGroupMemberByPolicy(context.Context, *model.GroupJoinRequest, int, time.Time) (*model.GroupInviteOutcome, error)
+	ListGroupJoinRequests(context.Context, string, string, string, int, time.Time) ([]*model.GroupJoinRequest, error)
+	TransitionGroupJoinRequest(context.Context, string, string, string, string, int, time.Time) (*model.GroupJoinRequest, bool, error)
 }
 type GroupProfileUpdate struct {
 	HistoryVisibleToNewMembers      *bool
@@ -1846,6 +1852,30 @@ func (p *WithRedis) MarkGroupAnnouncementRead(ctx context.Context, uid, cid stri
 		return s.MarkGroupAnnouncementRead(ctx, uid, cid, at)
 	}
 	return ErrUnsupported
+}
+func (p *WithRedis) AddGroupMembersByPolicy(ctx context.Context, actor, cid string, ids []string, maxMembers int, at time.Time) error {
+	if s, ok := p.base.(GroupJoinPolicyStore); ok {
+		return s.AddGroupMembersByPolicy(ctx, actor, cid, ids, maxMembers, at)
+	}
+	return ErrUnsupported
+}
+func (p *WithRedis) InviteGroupMemberByPolicy(ctx context.Context, request *model.GroupJoinRequest, maxMembers int, at time.Time) (*model.GroupInviteOutcome, error) {
+	if s, ok := p.base.(GroupJoinPolicyStore); ok {
+		return s.InviteGroupMemberByPolicy(ctx, request, maxMembers, at)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) ListGroupJoinRequests(ctx context.Context, actor, cid, status string, limit int, at time.Time) ([]*model.GroupJoinRequest, error) {
+	if s, ok := p.base.(GroupJoinPolicyStore); ok {
+		return s.ListGroupJoinRequests(ctx, actor, cid, status, limit, at)
+	}
+	return nil, ErrUnsupported
+}
+func (p *WithRedis) TransitionGroupJoinRequest(ctx context.Context, actor, cid, id, action string, maxMembers int, at time.Time) (*model.GroupJoinRequest, bool, error) {
+	if s, ok := p.base.(GroupJoinPolicyStore); ok {
+		return s.TransitionGroupJoinRequest(ctx, actor, cid, id, action, maxMembers, at)
+	}
+	return nil, false, ErrUnsupported
 }
 func (p *WithRedis) CreateGroupInvite(ctx context.Context, i *model.GroupInvite) (*model.GroupInvite, bool, error) {
 	if s, ok := p.base.(GroupStore); ok {

@@ -314,6 +314,8 @@ func (x *API) routes() {
 	x.mux.Handle("PUT /v2/channels/groups/{id}/announcement", x.requireAuth(http.HandlerFunc(x.groupAnnouncement)))
 	x.mux.Handle("POST /v2/channels/groups/{id}/announcement/read", x.requireAuth(http.HandlerFunc(x.readGroupAnnouncement)))
 	x.mux.Handle("POST /v2/channels/groups/{id}/invites", x.requireAuth(http.HandlerFunc(x.groupInvite)))
+	x.mux.Handle("GET /v2/channels/groups/{id}/join-requests", x.requireAuth(http.HandlerFunc(x.groupJoinRequests)))
+	x.mux.Handle("POST /v2/channels/groups/{id}/join-requests/{requestId}/{action}", x.requireAuth(http.HandlerFunc(x.groupJoinRequestAction)))
 	x.mux.Handle("GET /v2/channels/group-invitations", x.requireAuth(http.HandlerFunc(x.groupInvites)))
 	x.mux.Handle("POST /v2/channels/group-invitations/{id}/{action}", x.requireAuth(http.HandlerFunc(x.groupInviteAction)))
 	x.mux.Handle("POST /v2/channels/groups/join/qr", x.requireAuth(http.HandlerFunc(x.joinGroupQR)))
@@ -1016,6 +1018,12 @@ func writeError(w http.ResponseWriter, status int, code, msg string) {
 }
 func handleErr(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, app.ErrFriendRequired), errors.Is(err, store.ErrFriendRequired):
+		writeError(w, 403, "FRIENDSHIP_REQUIRED", "只能邀请自己的好友加入群聊")
+	case errors.Is(err, app.ErrJoinPolicy), errors.Is(err, store.ErrJoinPolicy):
+		writeError(w, 403, "GROUP_JOIN_POLICY_RESTRICTED", "当前入群方式不允许此操作")
+	case errors.Is(err, app.ErrJoinRequestExpired), errors.Is(err, store.ErrJoinRequestExpired):
+		writeError(w, 409, "GROUP_JOIN_REQUEST_EXPIRED", "入群审核申请已过期")
 	case errors.Is(err, app.ErrInvalid):
 		writeError(w, 400, "INVALID_ARGUMENT", err.Error())
 	case errors.Is(err, app.ErrForbidden), errors.Is(err, store.ErrForbidden):
@@ -2506,12 +2514,43 @@ func (x *API) groupInvite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_ARGUMENT", "invalid request")
 		return
 	}
-	i, dup, err := x.app.InviteGroupMember(uid(r), r.PathValue("id"), p.UserID)
+	outcome, err := x.app.InviteGroupMember(uid(r), r.PathValue("id"), p.UserID)
 	if err != nil {
 		handleErr(w, err)
 		return
 	}
-	write(w, map[bool]int{true: 200, false: 201}[dup], map[string]any{"invite": i, "duplicate": dup})
+	status := http.StatusCreated
+	if outcome.Duplicate {
+		status = http.StatusOK
+	}
+	write(w, status, outcome)
+}
+
+func (x *API) groupJoinRequests(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := x.app.GroupJoinRequests(uid(r), r.PathValue("id"), r.URL.Query().Get("status"), limit)
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	for _, item := range items {
+		if item.Requester != nil {
+			x.signAvatarURL(item.Requester)
+		}
+		if item.Invitee != nil {
+			x.signAvatarURL(item.Invitee)
+		}
+	}
+	write(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (x *API) groupJoinRequestAction(w http.ResponseWriter, r *http.Request) {
+	request, duplicate, err := x.app.TransitionGroupJoinRequest(uid(r), r.PathValue("id"), r.PathValue("requestId"), r.PathValue("action"))
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	write(w, http.StatusOK, map[string]any{"request": request, "duplicate": duplicate})
 }
 func (x *API) groupInviteAction(w http.ResponseWriter, r *http.Request) {
 	i, dup, err := x.app.TransitionGroupInvite(uid(r), r.PathValue("id"), r.PathValue("action"))

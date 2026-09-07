@@ -42,9 +42,10 @@ func (c *Client) OnlineUsers(ctx context.Context, ids []string) (map[string]bool
 }
 
 type Presence struct {
-	UserID    string    `json:"userId"`
-	Status    string    `json:"status"`
-	CheckedAt time.Time `json:"checkedAt"`
+	UserID        string     `json:"userId"`
+	Status        string     `json:"status"`
+	CheckedAt     time.Time  `json:"checkedAt"`
+	LastOfflineAt *time.Time `json:"lastOfflineAt,omitempty"`
 }
 type presenceFlight struct {
 	done  chan struct{}
@@ -88,7 +89,7 @@ func (p *PresenceCache) Query(ctx context.Context, ids []string) map[string]Pres
 		flight := p.flights[id]
 		if flight == nil {
 			if len(p.flights) >= 10000 {
-				result[id] = Presence{id, "unknown", now}
+				result[id] = Presence{UserID: id, Status: "unknown", CheckedAt: now}
 				continue
 			}
 			flight = &presenceFlight{done: make(chan struct{})}
@@ -104,7 +105,7 @@ func (p *PresenceCache) Query(ctx context.Context, ids []string) map[string]Pres
 	for id, flight := range waiting {
 		select {
 		case <-ctx.Done():
-			result[id] = Presence{id, "unknown", p.now().UTC()}
+			result[id] = Presence{UserID: id, Status: "unknown", CheckedAt: p.now().UTC()}
 		case <-flight.done:
 			result[id] = flight.value
 		}
@@ -130,7 +131,7 @@ func (p *PresenceCache) fetch(ids []string) {
 	defer p.mu.Unlock()
 	now := p.now().UTC()
 	for _, id := range ids {
-		value := Presence{id, "unknown", now}
+		value := Presence{UserID: id, Status: "unknown", CheckedAt: now}
 		if err == nil {
 			if online, ok := values[id]; ok {
 				value.Status = "offline"

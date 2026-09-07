@@ -186,6 +186,24 @@ func TestAccountInvitationSchemaIsVersioned(t *testing.T) {
 	}
 }
 
+func TestGroupJoinPolicySchemaIsVersioned(t *testing.T) {
+	if schemaVersion < 64 {
+		t.Fatalf("group join policy schema requires version 64 or newer, got %d", schemaVersion)
+	}
+	for _, fragment := range []string{
+		"ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS join_policy_version",
+		"CREATE TABLE IF NOT EXISTS im_group_join_requests",
+		"policy_version bigint NOT NULL",
+		"status IN ('pending','approved','rejected','cancelled','expired','invalidated')",
+		"im_group_join_requests_pending_idx",
+		"im_group_join_requests_expiry_idx",
+	} {
+		if !strings.Contains(normalizedSchema, fragment) {
+			t.Fatalf("group join policy schema is missing %q", fragment)
+		}
+	}
+}
+
 func TestPublicGuaguaHandleMigrationIsVersioned(t *testing.T) {
 	if schemaVersion < 49 {
 		t.Fatalf("public Guagua handles require schema version 49 or newer, got %d", schemaVersion)

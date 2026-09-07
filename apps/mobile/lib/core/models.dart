@@ -998,6 +998,11 @@ class GroupProfile {
     required this.joinPolicy,
     required this.allowMemberAddFriend,
     required this.updatedAt,
+    this.joinPolicyVersion = 1,
+    this.canDirectInvite = false,
+    this.canSubmitJoinRequest = false,
+    this.canReviewJoinRequests = false,
+    this.pendingJoinRequestCount = 0,
     this.avatarUrl,
     this.announcementReadAt,
     this.allMutedUntil,
@@ -1016,6 +1021,11 @@ class GroupProfile {
   final int announcementVersion;
   final DateTime? announcementReadAt;
   final String joinPolicy;
+  final int joinPolicyVersion;
+  final bool canDirectInvite;
+  final bool canSubmitJoinRequest;
+  final bool canReviewJoinRequests;
+  final int pendingJoinRequestCount;
   final bool allowMemberAddFriend;
   final DateTime? allMutedUntil;
   final String? qrToken;
@@ -1085,6 +1095,56 @@ class GroupInvitation {
     expiresAt: expiresAt,
     updatedAt: DateTime.now(),
   );
+}
+
+class GroupInviteOutcome {
+  const GroupInviteOutcome({
+    required this.action,
+    this.duplicate = false,
+    this.alreadyInGroup = false,
+    this.request,
+  });
+
+  final String action;
+  final bool duplicate;
+  final bool alreadyInGroup;
+  final GroupJoinRequest? request;
+}
+
+class GroupJoinRequest {
+  const GroupJoinRequest({
+    required this.id,
+    required this.conversationId,
+    required this.requesterId,
+    required this.inviteeId,
+    required this.status,
+    required this.createdAt,
+    required this.expiresAt,
+    required this.updatedAt,
+    this.groupName = '',
+    this.policyVersion = 1,
+    this.reviewedBy = '',
+    this.resolutionReason = '',
+    this.requester,
+    this.invitee,
+  });
+
+  final String id;
+  final String conversationId;
+  final String groupName;
+  final String requesterId;
+  final String inviteeId;
+  final int policyVersion;
+  final String status;
+  final DateTime createdAt;
+  final DateTime expiresAt;
+  final DateTime updatedAt;
+  final String reviewedBy;
+  final String resolutionReason;
+  final AppUser? requester;
+  final AppUser? invitee;
+
+  bool get pending => status == 'pending' && expiresAt.isAfter(DateTime.now());
 }
 
 class AppNotice {

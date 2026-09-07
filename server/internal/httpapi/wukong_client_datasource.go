@@ -236,7 +236,7 @@ func (x *API) wukongMessageExtraSync(w http.ResponseWriter, r *http.Request) {
 			"message_idstr": item.MessageID, "message_seq": item.MessageSeq,
 			"is_mutual_deleted": boolToInt(deleted),
 			"channel_id":        item.ChannelID, "channel_type": item.ChannelType,
-			"readed": item.Read, "readed_count": item.ReadCount, "unread_count": item.UnreadCount,
+			"readed": item.Read, "readed_count": item.ReadCount, "unread_count": item.UnreadCount, "delivered_count": item.DeliveredCount,
 			"revoke": recalled, "revoker": item.Revoker, "content_edit": wukongEditedPayload(item.EditedBody),
 			"edited_at": item.EditedAt, "extra_version": item.SyncVersion,
 			"is_pinned": pinned, "extra": item.Extra,
@@ -454,7 +454,7 @@ func (x *API) enrichWukongExtensions(ctx context.Context, userID string, message
 				delete(payload, "mention")
 			}
 		}
-		for _, key := range []string{"version", "recalledAt", "editedAt", "editVersion", "reactions", "isPinned", "pinnedBy", "pinnedAt"} {
+		for _, key := range []string{"version", "recalledAt", "editedAt", "editVersion", "reactions", "isPinned", "pinnedBy", "pinnedAt", "deliveredCount", "readCount"} {
 			if value, exists := extension[key]; exists {
 				payload[key] = value
 			}

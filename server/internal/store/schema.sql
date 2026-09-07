@@ -128,6 +128,7 @@ CREATE TRIGGER im_members_count_insert AFTER INSERT ON im_members REFERENCING NE
 DROP TRIGGER IF EXISTS im_members_count_delete ON im_members;
 CREATE TRIGGER im_members_count_delete AFTER DELETE ON im_members REFERENCING OLD TABLE AS deleted_members FOR EACH STATEMENT EXECUTE FUNCTION im_members_decrement_count();
 CREATE TABLE IF NOT EXISTS im_groups(conversation_id text PRIMARY KEY REFERENCES im_conversations(id) ON DELETE CASCADE,owner_id text NOT NULL REFERENCES im_users(id),announcement text NOT NULL DEFAULT '',announcement_version bigint NOT NULL DEFAULT 0,join_policy text NOT NULL DEFAULT 'invite',allow_member_add_friend boolean NOT NULL DEFAULT true,all_muted_until timestamptz,qr_token text UNIQUE,qr_expires_at timestamptz,dissolved_at timestamptz,updated_at timestamptz NOT NULL DEFAULT now());
+ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS join_policy_version bigint NOT NULL DEFAULT 1;
 ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS banned boolean NOT NULL DEFAULT false;
 ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS banned_at timestamptz;
 ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS banned_by text NOT NULL DEFAULT '';
@@ -395,6 +396,24 @@ CREATE TABLE IF NOT EXISTS im_group_announcement_reads(conversation_id text NOT 
 CREATE TABLE IF NOT EXISTS im_group_invites(id text PRIMARY KEY,conversation_id text NOT NULL REFERENCES im_groups(conversation_id) ON DELETE CASCADE,inviter_id text NOT NULL REFERENCES im_users(id),invitee_id text NOT NULL REFERENCES im_users(id),source text NOT NULL,status text NOT NULL,created_at timestamptz NOT NULL,expires_at timestamptz NOT NULL,updated_at timestamptz NOT NULL,resolved_at timestamptz);
 CREATE UNIQUE INDEX IF NOT EXISTS im_group_invites_pending_idx ON im_group_invites(conversation_id,invitee_id) WHERE status='pending';
 CREATE INDEX IF NOT EXISTS im_group_invites_expiry_idx ON im_group_invites(expires_at,id) WHERE status='pending';
+CREATE TABLE IF NOT EXISTS im_group_join_requests(
+ id text PRIMARY KEY,
+ conversation_id text NOT NULL REFERENCES im_groups(conversation_id) ON DELETE CASCADE,
+ requester_id text NOT NULL REFERENCES im_users(id),
+ invitee_id text NOT NULL REFERENCES im_users(id),
+ policy_version bigint NOT NULL CHECK(policy_version>0),
+ status text NOT NULL CHECK(status IN ('pending','approved','rejected','cancelled','expired','invalidated')),
+ created_at timestamptz NOT NULL,
+ expires_at timestamptz NOT NULL,
+ updated_at timestamptz NOT NULL,
+ reviewed_by text REFERENCES im_users(id),
+ resolved_at timestamptz,
+ resolution_reason text NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS im_group_join_requests_pending_idx ON im_group_join_requests(conversation_id,invitee_id) WHERE status='pending';
+CREATE INDEX IF NOT EXISTS im_group_join_requests_group_idx ON im_group_join_requests(conversation_id,status,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS im_group_join_requests_requester_idx ON im_group_join_requests(requester_id,status,updated_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS im_group_join_requests_expiry_idx ON im_group_join_requests(expires_at,id) WHERE status='pending';
 -- Message payloads, ordering and idempotency are owned exclusively by
 -- WuKongIM. PostgreSQL stores only business extensions keyed by the WuKong
 -- message id; these tables intentionally have no payload-table foreign key.

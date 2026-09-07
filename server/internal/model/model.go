@@ -98,6 +98,11 @@ type GroupProfile struct {
 	AnnouncementVersion        int64          `json:"announcementVersion"`
 	AnnouncementReadAt         *time.Time     `json:"announcementReadAt,omitempty"`
 	JoinPolicy                 string         `json:"joinPolicy"`
+	JoinPolicyVersion          int64          `json:"joinPolicyVersion"`
+	CanDirectInvite            bool           `json:"canDirectInvite"`
+	CanSubmitJoinRequest       bool           `json:"canSubmitJoinRequest"`
+	CanReviewJoinRequests      bool           `json:"canReviewJoinRequests"`
+	PendingJoinRequestCount    int64          `json:"pendingJoinRequestCount,omitempty"`
 	AllowMemberAddFriend       bool           `json:"allowMemberAddFriend"`
 	AllMutedUntil              *time.Time     `json:"allMutedUntil,omitempty"`
 	Banned                     bool           `json:"banned"`
@@ -121,6 +126,31 @@ type GroupInvite struct {
 	ExpiresAt      time.Time  `json:"expiresAt"`
 	UpdatedAt      time.Time  `json:"updatedAt"`
 	ResolvedAt     *time.Time `json:"resolvedAt,omitempty"`
+}
+
+type GroupInviteOutcome struct {
+	Action         string            `json:"action"`
+	Request        *GroupJoinRequest `json:"request,omitempty"`
+	Duplicate      bool              `json:"duplicate"`
+	AlreadyInGroup bool              `json:"alreadyInGroup,omitempty"`
+}
+
+type GroupJoinRequest struct {
+	ID               string     `json:"id"`
+	ConversationID   string     `json:"conversationId"`
+	GroupName        string     `json:"groupName,omitempty"`
+	RequesterID      string     `json:"requesterId"`
+	InviteeID        string     `json:"inviteeId"`
+	PolicyVersion    int64      `json:"policyVersion"`
+	Status           string     `json:"status"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	ExpiresAt        time.Time  `json:"expiresAt"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
+	ReviewedBy       string     `json:"reviewedBy,omitempty"`
+	ResolvedAt       *time.Time `json:"resolvedAt,omitempty"`
+	ResolutionReason string     `json:"resolutionReason,omitempty"`
+	Requester        *User      `json:"requester,omitempty"`
+	Invitee          *User      `json:"invitee,omitempty"`
 }
 
 type MessageSender struct {

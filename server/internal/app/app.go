@@ -26,11 +26,14 @@ import (
 )
 
 var (
-	ErrNotFound    = errors.New("not found")
-	ErrForbidden   = errors.New("forbidden")
-	ErrConflict    = errors.New("conflict")
-	ErrInvalid     = errors.New("invalid input")
-	ErrUnavailable = errors.New("service unavailable")
+	ErrNotFound           = errors.New("not found")
+	ErrForbidden          = errors.New("forbidden")
+	ErrConflict           = errors.New("conflict")
+	ErrInvalid            = errors.New("invalid input")
+	ErrUnavailable        = errors.New("service unavailable")
+	ErrFriendRequired     = errors.New("active friendship required")
+	ErrJoinPolicy         = errors.New("group join policy does not allow this operation")
+	ErrJoinRequestExpired = errors.New("group join request expired")
 )
 
 var handlePattern = regexp.MustCompile(`^[a-z0-9_]{4,24}$`)
@@ -2113,6 +2116,15 @@ func (a *App) AddGroupMembers(actor, cid string, users []string) error {
 	if len(users) == 0 || len(users) > 500 {
 		return ErrInvalid
 	}
+	if groups, ok := a.persistence.(store.GroupJoinPolicyStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		if err := groups.AddGroupMembersByPolicy(ctx, actor, cid, users, a.settingInt("maxGroupMembers", 500), time.Now()); err != nil {
+			return mapStoreError(err)
+		}
+		a.publish(users, "group.members.updated", map[string]any{"conversationId": cid})
+		return nil
+	}
 	if groups, ok := a.persistence.(store.GroupStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
@@ -2344,7 +2356,7 @@ func (a *App) UpdateGroupProfile(actor, cid string, u store.GroupProfileUpdate) 
 	if u.AvatarMediaID != nil && len(*u.AvatarMediaID) > 200 {
 		return nil, ErrInvalid
 	}
-	if u.JoinPolicy != nil && *u.JoinPolicy != "invite" && *u.JoinPolicy != "qr" && *u.JoinPolicy != "closed" {
+	if u.JoinPolicy != nil && *u.JoinPolicy != "invite" && *u.JoinPolicy != "manager_invite" && *u.JoinPolicy != "member_approval" && *u.JoinPolicy != "qr" && *u.JoinPolicy != "closed" {
 		return nil, ErrInvalid
 	}
 	groups, ok := a.persistence.(store.GroupStore)
@@ -2387,26 +2399,81 @@ func (a *App) ReadGroupAnnouncement(uid, cid string) error {
 	defer cancel()
 	return mapStoreError(groups.MarkGroupAnnouncementRead(ctx, uid, cid, time.Now()))
 }
-func (a *App) InviteGroupMember(actor, cid, invitee string) (*model.GroupInvite, bool, error) {
+func (a *App) InviteGroupMember(actor, cid, invitee string) (*model.GroupInviteOutcome, error) {
 	if invitee == "" || invitee == actor {
-		return nil, false, ErrInvalid
+		return nil, ErrInvalid
 	}
 	now := time.Now()
+	if groups, ok := a.persistence.(store.GroupJoinPolicyStore); ok {
+		request := &model.GroupJoinRequest{ID: id("gjr"), ConversationID: cid, RequesterID: actor, InviteeID: invitee}
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		outcome, err := groups.InviteGroupMemberByPolicy(ctx, request, a.settingInt("maxGroupMembers", 500), now)
+		if err != nil {
+			return nil, mapStoreError(err)
+		}
+		if outcome.Action == "added" {
+			a.publish([]string{invitee}, "group.members.updated", map[string]any{"conversationId": cid})
+		} else {
+			a.publish([]string{actor}, "group.join.request.updated", map[string]any{"conversationId": cid, "request": outcome.Request})
+		}
+		return outcome, nil
+	}
 	i := &model.GroupInvite{ID: id("ginv"), ConversationID: cid, InviterID: actor, InviteeID: invitee, Source: "invite", Status: "pending", CreatedAt: now, ExpiresAt: now.Add(24 * time.Hour), UpdatedAt: now}
 	groups, ok := a.persistence.(store.GroupStore)
 	if !ok {
-		return nil, false, ErrNotFound
+		return nil, ErrNotFound
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	created, dup, err := groups.CreateGroupInvite(ctx, i)
 	if err != nil {
-		return nil, false, mapStoreError(err)
+		return nil, mapStoreError(err)
 	}
 	if !dup {
 		a.publish([]string{invitee}, "group.invite", map[string]any{"invite": created})
 	}
-	return created, dup, nil
+	return &model.GroupInviteOutcome{Action: "pending_approval", Duplicate: dup, Request: &model.GroupJoinRequest{ID: created.ID, ConversationID: created.ConversationID, RequesterID: created.InviterID, InviteeID: created.InviteeID, Status: created.Status, CreatedAt: created.CreatedAt, ExpiresAt: created.ExpiresAt, UpdatedAt: created.UpdatedAt}}, nil
+}
+
+func (a *App) GroupJoinRequests(actor, cid, status string, limit int) ([]*model.GroupJoinRequest, error) {
+	if status != "" && status != "all" && status != "pending" && status != "approved" && status != "rejected" && status != "cancelled" && status != "expired" && status != "invalidated" {
+		return nil, ErrInvalid
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	groups, ok := a.persistence.(store.GroupJoinPolicyStore)
+	if !ok {
+		return nil, ErrUnavailable
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	items, err := groups.ListGroupJoinRequests(ctx, actor, cid, status, limit, time.Now())
+	return items, mapStoreError(err)
+}
+
+func (a *App) TransitionGroupJoinRequest(actor, conversationID, requestID, action string) (*model.GroupJoinRequest, bool, error) {
+	if conversationID == "" || requestID == "" || (action != "approve" && action != "reject" && action != "cancel") {
+		return nil, false, ErrInvalid
+	}
+	groups, ok := a.persistence.(store.GroupJoinPolicyStore)
+	if !ok {
+		return nil, false, ErrUnavailable
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	request, duplicate, err := groups.TransitionGroupJoinRequest(ctx, actor, conversationID, requestID, action, a.settingInt("maxGroupMembers", 500), time.Now())
+	if err != nil {
+		return request, false, mapStoreError(err)
+	}
+	if !duplicate {
+		a.publish([]string{actor, request.RequesterID, request.InviteeID}, "group.join.request.updated", map[string]any{"conversationId": request.ConversationID, "request": request})
+		if request.Status == "approved" {
+			a.publish([]string{request.InviteeID}, "group.members.updated", map[string]any{"conversationId": request.ConversationID})
+		}
+	}
+	return request, duplicate, nil
 }
 func (a *App) GroupInvites(uid, status string, limit int) ([]map[string]any, error) {
 	if status != "" && status != "pending" && status != "accepted" && status != "rejected" && status != "cancelled" {
@@ -3781,6 +3848,12 @@ func mapStoreError(err error) error {
 		return ErrConflict
 	case store.ErrUnsupported:
 		return ErrUnavailable
+	case store.ErrFriendRequired:
+		return ErrFriendRequired
+	case store.ErrJoinPolicy:
+		return ErrJoinPolicy
+	case store.ErrJoinRequestExpired:
+		return ErrJoinRequestExpired
 	default:
 		return err
 	}

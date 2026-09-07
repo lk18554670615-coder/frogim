@@ -31,6 +31,14 @@ void main() {
       UserPresenceSnapshot.fromJson({'userId': 'u'}).status,
       UserPresenceStatus.unknown,
     );
+    final offline = UserPresenceSnapshot.fromJson({
+      'userId': 'u',
+      'status': 'offline',
+      'checkedAt': '2026-09-07T05:00:00Z',
+      'lastOfflineAt': '2026-09-07T03:00:00Z',
+    });
+    expect(offline.lastOfflineAt, DateTime.utc(2026, 9, 7, 3));
+    expect(offline.checkedAt, DateTime.utc(2026, 9, 7, 5));
   });
 
   for (final platform in ['android', 'ios', 'web', 'macos']) {
@@ -214,6 +222,11 @@ void main() {
                 child: Column(
                   children: [
                     for (final s in UserPresenceStatus.values) PresenceLabel(s),
+                    PresenceLabel(
+                      UserPresenceStatus.offline,
+                      lastOfflineAt: DateTime.utc(2026, 9, 7, 3),
+                      checkedAt: DateTime.utc(2026, 9, 7, 5, 10),
+                    ),
                   ],
                 ),
               ),
@@ -222,6 +235,7 @@ void main() {
         );
         expect(find.text('● 在线'), findsOneWidget);
         expect(find.text('● 离线'), findsOneWidget);
+        expect(find.text('● 离线 2小时'), findsOneWidget);
         expect(find.text('状态未知'), findsOneWidget);
         expect(tester.takeException(), isNull);
       });
@@ -266,6 +280,26 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     controller.dispose();
     await repo.close();
+  });
+
+  test('离线时长使用服务端查询时间，未知下线时间不伪造', () {
+    expect(
+      presenceLabelText(
+        UserPresenceStatus.offline,
+        lastOfflineAt: DateTime.utc(2026, 9, 7, 4, 59, 31),
+        checkedAt: DateTime.utc(2026, 9, 7, 5),
+      ),
+      '离线不足1分钟',
+    );
+    expect(
+      presenceLabelText(
+        UserPresenceStatus.offline,
+        lastOfflineAt: DateTime.utc(2026, 9, 7, 4, 31),
+        checkedAt: DateTime.utc(2026, 9, 7, 5),
+      ),
+      '离线 29分钟',
+    );
+    expect(presenceLabelText(UserPresenceStatus.offline), '离线');
   });
 }
 

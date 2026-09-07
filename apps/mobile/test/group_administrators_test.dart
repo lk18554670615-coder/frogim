@@ -181,6 +181,31 @@ void main() {
     expect(find.text('已将“林屿”设为管理员'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
   });
+
+  testWidgets('群管理员可操作全员禁言但看不到群主专属设置', (tester) async {
+    final repository = _RoleRepository(currentRole: 'admin');
+    await _open(tester, repository, overview: true);
+    final muteRow = find.byKey(const Key('group-mute-all'));
+    await tester.scrollUntilVisible(muteRow, 250);
+    expect(muteRow, findsOneWidget);
+    expect(find.byKey(const Key('group-join-policy')), findsNothing);
+    final toggle = find.descendant(
+      of: muteRow,
+      matching: find.byType(CupertinoSwitch),
+    );
+    expect(tester.widget<CupertinoSwitch>(toggle).value, isFalse);
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(tester.widget<CupertinoSwitch>(toggle).value, isTrue);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('普通群成员没有全员禁言入口', (tester) async {
+    final repository = _RoleRepository(currentRole: 'member');
+    await _open(tester, repository, overview: true);
+    expect(find.byKey(const Key('group-mute-all')), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 }
 
 Future<AppController> _open(

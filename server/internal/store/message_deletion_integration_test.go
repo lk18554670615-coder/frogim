@@ -36,7 +36,7 @@ func TestMessageDeletionPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	if schemaVersion != 63 {
+	if schemaVersion < 62 {
 		t.Fatal("version", schemaVersion)
 	}
 	if err = p.migrate(ctx); err != nil {

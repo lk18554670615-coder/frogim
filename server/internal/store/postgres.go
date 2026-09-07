@@ -28,7 +28,7 @@ type Postgres struct {
 	historyBoundary GroupHistoryBoundaryReader
 }
 
-const schemaVersion = 63
+const schemaVersion = 64
 
 type PostgresOptions struct {
 	MaxConns          int32
@@ -154,6 +154,14 @@ func (p *Postgres) migrate(ctx context.Context) error {
 		}
 		if current < 63 {
 			if err = p.backfillInviteCodes(ctx, tx); err != nil {
+				return err
+			}
+		}
+		if current < 64 {
+			// The old flow required the invited user to accept. The new policy
+			// engine either adds a friend immediately or creates a manager review,
+			// so unresolved legacy invitations must never cross that boundary.
+			if _, err = tx.Exec(ctx, `UPDATE im_group_invites SET status='cancelled',resolved_at=COALESCE(resolved_at,now()),updated_at=now() WHERE status='pending'`); err != nil {
 				return err
 			}
 		}
@@ -3027,11 +3035,11 @@ func (p *Postgres) ExpireFriendRequests(ctx context.Context, at time.Time, limit
 	return items, nil
 }
 
-const groupProfileColumns = `g.conversation_id,g.owner_id,c.title,c.avatar_url,g.announcement,g.announcement_version,r.read_at,g.join_policy,g.allow_member_add_friend,g.all_muted_until,g.banned,g.banned_at,g.banned_by,g.ban_reason,COALESCE(g.qr_token,''),g.qr_expires_at,g.dissolved_at,g.updated_at,g.history_visible_to_new_members,g.history_policy_version`
+const groupProfileColumns = `g.conversation_id,g.owner_id,c.title,c.avatar_url,g.announcement,g.announcement_version,r.read_at,g.join_policy,g.join_policy_version,g.allow_member_add_friend,g.all_muted_until,g.banned,g.banned_at,g.banned_by,g.ban_reason,COALESCE(g.qr_token,''),g.qr_expires_at,g.dissolved_at,g.updated_at,g.history_visible_to_new_members,g.history_policy_version`
 
 func scanGroupProfile(row callRow) (*model.GroupProfile, error) {
 	g := &model.GroupProfile{}
-	err := row.Scan(&g.ConversationID, &g.OwnerID, &g.Name, &g.AvatarURL, &g.Announcement, &g.AnnouncementVersion, &g.AnnouncementReadAt, &g.JoinPolicy, &g.AllowMemberAddFriend, &g.AllMutedUntil, &g.Banned, &g.BannedAt, &g.BannedBy, &g.BanReason, &g.QRToken, &g.QRExpiresAt, &g.DissolvedAt, &g.UpdatedAt, &g.HistoryVisibleToNewMembers, &g.HistoryPolicyVersion)
+	err := row.Scan(&g.ConversationID, &g.OwnerID, &g.Name, &g.AvatarURL, &g.Announcement, &g.AnnouncementVersion, &g.AnnouncementReadAt, &g.JoinPolicy, &g.JoinPolicyVersion, &g.AllowMemberAddFriend, &g.AllMutedUntil, &g.Banned, &g.BannedAt, &g.BannedBy, &g.BanReason, &g.QRToken, &g.QRExpiresAt, &g.DissolvedAt, &g.UpdatedAt, &g.HistoryVisibleToNewMembers, &g.HistoryPolicyVersion)
 	return g, err
 }
 func groupInviteColumns(prefix string) string {
@@ -3188,6 +3196,18 @@ func (p *Postgres) GetGroupProfile(ctx context.Context, uid, cid string) (*model
 		g.HistoryVisibleToNewMembers = g.HistoryAccess.VisibleAll
 		g.HistoryPolicyVersion = g.HistoryAccess.Version
 	}
+	var role string
+	if roleErr := p.pool.QueryRow(ctx, `SELECT role FROM im_members WHERE conversation_id=$1 AND user_id=$2`, cid, uid).Scan(&role); roleErr != nil {
+		return nil, roleErr
+	}
+	g.CanReviewJoinRequests = role == "owner" || role == "admin"
+	g.CanDirectInvite = g.CanReviewJoinRequests || (role == "member" && g.JoinPolicy == "invite")
+	g.CanSubmitJoinRequest = role == "member" && g.JoinPolicy == "member_approval"
+	if g.CanReviewJoinRequests {
+		if countErr := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_group_join_requests WHERE conversation_id=$1 AND status='pending' AND expires_at>now()`, cid).Scan(&g.PendingJoinRequestCount); countErr != nil {
+			return nil, countErr
+		}
+	}
 	return g, err
 }
 func (p *Postgres) UpdateGroupProfile(ctx context.Context, actor, cid string, u GroupProfileUpdate, at time.Time) (*model.GroupProfile, error) {
@@ -3203,14 +3223,16 @@ func (p *Postgres) UpdateGroupProfile(ctx context.Context, actor, cid string, u 
 	if dissolved != nil {
 		return nil, ErrConflict
 	}
-	if role != "owner" && role != "admin" {
-		return nil, ErrForbidden
-	}
-	if role != "owner" && (u.JoinPolicy != nil || u.AllowMemberAddFriend != nil || u.AllMutedUntil != nil || u.RotateQR) {
+	if !canUpdateGroupProfile(role, u) {
 		return nil, ErrForbidden
 	}
 	if u.HistoryVisibleToNewMembers != nil {
 		if err = setGroupHistoryVisibility(ctx, tx, actor, cid, *u.HistoryVisibleToNewMembers, "member setting", at); err != nil {
+			return nil, err
+		}
+	}
+	if u.JoinPolicy != nil {
+		if err = p.setGroupJoinPolicy(ctx, tx, actor, cid, *u.JoinPolicy, at); err != nil {
 			return nil, err
 		}
 	}
@@ -3250,7 +3272,7 @@ func (p *Postgres) UpdateGroupProfile(ctx context.Context, actor, cid string, u 
 	if setAllMuted && u.AllMutedUntil.After(at) {
 		allMutedUntil = u.AllMutedUntil
 	}
-	if _, err = tx.Exec(ctx, `UPDATE im_groups SET join_policy=COALESCE($2,join_policy),allow_member_add_friend=COALESCE($3,allow_member_add_friend),all_muted_until=CASE WHEN $4::boolean THEN $5 ELSE all_muted_until END,qr_token=COALESCE($6,qr_token),qr_expires_at=CASE WHEN $6::text IS NULL THEN qr_expires_at ELSE $7 END,updated_at=$8 WHERE conversation_id=$1`, cid, u.JoinPolicy, u.AllowMemberAddFriend, setAllMuted, allMutedUntil, token, at.Add(24*time.Hour), at); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE im_groups SET allow_member_add_friend=COALESCE($2,allow_member_add_friend),all_muted_until=CASE WHEN $3::boolean THEN $4 ELSE all_muted_until END,qr_token=COALESCE($5,qr_token),qr_expires_at=CASE WHEN $5::text IS NULL THEN qr_expires_at ELSE $6 END,updated_at=$7 WHERE conversation_id=$1`, cid, u.AllowMemberAddFriend, setAllMuted, allMutedUntil, token, at.Add(24*time.Hour), at); err != nil {
 		return nil, err
 	}
 	if u.AllMutedUntil != nil {
@@ -3265,6 +3287,16 @@ func (p *Postgres) UpdateGroupProfile(ctx context.Context, actor, cid string, u 
 		return nil, err
 	}
 	return p.GetGroupProfile(ctx, actor, cid)
+}
+
+func canUpdateGroupProfile(role string, update GroupProfileUpdate) bool {
+	if role != "owner" && role != "admin" {
+		return false
+	}
+	// Entry policy, member-to-member discovery and QR rotation remain owner
+	// controls. Group administrators may operate all other management fields,
+	// including the all-member mute switch.
+	return role == "owner" || (update.JoinPolicy == nil && update.AllowMemberAddFriend == nil && !update.RotateQR)
 }
 func (p *Postgres) SetGroupAnnouncement(ctx context.Context, actor, cid, content string, at time.Time) (*model.GroupProfile, error) {
 	tx, err := p.pool.Begin(ctx)

@@ -124,6 +124,70 @@ func TestUserPresenceAuthorization(t *testing.T) {
 	}
 }
 
+type presenceLastOfflineMemory struct {
+	teststore.Memory
+	values    map[string]time.Time
+	requested []string
+}
+
+func (s *presenceLastOfflineMemory) PresenceLastOfflineAt(_ context.Context, ids []string) (map[string]time.Time, error) {
+	s.requested = append([]string(nil), ids...)
+	out := map[string]time.Time{}
+	for _, id := range ids {
+		if at, ok := s.values[id]; ok {
+			out[id] = at
+		}
+	}
+	return out, nil
+}
+
+func TestUserPresenceIncludesAuthorizedOfflineTime(t *testing.T) {
+	offlineAt := time.Date(2026, 9, 7, 2, 30, 0, 0, time.UTC)
+	persistence := &presenceLastOfflineMemory{values: map[string]time.Time{"usr_bob": offlineAt, "missing": offlineAt}}
+	a, err := app.New(t.Context(), persistence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.SeedDemo(); err != nil {
+		t.Fatal(err)
+	}
+	presenceTestFriend(t, a)
+	api := New(config.Config{JWTSecret: strings.Repeat("a", 32), DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}, a)
+	api.presence = wukong.NewPresenceCache(func(_ context.Context, ids []string) (map[string]bool, error) {
+		out := map[string]bool{}
+		for _, id := range ids {
+			out[id] = id == "usr_alice"
+		}
+		return out, nil
+	})
+	ts := httptest.NewServer(api.Handler())
+	defer ts.Close()
+	token := loginToken(t, ts.URL, "13800000001")
+	res := authenticatedRequest(t, "POST", ts.URL+"/v2/users/presence", token, `{"userIds":["usr_alice","usr_bob","missing"]}`)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", res.StatusCode)
+	}
+	var body struct {
+		Items []wukong.Presence `json:"items"`
+	}
+	if err = json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Items) != 3 || body.Items[0].Status != "online" || body.Items[0].LastOfflineAt != nil {
+		t.Fatalf("online=%+v", body.Items)
+	}
+	if body.Items[1].Status != "offline" || body.Items[1].LastOfflineAt == nil || !body.Items[1].LastOfflineAt.Equal(offlineAt) {
+		t.Fatalf("offline=%+v", body.Items[1])
+	}
+	if body.Items[2].Status != "hidden" || body.Items[2].LastOfflineAt != nil {
+		t.Fatalf("hidden=%+v", body.Items[2])
+	}
+	if len(persistence.requested) != 1 || persistence.requested[0] != "usr_bob" {
+		t.Fatalf("last-offline lookup leaked unauthorized/online users: %v", persistence.requested)
+	}
+}
+
 func TestUserPresenceRechecksAfterUpstreamWait(t *testing.T) {
 	a, _ := app.New(t.Context(), teststore.Memory{})
 	_ = a.SeedDemo()

@@ -203,6 +203,7 @@ class AppController extends ChangeNotifier {
   final Map<String, int> _lastDeliveredSeq = {};
   final Map<String, int> _pendingDeliveredSeq = {};
   final Map<String, Timer> _deliveryTimers = {};
+  final Map<String, Timer> _receiptRefreshTimers = {};
   final Map<String, Map<String, DateTime>> _typingUsers = {};
   final Map<String, Timer> _typingExpiryTimers = {};
   final Map<String, Timer> _typingStopTimers = {};
@@ -3802,13 +3803,86 @@ class AppController extends ChangeNotifier {
   }
 
   Future<bool> inviteGroupMember(String conversationId, AppUser user) async {
+    return await inviteGroupMemberWithOutcome(conversationId, user) != null;
+  }
+
+  Future<GroupInviteOutcome?> inviteGroupMemberWithOutcome(
+    String conversationId,
+    AppUser user,
+  ) async {
     final userId = currentUser?.id;
     try {
-      await repository.inviteGroupMember(conversationId, user.id);
-      return !_disposed && currentUser?.id == userId;
+      final source = repository is GroupInvitePolicyRepository
+          ? repository as GroupInvitePolicyRepository
+          : null;
+      final outcome = source == null
+          ? await repository
+                .inviteGroupMember(conversationId, user.id)
+                .then(
+                  (_) => const GroupInviteOutcome(action: 'pending_approval'),
+                )
+          : await source.inviteGroupMemberWithOutcome(conversationId, user.id);
+      return !_disposed && currentUser?.id == userId ? outcome : null;
+    } catch (exception) {
+      if (_disposed || currentUser?.id != userId) return null;
+      error = _messageFor(exception, fallback: '群邀请发送失败');
+      notifyListeners();
+      return null;
+    }
+  }
+
+  Future<List<GroupJoinRequest>?> loadGroupJoinRequests(
+    String conversationId, {
+    String status = 'pending',
+  }) async {
+    final userId = currentUser?.id;
+    final source = repository is GroupJoinReviewRepository
+        ? repository as GroupJoinReviewRepository
+        : null;
+    if (source == null) {
+      error = '当前服务暂不支持入群审核';
+      notifyListeners();
+      return null;
+    }
+    try {
+      final requests = await source.groupJoinRequests(
+        conversationId,
+        status: status,
+      );
+      return _disposed || currentUser?.id != userId ? null : requests;
+    } catch (exception) {
+      if (_disposed || currentUser?.id != userId) return null;
+      error = _messageFor(exception, fallback: '入群审核加载失败');
+      notifyListeners();
+      return null;
+    }
+  }
+
+  Future<bool> respondGroupJoinRequest(
+    String conversationId,
+    String requestId,
+    String action,
+  ) async {
+    final userId = currentUser?.id;
+    final source = repository is GroupJoinReviewRepository
+        ? repository as GroupJoinReviewRepository
+        : null;
+    if (source == null) {
+      error = '当前服务暂不支持入群审核';
+      notifyListeners();
+      return false;
+    }
+    try {
+      await source.respondGroupJoinRequest(conversationId, requestId, action);
+      if (_disposed || currentUser?.id != userId) return false;
+      _invalidateGroupMembers(conversationId);
+      groupSendPolicyRevision++;
+      _scheduleConversationRefresh();
+      notifyListeners();
+      return true;
     } catch (exception) {
       if (_disposed || currentUser?.id != userId) return false;
-      error = _messageFor(exception, fallback: '群邀请发送失败');
+      error = _messageFor(exception, fallback: '入群审核操作失败');
       notifyListeners();
       return false;
     }
@@ -3827,12 +3901,19 @@ class AppController extends ChangeNotifier {
   }
 
   Future<bool> removeGroupMember(String conversationId, AppUser user) async {
+    final actorId = currentUser?.id;
     try {
       await repository.removeGroupMember(conversationId, user.id);
+      if (_disposed || currentUser?.id != actorId) return false;
+      error = null;
       presence.invalidate();
       _invalidateGroupMembers(conversationId);
+      groupSendPolicyRevision++;
+      _scheduleConversationRefresh();
+      notifyListeners();
       return true;
     } catch (exception) {
+      if (_disposed || currentUser?.id != actorId) return false;
       error = _messageFor(exception, fallback: '移除群成员失败');
       notifyListeners();
       return false;
@@ -4325,6 +4406,10 @@ class AppController extends ChangeNotifier {
       timer.cancel();
     }
     _deliveryTimers.clear();
+    for (final timer in _receiptRefreshTimers.values) {
+      timer.cancel();
+    }
+    _receiptRefreshTimers.clear();
     for (final timer in _typingExpiryTimers.values) {
       timer.cancel();
     }
@@ -4528,8 +4613,10 @@ class AppController extends ChangeNotifier {
         _scheduleConversationRefresh();
       case ImEventType.messageDelivered:
         _applyReceipt(event.payload, delivered: true);
+        _scheduleAuthoritativeReceiptRefresh(event.payload);
       case ImEventType.messageRead:
         _applyReceipt(event.payload, delivered: false);
+        _scheduleAuthoritativeReceiptRefresh(event.payload);
       case ImEventType.messageExpired:
         final id = event.payload['messageId'] as String?;
         if (id == null) return;
@@ -4578,6 +4665,7 @@ class AppController extends ChangeNotifier {
         unawaited(_refreshSocial());
         _scheduleConversationRefresh();
       case ImEventType.groupInvitationChanged:
+        groupSendPolicyRevision++;
         unawaited(_refreshGroupInvitations());
       case ImEventType.announcementChanged:
         unawaited(refreshAnnouncements());
@@ -4737,6 +4825,33 @@ class AppController extends ChangeNotifier {
         readCount: readCount,
       );
     }
+  }
+
+  void _scheduleAuthoritativeReceiptRefresh(Map<String, Object?> payload) {
+    final conversationId = payload['conversationId']?.toString() ?? '';
+    if (conversationId.isEmpty ||
+        activeConversationId != conversationId ||
+        !canDisplayMessageReceipts(conversationId)) {
+      return;
+    }
+    final accountId = currentUser?.id;
+    if (accountId == null) return;
+    _receiptRefreshTimers.remove(conversationId)?.cancel();
+    _receiptRefreshTimers[conversationId] = Timer(
+      const Duration(milliseconds: 180),
+      () async {
+        _receiptRefreshTimers.remove(conversationId);
+        final activeLoad = _messageLoadOperations[conversationId];
+        if (activeLoad != null) await activeLoad;
+        if (_disposed ||
+            currentUser?.id != accountId ||
+            activeConversationId != conversationId ||
+            !canDisplayMessageReceipts(conversationId)) {
+          return;
+        }
+        await loadMessages(conversationId, force: true);
+      },
+    );
   }
 
   Future<void> _refreshSocial() async {
@@ -5147,6 +5262,9 @@ class AppController extends ChangeNotifier {
     _disposed = true;
     _conversationRefreshTimer?.cancel();
     for (final timer in _deliveryTimers.values) {
+      timer.cancel();
+    }
+    for (final timer in _receiptRefreshTimers.values) {
       timer.cancel();
     }
     for (final timer in _typingExpiryTimers.values) {

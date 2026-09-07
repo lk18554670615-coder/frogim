@@ -190,6 +190,35 @@ void main() {
     expect(restored.mediaHeight, 1920);
   });
 
+  test('maps authoritative group delivery and read counts into UI model', () {
+    final synced = WukongMessage.fromSyncJson({
+      'message_idstr': 'receipt-101',
+      'message_seq': 12,
+      'client_msg_no': 'receipt-client-101',
+      'from_uid': 'usr_owner',
+      'channel_id': 'group_receipts',
+      'channel_type': 2,
+      'timestamp': 1786406400,
+      'payload': {
+        'type': WukongContentType.text,
+        'content': '群回执',
+        'deliveredCount': 8,
+        'readCount': 5,
+      },
+    });
+
+    final mapped = mapper.toChatMessage(
+      synced,
+      currentUserId: 'usr_owner',
+      conversationId: 'conversation-receipts',
+    );
+
+    expect(mapped.deliveredCount, 8);
+    expect(mapped.readCount, 5);
+    expect(ChatMessage.fromJson(mapped.toJson()).deliveredCount, 8);
+    expect(ChatMessage.fromJson(mapped.toJson()).readCount, 5);
+  });
+
   test('normalizes WuKong and cached UTC timestamps for local display', () {
     final timestamp = DateTime.utc(2026, 9, 1, 5, 20);
     final mapped = mapper.toChatMessage(

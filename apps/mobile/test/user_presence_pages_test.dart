@@ -11,6 +11,7 @@ import 'package:linli_im/ui/screens/chat_screen.dart';
 import 'package:linli_im/ui/screens/group_management_screens.dart';
 import 'package:linli_im/ui/screens/home_screen.dart';
 import 'package:linli_im/ui/screens/relationship_screens.dart';
+import 'package:linli_im/ui/widgets/linli_widgets.dart';
 import 'package:linli_im/ui/widgets/user_presence.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -71,6 +72,9 @@ void main() {
               .status,
           status,
         );
+        if (id == 'u2') {
+          expect(find.text('● 离线 2小时'), findsOneWidget);
+        }
         if (id == 'u1') expect(find.text('我的搭档'), findsOneWidget);
       }
       final group = (await tester.runAsync(() => repo.groupProfile('c-team')))!;
@@ -139,6 +143,91 @@ void main() {
     });
   }
 
+  testWidgets('消息列表仅为单聊展示实时状态并同步头像在线点', (tester) async {
+    final repo = _PageRepo();
+    final c = AppController(repo);
+    await tester.runAsync(c.loginAsDemo);
+    addTearDown(c.dispose);
+    final direct = c.conversations.firstWhere((v) => v.id == 'c-linyu');
+    final group = c.conversations.firstWhere((v) => v.id == 'c-team');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              ConversationTile(conversation: direct, controller: c),
+              ConversationTile(conversation: group, controller: c),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final directRow = find.byKey(
+      const ValueKey('conversation-content-c-linyu'),
+    );
+    final directPresence = find.descendant(
+      of: directRow,
+      matching: find.byKey(const ValueKey('conversation-presence-c-linyu')),
+    );
+    expect(
+      tester.widget<PresenceLabel>(directPresence).status,
+      UserPresenceStatus.online,
+    );
+    expect(
+      tester
+          .widget<PersonAvatar>(
+            find.descendant(
+              of: find.byKey(const ValueKey('conversation-avatar-c-linyu')),
+              matching: find.byType(PersonAvatar),
+            ),
+          )
+          .online,
+      isTrue,
+    );
+    expect(
+      find.byKey(const ValueKey('conversation-presence-c-team')),
+      findsNothing,
+    );
+    expect(repo.contexts, contains(null));
+    await tester.pumpWidget(const SizedBox());
+    await repo.close();
+  });
+
+  testWidgets('消息列表和单聊顶部显示真实离线时长', (tester) async {
+    final repo = _PageRepo()..directOffline = true;
+    final c = AppController(repo);
+    await tester.runAsync(c.loginAsDemo);
+    addTearDown(c.dispose);
+    final conversation = c.conversations.firstWhere((v) => v.id == 'c-linyu');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConversationTile(conversation: conversation, controller: c),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('● 离线 2小时'), findsOneWidget);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ChatScreen(controller: c, conversation: conversation),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('chat-presence-c-linyu')),
+        matching: find.text('● 离线 2小时'),
+      ),
+      findsOneWidget,
+    );
+    await tester.pumpWidget(const SizedBox());
+    await repo.close();
+  });
+
   testWidgets('单聊正在输入优先，结束后恢复状态；普通会话刷新不重置在线状态', (tester) async {
     final repo = _PageRepo();
     final c = AppController(repo);
@@ -199,6 +288,7 @@ class _PageRepo extends DemoImRepository {
   final contexts = <String?>[];
   final _events = StreamController<ImEvent>.broadcast();
   bool directHidden = false;
+  bool directOffline = false;
   @override
   Stream<ImEvent> get events => _events.stream;
   void emit(ImEvent event) => _events.add(event);
@@ -219,11 +309,18 @@ class _PageRepo extends DemoImRepository {
           id,
           directHidden && groupId == null
               ? UserPresenceStatus.hidden
+              : directOffline && groupId == null && id == 'u1'
+              ? UserPresenceStatus.offline
               : switch (id) {
                   'u2' => UserPresenceStatus.offline,
                   'u3' => UserPresenceStatus.unknown,
                   _ => UserPresenceStatus.online,
                 },
+          checkedAt: DateTime.utc(2026, 9, 7, 5),
+          lastOfflineAt:
+              id == 'u2' || (directOffline && groupId == null && id == 'u1')
+              ? DateTime.utc(2026, 9, 7, 3)
+              : null,
         ),
     ];
   }

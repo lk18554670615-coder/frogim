@@ -108,7 +108,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('1440 工作台提供账号栏、会话列、聊天区和可收起资料栏', (tester) async {
+  testWidgets('1440 聊天信息默认关闭且聊天区可返回空白选择状态', (tester) async {
     final controller = await _pumpDesktopHome(
       tester,
       size: const Size(1440, 1000),
@@ -126,18 +126,31 @@ void main() {
           .width,
       304,
     );
+    expect(find.text('选择一个对话'), findsOneWidget);
+    expect(find.byKey(const Key('message-input')), findsNothing);
+
+    await tester.tap(
+      find.byKey(const ValueKey('conversation-slidable-c-team')),
+    );
+    await _pumpUi(tester);
+    expect(find.byKey(const Key('desktop-chat-details-panel')), findsNothing);
+    expect(find.byKey(const Key('message-input')), findsOneWidget);
+    expect(find.byKey(const Key('desktop-close-conversation')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('chat-more-button')));
+    await _pumpUi(tester);
     expect(
       tester.getSize(find.byKey(const Key('desktop-chat-details-panel'))).width,
       320,
     );
-    expect(find.byKey(const Key('message-input')), findsOneWidget);
-
     await tester.tap(find.byKey(const Key('desktop-close-details')));
     await _pumpUi(tester);
     expect(find.byKey(const Key('desktop-chat-details-panel')), findsNothing);
-    await tester.tap(find.byKey(const Key('chat-more-button')));
+
+    await tester.tap(find.byKey(const Key('desktop-close-conversation')));
     await _pumpUi(tester);
-    expect(find.byKey(const Key('desktop-chat-details-panel')), findsOneWidget);
+    expect(find.text('选择一个对话'), findsOneWidget);
+    expect(find.byKey(const Key('message-input')), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -267,7 +280,7 @@ void main() {
     await _pumpUi(tester);
   });
 
-  testWidgets('1280 深色 200% 字体仍可操作且没有溢出', (tester) async {
+  testWidgets('1280 深色 200% 字体初始空白区仍可操作且没有溢出', (tester) async {
     _setViewport(tester, const Size(1280, 900));
     final controller = AppController(DemoImRepository(latency: Duration.zero));
     await tester.runAsync(controller.loginAsDemo);
@@ -289,7 +302,8 @@ void main() {
     await _pumpUi(tester);
 
     expect(find.byKey(const Key('desktop-home-workspace')), findsOneWidget);
-    expect(find.byKey(const Key('message-input')), findsOneWidget);
+    expect(find.text('选择一个对话'), findsOneWidget);
+    expect(find.byKey(const Key('message-input')), findsNothing);
     expect(find.byKey(const Key('desktop-global-search')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });

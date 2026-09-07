@@ -15,6 +15,7 @@ import 'relationship_screens.dart';
 import 'qr_tools_screen.dart';
 import 'settings_screens.dart';
 import 'group_invite_members_screen.dart';
+import 'group_join_requests_screen.dart';
 
 class GroupManagementScreen extends StatefulWidget {
   const GroupManagementScreen({
@@ -255,29 +256,67 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
                   ),
                 ],
               ),
-              if (isOwner) ...[
-                const SectionHeader('群主管理'),
+              if (canEdit) ...[
+                SectionHeader(isOwner ? '群主管理' : '群管理员操作'),
                 SectionCard(
                   children: [
-                    SettingTile(
-                      key: const Key('group-join-policy'),
-                      icon: CupertinoIcons.person_badge_plus,
-                      title: '入群方式',
-                      subtitle: groupJoinPolicyLabel(value.joinPolicy),
-                      onTap: busy ? null : _changeJoinPolicy,
-                    ),
-                    SettingTile(
-                      icon: CupertinoIcons.person_2_square_stack,
-                      title: '允许同群成员添加好友',
-                      subtitle: value.allowMemberAddFriend
-                          ? '成员可从群资料发起好友申请'
-                          : '群成员资料页不会提供添加入口',
-                      trailing: CupertinoSwitch(
-                        value: value.allowMemberAddFriend,
-                        onChanged: busy ? null : _setMemberFriendPermission,
+                    if (value.canReviewJoinRequests)
+                      SettingTile(
+                        key: const Key('group-join-requests-entry'),
+                        icon: CupertinoIcons.person_2_square_stack,
+                        title: '入群审核',
+                        subtitle: value.pendingJoinRequestCount > 0
+                            ? '${value.pendingJoinRequestCount} 条待处理申请'
+                            : '暂无待处理申请',
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (value.pendingJoinRequestCount > 0)
+                              Container(
+                                key: const Key('group-join-request-badge'),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 3,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.primaryContainer,
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text('${value.pendingJoinRequestCount}'),
+                              ),
+                            const SizedBox(width: 6),
+                            const Icon(
+                              CupertinoIcons.chevron_forward,
+                              size: 16,
+                            ),
+                          ],
+                        ),
+                        onTap: busy ? null : _openJoinRequests,
                       ),
-                    ),
+                    if (isOwner) ...[
+                      SettingTile(
+                        key: const Key('group-join-policy'),
+                        icon: CupertinoIcons.person_badge_plus,
+                        title: '入群方式',
+                        subtitle: groupJoinPolicyLabel(value.joinPolicy),
+                        onTap: busy ? null : _changeJoinPolicy,
+                      ),
+                      SettingTile(
+                        icon: CupertinoIcons.person_2_square_stack,
+                        title: '允许同群成员添加好友',
+                        subtitle: value.allowMemberAddFriend
+                            ? '成员可从群资料发起好友申请'
+                            : '群成员资料页不会提供添加入口',
+                        trailing: CupertinoSwitch(
+                          value: value.allowMemberAddFriend,
+                          onChanged: busy ? null : _setMemberFriendPermission,
+                        ),
+                      ),
+                    ],
                     SettingTile(
+                      key: const Key('group-mute-all'),
                       icon: CupertinoIcons.speaker_slash,
                       title: '全员禁言',
                       subtitle: value.allMuted ? '仅群主和管理员可发言' : '所有成员可发言',
@@ -531,7 +570,13 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            for (final policy in ['invite', 'qr', 'closed'])
+            for (final policy in [
+              'invite',
+              'manager_invite',
+              'member_approval',
+              'qr',
+              'closed',
+            ])
               ListTile(
                 leading: Icon(
                   profile!.joinPolicy == policy
@@ -548,12 +593,31 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
       ),
     );
     if (selected == null || selected == profile!.joinPolicy) return;
+    final confirmed = await _confirm(
+      title: '修改入群方式？',
+      message:
+          '将入群方式改为“${groupJoinPolicyLabel(selected)}”。所有尚未处理的入群申请会立即失效，不能继续审核。',
+      action: '确认修改',
+    );
+    if (!confirmed || !mounted) return;
     await _runProfileUpdate(
       () => widget.controller.updateGroupProfile(
         widget.conversation.id,
         joinPolicy: selected,
       ),
     );
+  }
+
+  Future<void> _openJoinRequests() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => GroupJoinRequestsScreen(
+          controller: widget.controller,
+          conversationId: widget.conversation.id,
+        ),
+      ),
+    );
+    if (mounted) await _load(showLoading: false);
   }
 
   Future<void> _setHistoryVisibility(bool value) async {
@@ -1101,6 +1165,7 @@ class GroupMembersManagementScreen extends StatefulWidget {
 
 class _GroupMembersManagementScreenState
     extends State<GroupMembersManagementScreen> {
+  late GroupProfile profile = widget.profile;
   late List<GroupMember> members = widget.initialMembers;
   bool loading = false;
   bool changingRole = false;
@@ -1115,6 +1180,8 @@ class _GroupMembersManagementScreenState
       .firstOrNull;
   bool get isOwner => me?.isOwner == true;
   bool get isAdmin => me?.isAdmin == true;
+  bool get canInviteMembers =>
+      profile.canDirectInvite || profile.canSubmitJoinRequest;
   List<GroupMember> get visibleMembers {
     final candidates = widget.administratorMode
         ? [
@@ -1185,16 +1252,20 @@ class _GroupMembersManagementScreenState
     _externalRefreshTimer?.cancel();
     final request = ++_reloadRequest;
     setState(() => loading = true);
-    final updated = await widget.controller.loadGroupMembers(
-      widget.conversationId,
-    );
+    final results = await Future.wait([
+      widget.controller.loadGroupProfile(widget.conversationId),
+      widget.controller.loadGroupMembers(widget.conversationId),
+    ]);
     if (!mounted || request != _reloadRequest) return;
+    final updatedProfile = results[0] as GroupProfile?;
+    final updatedMembers = results[1] as List<GroupMember>?;
     setState(() {
       loading = false;
-      if (updated != null) members = updated;
+      if (updatedProfile != null) profile = updatedProfile;
+      if (updatedMembers != null) members = updatedMembers;
     });
-    if (updated == null) {
-      _showFeedback(widget.controller.error ?? '群成员加载失败，请稍后重试');
+    if (updatedProfile == null || updatedMembers == null) {
+      _showFeedback(widget.controller.error ?? '群资料加载失败，请稍后重试');
     }
   }
 
@@ -1247,7 +1318,7 @@ class _GroupMembersManagementScreenState
             onChanged: (value) => setState(() => query = value),
           ),
         ),
-        if (!widget.administratorMode)
+        if (!widget.administratorMode && canInviteMembers)
           ListTile(
             key: const Key('add-group-members'),
             contentPadding: const EdgeInsets.symmetric(horizontal: 16),
@@ -1261,8 +1332,20 @@ class _GroupMembersManagementScreenState
               child: const Icon(CupertinoIcons.person_add),
             ),
             title: Text(isOwner || isAdmin ? '添加群成员' : '邀请好友入群'),
-            subtitle: Text(isOwner || isAdmin ? '选择后直接加入群聊' : '对方同意邀请后加入'),
+            subtitle: Text(
+              isOwner || isAdmin || profile.joinPolicy == 'invite'
+                  ? '选择好友后直接加入群聊'
+                  : '提交后由群主或管理员审核',
+            ),
             onTap: loading || changingRole ? null : _pickMembers,
+          ),
+        if (!widget.administratorMode && !canInviteMembers)
+          ListTile(
+            key: const Key('group-invite-restricted'),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+            leading: const Icon(CupertinoIcons.lock),
+            title: const Text('当前无法邀请成员'),
+            subtitle: Text(groupJoinPolicyDescription(profile.joinPolicy)),
           ),
         const Divider(),
         if (visibleMembers.isEmpty)
@@ -1602,15 +1685,19 @@ class _DisbandGroupDialogState extends State<_DisbandGroupDialog> {
 }
 
 String groupJoinPolicyLabel(String policy) => switch (policy) {
+  'manager_invite' => '仅群主/管理员邀请',
+  'member_approval' => '成员邀请需管理员验证',
   'qr' => '二维码加入',
   'closed' => '暂停加入',
   _ => '仅成员邀请',
 };
 
 String groupJoinPolicyDescription(String policy) => switch (policy) {
+  'manager_invite' => '只有群主和管理员可直接添加好友',
+  'member_approval' => '成员提交申请，审核通过后好友直接加入',
   'qr' => '持有效群二维码可加入',
-  'closed' => '不接受新的成员或申请',
-  _ => '由现有群成员发起邀请',
+  'closed' => '暂停成员邀请和扫码；群主、管理员仍可直接添加',
+  _ => '所有群成员都可直接邀请自己的好友加入',
 };
 
 String _roleLabel(String role) => switch (role) {

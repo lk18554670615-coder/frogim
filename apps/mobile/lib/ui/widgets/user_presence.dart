@@ -91,20 +91,56 @@ class _UserPresenceState extends State<UserPresence> {
   );
 }
 
+String presenceLabelText(
+  UserPresenceStatus status, {
+  DateTime? lastOfflineAt,
+  DateTime? checkedAt,
+}) {
+  if (status == UserPresenceStatus.online) return '在线';
+  if (status == UserPresenceStatus.hidden) return '';
+  if (status == UserPresenceStatus.unknown) return '状态未知';
+  if (lastOfflineAt == null) return '离线';
+  final reference = checkedAt ?? DateTime.now().toUtc();
+  final elapsed = reference.toUtc().difference(lastOfflineAt.toUtc());
+  if (elapsed.isNegative || elapsed < const Duration(minutes: 1)) {
+    return '离线不足1分钟';
+  }
+  if (elapsed < const Duration(hours: 1)) {
+    return '离线 ${elapsed.inMinutes}分钟';
+  }
+  if (elapsed < const Duration(days: 1)) {
+    return '离线 ${elapsed.inHours}小时';
+  }
+  if (elapsed < const Duration(days: 30)) {
+    return '离线 ${elapsed.inDays}天';
+  }
+  if (elapsed < const Duration(days: 365)) {
+    return '离线 ${elapsed.inDays ~/ 30}个月';
+  }
+  return '离线 ${elapsed.inDays ~/ 365}年';
+}
+
 class PresenceLabel extends StatelessWidget {
-  const PresenceLabel(this.status, {super.key});
+  const PresenceLabel(
+    this.status, {
+    super.key,
+    this.lastOfflineAt,
+    this.checkedAt,
+  });
   final UserPresenceStatus status;
+  final DateTime? lastOfflineAt;
+  final DateTime? checkedAt;
   @override
   Widget build(BuildContext context) {
     if (status == UserPresenceStatus.hidden) return const SizedBox.shrink();
     final color = status == UserPresenceStatus.online
         ? LinliColors.systemGreen
         : Theme.of(context).colorScheme.onSurfaceVariant;
-    final label = switch (status) {
-      UserPresenceStatus.online => '在线',
-      UserPresenceStatus.offline => '离线',
-      _ => '状态未知',
-    };
+    final label = presenceLabelText(
+      status,
+      lastOfflineAt: lastOfflineAt,
+      checkedAt: checkedAt,
+    );
     return Text.rich(
       TextSpan(
         children: [

@@ -155,6 +155,8 @@ class MessageMapper {
       pinnedAt: _date(payload['pinnedAt']),
       pinnedBy: payload['pinnedBy'] as String?,
       expiresAt: expiresAt,
+      deliveredCount: (payload['deliveredCount'] as num?)?.toInt() ?? 0,
+      readCount: (payload['readCount'] as num?)?.toInt() ?? 0,
     );
   }
 

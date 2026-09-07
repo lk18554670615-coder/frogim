@@ -11,6 +11,25 @@ abstract interface class MessageDeletionRepository {
   bool isMessageDeleted(String messageId);
 }
 
+abstract interface class GroupJoinReviewRepository {
+  Future<List<GroupJoinRequest>> groupJoinRequests(
+    String conversationId, {
+    String status = 'pending',
+  });
+  Future<GroupJoinRequest> respondGroupJoinRequest(
+    String conversationId,
+    String requestId,
+    String action,
+  );
+}
+
+abstract interface class GroupInvitePolicyRepository {
+  Future<GroupInviteOutcome> inviteGroupMemberWithOutcome(
+    String conversationId,
+    String userId,
+  );
+}
+
 abstract interface class ImRepository {
   Stream<bool> get connectionChanges;
   Stream<ImEvent> get events;
