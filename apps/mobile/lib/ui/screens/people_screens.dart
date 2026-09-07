@@ -1158,7 +1158,8 @@ class SavedGroupsScreen extends StatelessWidget {
                   leading: PersonAvatar(
                     name: group.title,
                     avatarUrl:
-                        group.avatarUrl ?? 'assets/brand/qingwaguagua-icon.png',
+                        group.avatarUrl ??
+                        'assets/brand/qingwaguagua-avatar.png',
                     size: 50,
                   ),
                   title: Text(group.title),

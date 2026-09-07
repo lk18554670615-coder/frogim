@@ -6,26 +6,29 @@
 :root {
   color-scheme: light;
 
-  --color-paper: #fffdf8;
-  --color-paper-subtle: #f0ede3;
-  --color-canvas: #f7f5ee;
-  --color-ink: #171714;
-  --color-ink-secondary: #68655c;
-  --color-ink-tertiary: #8b877c;
-  --color-rule: #e4dfd1;
-  --color-rule-strong: #cbc4b3;
-  --color-brand-logo: #24e66d;
-  --color-brand: #ffd633;
-  --color-brand-strong: #171714;
-  --color-brand-deep: #2b2a25;
-  --color-brand-soft: #fff1a6;
-  --color-brand-line: #e6b900;
-  --color-brand-shadow: rgb(23 23 20 / 0.14);
-  --color-primary: #171714;
-  --color-primary-hover: #2b2a25;
-  --color-primary-ink: #ffd633;
-  --color-focus: #e6b900;
-  --color-focus-soft: rgb(255 214 51 / 0.28);
+  --color-paper: #ffffff;
+  --color-paper-subtle: #e9eef3;
+  --color-canvas: #f2f5f8;
+  --color-ink: #182533;
+  --color-ink-secondary: #5b6b7a;
+  --color-ink-tertiary: #5b6b7a;
+  --color-rule: #dce3ea;
+  --color-rule-strong: #7a8997;
+  --color-brand-logo: #1976b9;
+  --color-brand: #1976b9;
+  --color-brand-strong: #12649e;
+  --color-brand-deep: #14659f;
+  --color-brand-soft: #e7f2fc;
+  --color-brand-line: #1976b9;
+  --color-brand-shadow: rgb(25 118 185 / 0.14);
+  --color-link: #12649e;
+  --color-selected: #e7f2fc;
+  --color-selected-ink: #12649e;
+  --color-primary: #1976b9;
+  --color-primary-hover: #14659f;
+  --color-primary-ink: #ffffff;
+  --color-focus: #1976b9;
+  --color-focus-soft: rgb(25 118 185 / 0.18);
   --color-info: #0ba5ec;
   --color-info-soft: #f0f9ff;
   --color-warning: #f79009;
@@ -91,5 +94,5 @@
   --danger-soft: var(--color-danger-soft);
   --success: var(--color-success);
   --success-soft: var(--color-success-soft);
-  --sidebar: #171714;
+  --sidebar: #ffffff;
 }

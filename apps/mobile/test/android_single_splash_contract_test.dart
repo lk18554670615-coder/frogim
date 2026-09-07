@@ -11,7 +11,7 @@ void main() {
         'android/app/src/main/res/drawable-v21/launch_background.xml',
       ]) {
         final source = File(path).readAsStringSync();
-        expect(source, contains('@android:color/white'));
+        expect(source, contains('@color/launch_background'));
         expect(source, isNot(contains('splash_logo')));
         expect(source, isNot(contains('<bitmap')));
       }
@@ -38,7 +38,7 @@ void main() {
     expect(source, contains("class _LaunchScreen extends StatelessWidget"));
     expect(
       source,
-      contains("'assets/brand/qingwaguagua-mark-transparent.png'"),
+      contains("'assets/brand/qingwaguagua-badge.png'"),
     );
     expect(source, contains('CircularProgressIndicator('));
     expect(source, contains("'正在启动，请稍候…'"));

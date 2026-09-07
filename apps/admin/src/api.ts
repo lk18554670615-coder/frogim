@@ -844,8 +844,13 @@ function adaptUserOverview(value: unknown): UserOverview {
       selfChangesRemaining: number(invitationRaw.selfChangesRemaining, 1),
       createdAt: formatDate(invitationRaw.createdAt),
       invitedBy: invitedByRaw.id ? adaptUser(invitedByRaw) : undefined,
-      registrationMethod: registrationMethod === 'password' || registrationMethod === 'otp' ? registrationMethod : undefined,
+      registrationMethod: registrationMethod === 'password' || registrationMethod === 'otp' || registrationMethod === 'admin' ? registrationMethod : undefined,
       boundAt: invitationRaw.boundAt ? formatDate(invitationRaw.boundAt) : undefined,
+      boundCode: string(invitationRaw.boundCode),
+      boundCodeId: string(invitationRaw.boundCodeId),
+      bindingSource: invitationRaw.bindingSource === 'admin' ? 'admin' : 'registration',
+      bindingUpdatedAt: invitationRaw.bindingUpdatedAt ? formatDate(invitationRaw.bindingUpdatedAt) : undefined,
+      bindingVersion: number(invitationRaw.bindingVersion),
     } : undefined,
   };
 }
@@ -867,7 +872,9 @@ function adaptInviteRelation(value: unknown): InviteRelationRecord {
   const raw = object(value);
   return {
     invitee: adaptUser(raw.invitee), inviter: adaptUser(raw.inviter), inviteCodeId: string(raw.inviteCodeId),
-    inviteCode: string(raw.inviteCode), registrationMethod: string(raw.registrationMethod) === 'password' ? 'password' : 'otp',
+    inviteCode: string(raw.inviteCode), registrationMethod: raw.registrationMethod === 'admin' ? 'admin' : raw.registrationMethod === 'password' ? 'password' : 'otp',
+    bindingSource: raw.bindingSource === 'admin' ? 'admin' : 'registration',
+    updatedAt: formatDate(raw.updatedAt ?? raw.createdAt), version: number(raw.version, 1),
     createdAt: formatDate(raw.createdAt),
   };
 }
@@ -985,6 +992,7 @@ function adaptOperationsAccess(value: unknown): OperationsStatus['access'] {
 
 function liveApi(token: string): AdminApi {
   return {
+    async setUserInviteRelation(id, inviteCode, reason, expectedVersion) { await request(`/users/${encodeURIComponent(id)}/invite-relation`, token, { method: 'PUT', body: JSON.stringify({inviteCode: inviteCode.trim().toUpperCase(), reason: reason.trim(), expectedVersion, confirmed: true}) }); },
     async setUserMessagePermissions(id, allowed, reason) { await request(`/users/${encodeURIComponent(id)}/message-permissions`, token, {method:'PUT', body:JSON.stringify({canDeleteMessagesForEveryone:allowed,reason,confirmed:true})}); },
     async getCurrentAdmin() { return adaptAdminIdentity(await request('/auth/me', token)); },
     async changeCurrentAdminPassword(currentPassword, newPassword) { await request('/auth/change-password', token, { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }); },

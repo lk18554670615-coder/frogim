@@ -269,7 +269,7 @@ class _ChatScreenState extends State<ChatScreen> {
   String? get conversationAvatarUrl =>
       widget.conversation.avatarUrl ??
       (widget.conversation.kind == ConversationKind.group
-          ? 'assets/brand/qingwaguagua-icon.png'
+          ? 'assets/brand/qingwaguagua-avatar.png'
           : peer?.avatarUrl);
 
   bool get _isOrdinaryGroup =>
@@ -551,12 +551,10 @@ class _ChatScreenState extends State<ChatScreen> {
   Color _chatBackgroundColor(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
     return switch (_chatBackground) {
-      ChatBackgroundStyle.followSystem =>
-        dark ? LinliColors.darkBackground : LinliColors.background,
-      ChatBackgroundStyle.softMint =>
-        dark ? LinliColors.darkSurfaceElevated : LinliColors.brandYellowSoft,
+      ChatBackgroundStyle.followSystem => context.linli.chatBackground,
+      ChatBackgroundStyle.softMint => context.linli.selected,
       ChatBackgroundStyle.cleanPaper =>
-        dark ? LinliColors.brandInkSoft : LinliColors.surface,
+        dark ? LinliColors.darkSurfaceElevated : LinliColors.surface,
     };
   }
 
@@ -872,19 +870,16 @@ class _ChatScreenState extends State<ChatScreen> {
         onFiles: _sendWebFiles,
         onError: _showError,
         child: Scaffold(
+          backgroundColor: context.linli.chatBackground,
           appBar: AppBar(
-            backgroundColor: LinliColors.brandYellow,
-            foregroundColor: LinliColors.brandInk,
+            backgroundColor: context.linli.navigation,
+            foregroundColor: context.linli.primary,
             toolbarHeight: showPeerLoginInfoFor(context, widget.conversation)
                 ? 16 +
                       MediaQuery.textScalerOf(context).scale(24) +
                       3 * MediaQuery.textScalerOf(context).scale(16)
                 : null,
-            systemOverlayStyle: const SystemUiOverlayStyle(
-              statusBarColor: Colors.transparent,
-              statusBarIconBrightness: Brightness.dark,
-              statusBarBrightness: Brightness.light,
-            ),
+            systemOverlayStyle: context.linli.systemOverlay,
             titleSpacing: 0,
             centerTitle: false,
             leading: widget.onCloseDesktopConversation == null
@@ -909,7 +904,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         name: widget.controller.displayConversationName(
                           widget.conversation,
                         ),
-                        color: LinliColors.brandInk,
+                        color: context.linli.text,
                       ),
                       AnimatedBuilder(
                         animation: widget.controller,
@@ -937,7 +932,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                             .textTheme
                                             .labelSmall
                                             ?.copyWith(
-                                              color: LinliColors.systemGreen,
+                                              color: context.linli.successText,
                                             ),
                                       )
                                     : PresenceLabel(
@@ -959,8 +954,8 @@ class _ChatScreenState extends State<ChatScreen> {
                             style: Theme.of(context).textTheme.labelSmall
                                 ?.copyWith(
                                   color: typing != null
-                                      ? LinliColors.systemGreen
-                                      : LinliColors.brandInk,
+                                      ? context.linli.successText
+                                      : context.linli.secondaryText,
                                 ),
                           );
                         },
@@ -1393,7 +1388,7 @@ class _ChatScreenState extends State<ChatScreen> {
         curve: Curves.easeOutCubic,
         decoration: BoxDecoration(
           color: _highlightedMessageId == message.id
-              ? LinliColors.brandYellow.withValues(alpha: .16)
+              ? context.linli.selected
               : Colors.transparent,
           borderRadius: BorderRadius.circular(14),
         ),
@@ -3046,7 +3041,7 @@ class _MessageContextMenu extends StatelessWidget {
         child: Material(
           color: Theme.of(context).colorScheme.surfaceContainer,
           elevation: 10,
-          shadowColor: LinliColors.brandInk.withValues(alpha: .22),
+          shadowColor: LinliColors.label.withValues(alpha: .22),
           borderRadius: BorderRadius.circular(16),
           clipBehavior: Clip.antiAlias,
           child: ConstrainedBox(
@@ -3355,13 +3350,7 @@ class _ContextActionButton extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(
-                spec.icon,
-                size: 21,
-                color: Theme.of(context).brightness == Brightness.dark
-                    ? LinliColors.brandYellow
-                    : LinliColors.brandInk,
-              ),
+              Icon(spec.icon, size: 21, color: context.linli.primary),
               const SizedBox(height: 5),
               Text(
                 spec.label,
@@ -3747,7 +3736,7 @@ class _DirectContactSummary extends StatelessWidget {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: LinliColors.preview,
+                        color: context.linli.secondaryText,
                       ),
                     ),
                   ],
@@ -4154,7 +4143,7 @@ class _TimeDivider extends StatelessWidget {
       _displayTime(date),
       style: Theme.of(
         context,
-      ).textTheme.labelSmall?.copyWith(color: LinliColors.tertiaryLabel),
+      ).textTheme.labelSmall?.copyWith(color: context.linli.secondaryText),
     ),
   );
 
@@ -4287,14 +4276,14 @@ class MessageBubble extends StatelessWidget {
             key: Key('live-event-${message.clientMessageId}'),
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
             decoration: BoxDecoration(
-              color: LinliColors.brandYellow.withValues(alpha: .16),
+              color: context.linli.selected,
               borderRadius: BorderRadius.circular(999),
             ),
             child: Text(
               '${message.isMine ? '我' : resolvedSenderName} ${message.text}',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                color: LinliColors.brandInk,
+                color: context.linli.primary,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -4342,8 +4331,8 @@ class MessageBubble extends StatelessWidget {
                         ? CupertinoIcons.checkmark_circle_fill
                         : CupertinoIcons.circle,
                     color: selected
-                        ? LinliColors.brandInk
-                        : LinliColors.tertiaryLabel,
+                        ? context.linli.primary
+                        : context.linli.secondaryText,
                   ),
                 ),
                 const SizedBox(width: 4),
@@ -4425,7 +4414,7 @@ class MessageBubble extends StatelessWidget {
                                     ),
                                     minHeight: 3,
                                     borderRadius: BorderRadius.circular(999),
-                                    color: LinliColors.brandYellow,
+                                    color: context.linli.primary,
                                     backgroundColor: Theme.of(
                                       context,
                                     ).colorScheme.surfaceContainerHighest,
@@ -4451,7 +4440,7 @@ class MessageBubble extends StatelessWidget {
                           key: Key('message-expiry-${message.id}'),
                           style: Theme.of(context).textTheme.labelSmall
                               ?.copyWith(
-                                color: LinliColors.tertiaryLabel,
+                                color: context.linli.secondaryText,
                                 fontSize: 10,
                               ),
                         ),
@@ -4469,7 +4458,7 @@ class MessageBubble extends StatelessWidget {
                             _clock(message.sentAt),
                             style: Theme.of(context).textTheme.labelSmall
                                 ?.copyWith(
-                                  color: LinliColors.tertiaryLabel,
+                                  color: context.linli.secondaryText,
                                   fontSize: 10,
                                 ),
                           ),
@@ -4479,17 +4468,17 @@ class MessageBubble extends StatelessWidget {
                               key: Key('edited-label-${message.id}'),
                               style: Theme.of(context).textTheme.labelSmall
                                   ?.copyWith(
-                                    color: LinliColors.tertiaryLabel,
+                                    color: context.linli.secondaryText,
                                     fontSize: 10,
                                   ),
                             ),
                           if (message.isPinned)
-                            const Tooltip(
+                            Tooltip(
                               message: '群置顶消息',
                               child: Icon(
                                 CupertinoIcons.pin_fill,
                                 size: 11,
-                                color: LinliColors.tertiaryLabel,
+                                color: context.linli.secondaryText,
                               ),
                             ),
                           if (mine)
@@ -4640,12 +4629,12 @@ class _MessageReactionBar extends StatelessWidget {
                   ),
                   decoration: BoxDecoration(
                     color: reaction.reactedByMe
-                        ? LinliColors.brandYellow
+                        ? context.linli.selected
                         : Theme.of(context).colorScheme.surfaceContainerHigh,
                     borderRadius: BorderRadius.circular(999),
                     border: Border.all(
                       color: reaction.reactedByMe
-                          ? LinliColors.brandYellowPressed
+                          ? context.linli.primary
                           : Theme.of(context).colorScheme.outline,
                       width: reaction.reactedByMe ? 1.2 : .75,
                     ),
@@ -4658,7 +4647,7 @@ class _MessageReactionBar extends StatelessWidget {
                         style: Theme.of(context).textTheme.labelMedium
                             ?.copyWith(
                               color: reaction.reactedByMe
-                                  ? LinliColors.brandInk
+                                  ? context.linli.onSelected
                                   : Theme.of(context).colorScheme.onSurface,
                               fontWeight: FontWeight.w600,
                               fontFamilyFallback: const ['NotoColorEmoji'],
@@ -4667,10 +4656,10 @@ class _MessageReactionBar extends StatelessWidget {
                       ),
                       if (reaction.reactedByMe) ...[
                         const SizedBox(width: 4),
-                        const Icon(
+                        Icon(
                           CupertinoIcons.checkmark,
                           size: 12,
-                          color: LinliColors.brandInk,
+                          color: context.linli.onSelected,
                         ),
                       ],
                     ],
@@ -4721,15 +4710,10 @@ class _MessageContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final mine = message.isMine;
-    final dark = Theme.of(context).brightness == Brightness.dark;
     final bubbleColor = mine
-        ? LinliColors.brandYellow
-        : dark
-        ? LinliColors.darkSurfaceElevated
-        : LinliColors.surface;
-    final textColor = mine
-        ? LinliColors.brandInk
-        : Theme.of(context).colorScheme.onSurface;
+        ? context.linli.outgoingBubble
+        : context.linli.incomingBubble;
+    final textColor = context.linli.text;
 
     if (message.kind == MessageContentKind.image) {
       final media = mediaAccess.source(message.mediaId, message.mediaUrl);
@@ -4813,12 +4797,7 @@ class _MessageContent extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: textColor.withValues(alpha: .10),
                   border: Border(
-                    left: BorderSide(
-                      color: mine
-                          ? LinliColors.brandInk.withValues(alpha: .72)
-                          : LinliColors.preview,
-                      width: 2,
-                    ),
+                    left: BorderSide(color: context.linli.link, width: 2),
                   ),
                 ),
                 child: Text(
@@ -4826,7 +4805,7 @@ class _MessageContent extends StatelessWidget {
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    color: textColor.withValues(alpha: .72),
+                    color: context.linli.secondaryText,
                     fontSize: 12,
                   ),
                 ),
@@ -5220,7 +5199,7 @@ class _MessageImagePreviewState extends State<_MessageImagePreview> {
     final media = MediaQuery.of(context);
     return Scaffold(
       key: const Key('message-image-preview'),
-      backgroundColor: const Color(0xFF080B0A),
+      backgroundColor: LinliColors.mediaBackground,
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -5366,7 +5345,7 @@ class _MessageImagePreviewState extends State<_MessageImagePreview> {
           if (_busy)
             const Center(
               child: CircularProgressIndicator(
-                color: LinliColors.brandYellow,
+                color: LinliColors.darkPrimary,
                 strokeWidth: 2.5,
               ),
             ),
@@ -5457,7 +5436,7 @@ class _ZoomableMessageImageState extends State<_ZoomableMessageImage> {
             filterQuality: FilterQuality.high,
             errorBuilder: (_, _, _) => const Center(
               child: _MediaUnavailable(
-                color: LinliColors.brandInkSoft,
+                color: LinliColors.darkSurfaceElevated,
                 textColor: Colors.white70,
                 label: '图片加载失败',
               ),
@@ -5716,7 +5695,7 @@ class _ChatHistoryMessageCard extends StatelessWidget {
                 Text(
                   '记录明细暂不可用',
                   style: TextStyle(
-                    color: color.withValues(alpha: .72),
+                    color: context.linli.secondaryText,
                     fontSize: 12,
                   ),
                 )
@@ -5783,8 +5762,8 @@ class _ChatHistoryDetailScreen extends StatelessWidget {
                 vertical: 5,
               ),
               leading: CircleAvatar(
-                backgroundColor: LinliColors.brandYellow.withValues(alpha: .22),
-                foregroundColor: LinliColors.brandInk,
+                backgroundColor: context.linli.selected,
+                foregroundColor: context.linli.onSelected,
                 child: Icon(_chatHistoryIcon(entry.type), size: 18),
               ),
               title: Row(
@@ -6037,7 +6016,7 @@ class _ServerLinkPreview extends StatelessWidget {
                       maxLines: 3,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        color: color.withValues(alpha: .72),
+                        color: context.linli.secondaryText,
                         fontSize: 12,
                       ),
                     ),
@@ -6125,7 +6104,7 @@ class _MentionedMessageTextState extends State<_MentionedMessageText> {
           TextSpan(
             text: token,
             style: TextStyle(
-              color: LinliColors.brandInk,
+              color: context.linli.link,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -6139,10 +6118,10 @@ class _MentionedMessageTextState extends State<_MentionedMessageText> {
             text: token,
             semanticsLabel: '${_messageTokenLabel(uri)}：$token',
             style: TextStyle(
-              color: LinliColors.brandInk,
+              color: context.linli.link,
               fontWeight: FontWeight.w600,
               decoration: TextDecoration.underline,
-              decorationColor: LinliColors.brandInk,
+              decorationColor: context.linli.link,
             ),
             recognizer: recognizer,
             mouseCursor: SystemMouseCursors.click,
@@ -6358,7 +6337,7 @@ class _ContactMessageCard extends StatelessWidget {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
-                              color: color.withValues(alpha: .68),
+                              color: context.linli.secondaryText,
                               fontSize: 12,
                             ),
                           ),
@@ -6474,7 +6453,7 @@ class _LocationMessageCard extends StatelessWidget {
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                            color: color.withValues(alpha: .68),
+                            color: context.linli.secondaryText,
                             fontSize: 11,
                           ),
                         ),
@@ -6658,12 +6637,7 @@ class _DeliveryLabel extends StatelessWidget {
     return Text(
       receiptLabel,
       key: deliveredCount == null ? null : const Key('group-receipt-summary'),
-      style: TextStyle(
-        color: status == MessageStatus.read
-            ? LinliColors.preview
-            : LinliColors.tertiaryLabel,
-        fontSize: 10,
-      ),
+      style: TextStyle(color: context.linli.secondaryText, fontSize: 10),
     );
   }
 }
@@ -7384,10 +7358,10 @@ class _ChatComposerState extends State<ChatComposer> {
                 color: Theme.of(context).colorScheme.surfaceContainerHigh,
                 child: Row(
                   children: [
-                    const Icon(
+                    Icon(
                       CupertinoIcons.reply,
                       size: 16,
-                      color: LinliColors.preview,
+                      color: context.linli.secondaryText,
                     ),
                     const SizedBox(width: 8),
                     Expanded(
@@ -7527,7 +7501,7 @@ class _ChatComposerState extends State<ChatComposer> {
                               ? CupertinoIcons.xmark_circle_fill
                               : CupertinoIcons.add_circled,
                           color: canSendText
-                              ? LinliColors.brandInk
+                              ? context.linli.primary
                               : Theme.of(context).colorScheme.onSurface,
                           size: 28,
                         ),
@@ -7634,6 +7608,10 @@ class _ContactPickerSheetState extends State<_ContactPickerSheet> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: CupertinoSearchTextField(
+              style: TextStyle(color: context.linli.text),
+              placeholderStyle: TextStyle(color: context.linli.secondaryText),
+              itemColor: context.linli.secondaryText,
+              backgroundColor: context.linli.elevated,
               key: const Key('contact-card-search'),
               controller: searchController,
               placeholder: '搜索联系人或呱呱号',
@@ -7733,7 +7711,7 @@ class _AttachmentPanel extends StatelessWidget {
                             ).colorScheme.surfaceContainer,
                             borderRadius: BorderRadius.circular(14),
                           ),
-                          child: Icon(item.$2, color: LinliColors.brandInk),
+                          child: Icon(item.$2, color: context.linli.primary),
                         ),
                       ],
                     ),
@@ -7905,7 +7883,7 @@ class _EmojiPanelState extends State<_EmojiPanel> {
                   _categoryIcons[index],
                   color: _category == index
                       ? Theme.of(context).colorScheme.secondary
-                      : LinliColors.tertiaryLabel,
+                      : context.linli.secondaryText,
                 ),
               ),
             ),
@@ -8052,6 +8030,10 @@ class _MentionPickerSheetState extends State<_MentionPickerSheet> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: CupertinoSearchTextField(
+              style: TextStyle(color: context.linli.text),
+              placeholderStyle: TextStyle(color: context.linli.secondaryText),
+              itemColor: context.linli.secondaryText,
+              backgroundColor: context.linli.elevated,
               key: const Key('mention-member-search'),
               placeholder: '搜索群成员',
               onChanged: (value) => setState(() => query = value),
@@ -8071,12 +8053,12 @@ class _MentionPickerSheetState extends State<_MentionPickerSheet> {
                       height: 44,
                       alignment: Alignment.center,
                       decoration: BoxDecoration(
-                        color: LinliColors.brandYellow.withValues(alpha: .18),
+                        color: context.linli.selected,
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(
+                      child: Icon(
                         CupertinoIcons.person_3_fill,
-                        color: LinliColors.brandInk,
+                        color: context.linli.primary,
                       ),
                     ),
                     title: const Text('所有人'),

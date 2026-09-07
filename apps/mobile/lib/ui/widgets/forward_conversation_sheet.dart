@@ -226,6 +226,12 @@ class _ForwardConversationSheetState extends State<ForwardConversationSheet> {
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 16),
                             child: CupertinoSearchTextField(
+                              style: TextStyle(color: context.linli.text),
+                              placeholderStyle: TextStyle(
+                                color: context.linli.secondaryText,
+                              ),
+                              itemColor: context.linli.secondaryText,
+                              backgroundColor: context.linli.elevated,
                               key: const Key('forward-conversation-search'),
                               controller: searchController,
                               placeholder: '搜索会话',
@@ -353,9 +359,7 @@ class _ForwardConversationSheetState extends State<ForwardConversationSheet> {
                 borderRadius: BorderRadius.circular(12),
               ),
               selected: selected,
-              selectedTileColor: theme.brightness == Brightness.dark
-                  ? LinliColors.brandYellow.withValues(alpha: .10)
-                  : LinliColors.brandYellowSoft,
+              selectedTileColor: context.linli.selected,
               leading: PersonAvatar(
                 name: widget.controller.displayConversationName(item),
                 size: 44,
@@ -379,7 +383,7 @@ class _ForwardConversationSheetState extends State<ForwardConversationSheet> {
                       ? CupertinoIcons.check_mark_circled_solid
                       : CupertinoIcons.circle,
                   color: selected
-                      ? LinliColors.brandYellow
+                      ? context.linli.primary
                       : theme.colorScheme.outlineVariant,
                 ),
               ),
@@ -441,7 +445,7 @@ class _ForwardConversationSheetState extends State<ForwardConversationSheet> {
               : target.status == ForwardTargetStatus.succeeded
               ? const Icon(
                   CupertinoIcons.check_mark_circled,
-                  color: LinliColors.brandYellow,
+                  color: LinliColors.systemGreen,
                 )
               : null,
         );

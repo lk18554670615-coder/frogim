@@ -1,6 +1,6 @@
 /* Hallmark · genre: enterprise-workbench · macrostructure: TailAdmin shell · design-system: DESIGN.md · designed-as-app
  * studied-DNA: TailAdmin Free React (MIT) · source: https://github.com/TailAdmin/free-react-tailwind-admin-dashboard
- * brand adaptation: yellow/black emphasis + warm operational canvas
+ * brand adaptation: blue/white emphasis + cool operational canvas
  * pre-emit critique: P5 H5 E5 S5 R5 V5
  */
 
@@ -53,9 +53,9 @@ textarea:focus-visible {
   flex-direction: column;
   padding: 0 20px 20px;
   overflow: hidden;
-  border-right: 1px solid #2b2a25;
+  border-right: 1px solid var(--color-rule);
   background: var(--sidebar);
-  color: #fff8de;
+  color: var(--color-ink);
   transition: width var(--dur-medium) var(--ease-out), transform var(--dur-medium) var(--ease-out);
 }
 
@@ -94,7 +94,7 @@ textarea:focus-visible {
 
 .tailadmin-shell .brand strong {
   display: block;
-  color: #fff8de;
+  color: var(--color-ink);
   font-family: var(--font-display);
   font-size: 18px;
   font-weight: 650;
@@ -106,7 +106,7 @@ textarea:focus-visible {
 .tailadmin-shell .brand span {
   display: block;
   margin-top: 4px;
-  color: #c8c2ae;
+  color: var(--color-ink-secondary);
   font-size: 12px;
   line-height: 1;
   white-space: nowrap;
@@ -121,14 +121,14 @@ textarea:focus-visible {
   padding: 0 3px 16px 0;
   overflow-x: hidden;
   overflow-y: auto;
-  scrollbar-color: #514d41 transparent;
+  scrollbar-color: var(--color-rule-strong) transparent;
   scrollbar-width: thin;
 }
 
 .sidebar-nav-label {
   margin: 0 0 12px;
   padding: 0 12px;
-  color: #8f8a79;
+  color: var(--color-ink-secondary);
   font-size: 11px;
   font-weight: 600;
   line-height: 1.4;
@@ -147,7 +147,7 @@ textarea:focus-visible {
   padding: 0 12px;
   border: 0;
   border-radius: 8px;
-  color: #c8c2ae;
+  color: var(--color-ink-secondary);
   background: transparent;
   font-size: 14px;
   font-weight: 500;
@@ -160,14 +160,14 @@ textarea:focus-visible {
 .tailadmin-shell .nav-item svg,
 .tailadmin-shell .nav-section-toggle svg {
   flex: 0 0 auto;
-  color: #8f8a79;
+  color: var(--color-ink-secondary);
   transition: color var(--dur-short) var(--ease-out), transform var(--dur-short) var(--ease-out);
 }
 
 .tailadmin-shell .nav-item:hover,
 .tailadmin-shell .nav-section-toggle:hover {
-  background: #2b2a25;
-  color: #fff8de;
+  background: var(--color-paper-subtle);
+  color: var(--color-ink);
 }
 
 .tailadmin-shell .nav-item:hover svg,
@@ -177,7 +177,7 @@ textarea:focus-visible {
 
 .tailadmin-shell .nav-item.active,
 .tailadmin-shell .nav-section-toggle.has-active {
-  background: var(--color-brand);
+  background: var(--color-selected);
   color: var(--color-brand-strong);
   font-weight: 600;
 }
@@ -238,7 +238,7 @@ textarea:focus-visible {
   gap: 10px;
   padding: 15px 8px 0;
   margin-top: auto;
-  border-top: 1px solid #3b382e;
+  border-top: 1px solid var(--color-rule);
 }
 
 .admin-avatar,
@@ -249,7 +249,7 @@ textarea:focus-visible {
   place-items: center;
   flex: 0 0 38px;
   border-radius: 10px;
-  background: var(--color-brand);
+  background: var(--color-selected);
   color: var(--color-brand-strong);
   font-size: 14px;
   font-weight: 700;
@@ -269,14 +269,14 @@ textarea:focus-visible {
 }
 
 .tailadmin-shell .sidebar-foot strong {
-  color: #fff8de;
+  color: var(--color-ink);
   font-size: 13px;
   font-weight: 600;
 }
 
 .tailadmin-shell .sidebar-foot span {
   margin-top: 4px;
-  color: #8f8a79;
+  color: var(--color-ink-secondary);
   font-size: 11px;
 }
 
@@ -289,11 +289,11 @@ textarea:focus-visible {
 .tailadmin-shell .sidebar-logout {
   width: 32px;
   height: 32px;
-  color: #8f8a79;
+  color: var(--color-ink-secondary);
 }
 
 .tailadmin-shell .sidebar-logout:hover {
-  background: #2b2a25;
+  background: var(--color-paper-subtle);
   color: var(--color-brand);
 }
 
@@ -315,7 +315,7 @@ textarea:focus-visible {
   gap: 24px;
   padding: 0 32px;
   border-bottom: 1px solid var(--color-brand-line);
-  background: rgb(255 214 51 / 0.96);
+  background: rgb(255 255 255 / 0.96);
   box-shadow: none;
   backdrop-filter: blur(12px);
 }
@@ -528,8 +528,8 @@ textarea:focus-visible {
   height: 7px;
   flex: 0 0 7px;
   border-radius: 50%;
-  background: var(--color-brand-logo);
-  box-shadow: 0 0 0 4px var(--color-brand-soft);
+  background: var(--color-success);
+  box-shadow: 0 0 0 4px var(--color-success-soft);
 }
 
 .topbar-user {
@@ -1156,7 +1156,7 @@ textarea:focus-visible {
   display: grid;
   place-items: center;
   padding: 48px;
-  background: var(--color-brand);
+  background: var(--color-selected);
   color: var(--color-brand-strong);
 }
 
@@ -1183,7 +1183,7 @@ textarea:focus-visible {
 
 .login-brand-panel span {
   margin-top: 8px;
-  color: rgb(255 255 255 / 0.68);
+  color: var(--color-ink-secondary);
   font-size: 14px;
 }
 

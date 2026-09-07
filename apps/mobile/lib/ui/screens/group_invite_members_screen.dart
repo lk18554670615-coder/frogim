@@ -1,6 +1,8 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
+import '../../core/app_theme.dart';
+
 import '../../core/app_controller.dart';
 import '../../core/models.dart';
 import '../../core/user_identity.dart';
@@ -228,6 +230,12 @@ class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
                       child: CupertinoSearchTextField(
+                        style: TextStyle(color: context.linli.text),
+                        placeholderStyle: TextStyle(
+                          color: context.linli.secondaryText,
+                        ),
+                        itemColor: context.linli.secondaryText,
+                        backgroundColor: context.linli.elevated,
                         key: const Key('group-invite-search'),
                         enabled: !_busy,
                         placeholder: '搜索昵称、备注或呱呱号',

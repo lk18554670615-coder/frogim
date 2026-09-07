@@ -97,8 +97,10 @@ case "${1:-help}" in
     docker run --rm \
       -v "$CERTBOT_DIR:/etc/letsencrypt" \
       -v "$CERTBOT_WEBROOT:/var/www/certbot" \
-      "${CERTBOT_IMAGE:-certbot/certbot:latest}" renew --quiet
-    "${compose[@]}" exec -T gateway caddy reload --config /etc/caddy/Caddyfile
+      "${CERTBOT_IMAGE:-certbot/certbot:latest}" renew --quiet --cert-name "$SERVER_IP"
+    # Reload certificates even when the Caddy configuration has not changed.
+    # Retired IP lineages must not prevent the active site's renewal/reload.
+    "${compose[@]}" exec -T gateway caddy reload --config /etc/caddy/Caddyfile --force
     ;;
   issue-cert)
     exec "$APP_ROOT/infra/scripts/issue-ip-certificate.sh" "$CONFIG_FILE"

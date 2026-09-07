@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'support/atomic_golden_comparator.dart';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -15,7 +17,13 @@ const _gridKey = Key('emoji-grid');
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  final previousComparator = goldenFileComparator;
   setUpAll(() async {
+    if (previousComparator case final LocalFileComparator comparator) {
+      goldenFileComparator = AtomicGoldenComparator(
+        comparator.basedir.resolve('emoji_panel_test.dart'),
+      );
+    }
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
           const MethodChannel('com.llfbandit.record/messages'),
@@ -36,6 +44,7 @@ void main() {
   });
 
   tearDownAll(() {
+    goldenFileComparator = previousComparator;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
           const MethodChannel('com.llfbandit.record/messages'),

@@ -134,7 +134,7 @@ class PresenceLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     if (status == UserPresenceStatus.hidden) return const SizedBox.shrink();
     final color = status == UserPresenceStatus.online
-        ? LinliColors.systemGreen
+        ? context.linli.successText
         : Theme.of(context).colorScheme.onSurfaceVariant;
     final label = presenceLabelText(
       status,

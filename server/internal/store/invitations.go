@@ -29,6 +29,9 @@ type InviteCode struct {
 }
 
 type InviteRelation struct {
+	BindingSource      string      `json:"bindingSource"`
+	UpdatedAt          time.Time   `json:"updatedAt"`
+	Version            int64       `json:"version"`
 	Invitee            *model.User `json:"invitee"`
 	Inviter            *model.User `json:"inviter"`
 	InviteCodeID       string      `json:"inviteCodeId"`
@@ -200,7 +203,7 @@ func (p *Postgres) RegisterPasswordUserWithInvite(ctx context.Context, phone, na
 		return nil, err
 	}
 	if inviter != nil {
-		if _, err = tx.Exec(ctx, `INSERT INTO im_user_invite_relations(invitee_user_id,inviter_user_id,invite_code_id,registration_method,created_at) VALUES($1,$2,$3,'password',$4)`, u.ID, inviter.UserID, inviter.ID, created); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO im_user_invite_relations(invitee_user_id,inviter_user_id,invite_code_id,registration_method,created_at,updated_at) VALUES($1,$2,$3,'password',$4,$4)`, u.ID, inviter.UserID, inviter.ID, created); err != nil {
 			return nil, err
 		}
 	}
@@ -275,7 +278,7 @@ func (p *Postgres) LoginOrCreateUserWithInvite(ctx context.Context, phone, name,
 		return nil, false, err
 	}
 	if inviter != nil {
-		if _, err = tx.Exec(ctx, `INSERT INTO im_user_invite_relations(invitee_user_id,inviter_user_id,invite_code_id,registration_method,created_at) VALUES($1,$2,$3,'otp',$4)`, u.ID, inviter.UserID, inviter.ID, created); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO im_user_invite_relations(invitee_user_id,inviter_user_id,invite_code_id,registration_method,created_at,updated_at) VALUES($1,$2,$3,'otp',$4,$4)`, u.ID, inviter.UserID, inviter.ID, created); err != nil {
 			return nil, false, err
 		}
 	}
@@ -389,7 +392,7 @@ func (p *Postgres) ListAdminInviteCodes(ctx context.Context, query, status, curs
 	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_user_invite_codes c JOIN im_users u ON u.id=c.user_id WHERE `+where, query, pattern, status).Scan(&page.Total); err != nil {
 		return page, err
 	}
-	rows, err := p.pool.Query(ctx, `SELECT c.id,c.user_id,c.code,c.status,c.source,c.created_at,u.invite_code_change_count,u.id,u.phone,u.name,COALESCE(u.handle,''),u.avatar_url,u.banned,u.created_at FROM im_user_invite_codes c JOIN im_users u ON u.id=c.user_id WHERE `+where+` ORDER BY c.created_at DESC,c.id LIMIT $4 OFFSET $5`, query, pattern, status, limit, offset)
+	rows, err := p.pool.Query(ctx, `SELECT c.id,c.user_id,c.code,c.status,c.source,c.created_at,u.invite_code_change_count,u.id,u.phone,u.name,COALESCE(u.handle,''),u.avatar_url,(u.banned AND (u.banned_until IS NULL OR u.banned_until>now())),u.created_at FROM im_user_invite_codes c JOIN im_users u ON u.id=c.user_id WHERE `+where+` ORDER BY (upper(c.code)=upper($1)) DESC,c.created_at DESC,c.id LIMIT $4 OFFSET $5`, query, pattern, status, limit, offset)
 	if err != nil {
 		return page, err
 	}
@@ -418,14 +421,14 @@ func (p *Postgres) ListAdminInviteRelations(ctx context.Context, query, method, 
 	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_user_invite_relations r JOIN im_user_invite_codes c ON c.id=r.invite_code_id JOIN im_users inviter ON inviter.id=r.inviter_user_id JOIN im_users invitee ON invitee.id=r.invitee_user_id WHERE `+where, query, pattern, method, from, to).Scan(&page.Total); err != nil {
 		return page, err
 	}
-	rows, err := p.pool.Query(ctx, `SELECT c.id,c.code,r.registration_method,r.created_at,inviter.id,inviter.phone,inviter.name,COALESCE(inviter.handle,''),inviter.avatar_url,invitee.id,invitee.phone,invitee.name,COALESCE(invitee.handle,''),invitee.avatar_url FROM im_user_invite_relations r JOIN im_user_invite_codes c ON c.id=r.invite_code_id JOIN im_users inviter ON inviter.id=r.inviter_user_id JOIN im_users invitee ON invitee.id=r.invitee_user_id WHERE `+where+` ORDER BY r.created_at DESC,r.invitee_user_id DESC LIMIT $6 OFFSET $7`, query, pattern, method, from, to, limit, offset)
+	rows, err := p.pool.Query(ctx, `SELECT c.id,c.code,r.registration_method,r.created_at,r.binding_source,r.updated_at,r.version,inviter.id,inviter.phone,inviter.name,COALESCE(inviter.handle,''),inviter.avatar_url,invitee.id,invitee.phone,invitee.name,COALESCE(invitee.handle,''),invitee.avatar_url FROM im_user_invite_relations r JOIN im_user_invite_codes c ON c.id=r.invite_code_id JOIN im_users inviter ON inviter.id=r.inviter_user_id JOIN im_users invitee ON invitee.id=r.invitee_user_id WHERE `+where+` ORDER BY r.created_at DESC,r.invitee_user_id DESC LIMIT $6 OFFSET $7`, query, pattern, method, from, to, limit, offset)
 	if err != nil {
 		return page, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		item := InviteRelation{Inviter: &model.User{}, Invitee: &model.User{}}
-		if err = rows.Scan(&item.InviteCodeID, &item.InviteCode, &item.RegistrationMethod, &item.CreatedAt, &item.Inviter.ID, &item.Inviter.Phone, &item.Inviter.Name, &item.Inviter.Handle, &item.Inviter.AvatarURL, &item.Invitee.ID, &item.Invitee.Phone, &item.Invitee.Name, &item.Invitee.Handle, &item.Invitee.AvatarURL); err != nil {
+		if err = rows.Scan(&item.InviteCodeID, &item.InviteCode, &item.RegistrationMethod, &item.CreatedAt, &item.BindingSource, &item.UpdatedAt, &item.Version, &item.Inviter.ID, &item.Inviter.Phone, &item.Inviter.Name, &item.Inviter.Handle, &item.Inviter.AvatarURL, &item.Invitee.ID, &item.Invitee.Phone, &item.Invitee.Name, &item.Invitee.Handle, &item.Invitee.AvatarURL); err != nil {
 			return page, err
 		}
 		page.Items = append(page.Items, item)

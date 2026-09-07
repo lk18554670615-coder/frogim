@@ -57,7 +57,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: Colors.black,
     appBar: AppBar(
-      backgroundColor: LinliColors.brandInk,
+      backgroundColor: LinliColors.mediaBackground,
       foregroundColor: Colors.white,
       surfaceTintColor: Colors.transparent,
       iconTheme: const IconThemeData(color: Colors.white),
@@ -128,7 +128,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
                     vertical: 8,
                   ),
                   decoration: BoxDecoration(
-                    color: LinliColors.brandInk.withValues(alpha: .94),
+                    color: LinliColors.label.withValues(alpha: .94),
                     borderRadius: BorderRadius.circular(20),
                     border: Border.all(
                       color: Colors.white.withValues(alpha: .18),
@@ -327,12 +327,12 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
           width: 52,
           height: 52,
           decoration: BoxDecoration(
-            color: LinliColors.brandYellowStrong,
+            color: context.linli.selected,
             borderRadius: BorderRadius.circular(16),
           ),
-          child: const Icon(
+          child: Icon(
             CupertinoIcons.device_laptop,
-            color: LinliColors.brandInk,
+            color: context.linli.primary,
             size: 27,
           ),
         ),
@@ -452,7 +452,7 @@ class MyQrCodeScreen extends StatelessWidget {
               borderRadius: BorderRadius.circular(24),
               boxShadow: [
                 BoxShadow(
-                  color: LinliColors.brandInk.withValues(alpha: .08),
+                  color: LinliColors.label.withValues(alpha: .08),
                   blurRadius: 30,
                   offset: const Offset(0, 12),
                 ),
@@ -497,11 +497,11 @@ class MyQrCodeScreen extends StatelessWidget {
                     backgroundColor: Colors.white,
                     eyeStyle: const QrEyeStyle(
                       eyeShape: QrEyeShape.square,
-                      color: LinliColors.brandInk,
+                      color: LinliColors.label,
                     ),
                     dataModuleStyle: const QrDataModuleStyle(
                       dataModuleShape: QrDataModuleShape.square,
-                      color: LinliColors.brandInk,
+                      color: LinliColors.label,
                     ),
                   ),
                 ),
@@ -600,11 +600,11 @@ class GroupQrCodeScreen extends StatelessWidget {
                     backgroundColor: Colors.white,
                     eyeStyle: const QrEyeStyle(
                       eyeShape: QrEyeShape.square,
-                      color: LinliColors.brandInk,
+                      color: LinliColors.label,
                     ),
                     dataModuleStyle: const QrDataModuleStyle(
                       dataModuleShape: QrDataModuleShape.square,
-                      color: LinliColors.brandInk,
+                      color: LinliColors.label,
                     ),
                   ),
                 ),
@@ -681,7 +681,7 @@ Future<Uint8List?> _renderQrShareCard(
   canvas.drawColor(LinliColors.background, ui.BlendMode.src);
 
   final brandBytes = await rootBundle.load(
-    'assets/brand/qingwaguagua-mark-transparent.png',
+    'assets/brand/qingwaguagua-badge.png',
   );
   final codec = await ui.instantiateImageCodec(
     brandBytes.buffer.asUint8List(),
@@ -709,7 +709,7 @@ Future<Uint8List?> _renderQrShareCard(
     maxWidth: 500,
     fontSize: 34,
     fontWeight: FontWeight.w700,
-    color: LinliColors.brandInk,
+    color: LinliColors.label,
   );
   _paintShareText(
     canvas,
@@ -751,11 +751,11 @@ Future<Uint8List?> _renderQrShareCard(
     gapless: true,
     eyeStyle: const QrEyeStyle(
       eyeShape: QrEyeShape.square,
-      color: LinliColors.brandInk,
+      color: LinliColors.label,
     ),
     dataModuleStyle: const QrDataModuleStyle(
       dataModuleShape: QrDataModuleShape.square,
-      color: LinliColors.brandInk,
+      color: LinliColors.label,
     ),
   ).paint(canvas, ui.Size.square(qrRect.width));
   canvas.restore();
@@ -766,7 +766,7 @@ Future<Uint8List?> _renderQrShareCard(
     maxWidth: 940,
     fontSize: 27,
     fontWeight: FontWeight.w600,
-    color: LinliColors.brandInk,
+    color: LinliColors.label,
     centered: true,
   );
   _paintShareText(

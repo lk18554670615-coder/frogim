@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'support/atomic_golden_comparator.dart';
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -30,7 +32,13 @@ void main() {
   final audioChannels = <EventChannel>[];
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
+  final previousComparator = goldenFileComparator;
   setUpAll(() async {
+    if (previousComparator case final LocalFileComparator comparator) {
+      goldenFileComparator = AtomicGoldenComparator(
+        comparator.basedir.resolve('peer_login_info_test.dart'),
+      );
+    }
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
     messenger.setMockMethodCallHandler(
@@ -72,6 +80,7 @@ void main() {
   });
 
   tearDownAll(() {
+    goldenFileComparator = previousComparator;
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
     messenger.setMockMethodCallHandler(

@@ -1308,6 +1308,10 @@ class _GroupMembersManagementScreenState
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
           child: CupertinoSearchTextField(
+            style: TextStyle(color: context.linli.text),
+            placeholderStyle: TextStyle(color: context.linli.secondaryText),
+            itemColor: context.linli.secondaryText,
+            backgroundColor: context.linli.elevated,
             key: const Key('group-member-search'),
             placeholder:
                 widget.controller.canViewGroupMemberHandle(

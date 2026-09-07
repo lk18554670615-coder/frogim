@@ -2,6 +2,26 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getApi, loginAdmin } from './api';
 
 describe('live API adapter', () => {
+  it('邀请来源改绑发送确认、理由和版本，补绑不伪装为验证码注册', async () => {
+    const fetchMock=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>({ok:true,status:200,headers:new Headers(),json:async()=>init?.method?{}:String(input).includes('/invite-relations')?{items:[{invitee:{id:'u2'},inviter:{id:'u1'},inviteCodeId:'ic1',inviteCode:'ABCDEF88',registrationMethod:'admin',bindingSource:'admin',version:3,createdAt:'2026-09-06T08:00:00Z',updatedAt:'2026-09-07T08:00:00Z'}],total:1}:{user:{id:'u2'},invitation:{code:'MYCODE88',status:'active',invitedBy:{id:'u1',name:'邀请人'},boundCode:'ABCDEF88',boundCodeId:'ic1',registrationMethod:'admin',bindingSource:'admin',bindingVersion:3,bindingUpdatedAt:'2026-09-07T08:00:00Z'}}}));
+    vi.stubGlobal('fetch',fetchMock);const api=getApi('token');
+    const overview=await api.getUserOverview('u2');
+    expect(overview.invitation).toMatchObject({code:'MYCODE88',boundCode:'ABCDEF88',boundCodeId:'ic1',registrationMethod:'admin',bindingSource:'admin',bindingVersion:3});
+    const relations=await api.getInviteRelations('','admin');
+    expect(relations.items[0]).toMatchObject({registrationMethod:'admin',bindingSource:'admin',version:3});
+    expect(relations.items[0].updatedAt).not.toEqual(relations.items[0].createdAt);
+    await api.setUserInviteRelation('u/2',' abcdef88 ',' 用户申请 ',3);
+    const [url,init]=fetchMock.mock.calls[fetchMock.mock.calls.length - 1];
+    expect(String(url)).toContain('/users/u%2F2/invite-relation');
+    expect(init?.method).toBe('PUT');
+    expect(JSON.parse(String(init?.body))).toEqual({inviteCode:'ABCDEF88',reason:'用户申请',expectedVersion:3,confirmed:true});
+  });
+
+  it('邀请来源并发冲突保留服务端具体错误', async () => {
+    vi.stubGlobal('fetch',vi.fn(async()=>({ok:false,status:409,headers:new Headers(),json:async()=>({error:{code:'INVITE_RELATION_CHANGED',message:'邀请来源已被其他管理员修改，请刷新用户详情后重试'}})})));
+    await expect(getApi('token').setUserInviteRelation('u2','ABCDEF88','纠错',2)).rejects.toMatchObject({code:'INVITE_RELATION_CHANGED',message:'邀请来源已被其他管理员修改，请刷新用户详情后重试'});
+  });
+
   it('全端删除授权使用专用接口，默认关闭，保留审核标记', async () => {
     const fetchMock=vi.fn(async (_input:RequestInfo|URL, init?:RequestInit)=>({ok:true,status:200,headers:new Headers(),json:async()=>init?.body?JSON.parse(String(init.body)):{items:[{id:'u1',name:'测试',canDeleteMessagesForEveryone:true},{id:'u2',name:'默认关闭'}],total:2}}));
     vi.stubGlobal('fetch',fetchMock);const api=getApi('token');

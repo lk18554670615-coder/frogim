@@ -4,6 +4,8 @@
 
 ## 目录
 
+当前客户端版本：**1.0.5+4009**。更新内容和发布边界见 [1.0.5 发布说明](docs/RELEASE_1.0.5.md)。
+
 ```text
 apps/mobile        Flutter iOS、Android、Web 与 macOS 客户端
 apps/admin         React 运营、审核与系统配置后台
@@ -57,7 +59,7 @@ docker compose -f infra/compose.yaml -f infra/compose.wukong.yaml config -q
 
 ## iOS 自动构建
 
-Android 与 iOS 应用统一使用包名/Bundle ID `com.fd.kuailiao`。GitHub Actions 在 `main` 分支相关代码变化时自动完成 Flutter 静态分析、完整测试和无签名 iOS Release 编译；在 Actions 页面手动运行 `iOS Build` 并启用“使用仓库 Secrets 构建签名 IPA”，可生成 App Store 签名产物。
+Android 与 iOS 应用统一使用包名/Bundle ID `com.fd.kuailiao`。GitHub Actions 在 `main` 分支相关代码变化时自动完成 Flutter 静态分析、测试、无签名 iOS Release 编译及签名 IPA 构建；也可手动运行 `iOS Build` 并启用“使用仓库 Secrets 构建签名 IPA”。实际分发类型取决于仓库保存的证书、描述文件和导出配置，构建完成不代表企业分发平台已上架。
 
 证书、描述文件和密码只允许保存在 GitHub 加密 Secrets 中，不得提交到仓库。工作流入口、所需 Secrets、产物下载和签名方式见 [GitHub Actions iOS 构建](docs/GITHUB_IOS_ACTIONS.md)。
 

@@ -5,9 +5,9 @@ import 'package:pro_image_editor/pro_image_editor.dart';
 
 import 'app_theme.dart';
 
-const _editorBackground = Color(0xFF080B0A);
-const _editorBarBackground = LinliColors.brandInk;
-const _editorAccent = LinliColors.brandYellow;
+const _editorBackground = LinliColors.mediaBackground;
+const _editorBarBackground = LinliColors.darkSurface;
+const _editorAccent = LinliColors.darkPrimary;
 const _editorToolbarText = TextStyle(
   color: Colors.white,
   fontSize: 15,
@@ -112,8 +112,10 @@ ReactiveAppbar _buildMainEditorAppBar(
             minimumSize: const Size(64, 44),
             padding: const EdgeInsets.symmetric(horizontal: 16),
             backgroundColor: _editorAccent,
-            foregroundColor: LinliColors.brandInk,
-            textStyle: _editorToolbarText.copyWith(color: LinliColors.brandInk),
+            foregroundColor: LinliColors.darkBackground,
+            textStyle: _editorToolbarText.copyWith(
+              color: LinliColors.darkBackground,
+            ),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(10),
             ),

@@ -253,7 +253,7 @@ class _LaunchScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    backgroundColor: Colors.white,
+    backgroundColor: context.linli.background,
     body: SafeArea(
       child: Center(
         child: Semantics(
@@ -265,28 +265,28 @@ class _LaunchScreen extends StatelessWidget {
               children: [
                 ExcludeSemantics(
                   child: Image.asset(
-                    'assets/brand/qingwaguagua-mark-transparent.png',
+                    'assets/brand/qingwaguagua-badge.png',
                     width: 160,
                     height: 160,
                   ),
                 ),
                 Transform.translate(
                   offset: const Offset(0, 116),
-                  child: const SizedBox.square(
+                  child: SizedBox.square(
                     dimension: 22,
                     child: CircularProgressIndicator(
-                      color: LinliColors.brandInk,
+                      color: context.linli.primary,
                       strokeWidth: 2,
                     ),
                   ),
                 ),
                 Transform.translate(
                   offset: const Offset(0, 150),
-                  child: const ExcludeSemantics(
+                  child: ExcludeSemantics(
                     child: Text(
                       '正在启动，请稍候…',
                       style: TextStyle(
-                        color: LinliColors.preview,
+                        color: context.linli.secondaryText,
                         fontSize: 14,
                         fontWeight: FontWeight.w500,
                         letterSpacing: .2,

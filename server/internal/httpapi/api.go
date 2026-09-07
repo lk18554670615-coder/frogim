@@ -493,6 +493,7 @@ func (x *API) routes() {
 	x.mux.Handle("GET /v2/admin/settings", x.requireAdmin(http.HandlerFunc(x.settings)))
 	x.mux.Handle("PUT /v2/admin/settings", x.requireAdmin(http.HandlerFunc(x.updateSettings)))
 	x.mux.Handle("GET /v2/admin/invite-codes", x.requireAdmin(http.HandlerFunc(x.adminInviteCodes)))
+	x.mux.Handle("PUT /v2/admin/users/{id}/invite-relation", x.requireAdmin(http.HandlerFunc(x.adminSetUserInviteRelation)))
 	x.mux.Handle("GET /v2/admin/invite-relations", x.requireAdmin(http.HandlerFunc(x.adminInviteRelations)))
 	x.mux.Handle("PUT /v2/admin/invite-codes/{id}/status", x.requireAdmin(http.HandlerFunc(x.adminInviteCodeStatus)))
 	x.mux.Handle("POST /v2/admin/invite-codes/{id}/reset", x.requireAdmin(http.HandlerFunc(x.adminResetInviteCode)))

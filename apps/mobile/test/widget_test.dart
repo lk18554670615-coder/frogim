@@ -52,7 +52,7 @@ void main() {
             widget.width == 160 &&
             widget.height == 160 &&
             (widget.image as AssetImage).assetName ==
-                'assets/brand/qingwaguagua-mark-transparent.png',
+                'assets/brand/qingwaguagua-badge.png',
       ),
       findsOneWidget,
     );
@@ -249,10 +249,7 @@ void main() {
     final conversationDecoration =
         conversationContent.decoration! as BoxDecoration;
     expect(conversationDecoration.border?.bottom.width, .75);
-    expect(
-      conversationDecoration.border?.bottom.color,
-      const Color(0xFFE4DFD1),
-    );
+    expect(conversationDecoration.border?.bottom.color, LinliColors.separator);
     final conversationTitle = tester.widget<Text>(
       find.byKey(const ValueKey('conversation-title-c-team')),
     );
@@ -1081,7 +1078,7 @@ void main() {
     );
   });
 
-  testWidgets('四个一级页面使用一致的黄色标题区和圆角内容面', (tester) async {
+  testWidgets('四个一级页面使用一致的蓝白标题区和圆角内容面', (tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -2123,32 +2120,32 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  test('浅色和深色主题保持黄黑品牌层级与语义状态色', () {
+  test('浅色和深色主题保持蓝白品牌层级与语义状态色', () {
     final light = buildLinliTheme(Brightness.light);
     final dark = buildLinliTheme(Brightness.dark);
-    expect(LinliColors.brandYellow, const Color(0xFFFFD633));
-    expect(LinliColors.brandInk, const Color(0xFF171714));
-    expect(light.colorScheme.primary, LinliColors.brandYellow);
-    expect(light.colorScheme.onPrimary, LinliColors.brandInk);
+    expect(LinliColors.primary, const Color(0xFF1976B9));
+    expect(LinliColors.label, const Color(0xFF182533));
+    expect(light.colorScheme.primary, LinliColors.primary);
+    expect(light.colorScheme.onPrimary, Colors.white);
     expect(light.scaffoldBackgroundColor, LinliColors.background);
     expect(dark.scaffoldBackgroundColor, LinliColors.darkBackground);
     expect(
       light.filledButtonTheme.style?.backgroundColor?.resolve({}),
-      LinliColors.brandInk,
+      LinliColors.primary,
     );
     expect(
       light.filledButtonTheme.style?.foregroundColor?.resolve({}),
-      LinliColors.brandYellow,
+      Colors.white,
     );
     expect(
       dark.filledButtonTheme.style?.backgroundColor?.resolve({}),
-      LinliColors.brandYellow,
+      LinliColors.darkPrimary,
     );
     expect(
       dark.filledButtonTheme.style?.foregroundColor?.resolve({}),
-      LinliColors.brandInk,
+      LinliColors.darkBackground,
     );
-    expect(LinliColors.systemGreen, isNot(LinliColors.brandYellow));
+    expect(LinliColors.systemGreen, isNot(LinliColors.primary));
     expect(light.textTheme.headlineLarge?.fontSize, 32);
     expect(light.textTheme.titleLarge?.fontSize, 17);
     expect(light.textTheme.titleMedium?.fontSize, 16);

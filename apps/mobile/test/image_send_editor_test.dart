@@ -76,7 +76,7 @@ void main() {
     }
     final editorTheme = editor.configs.theme!;
     expect(editorTheme.appBarTheme.foregroundColor, Colors.white);
-    expect(editorTheme.appBarTheme.backgroundColor, LinliColors.brandInk);
+    expect(editorTheme.appBarTheme.backgroundColor, LinliColors.darkSurface);
     final progress = editor
         .configs
         .progressIndicatorConfigs
@@ -85,7 +85,7 @@ void main() {
     expect(progress, isA<CircularProgressIndicator>());
     expect(
       (progress! as CircularProgressIndicator).color,
-      LinliColors.brandYellow,
+      LinliColors.darkPrimary,
     );
     expect(tester.takeException(), isNull);
   });

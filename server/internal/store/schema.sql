@@ -943,3 +943,14 @@ CREATE TABLE IF NOT EXISTS im_user_invite_relations(
 );
 CREATE INDEX IF NOT EXISTS im_user_invite_relations_inviter_time_idx ON im_user_invite_relations(inviter_user_id,created_at DESC,invitee_user_id DESC);
 CREATE INDEX IF NOT EXISTS im_user_invite_relations_time_idx ON im_user_invite_relations(created_at DESC,invitee_user_id DESC);
+
+-- Administrative corrections preserve the initial binding method/time. An
+-- unbound account supplemented by an administrator has no registration claim.
+ALTER TABLE im_user_invite_relations DROP CONSTRAINT IF EXISTS im_user_invite_relations_registration_method_check;
+ALTER TABLE im_user_invite_relations ADD CONSTRAINT im_user_invite_relations_registration_method_check CHECK(registration_method IN ('password','otp','admin'));
+ALTER TABLE im_user_invite_relations ADD COLUMN IF NOT EXISTS binding_source text NOT NULL DEFAULT 'registration' CHECK(binding_source IN ('registration','admin'));
+ALTER TABLE im_user_invite_relations ADD COLUMN IF NOT EXISTS updated_at timestamptz;
+UPDATE im_user_invite_relations SET updated_at=created_at WHERE updated_at IS NULL;
+ALTER TABLE im_user_invite_relations ALTER COLUMN updated_at SET DEFAULT now();
+ALTER TABLE im_user_invite_relations ALTER COLUMN updated_at SET NOT NULL;
+ALTER TABLE im_user_invite_relations ADD COLUMN IF NOT EXISTS version bigint NOT NULL DEFAULT 1 CHECK(version>0);

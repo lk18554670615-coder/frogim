@@ -13,10 +13,12 @@ import (
 )
 
 var (
-	ErrInviteRequired   = errors.New("invite code required")
-	ErrInviteInvalid    = errors.New("invite code invalid")
-	ErrInviteDisabled   = errors.New("invite code disabled")
-	ErrInviteChangeUsed = errors.New("invite code change already used")
+	ErrInviteRelationCycle = errors.New("invite relation cycle")
+	ErrInviteRelationStale = errors.New("invite relation changed")
+	ErrInviteRequired      = errors.New("invite code required")
+	ErrInviteInvalid       = errors.New("invite code invalid")
+	ErrInviteDisabled      = errors.New("invite code disabled")
+	ErrInviteChangeUsed    = errors.New("invite code change already used")
 )
 
 var customInviteCodePattern = regexp.MustCompile(`^[A-Z0-9](?:[A-Z0-9_-]{4,18})[A-Z0-9]$`)
@@ -46,6 +48,10 @@ func (a *App) validCustomInviteCode(value string) bool {
 
 func mapInviteStoreError(err error) error {
 	switch {
+	case errors.Is(err, store.ErrInviteRelationCycle):
+		return ErrInviteRelationCycle
+	case errors.Is(err, store.ErrInviteRelationStale):
+		return ErrInviteRelationStale
 	case errors.Is(err, store.ErrInviteRequired):
 		return ErrInviteRequired
 	case errors.Is(err, store.ErrInviteInvalid):
@@ -203,7 +209,7 @@ func parseInviteFilterTime(value string) (time.Time, error) {
 }
 
 func (a *App) AdminInviteRelations(ctx context.Context, query, method, from, to, cursor string, limit int) (store.InviteRelationPage, error) {
-	if method != "" && method != "password" && method != "otp" {
+	if method != "" && method != "password" && method != "otp" && method != "admin" {
 		return store.InviteRelationPage{}, ErrInvalid
 	}
 	fromTime, fromErr := parseInviteFilterTime(from)
@@ -232,6 +238,21 @@ func (a *App) AdminResetInviteCode(ctx context.Context, actor, id, reason string
 	}
 	if s, ok := a.persistence.(store.InvitationStore); ok {
 		item, err := s.ResetAdminInviteCode(ctx, actor, id, strings.TrimSpace(reason), time.Now().UTC())
+		return item, mapInviteStoreError(err)
+	}
+	return nil, ErrUnavailable
+}
+
+func (a *App) AdminSetInviteRelation(ctx context.Context, actor, userID, code, reason string, expectedVersion int64) (*store.InviteRelationBinding, error) {
+	code, reason = normalizeInviteCode(code), strings.TrimSpace(reason)
+	if actor == "" || userID == "" || reason == "" || len([]rune(reason)) > 500 || expectedVersion < 0 {
+		return nil, ErrInvalid
+	}
+	if !customInviteCodePattern.MatchString(code) {
+		return nil, ErrInviteInvalid
+	}
+	if s, ok := a.persistence.(store.InvitationStore); ok {
+		item, err := s.SetAdminInviteRelation(ctx, actor, userID, code, reason, expectedVersion, time.Now().UTC())
 		return item, mapInviteStoreError(err)
 	}
 	return nil, ErrUnavailable

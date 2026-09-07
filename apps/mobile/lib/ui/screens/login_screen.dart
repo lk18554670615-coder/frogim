@@ -317,7 +317,7 @@ class _LoginScreenState extends State<LoginScreen> {
           if (showBrand) ...[
             Center(
               child: Image.asset(
-                'assets/brand/qingwaguagua-mark-transparent.png',
+                'assets/brand/qingwaguagua-badge.png',
                 width: 88,
                 height: 88,
                 semanticLabel: '青蛙呱呱应用图标',
@@ -346,9 +346,7 @@ class _LoginScreenState extends State<LoginScreen> {
           CupertinoSlidingSegmentedControl<_LoginMode>(
             key: const Key('login-mode-control'),
             groupValue: effectiveMode,
-            backgroundColor: Theme.of(context).brightness == Brightness.dark
-                ? LinliColors.darkSurfaceElevated
-                : LinliColors.brandYellowStrong,
+            backgroundColor: context.linli.selected,
             thumbColor: Theme.of(context).colorScheme.surfaceContainer,
             children: {
               _LoginMode.code: _LoginModeLabel(
@@ -599,11 +597,11 @@ class _LoginScreenState extends State<LoginScreen> {
                     version: QrVersions.auto,
                     eyeStyle: const QrEyeStyle(
                       eyeShape: QrEyeShape.square,
-                      color: LinliColors.brandInk,
+                      color: LinliColors.label,
                     ),
                     dataModuleStyle: const QrDataModuleStyle(
                       dataModuleShape: QrDataModuleShape.square,
-                      color: LinliColors.brandInk,
+                      color: LinliColors.label,
                     ),
                     padding: EdgeInsets.zero,
                   ),
@@ -618,9 +616,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ? CupertinoIcons.exclamationmark_circle
                   : CupertinoIcons.shield_lefthalf_fill,
               size: 17,
-              color: canRefresh
-                  ? LinliColors.systemRed
-                  : LinliColors.brandInk,
+              color: canRefresh ? context.linli.error : context.linli.text,
             ),
             const SizedBox(width: 7),
             Flexible(
@@ -630,7 +626,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   fontWeight: FontWeight.w600,
-                  color: canRefresh ? LinliColors.systemRed : null,
+                  color: canRefresh ? context.linli.error : null,
                 ),
               ),
             ),
@@ -678,7 +674,7 @@ class _LoginModeLabel extends StatelessWidget {
       style: TextStyle(
         color: selected
             ? Theme.of(context).colorScheme.onSurface
-            : LinliColors.preview,
+            : context.linli.secondaryText,
         fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
       ),
     ),
@@ -735,7 +731,7 @@ class _DesktopLoginBrandPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ColoredBox(
     key: const Key('desktop-login-brand-panel'),
-    color: LinliColors.brandYellow,
+    color: context.linli.selected,
     child: Padding(
       padding: const EdgeInsets.all(36),
       child: Column(
@@ -743,16 +739,16 @@ class _DesktopLoginBrandPanel extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Image.asset(
-            'assets/brand/qingwaguagua-mark-transparent.png',
+            'assets/brand/qingwaguagua-badge.png',
             width: 96,
             height: 96,
             semanticLabel: '青蛙呱呱应用图标',
           ),
           const SizedBox(height: 24),
-          const Text(
+          Text(
             '青蛙呱呱',
             style: TextStyle(
-              color: LinliColors.brandInk,
+              color: context.linli.text,
               fontSize: 24,
               height: 1.2,
               fontWeight: FontWeight.w700,
@@ -760,10 +756,10 @@ class _DesktopLoginBrandPanel extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 8),
-          const Text(
+          Text(
             '桌面网页版',
             style: TextStyle(
-              color: LinliColors.preview,
+              color: context.linli.secondaryText,
               fontSize: 13,
               height: 1.4,
               letterSpacing: .6,
@@ -840,7 +836,7 @@ class _InviteCodeScannerScreenState extends State<InviteCodeScannerScreen> {
             width: 250,
             height: 250,
             decoration: BoxDecoration(
-              border: Border.all(color: LinliColors.brandYellow, width: 3),
+              border: Border.all(color: LinliColors.darkPrimary, width: 3),
               borderRadius: BorderRadius.circular(24),
             ),
           ),
@@ -1523,7 +1519,7 @@ class _AuthBrandAppBarTitle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Image.asset(
-    'assets/brand/qingwaguagua-mark-transparent.png',
+    'assets/brand/qingwaguagua-badge.png',
     width: 28,
     height: 28,
     semanticLabel: '青蛙呱呱',
@@ -1567,7 +1563,7 @@ class _AuthCodeSentNotice extends StatelessWidget {
     child: Text(
       '验证码已发送，5 分钟内有效',
       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-        color: LinliColors.brandInk,
+        color: context.linli.successText,
         fontWeight: FontWeight.w500,
       ),
     ),
@@ -1584,18 +1580,16 @@ class _RegistrationClosedNotice extends StatelessWidget {
     key: const Key('registration-disabled-notice'),
     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
     decoration: BoxDecoration(
-      color: Theme.of(context).brightness == Brightness.dark
-          ? LinliColors.darkSurfaceElevated
-          : LinliColors.brandYellowSoft,
+      color: context.linli.selected,
       borderRadius: BorderRadius.circular(14),
       border: Border.all(color: Theme.of(context).colorScheme.outline),
     ),
     child: Row(
       children: [
-        const Icon(
+        Icon(
           CupertinoIcons.info_circle,
           size: 18,
-          color: LinliColors.brandInk,
+          color: context.linli.primary,
         ),
         const SizedBox(width: 10),
         Expanded(

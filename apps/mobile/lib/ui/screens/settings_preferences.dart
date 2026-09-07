@@ -5,13 +5,13 @@ enum ChatBackgroundStyle { followSystem, softMint, cleanPaper }
 extension ChatBackgroundStyleDetails on ChatBackgroundStyle {
   String get title => switch (this) {
     ChatBackgroundStyle.followSystem => '跟随系统',
-    ChatBackgroundStyle.softMint => '柔和薄荷',
+    ChatBackgroundStyle.softMint => '柔和浅蓝',
     ChatBackgroundStyle.cleanPaper => '纯净纸面',
   };
 
   String get subtitle => switch (this) {
     ChatBackgroundStyle.followSystem => '自动适配浅色与深色外观',
-    ChatBackgroundStyle.softMint => '与青蛙 Logo 呼应的低饱和浅绿',
+    ChatBackgroundStyle.softMint => '低饱和浅蓝，适合长时间阅读',
     ChatBackgroundStyle.cleanPaper => '更简洁、对比更清晰的中性背景',
   };
 

@@ -595,7 +595,7 @@ void main() {
       preferences.getString(LocalSettingsStore.chatBackground),
       ChatBackgroundStyle.softMint.name,
     );
-    expect(find.text('聊天背景已切换为“柔和薄荷”'), findsOneWidget);
+    expect(find.text('聊天背景已切换为“柔和浅蓝”'), findsOneWidget);
   });
 
   testWidgets('聊天页读取并应用已保存的本机背景', (tester) async {
@@ -619,7 +619,7 @@ void main() {
     final surface = tester.widget<ColoredBox>(
       find.byKey(const Key('chat-background-surface')),
     );
-    expect(surface.color, LinliColors.brandYellowSoft);
+    expect(surface.color, LinliColors.selectedSurface);
   });
 
   testWidgets('通知偏好写入本机且通用外观操作生效', (tester) async {
@@ -683,7 +683,7 @@ void main() {
     await tester.tap(find.byKey(const Key('chat-background-softMint')));
     await _settle(tester);
     expect(find.text('聊天背景保存失败，原设置未改变'), findsOneWidget);
-    expect(find.text('聊天背景已切换为“柔和薄荷”'), findsNothing);
+    expect(find.text('聊天背景已切换为“柔和浅蓝”'), findsNothing);
   });
 
   testWidgets('反馈草稿写入失败会保留当前内容且不显示假成功', (tester) async {

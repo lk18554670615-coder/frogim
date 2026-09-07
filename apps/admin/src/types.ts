@@ -234,7 +234,12 @@ export interface UserOverview {
     selfChangesRemaining: number;
     createdAt: string;
     invitedBy?: UserRecord;
-    registrationMethod?: 'password' | 'otp';
+    registrationMethod?: 'password' | 'otp' | 'admin';
+    boundCode?: string;
+    boundCodeId?: string;
+    bindingSource?: 'registration' | 'admin';
+    bindingUpdatedAt?: string;
+    bindingVersion?: number;
     boundAt?: string;
   };
 }
@@ -256,7 +261,10 @@ export interface InviteRelationRecord {
   inviter: UserRecord;
   inviteCodeId: string;
   inviteCode: string;
-  registrationMethod: 'password' | 'otp';
+  registrationMethod: 'password' | 'otp' | 'admin';
+  bindingSource: 'registration' | 'admin';
+  updatedAt: string;
+  version: number;
   createdAt: string;
 }
 
@@ -891,6 +899,7 @@ export interface SupportSessionRecord {
 }
 
 export interface AdminApi {
+  setUserInviteRelation(id: string, inviteCode: string, reason: string, expectedVersion: number): Promise<void>;
   setUserMessagePermissions(id: string, allowed: boolean, reason: string): Promise<void>;
   getCurrentAdmin(): Promise<Omit<AdminSession, 'token' | 'expiresAt'>>;
   changeCurrentAdminPassword(currentPassword: string, newPassword: string): Promise<void>;

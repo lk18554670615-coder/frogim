@@ -277,18 +277,14 @@ class LinliSearchBar extends StatelessWidget {
             Icon(
               CupertinoIcons.search,
               size: 18,
-              color: Theme.of(
-                context,
-              ).colorScheme.onSurface.withValues(alpha: .42),
+              color: context.linli.secondaryText,
             ),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
                 hint,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Theme.of(
-                    context,
-                  ).colorScheme.onSurface.withValues(alpha: .42),
+                  color: context.linli.secondaryText,
                 ),
               ),
             ),
@@ -414,7 +410,7 @@ class SectionHeader extends StatelessWidget {
     child: Text(
       text,
       style: Theme.of(context).textTheme.labelMedium?.copyWith(
-        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .5),
+        color: context.linli.secondaryText,
         fontWeight: FontWeight.w600,
         letterSpacing: .1,
       ),
@@ -451,34 +447,28 @@ class SettingTile extends StatelessWidget {
             height: 34,
             decoration: BoxDecoration(
               color: destructive
-                  ? LinliColors.systemRed.withValues(alpha: .1)
-                  : Theme.of(context).brightness == Brightness.dark
-                  ? LinliColors.brandYellow.withValues(alpha: .14)
-                  : LinliColors.brandYellowStrong,
+                  ? context.linli.error.withValues(alpha: .1)
+                  : context.linli.selected,
               borderRadius: BorderRadius.circular(10),
             ),
             alignment: Alignment.center,
             child: Icon(
               icon,
               size: 18,
-              color: destructive
-                  ? LinliColors.systemRed
-                  : Theme.of(context).brightness == Brightness.dark
-                  ? LinliColors.brandYellow
-                  : LinliColors.brandInk,
+              color: destructive ? context.linli.error : context.linli.primary,
             ),
           )
         : Icon(
             icon,
             size: 21,
             color: destructive
-                ? LinliColors.systemRed
+                ? context.linli.error
                 : Theme.of(context).colorScheme.primary,
           ),
     title: Text(
       title,
       style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-        color: destructive ? LinliColors.systemRed : null,
+        color: destructive ? context.linli.error : null,
         fontWeight: FontWeight.w500,
       ),
     ),
@@ -496,7 +486,7 @@ class SettingTile extends StatelessWidget {
         Icon(
           CupertinoIcons.chevron_forward,
           size: 17,
-          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .25),
+          color: context.linli.secondaryText,
         ),
     onTap: onTap,
   );
@@ -530,25 +520,13 @@ class StatePanel extends StatelessWidget {
             width: 56,
             height: 56,
             decoration: BoxDecoration(
-              color: Theme.of(context).brightness == Brightness.dark
-                  ? LinliColors.brandYellow.withValues(alpha: .1)
-                  : LinliColors.brandYellowSoft,
+              color: context.linli.selected,
               shape: BoxShape.circle,
             ),
             alignment: Alignment.center,
             child: loading
-                ? CupertinoActivityIndicator(
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? LinliColors.brandYellow
-                        : LinliColors.brandInk,
-                  )
-                : Icon(
-                    icon,
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? LinliColors.brandYellow
-                        : LinliColors.brandInk,
-                    size: 26,
-                  ),
+                ? CupertinoActivityIndicator(color: context.linli.primary)
+                : Icon(icon, color: context.linli.primary, size: 26),
           ),
           const SizedBox(height: 18),
           Text(
@@ -560,9 +538,7 @@ class StatePanel extends StatelessWidget {
           Text(
             body,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              color: Theme.of(
-                context,
-              ).colorScheme.onSurface.withValues(alpha: .5),
+              color: context.linli.secondaryText,
             ),
             textAlign: TextAlign.center,
           ),

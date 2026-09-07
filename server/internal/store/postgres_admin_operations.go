@@ -317,11 +317,12 @@ func (p *Postgres) AdminUserOverview(ctx context.Context, id string) (map[string
 	if err == nil {
 		invitation := map[string]any{"id": code.ID, "code": code.Code, "status": code.Status, "source": code.Source, "selfChangesUsed": code.SelfChangesUsed, "selfChangesRemaining": max(0, 1-code.SelfChangesUsed), "createdAt": code.CreatedAt}
 		var inviter model.User
-		var method string
-		var boundAt time.Time
-		relationErr := p.pool.QueryRow(ctx, `SELECT inviter.id,inviter.phone,inviter.name,COALESCE(inviter.handle,''),inviter.avatar_url,r.registration_method,r.created_at
-			FROM im_user_invite_relations r JOIN im_users inviter ON inviter.id=r.inviter_user_id WHERE r.invitee_user_id=$1`, id).Scan(
-			&inviter.ID, &inviter.Phone, &inviter.Name, &inviter.Handle, &inviter.AvatarURL, &method, &boundAt,
+		var method, boundCode, boundCodeID, bindingSource string
+		var boundAt, bindingUpdatedAt time.Time
+		var bindingVersion int64
+		relationErr := p.pool.QueryRow(ctx, `SELECT inviter.id,inviter.phone,inviter.name,COALESCE(inviter.handle,''),inviter.avatar_url,r.registration_method,r.created_at,c.code,c.id,r.binding_source,r.updated_at,r.version
+			FROM im_user_invite_relations r JOIN im_user_invite_codes c ON c.id=r.invite_code_id JOIN im_users inviter ON inviter.id=r.inviter_user_id WHERE r.invitee_user_id=$1`, id).Scan(
+			&inviter.ID, &inviter.Phone, &inviter.Name, &inviter.Handle, &inviter.AvatarURL, &method, &boundAt, &boundCode, &boundCodeID, &bindingSource, &bindingUpdatedAt, &bindingVersion,
 		)
 		if relationErr != nil && !errors.Is(relationErr, pgx.ErrNoRows) {
 			return nil, relationErr
@@ -330,6 +331,11 @@ func (p *Postgres) AdminUserOverview(ctx context.Context, id string) (map[string
 			invitation["invitedBy"] = &inviter
 			invitation["registrationMethod"] = method
 			invitation["boundAt"] = boundAt
+			invitation["boundCode"] = boundCode
+			invitation["boundCodeId"] = boundCodeID
+			invitation["bindingSource"] = bindingSource
+			invitation["bindingUpdatedAt"] = bindingUpdatedAt
+			invitation["bindingVersion"] = bindingVersion
 		}
 		result["invitation"] = invitation
 	}

@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'dart:io';
+
+import 'support/atomic_golden_comparator.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,10 +12,12 @@ import 'package:linli_im/core/image_send_editor.dart';
 import 'package:linli_im/core/models.dart';
 import 'package:linli_im/data/demo_repository.dart';
 import 'package:linli_im/im/business_features.dart';
+import 'package:linli_im/main.dart' as app;
 import 'package:linli_im/ui/legal_documents.dart';
 import 'package:linli_im/ui/screens/business_channel_screens.dart';
 import 'package:linli_im/ui/screens/chat_screen.dart';
 import 'package:linli_im/ui/screens/group_invite_members_screen.dart';
+import 'package:linli_im/ui/screens/group_management_screens.dart';
 import 'package:linli_im/ui/screens/home_screen.dart';
 import 'package:linli_im/ui/screens/login_screen.dart';
 import 'package:linli_im/ui/screens/moments_screen.dart';
@@ -22,6 +27,7 @@ import 'package:linli_im/ui/screens/settings_screens.dart';
 import 'package:linli_im/ui/screens/sticker_store_screen.dart';
 import 'package:linli_im/ui/voice_composer_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class _GoldenVoiceController extends VoiceComposerController {
   @override
@@ -35,6 +41,11 @@ class _GoldenVoiceController extends VoiceComposerController {
   }
 }
 
+class _PendingBrandRestoreRepository extends DemoImRepository {
+  @override
+  Future<bool> restoreSession() => Completer<bool>().future;
+}
+
 const _surfaceKey = Key('visual-regression-surface');
 final _audioPlayerEventChannels = <EventChannel>[];
 Directory? _testStorageDirectory;
@@ -45,6 +56,13 @@ void main() {
   late final GoldenFileComparator originalGoldenComparator;
 
   setUpAll(() async {
+    PackageInfo.setMockInitialValues(
+      appName: '青蛙呱呱',
+      packageName: 'com.fd.kuailiao',
+      version: '1.0.4',
+      buildNumber: '4008',
+      buildSignature: '',
+    );
     _testStorageDirectory = Directory.systemTemp.createTempSync(
       'linli_visual_regression_',
     );
@@ -158,21 +176,69 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
 
-  testWidgets('mobile login visual baseline', (tester) async {
-    final controller = AppController(_ProductionAuthGoldenRepository());
-    addTearDown(controller.dispose);
-
-    await _pumpSurface(
+  for (final brightness in Brightness.values) {
+    testWidgets('mobile login visual baseline ${brightness.name}', (
       tester,
-      size: const Size(390, 844),
-      child: LoginScreen(controller: controller),
-    );
+    ) async {
+      final controller = AppController(_ProductionAuthGoldenRepository());
+      addTearDown(controller.dispose);
 
-    await expectLater(
-      find.byKey(_surfaceKey),
-      matchesGoldenFile('goldens/windows/mobile-login.png'),
-    );
-  }, skip: !Platform.isWindows);
+      await _pumpSurface(
+        tester,
+        brightness: brightness,
+        size: const Size(390, 844),
+        child: LoginScreen(controller: controller),
+      );
+
+      await expectLater(
+        find.byKey(_surfaceKey),
+        matchesGoldenFile(
+          'goldens/windows/mobile-login${brightness == Brightness.light ? '' : '-dark'}.png',
+        ),
+      );
+    }, skip: !Platform.isWindows);
+  }
+
+  for (final brightness in Brightness.values) {
+    testWidgets('brand launch visual baseline ${brightness.name}', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({
+        'linli_im.theme_mode.v1': brightness.name,
+      });
+      await _pumpSurface(
+        tester,
+        size: const Size(390, 844),
+        brightness: brightness,
+        child: app.LinliApp(repository: _PendingBrandRestoreRepository()),
+      );
+      expect(find.bySemanticsLabel('青蛙呱呱正在启动'), findsOneWidget);
+      await expectLater(
+        find.byKey(_surfaceKey),
+        matchesGoldenFile(
+          'goldens/windows/brand-launch-${brightness.name}.png',
+        ),
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+      SharedPreferences.setMockInitialValues({});
+    }, skip: !Platform.isWindows);
+
+    testWidgets('brand about visual baseline ${brightness.name}', (
+      tester,
+    ) async {
+      await _pumpSurface(
+        tester,
+        size: const Size(390, 844),
+        brightness: brightness,
+        child: const AboutScreen(),
+      );
+      expect(find.bySemanticsLabel('青蛙呱呱图标'), findsOneWidget);
+      await expectLater(
+        find.byKey(_surfaceKey),
+        matchesGoldenFile('goldens/windows/brand-about-${brightness.name}.png'),
+      );
+    }, skip: !Platform.isWindows);
+  }
 
   testWidgets('mobile registration visual baseline', (tester) async {
     final controller = AppController(_ProductionAuthGoldenRepository());
@@ -246,21 +312,30 @@ void main() {
     );
   }, skip: !Platform.isWindows);
 
-  testWidgets('mobile settings visual baseline', (tester) async {
-    final controller = await _authenticatedController(tester);
-    addTearDown(controller.dispose);
+  for (final brightness in Brightness.values) {
+    testWidgets(
+      'mobile settings visual baseline ${brightness.name}',
+      (tester) async {
+        final controller = await _authenticatedController(tester);
+        addTearDown(controller.dispose);
 
-    await _pumpSurface(
-      tester,
-      size: const Size(390, 844),
-      child: SettingsScreen(controller: controller, onToggleTheme: () {}),
-    );
+        await _pumpSurface(
+          tester,
+          brightness: brightness,
+          size: const Size(390, 844),
+          child: SettingsScreen(controller: controller, onToggleTheme: () {}),
+        );
 
-    await expectLater(
-      find.byKey(_surfaceKey),
-      matchesGoldenFile('goldens/windows/mobile-settings-brand.png'),
+        await expectLater(
+          find.byKey(_surfaceKey),
+          matchesGoldenFile(
+            'goldens/windows/mobile-settings-brand${brightness == Brightness.light ? '' : '-dark'}.png',
+          ),
+        );
+      },
+      skip: !Platform.isWindows,
     );
-  }, skip: !Platform.isWindows);
+  }
 
   testWidgets('mobile direct chat info visual baseline', (tester) async {
     final controller = await _authenticatedController(tester);
@@ -475,51 +550,60 @@ void main() {
     );
   }, skip: !Platform.isWindows);
 
-  for (final phase in [
-    VoiceComposerPhase.recording,
-    VoiceComposerPhase.canceling,
-    VoiceComposerPhase.preview,
-  ]) {
-    testWidgets('mobile voice ${phase.name} visual baseline', (tester) async {
-      final voice = _GoldenVoiceController();
-      final text = TextEditingController();
-      await _pumpSurface(
-        tester,
-        size: const Size(390, 844),
-        child: Scaffold(
-          appBar: AppBar(
-            title: const Text('语音消息'),
-            leading: const BackButton(),
-          ),
-          body: Column(
-            children: [
-              const Expanded(child: Center(child: Text('按住说话，松开后可试听'))),
-              ChatComposer(
-                controller: text,
-                voiceController: voice,
-                onSend: () {},
-                onToggleAttachments: () {},
-                onToggleEmoji: () {},
-                onAttachment: (_) {},
-                onVoiceReady: (_) {},
-                onCancelReply: () {},
+  for (final brightness in Brightness.values) {
+    for (final phase in [
+      VoiceComposerPhase.recording,
+      VoiceComposerPhase.canceling,
+      VoiceComposerPhase.preview,
+    ]) {
+      testWidgets(
+        'mobile voice ${phase.name} ${brightness.name} visual baseline',
+        (tester) async {
+          final voice = _GoldenVoiceController();
+          final text = TextEditingController();
+          await _pumpSurface(
+            tester,
+            brightness: brightness,
+            size: const Size(390, 844),
+            child: Scaffold(
+              appBar: AppBar(
+                title: const Text('语音消息'),
+                leading: const BackButton(),
               ),
-            ],
-          ),
-        ),
+              body: Column(
+                children: [
+                  const Expanded(child: Center(child: Text('按住说话，松开后可试听'))),
+                  ChatComposer(
+                    controller: text,
+                    voiceController: voice,
+                    onSend: () {},
+                    onToggleAttachments: () {},
+                    onToggleEmoji: () {},
+                    onAttachment: (_) {},
+                    onVoiceReady: (_) {},
+                    onCancelReply: () {},
+                  ),
+                ],
+              ),
+            ),
+          );
+          await tester.tap(find.byKey(const Key('voice-mode-button')));
+          await tester.pump();
+          voice.show(phase);
+          await _settle(tester);
+          await expectLater(
+            find.byKey(_surfaceKey),
+            matchesGoldenFile(
+              'goldens/windows/mobile-voice-${phase.name}${brightness == Brightness.light ? '' : '-dark'}.png',
+            ),
+          );
+          await tester.pumpWidget(const SizedBox.shrink());
+          voice.dispose();
+          text.dispose();
+        },
+        skip: !Platform.isWindows,
       );
-      await tester.tap(find.byKey(const Key('voice-mode-button')));
-      await tester.pump();
-      voice.show(phase);
-      await _settle(tester);
-      await expectLater(
-        find.byKey(_surfaceKey),
-        matchesGoldenFile('goldens/windows/mobile-voice-${phase.name}.png'),
-      );
-      await tester.pumpWidget(const SizedBox.shrink());
-      voice.dispose();
-      text.dispose();
-    }, skip: !Platform.isWindows);
+    }
   }
 
   testWidgets('mobile group chat visual baseline', (tester) async {
@@ -545,42 +629,55 @@ void main() {
     );
   }, skip: !Platform.isWindows);
 
-  testWidgets('message reaction chips visual baseline', (tester) async {
-    await _pumpSurface(
-      tester,
-      size: const Size(390, 240),
-      child: Scaffold(
-        body: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Align(
-            alignment: Alignment.topLeft,
-            child: MessageBubble(
-              message: ChatMessage(
-                id: 'reaction-preview',
-                conversationId: 'group-preview',
-                senderId: 'friend-1',
-                senderName: '呱呱',
-                text: '这条消息有多个回应',
-                sentAt: DateTime(2026, 9, 4, 11),
-                isMine: false,
-                reactions: const [
-                  MessageReaction(emoji: '❤️', count: 1, reactedByMe: false),
-                  MessageReaction(emoji: '👍', count: 3, reactedByMe: true),
-                ],
+  for (final brightness in Brightness.values) {
+    testWidgets(
+      'message reaction chips visual baseline ${brightness.name}',
+      (tester) async {
+        await _pumpSurface(
+          tester,
+          brightness: brightness,
+          size: const Size(390, 240),
+          child: Scaffold(
+            body: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: MessageBubble(
+                  message: ChatMessage(
+                    id: 'reaction-preview',
+                    conversationId: 'group-preview',
+                    senderId: 'friend-1',
+                    senderName: '呱呱',
+                    text: '这条消息有多个回应',
+                    sentAt: DateTime(2026, 9, 4, 11),
+                    isMine: false,
+                    reactions: const [
+                      MessageReaction(
+                        emoji: '❤️',
+                        count: 1,
+                        reactedByMe: false,
+                      ),
+                      MessageReaction(emoji: '👍', count: 3, reactedByMe: true),
+                    ],
+                  ),
+                  onReactionTap: (_) {},
+                  onAddReaction: () {},
+                ),
               ),
-              onReactionTap: (_) {},
-              onAddReaction: () {},
             ),
           ),
-        ),
-      ),
-    );
+        );
 
-    await expectLater(
-      find.byKey(_surfaceKey),
-      matchesGoldenFile('goldens/windows/message-reaction-chips.png'),
+        await expectLater(
+          find.byKey(_surfaceKey),
+          matchesGoldenFile(
+            'goldens/windows/message-reaction-chips${brightness == Brightness.light ? '' : '-dark'}.png',
+          ),
+        );
+      },
+      skip: !Platform.isWindows,
     );
-  }, skip: !Platform.isWindows);
+  }
 
   testWidgets('mobile robot command menu visual baseline', (tester) async {
     final controller = AppController(_RobotGoldenRepository());
@@ -698,6 +795,74 @@ void main() {
     );
   }, skip: !Platform.isWindows);
 
+  for (final brightness in Brightness.values) {
+    for (final id in ['c-linyu', 'c-team']) {
+      testWidgets('$id ${brightness.name} chat palette', (tester) async {
+        final controller = await _authenticatedController(tester);
+        addTearDown(controller.dispose);
+        await _pumpSurface(
+          tester,
+          size: const Size(390, 844),
+          brightness: brightness,
+          child: ChatScreen(
+            controller: controller,
+            conversation: controller.conversations.firstWhere(
+              (c) => c.id == id,
+            ),
+            chatBackgroundOverride: ChatBackgroundStyle.followSystem,
+          ),
+        );
+        await expectLater(
+          find.byKey(_surfaceKey),
+          matchesGoldenFile(
+            'goldens/windows/blue-chat-$id-${brightness.name}.png',
+          ),
+        );
+      }, skip: !Platform.isWindows);
+    }
+    testWidgets('${brightness.name} group management palette', (tester) async {
+      final controller = await _authenticatedController(tester);
+      addTearDown(controller.dispose);
+      await _pumpSurface(
+        tester,
+        size: const Size(390, 844),
+        brightness: brightness,
+        child: GroupManagementScreen(
+          controller: controller,
+          conversation: controller.conversations.firstWhere(
+            (c) => c.id == 'c-team',
+          ),
+        ),
+      );
+      await expectLater(
+        find.byKey(_surfaceKey),
+        matchesGoldenFile(
+          'goldens/windows/blue-group-management-${brightness.name}.png',
+        ),
+      );
+    }, skip: !Platform.isWindows);
+  }
+
+  testWidgets('dark desktop narrow chat with large text palette', (
+    tester,
+  ) async {
+    final controller = await _authenticatedController(tester);
+    addTearDown(controller.dispose);
+    await _pumpSurface(
+      tester,
+      size: const Size(1280, 960),
+      brightness: Brightness.dark,
+      textScale: 1.6,
+      child: HomeScreen(controller: controller, onToggleTheme: () {}),
+    );
+    await tester.tap(find.byKey(const ValueKey('conversation-content-c-team')));
+    await _settle(tester);
+    await expectLater(
+      find.byKey(_surfaceKey),
+      matchesGoldenFile('goldens/windows/blue-desktop-dark-large.png'),
+    );
+  }, skip: !Platform.isWindows);
+
   testWidgets('send-time image editor visual baseline', (tester) async {
     final asset = await rootBundle.load('assets/avatars/weekend-coffee.png');
     final source = asset.buffer.asUint8List(
@@ -731,7 +896,7 @@ void main() {
   }, skip: !Platform.isWindows);
 }
 
-class _TolerantLocalFileComparator extends LocalFileComparator {
+class _TolerantLocalFileComparator extends AtomicGoldenComparator {
   _TolerantLocalFileComparator(super.testFile);
 
   // Allow tiny platform rasterisation drift at clipped/gradient text edges.

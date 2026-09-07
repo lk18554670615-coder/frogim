@@ -63,7 +63,7 @@ class _HomeScreenState extends State<HomeScreen> {
         animation: widget.controller,
         builder: (context, _) {
           return AnnotatedRegion<SystemUiOverlayStyle>(
-            value: SystemUiOverlayStyle.light,
+            value: context.linli.systemOverlay,
             child: LayoutBuilder(
               builder: (context, constraints) {
                 final desktop = useLinliDesktopLayout(constraints.maxWidth);
@@ -346,7 +346,7 @@ class _DesktopAccountNavigation extends StatelessWidget {
       key: const Key('home-navigation-rail'),
       width: 72,
       child: ColoredBox(
-        color: LinliColors.brandInk,
+        color: context.linli.navigation,
         child: SafeArea(
           right: false,
           child: Column(
@@ -483,7 +483,7 @@ class _DesktopNavButton extends StatelessWidget {
                   height: 40,
                   decoration: BoxDecoration(
                     color: selected
-                        ? LinliColors.brandYellow.withValues(alpha: .16)
+                        ? context.linli.selected
                         : Colors.transparent,
                     borderRadius: BorderRadius.circular(12),
                   ),
@@ -492,15 +492,15 @@ class _DesktopNavButton extends StatelessWidget {
                   icon,
                   size: 22,
                   color: selected
-                      ? LinliColors.brandYellow
-                      : LinliColors.darkPreview,
+                      ? context.linli.primary
+                      : context.linli.secondaryText,
                 ),
                 if (selected)
-                  const Positioned(
+                  Positioned(
                     left: 0,
                     child: DecoratedBox(
                       decoration: BoxDecoration(
-                        color: LinliColors.brandYellow,
+                        color: context.linli.primary,
                         borderRadius: BorderRadius.horizontal(
                           right: Radius.circular(99),
                         ),
@@ -637,10 +637,10 @@ class _DesktopDirectoryAction extends StatelessWidget {
                 width: 40,
                 height: 40,
                 decoration: BoxDecoration(
-                  color: LinliColors.brandYellow.withValues(alpha: .16),
+                  color: context.linli.selected,
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Icon(icon, size: 21, color: LinliColors.brandInk),
+                child: Icon(icon, size: 21, color: context.linli.primary),
               ),
               const SizedBox(height: 16),
               Text(title, style: Theme.of(context).textTheme.titleMedium),
@@ -962,19 +962,13 @@ class _DesktopActionGrid extends StatelessWidget {
                             width: 40,
                             height: 40,
                             decoration: BoxDecoration(
-                              color: LinliColors.brandYellow.withValues(
-                                alpha: .18,
-                              ),
+                              color: LinliColors.primary.withValues(alpha: .18),
                               borderRadius: BorderRadius.circular(11),
                             ),
                             child: Icon(
                               action.icon,
                               size: 21,
-                              color:
-                                  Theme.of(context).brightness ==
-                                      Brightness.dark
-                                  ? LinliColors.brandYellow
-                                  : LinliColors.brandInk,
+                              color: context.linli.primary,
                             ),
                           ),
                           const SizedBox(height: 15),
@@ -1023,11 +1017,8 @@ class _LinliTabBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    final inactiveColor = dark
-        ? LinliColors.darkPreview
-        : const Color(0xFFB6B09D);
-    const selectedColor = LinliColors.brandYellow;
+    final inactiveColor = context.linli.secondaryText;
+    final selectedColor = context.linli.primary;
     const items = [
       ('消息', CupertinoIcons.chat_bubble, CupertinoIcons.chat_bubble_fill),
       ('联系人', CupertinoIcons.person_2, CupertinoIcons.person_2_fill),
@@ -1036,7 +1027,7 @@ class _LinliTabBar extends StatelessWidget {
     ];
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: LinliColors.brandInk,
+        color: context.linli.navigation,
         border: Border(
           top: BorderSide(color: Theme.of(context).colorScheme.outline),
         ),
@@ -1065,17 +1056,25 @@ class _LinliTabBar extends StatelessWidget {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          _MessageNavIcon(
-                            key: Key('home-tab-icon-$i'),
-                            icon: selectedIndex == i
-                                ? items[i].$3
-                                : items[i].$2,
-                            count: i == 0 ? unreadCount : 0,
-                            showDot: i == 0 && hasMutedUnread,
-                            badgeCount: i == 1 ? contactNotificationCount : 0,
-                            color: selectedIndex == i
-                                ? selectedColor
-                                : inactiveColor,
+                          DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: selectedIndex == i
+                                  ? context.linli.selected
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: _MessageNavIcon(
+                              key: Key('home-tab-icon-$i'),
+                              icon: selectedIndex == i
+                                  ? items[i].$3
+                                  : items[i].$2,
+                              count: i == 0 ? unreadCount : 0,
+                              showDot: i == 0 && hasMutedUnread,
+                              badgeCount: i == 1 ? contactNotificationCount : 0,
+                              color: selectedIndex == i
+                                  ? selectedColor
+                                  : inactiveColor,
+                            ),
                           ),
                           const SizedBox(height: 4),
                           Text(
@@ -1158,16 +1157,10 @@ class _HeaderMenuItem extends StatelessWidget {
           width: 30,
           height: 30,
           decoration: BoxDecoration(
-            color: dark
-                ? LinliColors.brandYellow.withValues(alpha: .16)
-                : LinliColors.brandYellowStrong,
+            color: context.linli.selected,
             borderRadius: BorderRadius.circular(9),
           ),
-          child: Icon(
-            icon,
-            color: dark ? LinliColors.brandYellow : LinliColors.brandInk,
-            size: 17,
-          ),
+          child: Icon(icon, color: context.linli.primary, size: 17),
         ),
         const SizedBox(width: 11),
         Expanded(
@@ -1270,7 +1263,7 @@ class _ConversationsTabState extends State<ConversationsTab> {
       );
     }
     return ColoredBox(
-      color: LinliColors.brandYellow,
+      color: context.linli.navigation,
       child: SafeArea(
         bottom: false,
         child: Column(
@@ -1442,17 +1435,13 @@ class _DesktopFilterChip extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 10),
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: selected
-                ? LinliColors.brandYellow
-                : Theme.of(context).colorScheme.surfaceContainerHigh,
+            color: selected ? context.linli.selected : context.linli.elevated,
             borderRadius: BorderRadius.circular(10),
           ),
           child: Text(
             count == null || count == 0 ? label : '$label $count',
             style: Theme.of(context).textTheme.labelMedium?.copyWith(
-              color: selected
-                  ? LinliColors.brandInk
-                  : Theme.of(context).colorScheme.onSurface,
+              color: selected ? context.linli.onSelected : context.linli.text,
               fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
             ),
           ),
@@ -1489,7 +1478,7 @@ class _MessagesHeader extends StatelessWidget {
                   child: Text(
                     '消息',
                     style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                      color: LinliColors.brandInk,
+                      color: context.linli.text,
                     ),
                   ),
                 ),
@@ -1504,7 +1493,7 @@ class _MessagesHeader extends StatelessWidget {
                         ? LinliColors.darkSurfaceElevated
                         : LinliColors.surface,
                     surfaceTintColor: Colors.transparent,
-                    shadowColor: LinliColors.brandInk.withValues(alpha: .14),
+                    shadowColor: LinliColors.label.withValues(alpha: .14),
                     elevation: 8,
                     offset: const Offset(0, 6),
                     menuPadding: const EdgeInsets.symmetric(vertical: 6),
@@ -1523,12 +1512,12 @@ class _MessagesHeader extends StatelessWidget {
                       width: 28,
                       height: 28,
                       decoration: BoxDecoration(
-                        color: LinliColors.brandYellow,
+                        color: context.linli.primary,
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(
+                      child: Icon(
                         CupertinoIcons.add,
-                        color: LinliColors.brandInk,
+                        color: context.linli.onPrimary,
                         size: 16,
                       ),
                     ),
@@ -1615,15 +1604,13 @@ class _MessagesHeader extends StatelessWidget {
                   constraints: const BoxConstraints(minHeight: 40),
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: .1),
+                    color: context.linli.elevated,
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: .12),
-                    ),
+                    border: Border.all(color: context.linli.separator),
                   ),
-                  child: const Row(
+                  child: Row(
                     children: [
-                      Icon(CupertinoIcons.search, color: LinliColors.brandInk),
+                      Icon(CupertinoIcons.search, color: context.linli.text),
                       SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -1631,7 +1618,7 @@ class _MessagesHeader extends StatelessWidget {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                            color: LinliColors.brandInk,
+                            color: context.linli.text,
                             fontSize: 15,
                           ),
                         ),
@@ -1803,7 +1790,10 @@ class _FilterEdgeCue extends StatelessWidget {
         gradient: LinearGradient(
           begin: left ? Alignment.centerLeft : Alignment.centerRight,
           end: left ? Alignment.centerRight : Alignment.centerLeft,
-          colors: const [LinliColors.brandInk, Color(0x00171714)],
+          colors: [
+            context.linli.navigation,
+            context.linli.navigation.withValues(alpha: 0),
+          ],
         ),
       ),
       child: Padding(
@@ -1846,21 +1836,17 @@ class _StatusFilterButton extends StatelessWidget {
         constraints: const BoxConstraints(minHeight: 36, minWidth: 48),
         padding: const EdgeInsets.symmetric(horizontal: 10),
         decoration: BoxDecoration(
-          color: selected
-              ? LinliColors.brandYellow
-              : Colors.white.withValues(alpha: .08),
+          color: selected ? context.linli.selected : context.linli.elevated,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: selected
-                ? LinliColors.brandYellow
-                : Colors.white.withValues(alpha: .12),
+            color: selected ? context.linli.primary : context.linli.separator,
           ),
         ),
         alignment: Alignment.center,
         child: Text(
           count == null || count == 0 ? label : '$label $count',
           style: TextStyle(
-            color: selected ? LinliColors.brandInk : Colors.white,
+            color: selected ? context.linli.onSelected : context.linli.text,
             fontSize: 14,
             fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
           ),
@@ -1907,7 +1893,7 @@ class _ConversationBody extends StatelessWidget {
     final leadingItemCount = showSystemNotifications ? 1 : 0;
     return RefreshIndicator(
       onRefresh: controller.refresh,
-      color: LinliColors.brandInk,
+      color: context.linli.primary,
       child: SlidableAutoCloseBehavior(
         child: ListView.builder(
           physics: const AlwaysScrollableScrollPhysics(),
@@ -2094,7 +2080,7 @@ class ConversationTile extends StatelessWidget {
                     ? LinliColors.darkPinnedSurface
                     : LinliColors.pinnedSurface)
               : selected
-              ? Theme.of(context).colorScheme.surfaceContainerHighest
+              ? context.linli.selected
               : Theme.of(context).colorScheme.surfaceContainer,
           child: InkWell(
             onSecondaryTapDown: (details) =>
@@ -2236,7 +2222,7 @@ class ConversationTile extends StatelessWidget {
                                   style: Theme.of(context).textTheme.bodyMedium
                                       ?.copyWith(
                                         color: draft.isEmpty
-                                            ? LinliColors.preview
+                                            ? context.linli.secondaryText
                                             : LinliColors.systemRed,
                                         fontSize: 14,
                                       ),
@@ -2258,13 +2244,13 @@ class ConversationTile extends StatelessWidget {
                                   ),
                                   alignment: Alignment.center,
                                   decoration: BoxDecoration(
-                                    color: LinliColors.brandYellow,
+                                    color: context.linli.selected,
                                     borderRadius: BorderRadius.circular(999),
                                   ),
-                                  child: const Text(
+                                  child: Text(
                                     '@我',
                                     style: TextStyle(
-                                      color: LinliColors.brandInk,
+                                      color: context.linli.onSelected,
                                       fontSize: 11,
                                       fontWeight: FontWeight.w700,
                                     ),
@@ -2737,7 +2723,7 @@ class _ContactsTabState extends State<ContactsTab> {
                     height: 64,
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
-                      color: LinliColors.brandInk.withValues(alpha: .88),
+                      color: LinliColors.label.withValues(alpha: .88),
                       borderRadius: BorderRadius.circular(18),
                     ),
                     child: Text(
@@ -2796,7 +2782,7 @@ class _ContactGroupHeader extends StatelessWidget {
     child: Text(
       letter,
       style: Theme.of(context).textTheme.labelLarge?.copyWith(
-        color: LinliColors.brandInk,
+        color: context.linli.secondaryText,
         fontWeight: FontWeight.w700,
       ),
     ),
@@ -2905,7 +2891,7 @@ class _ContactAlphabetRail extends StatelessWidget {
           decoration: BoxDecoration(
             color: activeLetter == null
                 ? Colors.transparent
-                : LinliColors.brandYellowSoft.withValues(alpha: .88),
+                : context.linli.selected.withValues(alpha: .94),
             borderRadius: BorderRadius.circular(16),
           ),
           child: Column(
@@ -2927,7 +2913,7 @@ class _ContactAlphabetRail extends StatelessWidget {
                           letter,
                           style: TextStyle(
                             color: activeLetter == letter
-                                ? LinliColors.brandInk
+                                ? context.linli.onSelected
                                 : Theme.of(
                                     context,
                                   ).colorScheme.onSurfaceVariant,
@@ -3051,11 +3037,8 @@ class MeTab extends StatelessWidget {
                       ),
                       icon: const Icon(CupertinoIcons.qrcode),
                       style: IconButton.styleFrom(
-                        backgroundColor:
-                            Theme.of(context).brightness == Brightness.dark
-                            ? LinliColors.brandYellow.withValues(alpha: .14)
-                            : LinliColors.brandYellowStrong,
-                        foregroundColor: LinliColors.brandInk,
+                        backgroundColor: context.linli.selected,
+                        foregroundColor: context.linli.primary,
                       ),
                     ),
                     const SizedBox(width: 2),
@@ -3167,7 +3150,7 @@ class _TopLevelShell extends StatelessWidget {
         child: Column(
           children: [
             ColoredBox(
-              color: LinliColors.brandYellow,
+              color: context.linli.navigation,
               child: SizedBox(
                 key: ValueKey('desktop-top-level-header-$title'),
                 height: 64,
@@ -3195,7 +3178,7 @@ class _TopLevelShell extends StatelessWidget {
       );
     }
     return ColoredBox(
-      color: LinliColors.brandYellow,
+      color: context.linli.navigation,
       child: SafeArea(
         bottom: false,
         child: Column(
@@ -3211,7 +3194,7 @@ class _TopLevelShell extends StatelessWidget {
                       child: Text(
                         title,
                         style: Theme.of(context).textTheme.headlineMedium
-                            ?.copyWith(color: LinliColors.brandInk),
+                            ?.copyWith(color: context.linli.text),
                       ),
                     ),
                     ?action,

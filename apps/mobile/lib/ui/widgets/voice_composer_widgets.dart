@@ -32,10 +32,8 @@ class VoiceRecordingOverlay extends StatelessWidget {
     final color = canceling
         ? (Theme.of(context).brightness == Brightness.dark
               ? const Color(0xFFFF758B)
-              : LinliColors.systemRed)
-        : Theme.of(context).brightness == Brightness.dark
-        ? LinliColors.brandYellow
-        : LinliColors.brandInk;
+              : context.linli.error)
+        : context.linli.primary;
     final title = switch (phase) {
       VoiceComposerPhase.preparing => '正在准备录音',
       VoiceComposerPhase.processing => '正在处理语音',
@@ -237,9 +235,9 @@ class VoiceRecordingButton extends StatelessWidget {
           alignment: Alignment.center,
           decoration: BoxDecoration(
             color: canceling
-                ? LinliColors.systemRed.withValues(alpha: .12)
+                ? context.linli.error.withValues(alpha: .12)
                 : recording
-                ? LinliColors.brandYellow.withValues(alpha: .16)
+                ? context.linli.selected
                 : Theme.of(context).colorScheme.surfaceContainerHigh,
             borderRadius: BorderRadius.circular(14),
           ),
@@ -247,7 +245,7 @@ class VoiceRecordingButton extends StatelessWidget {
             text,
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: canceling ? LinliColors.systemRed : null,
+              color: canceling ? context.linli.error : null,
             ),
           ),
         ),
@@ -376,9 +374,7 @@ class _VoiceSendButtonState extends State<_VoiceSendButton> {
             ? const CupertinoActivityIndicator(radius: 10)
             : Icon(
                 CupertinoIcons.arrow_up_circle_fill,
-                color: Theme.of(context).brightness == Brightness.dark
-                    ? LinliColors.brandYellow
-                    : LinliColors.brandInk,
+                color: context.linli.primary,
                 size: 28,
               ),
       ),
@@ -464,7 +460,7 @@ class VoiceUploadProgress extends StatelessWidget {
                     value: progress,
                     minHeight: 3,
                     borderRadius: BorderRadius.circular(999),
-                    color: LinliColors.brandYellow,
+                    color: context.linli.primary,
                     backgroundColor: Theme.of(
                       context,
                     ).colorScheme.surfaceContainerHighest,

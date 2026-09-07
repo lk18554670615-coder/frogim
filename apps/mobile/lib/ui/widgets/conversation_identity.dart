@@ -57,7 +57,7 @@ class ConversationAvatar extends StatelessWidget {
                   width: markSize,
                   height: markSize,
                   decoration: BoxDecoration(
-                    color: LinliColors.brandInk,
+                    color: context.linli.primary,
                     shape: BoxShape.circle,
                     border: Border.all(
                       color: Theme.of(context).colorScheme.surfaceContainer,
@@ -66,7 +66,7 @@ class ConversationAvatar extends StatelessWidget {
                   ),
                   child: Icon(
                     CupertinoIcons.group_solid,
-                    color: Colors.white,
+                    color: context.linli.onPrimary,
                     size: markSize - 6,
                   ),
                 ),
@@ -83,11 +83,10 @@ class ConversationTypeBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dark = Theme.of(context).brightness == Brightness.dark;
     return ExcludeSemantics(
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: dark ? LinliColors.brandInkSoft : LinliColors.brandYellowStrong,
+          color: context.linli.selected,
           borderRadius: BorderRadius.circular(4),
         ),
         child: Padding(
@@ -100,9 +99,7 @@ class ConversationTypeBadge extends StatelessWidget {
               fontSize: 10,
               height: 1.2,
               fontWeight: FontWeight.w600,
-              color: dark
-                  ? LinliColors.brandYellowStrong
-                  : LinliColors.brandInk,
+              color: context.linli.onSelected,
             ),
           ),
         ),

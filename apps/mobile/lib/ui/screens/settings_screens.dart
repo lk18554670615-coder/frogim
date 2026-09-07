@@ -1226,11 +1226,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                                   width: 30,
                                   height: 30,
                                   decoration: BoxDecoration(
-                                    color:
-                                        Theme.of(context).brightness ==
-                                            Brightness.dark
-                                        ? LinliColors.brandYellow
-                                        : LinliColors.brandInk,
+                                    color: context.linli.primary,
                                     shape: BoxShape.circle,
                                     border: Border.all(
                                       color: Theme.of(
@@ -1245,7 +1241,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                                     color:
                                         Theme.of(context).brightness ==
                                             Brightness.dark
-                                        ? LinliColors.brandInk
+                                        ? LinliColors.label
                                         : Colors.white,
                                   ),
                                 ),
@@ -2871,12 +2867,10 @@ class _ChatBackgroundSettingsScreenState
   Color _previewColor(BuildContext context, ChatBackgroundStyle style) {
     final dark = Theme.of(context).brightness == Brightness.dark;
     return switch (style) {
-      ChatBackgroundStyle.followSystem =>
-        dark ? LinliColors.darkBackground : LinliColors.background,
-      ChatBackgroundStyle.softMint =>
-        dark ? LinliColors.darkSurfaceElevated : LinliColors.brandYellowSoft,
+      ChatBackgroundStyle.followSystem => context.linli.chatBackground,
+      ChatBackgroundStyle.softMint => context.linli.selected,
       ChatBackgroundStyle.cleanPaper =>
-        dark ? LinliColors.brandInkSoft : LinliColors.surface,
+        dark ? LinliColors.darkSurfaceElevated : LinliColors.surface,
     };
   }
 
@@ -2931,7 +2925,7 @@ class _ChatBackgroundSettingsScreenState
                         ? CupertinoIcons.check_mark_circled_solid
                         : CupertinoIcons.circle,
                     color: selected == style
-                        ? LinliColors.brandInk
+                        ? context.linli.primary
                         : Theme.of(
                             context,
                           ).colorScheme.onSurface.withValues(alpha: .25),
@@ -3696,11 +3690,7 @@ class _SettingsRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
-    final color = destructive
-        ? LinliColors.systemRed
-        : dark
-        ? LinliColors.brandYellow
-        : LinliColors.brandInk;
+    final color = destructive ? context.linli.error : context.linli.primary;
     return Semantics(
       button: onTap != null,
       enabled: onTap != null,
@@ -3720,7 +3710,7 @@ class _SettingsRow extends StatelessWidget {
         title: Text(
           title,
           style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-            color: destructive ? LinliColors.systemRed : null,
+            color: destructive ? context.linli.error : null,
             fontWeight: FontWeight.w500,
           ),
         ),
@@ -3857,12 +3847,7 @@ class _FaqRow extends StatelessWidget {
   Widget build(BuildContext context) => ExpansionTile(
     tilePadding: const EdgeInsets.symmetric(horizontal: 14),
     childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 16),
-    leading: Icon(
-      CupertinoIcons.question_circle,
-      color: Theme.of(context).brightness == Brightness.dark
-          ? LinliColors.brandYellow
-          : LinliColors.brandInk,
-    ),
+    leading: Icon(CupertinoIcons.question_circle, color: context.linli.primary),
     title: Text(question, style: Theme.of(context).textTheme.bodyLarge),
     children: [
       Align(

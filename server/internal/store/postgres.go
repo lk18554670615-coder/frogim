@@ -28,7 +28,7 @@ type Postgres struct {
 	historyBoundary GroupHistoryBoundaryReader
 }
 
-const schemaVersion = 64
+const schemaVersion = 65
 
 type PostgresOptions struct {
 	MaxConns          int32

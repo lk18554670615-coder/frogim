@@ -159,6 +159,7 @@ type PasswordAuthStore interface {
 	UpdatePassword(context.Context, string, string, time.Time) error
 }
 type InvitationStore interface {
+	SetAdminInviteRelation(context.Context, string, string, string, string, int64, time.Time) (*InviteRelationBinding, error)
 	RegisterPasswordUserWithInvite(context.Context, string, string, string, string, time.Time, string, string) (*model.User, error)
 	LoginOrCreateUserWithInvite(context.Context, string, string, string, time.Time, bool, string, string) (*model.User, bool, error)
 	ValidateInviteCode(context.Context, string) (bool, error)
@@ -530,6 +531,13 @@ func (p *WithRedis) SetAdminInviteCodeStatus(ctx context.Context, actor, id, sta
 	}
 	return nil, ErrUnsupported
 }
+func (p *WithRedis) SetAdminInviteRelation(ctx context.Context, actor, userID, code, reason string, expectedVersion int64, at time.Time) (*InviteRelationBinding, error) {
+	if s, ok := p.base.(InvitationStore); ok {
+		return s.SetAdminInviteRelation(ctx, actor, userID, code, reason, expectedVersion, at)
+	}
+	return nil, ErrUnsupported
+}
+
 func (p *WithRedis) ResetAdminInviteCode(ctx context.Context, actor, id, reason string, at time.Time) (*InviteCode, error) {
 	if s, ok := p.base.(InvitationStore); ok {
 		return s.ResetAdminInviteCode(ctx, actor, id, reason, at)

@@ -277,6 +277,69 @@ describe('青蛙呱呱管理后台', () => {
     expect(screen.queryByText('spam')).not.toBeInTheDocument();
   });
 
+  it.each([false, true])('邀请来源支持补绑或改绑，先核对再确认（已有绑定=%s）', async (bound) => {
+    window.history.replaceState({}, '', '/users');
+    let saved = false;
+    const writes: unknown[] = [];
+    const inviter = { id: 'u_inviter', name: '新的邀请人', phone: '13900002222', status: 'active' };
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/invite-codes?')) return response({items: [{ id: 'ic_new', userId: inviter.id, code: 'NEWCODE88', status: 'active', user: inviter }], total: 1});
+      if (url.endsWith('/invite-relation')) { writes.push(JSON.parse(String(init?.body))); saved = true; return response({version: bound ? 3 : 1}); }
+      if (url.endsWith('/users/u_10291')) {
+        const original = await (await liveFixture(input, init)).json() as Record<string, unknown>;
+        return response({...original, invitation: {code: 'MYCODE88', status: 'active', selfChangesRemaining: 1, invitedBy: saved ? inviter : bound ? {id:'old',name:'原邀请人'} : undefined, boundCode: saved ? 'NEWCODE88' : bound ? 'OLDCODE88' : undefined, registrationMethod: bound ? 'otp' : saved ? 'admin' : undefined, bindingVersion: saved ? bound ? 3 : 1 : bound ? 2 : 0, bindingSource: saved ? 'admin' : 'registration'}});
+      }
+      return liveFixture(input, init);
+    }));
+    render(<App />);
+    await screen.findByText('林夏');
+    await userEvent.click(screen.getAllByRole('button', {name:'查看详情'})[0]);
+    await userEvent.click(await screen.findByRole('button', {name: bound ? '修改邀请来源' : '补绑邀请来源'}));
+    const editor = await screen.findByRole('dialog', {name: bound ? '修改邀请来源' : '补绑邀请来源'});
+    expect(within(editor).getByRole('button', {name:'核对邀请码'})).toBeDisabled();
+    await userEvent.type(within(editor).getByLabelText('新的邀请来源码'), ' newcode88 ');
+    await userEvent.type(within(editor).getByLabelText('改绑操作理由'), '用户申请纠正邀请来源');
+    await userEvent.click(within(editor).getByRole('button', {name:'核对邀请码'}));
+    const confirm = await screen.findByRole('dialog', {name:'确认邀请来源变更'});
+    expect(within(confirm).getByText('新的邀请人')).toBeInTheDocument();
+    expect(writes).toHaveLength(0);
+    await userEvent.dblClick(within(confirm).getByRole('button', {name:'确认保存邀请来源'}));
+    await waitFor(() => expect(writes).toEqual([{inviteCode:'NEWCODE88',reason:'用户申请纠正邀请来源',expectedVersion:bound ? 2 : 0,confirmed:true}]));
+    await waitFor(() => expect(screen.queryByRole('dialog', {name:'确认邀请来源变更'})).not.toBeInTheDocument());
+    expect(await screen.findByText('MYCODE88')).toBeInTheDocument();
+    expect(await screen.findByRole('button', {name:'修改邀请来源'})).toBeInTheDocument();
+  });
+
+  it('无效邀请来源留在编辑弹窗，取消不写入', async () => {
+    window.history.replaceState({}, '', '/users');
+    const fetchMock = vi.fn(async (input:RequestInfo|URL,init?:RequestInit) =>
+      String(input).includes('/invite-codes?') ? response({items:[],total:0}) : liveFixture(input,init));
+    vi.stubGlobal('fetch',fetchMock);
+    render(<App />);
+    await screen.findByText('林夏');
+    await userEvent.click(screen.getAllByRole('button',{name:'查看详情'})[0]);
+    await userEvent.click(await screen.findByRole('button',{name:'补绑邀请来源'}));
+    const dialog=await screen.findByRole('dialog',{name:'补绑邀请来源'});
+    await userEvent.type(within(dialog).getByLabelText('新的邀请来源码'),'INVALID88');
+    await userEvent.type(within(dialog).getByLabelText('改绑操作理由'),'核对');
+    await userEvent.click(within(dialog).getByRole('button',{name:'核对邀请码'}));
+    expect(await within(dialog).findByText('邀请码无效、已停用或邀请人账号不可用')).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button',{name:'取消'}));
+    expect(fetchMock.mock.calls.some(([url])=>String(url).endsWith('/invite-relation'))).toBe(false);
+  });
+
+  it('只读管理员不能补绑或改绑邀请来源', async () => {
+    const readonly={...session,roleId:'support',permissions:[]};
+    sessionStorage.setItem('qingwaguagua_admin_session',JSON.stringify(readonly));
+    vi.stubGlobal('fetch',vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>String(input).includes('/auth/me')?response(readonly):liveFixture(input,init)));
+    window.history.replaceState({}, '', '/users');render(<App />);
+    await screen.findByText('林夏');await userEvent.click(screen.getAllByRole('button',{name:'查看详情'})[0]);
+    expect(await screen.findByRole('heading',{name:'邀请来源管理'})).toBeInTheDocument();
+    expect(screen.queryByRole('button',{name:'补绑邀请来源'})).not.toBeInTheDocument();
+    expect(screen.queryByRole('button',{name:'修改邀请来源'})).not.toBeInTheDocument();
+  });
+
   it('按需加载真实用户详情并支持键盘关闭', async () => {
     window.history.replaceState({}, '', '/users');
     render(<App />);

@@ -222,6 +222,12 @@ class _GroupRemoveMembersScreenState extends State<GroupRemoveMembersScreen> {
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
                     child: CupertinoSearchTextField(
+                      style: TextStyle(color: context.linli.text),
+                      placeholderStyle: TextStyle(
+                        color: context.linli.secondaryText,
+                      ),
+                      itemColor: context.linli.secondaryText,
+                      backgroundColor: context.linli.elevated,
                       key: const Key('group-remove-search'),
                       enabled: !_busy,
                       placeholder: '搜索群成员',

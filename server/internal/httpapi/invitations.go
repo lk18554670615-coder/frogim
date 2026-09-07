@@ -12,6 +12,10 @@ import (
 
 func writeInviteError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, app.ErrInviteRelationCycle):
+		writeError(w, http.StatusConflict, "INVITE_RELATION_CYCLE", "不能绑定自己的邀请码，也不能形成循环邀请关系")
+	case errors.Is(err, app.ErrInviteRelationStale):
+		writeError(w, http.StatusConflict, "INVITE_RELATION_CHANGED", "邀请来源已被其他管理员修改，请刷新用户详情后重试")
 	case errors.Is(err, app.ErrInviteRequired):
 		writeError(w, http.StatusBadRequest, "INVITE_CODE_REQUIRED", "创建新账号需要填写邀请码")
 	case errors.Is(err, app.ErrInviteInvalid):
@@ -25,6 +29,29 @@ func writeInviteError(w http.ResponseWriter, err error) {
 	default:
 		handleErr(w, err)
 	}
+}
+
+func (x *API) adminSetUserInviteRelation(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		InviteCode      string `json:"inviteCode"`
+		Reason          string `json:"reason"`
+		Confirmed       bool   `json:"confirmed"`
+		ExpectedVersion *int64 `json:"expectedVersion"`
+	}
+	if decode(r, &payload) != nil || !confirmedReason(payload.Confirmed, payload.Reason) {
+		writeError(w, http.StatusBadRequest, "CONFIRMATION_REQUIRED", "请填写操作理由并确认修改")
+		return
+	}
+	if payload.ExpectedVersion == nil || *payload.ExpectedVersion < 0 {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "请刷新用户详情后再修改邀请来源")
+		return
+	}
+	item, err := x.app.AdminSetInviteRelation(r.Context(), uid(r), r.PathValue("id"), payload.InviteCode, payload.Reason, *payload.ExpectedVersion)
+	if err != nil {
+		writeInviteError(w, err)
+		return
+	}
+	write(w, http.StatusOK, item)
 }
 
 func (x *API) validateInviteCode(w http.ResponseWriter, r *http.Request) {

@@ -46,7 +46,7 @@ func TestInvitationPostgresLifecycle(t *testing.T) {
 	if _, err = p.pool.Exec(ctx, `INSERT INTO im_users(id,phone,name,created_at) VALUES('legacy','13900000001','legacy',now())`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = p.pool.Exec(ctx, `DELETE FROM im_schema_migrations WHERE version=63; INSERT INTO im_schema_migrations(version) VALUES(62) ON CONFLICT DO NOTHING`); err != nil {
+	if _, err = p.pool.Exec(ctx, `DELETE FROM im_schema_migrations WHERE version>=63; INSERT INTO im_schema_migrations(version) VALUES(62) ON CONFLICT DO NOTHING`); err != nil {
 		t.Fatal(err)
 	}
 	if err = p.migrate(ctx); err != nil {
