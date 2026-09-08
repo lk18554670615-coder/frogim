@@ -182,7 +182,7 @@ class _MyInviteCodeScreenState extends State<MyInviteCodeScreen> {
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: profile!.status == 'active'
-                      ? LinliColors.systemGreen
+                      ? context.linli.successText
                       : Theme.of(context).colorScheme.error,
                 ),
               ),

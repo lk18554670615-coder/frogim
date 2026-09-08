@@ -153,7 +153,7 @@ void main() {
   );
 
   test('native bridge sends independent flags on Android and iOS', () async {
-    const channel = MethodChannel('com.fd.kuailiao/message_feedback');
+    const channel = MethodChannel('top.hongjinghuanqiu.app/message_feedback');
     final calls = <MethodCall>[];
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;

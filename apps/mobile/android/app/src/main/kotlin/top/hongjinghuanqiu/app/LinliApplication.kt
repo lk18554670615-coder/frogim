@@ -1,4 +1,4 @@
-package com.fd.kuailiao
+package top.hongjinghuanqiu.app
 
 import android.app.NotificationChannel
 import android.app.NotificationManager

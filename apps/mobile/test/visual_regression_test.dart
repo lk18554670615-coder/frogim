@@ -58,7 +58,7 @@ void main() {
   setUpAll(() async {
     PackageInfo.setMockInitialValues(
       appName: '青蛙呱呱',
-      packageName: 'com.fd.kuailiao',
+      packageName: 'top.hongjinghuanqiu.app',
       version: '1.0.4',
       buildNumber: '4008',
       buildSignature: '',

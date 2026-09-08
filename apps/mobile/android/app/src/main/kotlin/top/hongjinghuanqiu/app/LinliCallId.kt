@@ -1,4 +1,4 @@
-package com.fd.kuailiao
+package top.hongjinghuanqiu.app
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest

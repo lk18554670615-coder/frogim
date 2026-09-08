@@ -308,6 +308,7 @@ class MessagingConnectionBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
+    final foreground = dark ? const Color(0xFFFFD8B8) : const Color(0xFF70401F);
     final message = retrying ? '正在重新连接消息服务…' : '消息服务未连接，发送暂不可用';
     return Semantics(
       container: true,
@@ -332,9 +333,7 @@ class MessagingConnectionBanner extends StatelessWidget {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: dark
-                      ? const Color(0xFFFFD8B8)
-                      : const Color(0xFF70401F),
+                  color: foreground,
                   fontWeight: FontWeight.w500,
                 ),
               ),
@@ -350,10 +349,10 @@ class MessagingConnectionBanner extends StatelessWidget {
                 minimumSize: const Size(48, 44),
                 padding: const EdgeInsets.symmetric(horizontal: 10),
                 onPressed: onRetry,
-                child: const Text(
+                child: Text(
                   '重试',
                   style: TextStyle(
-                    color: LinliColors.systemOrange,
+                    color: foreground,
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
                   ),

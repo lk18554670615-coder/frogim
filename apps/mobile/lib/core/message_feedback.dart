@@ -41,7 +41,7 @@ class MessageFeedback {
        _play = play ?? _playNative,
        _now = now ?? DateTime.now;
 
-  static const _channel = MethodChannel('com.fd.kuailiao/message_feedback');
+  static const _channel = MethodChannel('top.hongjinghuanqiu.app/message_feedback');
   static const webSoundAsset = 'sounds/message.wav';
   static AudioPlayer? _webPlayer;
   final Future<MessageFeedbackPreferences> Function() _preferences;

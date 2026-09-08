@@ -30,7 +30,7 @@ iPhone，也不能提交 App Store。
 | --- | --- |
 | `IOS_CERTIFICATE_P12_BASE64` | Apple Distribution `.p12` 的 Base64 文本 |
 | `IOS_CERTIFICATE_PASSWORD` | `.p12` 密码 |
-| `IOS_PROVISIONING_PROFILE_BASE64` | 匹配 `com.fd.kuailiao` 的 `.mobileprovision` Base64 文本 |
+| `IOS_PROVISIONING_PROFILE_BASE64` | 匹配 `top.hongjinghuanqiu.app` 的 `.mobileprovision` Base64 文本 |
 | `IOS_EXPORT_OPTIONS_PLIST_BASE64` | 对应发布方式的 `ExportOptions.plist` Base64 文本 |
 | `IOS_KEYCHAIN_PASSWORD` | 临时 CI Keychain 使用的随机高强度密码 |
 | `GETUI_APP_ID` | 可选，个推客户端 App ID；三项均配置后才启用个推 |
@@ -46,6 +46,17 @@ Apple 证书、描述文件和私钥材料不得提交到 Git。Windows PowerShe
 ```
 
 对 `.mobileprovision` 和 `ExportOptions.plist` 使用同样命令生成 Base64 文本。
+
+### 当前 Ad Hoc 配置
+
+- Bundle ID：`top.hongjinghuanqiu.app`；Team ID：`XTGL9G753G`。
+- 描述文件名称：`top.hongjinghuanqiu.app`；UUID：`aa010cd5-9d04-40ee-b7b6-577f238ff8fb`。
+- 导出：`method=release-testing`、`signingStyle=manual`，`provisioningProfiles` 以该 Bundle ID 为键、上述 UUID 为值。
+- 描述文件登记 99 台设备，有效期至 2027-09-05；它不是不限设备的企业描述文件，也不能用于 App Store 提交。
+- `tool/validate_ios_signing.py` 在 CI 检查 Bundle ID、团队、有效期、APNs 环境与导出方式，避免旧配置混用。此检查不替代 Xcode 的证书信任与吊销校验。
+- 替换 Secrets 后，必须使用已更新包名的提交构建；不要重跑旧包名的历史任务。新增设备需要重新生成、替换描述文件并重新构建。
+
+新包名不能覆盖安装旧应用，也不会自动继承本地数据。个推控制台和 APNs 推送配置需另行核对新应用绑定；当前服务端和旧客户端更新策略不随签名材料替换而修改。
 
 ## 手动构建签名 IPA
 

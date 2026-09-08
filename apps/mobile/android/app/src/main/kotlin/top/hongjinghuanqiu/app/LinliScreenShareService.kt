@@ -1,4 +1,4 @@
-package com.fd.kuailiao
+package top.hongjinghuanqiu.app
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -77,8 +77,8 @@ class LinliScreenShareService : Service() {
     companion object {
         private const val channelId = "linli_screen_share_channel"
         private const val notificationId = 0x5348
-        private const val actionStart = "com.fd.kuailiao.action.START_SCREEN_SHARE"
-        private const val actionStop = "com.fd.kuailiao.action.STOP_SCREEN_SHARE"
+        private const val actionStart = "top.hongjinghuanqiu.app.action.START_SCREEN_SHARE"
+        private const val actionStop = "top.hongjinghuanqiu.app.action.STOP_SCREEN_SHARE"
 
         fun start(context: Context) {
             val intent = Intent(context, LinliScreenShareService::class.java).setAction(actionStart)

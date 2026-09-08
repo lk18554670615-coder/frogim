@@ -1,4 +1,4 @@
-package com.fd.kuailiao
+package top.hongjinghuanqiu.app
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals

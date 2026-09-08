@@ -42,7 +42,7 @@ android {
         val file = rootProject.file("local.properties")
         if (file.exists()) file.inputStream().use(::load)
     }
-    namespace = "com.fd.kuailiao"
+    namespace = "top.hongjinghuanqiu.app"
     // API 36 is required transitively by the pinned LiveKit 2.7.0 graph.
     // This does not opt the app into new target-SDK runtime behavior.
     compileSdk = 36
@@ -54,7 +54,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.fd.kuailiao"
+        applicationId = "top.hongjinghuanqiu.app"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

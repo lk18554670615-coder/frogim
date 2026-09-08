@@ -59,7 +59,7 @@ docker compose -f infra/compose.yaml -f infra/compose.wukong.yaml config -q
 
 ## iOS 自动构建
 
-Android 与 iOS 应用统一使用包名/Bundle ID `com.fd.kuailiao`。GitHub Actions 在 `main` 分支相关代码变化时自动完成 Flutter 静态分析、测试、无签名 iOS Release 编译及签名 IPA 构建；也可手动运行 `iOS Build` 并启用“使用仓库 Secrets 构建签名 IPA”。实际分发类型取决于仓库保存的证书、描述文件和导出配置，构建完成不代表企业分发平台已上架。
+Android 与 iOS 应用统一使用包名/Bundle ID `top.hongjinghuanqiu.app`，不能覆盖安装旧包名 `com.fd.kuailiao` 的应用。GitHub Actions 在 `main` 分支相关代码变化时自动完成 Flutter 静态分析、测试、无签名 iOS Release 编译及签名 IPA 构建；也可手动运行 `iOS Build` 并启用“使用仓库 Secrets 构建签名 IPA”。当前 iOS 使用 Ad Hoc 签名，仅描述文件登记的设备可安装，不是不限设备的企业分发包，也不能直接提交 App Store。
 
 证书、描述文件和密码只允许保存在 GitHub 加密 Secrets 中，不得提交到仓库。工作流入口、所需 Secrets、产物下载和签名方式见 [GitHub Actions iOS 构建](docs/GITHUB_IOS_ACTIONS.md)。
 

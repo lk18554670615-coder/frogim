@@ -1,4 +1,4 @@
-package com.fd.kuailiao
+package top.hongjinghuanqiu.app
 
 import android.app.Activity
 import android.content.Intent
@@ -11,9 +11,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 class MainActivity : FlutterActivity() {
-    private val screenshotChannelName = "com.fd.kuailiao/screenshot"
-    private val systemCallChannelName = "com.fd.kuailiao/system_calls"
-    private val screenShareChannelName = "com.fd.kuailiao/screen_share"
+    private val screenshotChannelName = "top.hongjinghuanqiu.app/screenshot"
+    private val systemCallChannelName = "top.hongjinghuanqiu.app/system_calls"
+    private val screenShareChannelName = "top.hongjinghuanqiu.app/screen_share"
     private var screenshotChannel: MethodChannel? = null
     private var systemCallChannel: MethodChannel? = null
     private var screenShareChannel: MethodChannel? = null

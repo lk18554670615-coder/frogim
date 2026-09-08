@@ -1,4 +1,4 @@
-package com.fd.kuailiao
+package top.hongjinghuanqiu.app
 
 import android.app.Activity
 import android.app.NotificationManager
@@ -19,7 +19,7 @@ import io.flutter.plugin.common.MethodChannel
 class LinliMessageFeedback(private val activity: Activity, messenger: BinaryMessenger) {
     private val handler = Handler(Looper.getMainLooper())
     private var ringtone: Ringtone? = null
-    private val channel = MethodChannel(messenger, "com.fd.kuailiao/message_feedback")
+    private val channel = MethodChannel(messenger, "top.hongjinghuanqiu.app/message_feedback")
     private val attributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_NOTIFICATION)
         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)

@@ -37,6 +37,7 @@ permissions:
 env:
   FLUTTER_STORAGE_BASE_URL: https://storage.googleapis.com
   PUB_HOSTED_URL: https://pub.dev
+  IOS_BUNDLE_ID: top.hongjinghuanqiu.app
 
 jobs:
   compile:
@@ -77,6 +78,9 @@ jobs:
 
       - name: Run Flutter tests
         run: flutter test --reporter compact
+
+      - name: Test signing metadata validation
+        run: python3 -m unittest discover -s tool -p test_ios_signing.py -v
 
       - name: Compile release iOS app without signing
         run: |
@@ -183,6 +187,10 @@ jobs:
           security default-keychain -d user -s "${keychain_path}"
 
           security cms -D -i "${profile_path}" > "${profile_plist}"
+          python3 tool/validate_ios_signing.py \
+            --profile "${profile_plist}" \
+            --export-options "${export_options_path}" \
+            --bundle-id "${IOS_BUNDLE_ID}"
           profile_uuid=$(/usr/libexec/PlistBuddy -c 'Print UUID' "${profile_plist}")
           profile_name=$(/usr/libexec/PlistBuddy -c 'Print Name' "${profile_plist}")
           profiles_dir="${HOME}/Library/MobileDevice/Provisioning Profiles"

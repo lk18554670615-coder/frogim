@@ -36,7 +36,7 @@ import flutter_callkit_incoming
       return
     }
     let feedback = FlutterMethodChannel(
-      name: "com.fd.kuailiao/message_feedback",
+      name: "top.hongjinghuanqiu.app/message_feedback",
       binaryMessenger: registrar.messenger()
     )
     messageFeedbackChannel?.setMethodCallHandler(nil)
@@ -80,7 +80,7 @@ import flutter_callkit_incoming
       }
     }
     let channel = FlutterMethodChannel(
-      name: "com.fd.kuailiao/screenshot",
+      name: "top.hongjinghuanqiu.app/screenshot",
       binaryMessenger: registrar.messenger()
     )
     screenshotChannel = channel

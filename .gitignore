@@ -20,6 +20,8 @@
 *.p8
 *.p12
 *.pfx
+*.mobileprovision
+*.provisionprofile
 *.jks
 *.keystore
 apps/mobile/android/key.properties

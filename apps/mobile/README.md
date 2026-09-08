@@ -96,16 +96,17 @@ bash infra/scripts/publish-client-version.sh android 1.0.0 1.0.0 \
 
 ## Android 与 iOS 应用标识
 
-Android `applicationId` 与 iOS Bundle ID 统一为 `com.fd.kuailiao`。修改该值会被系统和应用商店视为另一款应用，旧包名客户端不能原地升级到新包名。
+Android `applicationId` 与 iOS Bundle ID 统一为 `top.hongjinghuanqiu.app`。修改该值会被系统和应用商店视为另一款应用，旧包名 `com.fd.kuailiao` 客户端不能原地升级到新包名，本地数据也不会自动迁移。macOS 应用标识本次不变。
 
 ## iOS 签名构建
 
-iOS Release/Profile 使用 App Store 手动分发签名。Windows 不直接构建 IPA，统一通过仓库的 GitHub Actions `iOS Build` 工作流在 `macos-26` / Xcode 26 Runner 上构建：
+iOS Release/Profile 使用 Ad Hoc 手动分发签名，Xcode 26 的导出方式为 `release-testing`。Windows 不直接构建 IPA，统一通过仓库的 GitHub Actions `iOS Build` 工作流在 `macos-26` / Xcode 26 Runner 上构建：
 
-- 推送 `main` 中的 Flutter、iOS 或工作流变化时，自动执行静态分析、完整测试和无签名 Release 编译。
+- 推送 `main` 中的 Flutter、iOS 或工作流变化时，自动执行静态分析、完整测试、无签名 Release 编译，成功后继续构建签名 IPA。
 - 在 GitHub Actions 页面手动运行工作流，并启用“使用仓库 Secrets 构建签名 IPA”，构建成功后下载 `ios-signed-<run_number>` Artifact。
 - Apple Distribution P12、密码、描述文件、ExportOptions 和临时 Keychain 密码必须使用 GitHub 加密 Secrets；不得写入 Git、构建参数或日志。
-- App Store 描述文件生成的 IPA 用于 App Store Connect/TestFlight；如需直接安装到指定设备，必须改用包含设备 UDID 的 Ad Hoc 描述文件。
+- 当前描述文件登记了 99 台设备，只有已登记设备可安装；其有效期至 2027-09-05。App Store/TestFlight 发布需要另行更换对应描述文件和导出配置，不能使用当前 Ad Hoc 包。
+- 更换包名后须独立核对个推应用绑定、APNs 凭据和服务端推送路由；不能仅修改包名就认为推送可用，也不要将新包地址发布为旧包的强制更新。
 
 完整配置与操作步骤见 [GitHub Actions iOS 构建](../../docs/GITHUB_IOS_ACTIONS.md)。
 

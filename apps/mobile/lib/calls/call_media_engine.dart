@@ -54,7 +54,7 @@ abstract interface class CallMediaEngine {
 
 class LiveKitCallMediaEngine implements CallMediaEngine {
   static const _screenShareChannel = MethodChannel(
-    'com.fd.kuailiao/screen_share',
+    'top.hongjinghuanqiu.app/screen_share',
   );
   final _connections = StreamController<CallConnectionState>.broadcast();
   final _media = StreamController<void>.broadcast();
