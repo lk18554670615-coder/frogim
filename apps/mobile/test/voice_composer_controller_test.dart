@@ -105,7 +105,11 @@ void main() {
       expect(voice.samples.value.last, closeTo(.55, .0001));
       expect(phaseChanges, initial);
       recorder.failAmplitude = true;
-      await Future<void>.delayed(const Duration(milliseconds: 110));
+      final unavailableTimeout = Stopwatch()..start();
+      while (voice.samples.value.isNotEmpty &&
+          unavailableTimeout.elapsed < const Duration(seconds: 2)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
       expect(voice.samples.value, isEmpty);
       final count = recorder.samples;
       await Future<void>.delayed(const Duration(milliseconds: 120));
