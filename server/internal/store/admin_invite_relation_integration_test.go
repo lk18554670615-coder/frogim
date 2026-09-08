@@ -266,7 +266,7 @@ func TestAdminInviteRelationMigration65(t *testing.T) {
 	if err := p.pool.QueryRow(ctx, "SELECT version,binding_source,registration_method,created_at,updated_at FROM im_user_invite_relations WHERE invitee_user_id='b'").Scan(&version, &source, &method, &created, &updated); err != nil {
 		t.Fatal(err)
 	}
-	if schemaVersion != 65 || version != 1 || source != "registration" || method != "password" || !created.Equal(updated) {
+	if schemaVersion < 65 || version != 1 || source != "registration" || method != "password" || !created.Equal(updated) {
 		t.Fatalf("migration: %d %s %s %v %v", version, source, method, created, updated)
 	}
 }

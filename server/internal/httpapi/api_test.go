@@ -3502,10 +3502,45 @@ func TestMomentsRESTWorkflowPostgres(t *testing.T) {
 	if res.StatusCode != http.StatusCreated || momentID == "" || created.Item["authorId"] != author.ID {
 		t.Fatalf("create moment status=%d body=%v", res.StatusCode, created)
 	}
+	if created.Item["visibility"] != "public" {
+		t.Fatalf("friend-public visibility label was not preserved: %v", created.Item)
+	}
+
+	// A valid account is not enough to see or interact with a moment. The
+	// relationship must exist at request time. In moments, "public" means
+	// public to all current friends, never public to every account.
 	res = authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/moments?authorId="+url.QueryEscape(author.ID), viewerToken, "")
 	var feed struct {
 		Items []map[string]any `json:"items"`
 	}
+	_ = json.NewDecoder(res.Body).Decode(&feed)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || len(feed.Items) != 0 {
+		t.Fatalf("stranger moment feed status=%d body=%v", res.StatusCode, feed)
+	}
+	res = authenticatedRequest(t, http.MethodPut, ts.URL+"/v2/moments/"+momentID+"/like", viewerToken, "")
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("stranger moment like status=%d", res.StatusCode)
+	}
+	res.Body.Close()
+	res = authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/moments/"+momentID+"/comments", viewerToken, `{"content":"越权评论"}`)
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("stranger moment comment status=%d", res.StatusCode)
+	}
+	res.Body.Close()
+
+	friendRequest, err := a.RequestFriend(author.ID, viewer.ID, "朋友圈可见性测试")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.AcceptFriend(viewer.ID, friendRequest.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	res = authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/moments?authorId="+url.QueryEscape(author.ID), viewerToken, "")
+	feed = struct {
+		Items []map[string]any `json:"items"`
+	}{}
 	_ = json.NewDecoder(res.Body).Decode(&feed)
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK || len(feed.Items) != 1 || feed.Items[0]["id"] != momentID {

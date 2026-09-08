@@ -538,6 +538,32 @@ func TestMomentsVisibilityMediaInteractionsAndReminders(t *testing.T) {
 		VALUES($1,$2,$3,'image/png',128,'ready',now(),now())`, imageID, author, "moments/"+imageID); err != nil {
 		t.Fatal(err)
 	}
+	legacyPublicID := "moment_legacy_public_" + suffix
+	legacyPublic, err := p.CreateMoment(ctx, MomentCreate{
+		ID: legacyPublicID, AuthorID: author, Content: "旧客户端公开值", MediaKind: "none",
+		Visibility: "public", At: time.Now(),
+	})
+	if err != nil || legacyPublic.Visibility != "public" {
+		t.Fatalf("friend-public visibility label was not preserved: item=%#v err=%v", legacyPublic, err)
+	}
+	if feed, _, feedErr := p.ListMoments(ctx, stranger, author, "", 20); feedErr != nil || len(feed) != 0 {
+		t.Fatalf("legacy public moment leaked to stranger: feed=%#v err=%v", feed, feedErr)
+	}
+	if _, err = p.SetMomentLike(ctx, stranger, legacyPublicID, true, time.Now()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("stranger liked legacy public moment err=%v", err)
+	}
+	if _, err = p.CreateMomentComment(ctx, "moment_stranger_comment_"+suffix, stranger, legacyPublicID, "", "越权评论", time.Now()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("stranger commented on legacy public moment err=%v", err)
+	}
+	if err = p.DeleteMoment(ctx, author, legacyPublicID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = p.CreateMoment(ctx, MomentCreate{
+		ID: "moment_selected_stranger_" + suffix, AuthorID: author, Content: "错误的指定范围", MediaKind: "none",
+		Visibility: "selected", VisibleUserIDs: []string{stranger}, At: time.Now(),
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("selected visibility accepted a non-friend err=%v", err)
+	}
 	momentID := "moment_" + suffix
 	moment, err := p.CreateMoment(ctx, MomentCreate{
 		ID: momentID, AuthorID: author, Content: "仅好友可见，排除一人", MediaKind: "images",
@@ -563,6 +589,28 @@ func TestMomentsVisibilityMediaInteractionsAndReminders(t *testing.T) {
 	}
 	if allowed, accessErr := p.CanAccessMedia(ctx, friend, imageID); accessErr != nil || !allowed {
 		t.Fatalf("friend media allowed=%v err=%v", allowed, accessErr)
+	}
+	if allowed, accessErr := p.canShareMomentWithAudience(ctx, momentID, WukongMessageRoute{ChannelID: friend, ChannelType: wukong.ChannelPerson}); accessErr != nil || !allowed {
+		t.Fatalf("friend direct share allowed=%v err=%v", allowed, accessErr)
+	}
+	if allowed, accessErr := p.canShareMomentWithAudience(ctx, momentID, WukongMessageRoute{ChannelID: stranger, ChannelType: wukong.ChannelPerson}); accessErr != nil || allowed {
+		t.Fatalf("stranger direct share allowed=%v err=%v", allowed, accessErr)
+	}
+	shareGroupID := "moment_share_group_" + suffix
+	if _, err = p.pool.Exec(ctx, `INSERT INTO im_conversations(id,kind,title,created_at,updated_at) VALUES($1,'group','Moment share',now(),now())`, shareGroupID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = p.pool.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,joined_at) VALUES($1,$2,'owner',now()),($1,$3,'member',now())`, shareGroupID, author, friend); err != nil {
+		t.Fatal(err)
+	}
+	if allowed, accessErr := p.canShareMomentWithAudience(ctx, momentID, WukongMessageRoute{ChannelID: shareGroupID, ChannelType: wukong.ChannelGroup}); accessErr != nil || !allowed {
+		t.Fatalf("friend-only group share allowed=%v err=%v", allowed, accessErr)
+	}
+	if _, err = p.pool.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,joined_at) VALUES($1,$2,'member',now())`, shareGroupID, stranger); err != nil {
+		t.Fatal(err)
+	}
+	if allowed, accessErr := p.canShareMomentWithAudience(ctx, momentID, WukongMessageRoute{ChannelID: shareGroupID, ChannelType: wukong.ChannelGroup}); accessErr != nil || allowed {
+		t.Fatalf("group share leaked to stranger: allowed=%v err=%v", allowed, accessErr)
 	}
 
 	liked, err := p.SetMomentLike(ctx, friend, momentID, true, time.Now())
@@ -628,6 +676,18 @@ func TestMomentsVisibilityMediaInteractionsAndReminders(t *testing.T) {
 	var moderationAudits int
 	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_audits WHERE action='moment.moderated' AND target_id=$1 AND metadata ? 'reason'`, momentID).Scan(&moderationAudits); err != nil || moderationAudits != 2 {
 		t.Fatalf("moment moderation audits=%d err=%v", moderationAudits, err)
+	}
+	if _, err = p.pool.Exec(ctx, `DELETE FROM im_friendships WHERE (user_id=$1 AND friend_user_id=$2) OR (user_id=$2 AND friend_user_id=$1)`, author, friend); err != nil {
+		t.Fatal(err)
+	}
+	if feed, _, feedErr := p.ListMoments(ctx, friend, author, "", 20); feedErr != nil || len(feed) != 0 {
+		t.Fatalf("former friend still sees moment: feed=%#v err=%v", feed, feedErr)
+	}
+	if allowed, accessErr := p.CanAccessMedia(ctx, friend, imageID); accessErr != nil || allowed {
+		t.Fatalf("former friend still accesses moment media: allowed=%v err=%v", allowed, accessErr)
+	}
+	if reminders, reminderErr := p.ListMomentReminders(ctx, friend, 20); reminderErr != nil || len(reminders) != 0 {
+		t.Fatalf("former friend still sees moment reminders: reminders=%#v err=%v", reminders, reminderErr)
 	}
 	if err = p.DeleteMoment(ctx, author, momentID, time.Now()); err != nil {
 		t.Fatal(err)

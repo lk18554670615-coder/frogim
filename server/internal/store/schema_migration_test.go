@@ -204,6 +204,22 @@ func TestGroupJoinPolicySchemaIsVersioned(t *testing.T) {
 	}
 }
 
+func TestMomentFriendOnlyAccessSchemaIsVersioned(t *testing.T) {
+	if schemaVersion < 66 {
+		t.Fatalf("friend-only moment access requires schema version 66 or newer, got %d", schemaVersion)
+	}
+	for _, fragment := range []string{
+		"CREATE OR REPLACE FUNCTION im_can_access_moment",
+		"friendship.user_id=viewer_id AND friendship.friend_user_id=moment.author_id",
+		"moment.visibility IN ('public','friends')",
+		"moment.visibility='selected' AND viewer_id=ANY(moment.visible_user_ids)",
+	} {
+		if !strings.Contains(normalizedSchema, fragment) {
+			t.Fatalf("friend-only moment access schema is missing %q", fragment)
+		}
+	}
+}
+
 func TestPublicGuaguaHandleMigrationIsVersioned(t *testing.T) {
 	if schemaVersion < 49 {
 		t.Fatalf("public Guagua handles require schema version 49 or newer, got %d", schemaVersion)

@@ -304,6 +304,26 @@ CREATE TABLE IF NOT EXISTS im_moments(
 CREATE INDEX IF NOT EXISTS im_moments_feed_idx ON im_moments(created_at DESC,id DESC) WHERE status='published';
 CREATE INDEX IF NOT EXISTS im_moments_author_idx ON im_moments(author_id,created_at DESC,id DESC);
 CREATE INDEX IF NOT EXISTS im_moments_media_idx ON im_moments USING gin(media_ids);
+CREATE OR REPLACE FUNCTION im_can_access_moment(viewer_id text,target_moment_id text) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+ SELECT EXISTS(
+  SELECT 1 FROM im_moments moment
+  WHERE moment.id=target_moment_id AND moment.status<>'deleted' AND (
+   moment.author_id=viewer_id OR (
+    moment.status='published'
+    AND EXISTS(
+     SELECT 1 FROM im_friendships friendship
+     WHERE friendship.user_id=viewer_id AND friendship.friend_user_id=moment.author_id
+    )
+    AND (
+     moment.visibility IN ('public','friends') OR
+     (moment.visibility='excluded' AND NOT (viewer_id=ANY(moment.visible_user_ids))) OR
+     (moment.visibility='selected' AND viewer_id=ANY(moment.visible_user_ids))
+    )
+   )
+  )
+ );
+$$;
 CREATE TABLE IF NOT EXISTS im_moment_likes(
  moment_id text NOT NULL REFERENCES im_moments(id) ON DELETE CASCADE,
  user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,

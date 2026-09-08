@@ -1255,6 +1255,13 @@ func (p *Postgres) AuthorizeWukongClientMessage(ctx context.Context, input Wukon
 		if input.ResourceID == "" || !allowed {
 			return WukongMessageRoute{}, ErrForbidden
 		}
+		allowed, accessErr = p.canShareMomentWithAudience(ctx, input.ResourceID, route)
+		if accessErr != nil {
+			return WukongMessageRoute{}, accessErr
+		}
+		if !allowed {
+			return WukongMessageRoute{}, ErrForbidden
+		}
 	}
 	if input.Type == "sticker" {
 		allowed, accessErr := p.CanUseSticker(ctx, input.UserID, input.ResourceID)
@@ -1266,6 +1273,26 @@ func (p *Postgres) AuthorizeWukongClientMessage(ctx context.Context, input Wukon
 		}
 	}
 	return route, nil
+}
+
+// canShareMomentWithAudience prevents a moment-share message from copying a
+// private preview into a conversation whose recipients cannot read the source
+// moment. A group share is allowed only when every current member is within the
+// source author's effective friend visibility scope.
+func (p *Postgres) canShareMomentWithAudience(ctx context.Context, momentID string, route WukongMessageRoute) (bool, error) {
+	switch route.ChannelType {
+	case wukong.ChannelPerson:
+		return p.CanAccessMoment(ctx, route.ChannelID, momentID)
+	case wukong.ChannelGroup:
+		var allowed bool
+		err := p.pool.QueryRow(ctx, `SELECT NOT EXISTS(
+			SELECT 1 FROM im_members member
+			WHERE member.conversation_id=$1 AND NOT im_can_access_moment(member.user_id,$2)
+		)`, route.ChannelID, momentID).Scan(&allowed)
+		return allowed, err
+	default:
+		return false, nil
+	}
 }
 
 func (p *WithRedis) AuthorizeWukongClientMessage(ctx context.Context, input WukongClientMessageInput) (WukongMessageRoute, error) {

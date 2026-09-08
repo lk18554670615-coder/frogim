@@ -28,7 +28,7 @@ type Postgres struct {
 	historyBoundary GroupHistoryBoundaryReader
 }
 
-const schemaVersion = 65
+const schemaVersion = 66
 
 type PostgresOptions struct {
 	MaxConns          int32
@@ -1380,16 +1380,8 @@ func (p *Postgres) CanAccessMedia(ctx context.Context, uid, id string) (bool, er
 					))
 				)
 			) OR EXISTS(
-				SELECT 1 FROM im_moments moment WHERE media.id=ANY(moment.media_ids) AND moment.status<>'deleted' AND (
-					moment.author_id=$1 OR (moment.status='published' AND (
-						moment.visibility='public' OR
-						(moment.visibility IN ('friends','excluded') AND EXISTS(
-							SELECT 1 FROM im_friendships friendship
-							WHERE friendship.user_id=$1 AND friendship.friend_user_id=moment.author_id)
-							AND (moment.visibility<>'excluded' OR NOT ($1=ANY(moment.visible_user_ids)))) OR
-						(moment.visibility='selected' AND $1=ANY(moment.visible_user_ids))
-					))
-				)
+				SELECT 1 FROM im_moments moment
+				WHERE media.id=ANY(moment.media_ids) AND im_can_access_moment($1,moment.id)
 			) OR EXISTS(
 				SELECT 1 FROM im_sticker_packs pack WHERE pack.status='published' AND (
 					pack.cover_media_id=$2 OR EXISTS(
@@ -2029,15 +2021,7 @@ func (p *Postgres) CreateReportRecord(ctx context.Context, r *model.Report, a *m
 	case "group":
 		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_conversations c JOIN im_members member ON member.conversation_id=c.id AND member.user_id=$2 WHERE c.id=$1 AND c.kind='group')`, r.TargetID, r.ReporterID).Scan(&targetExists)
 	case "moment":
-		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_moments moment WHERE moment.id=$1 AND moment.status<>'deleted' AND (
-			moment.author_id=$2 OR (moment.status='published' AND (
-				moment.visibility='public' OR
-				(moment.visibility IN ('friends','excluded') AND EXISTS(
-					SELECT 1 FROM im_friendships friendship WHERE friendship.user_id=$2 AND friendship.friend_user_id=moment.author_id)
-					AND (moment.visibility<>'excluded' OR NOT ($2=ANY(moment.visible_user_ids)))) OR
-				(moment.visibility='selected' AND $2=ANY(moment.visible_user_ids))
-			))
-		))`, r.TargetID, r.ReporterID).Scan(&targetExists)
+		err = tx.QueryRow(ctx, `SELECT im_can_access_moment($2,$1)`, r.TargetID, r.ReporterID).Scan(&targetExists)
 	default:
 		return ErrUnsupported
 	}

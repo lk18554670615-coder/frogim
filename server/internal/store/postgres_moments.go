@@ -11,14 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const momentVisibilitySQL = `(moment.author_id=$1 OR (moment.status='published' AND (
-	moment.visibility='public' OR
-	(moment.visibility IN ('friends','excluded') AND EXISTS(
-		SELECT 1 FROM im_friendships friendship
-		WHERE friendship.user_id=$1 AND friendship.friend_user_id=moment.author_id)
-		AND (moment.visibility<>'excluded' OR NOT ($1=ANY(moment.visible_user_ids)))) OR
-	(moment.visibility='selected' AND $1=ANY(moment.visible_user_ids))
-)))`
+const momentVisibilitySQL = `im_can_access_moment($1,moment.id)`
 
 const momentSelectSQL = `SELECT moment.id,moment.author_id,author.name,author.avatar_url,
 	moment.content,moment.media_kind,moment.media_ids,
@@ -153,7 +146,9 @@ func (p *Postgres) CreateMoment(ctx context.Context, input MomentCreate) (*Momen
 	}
 	if len(visibleIDs) > 0 {
 		var visibleCount int
-		if err = tx.QueryRow(ctx, `SELECT count(*) FROM im_users WHERE id=ANY($1::text[]) AND id<>$2 AND deleted_at IS NULL`, visibleIDs, input.AuthorID).Scan(&visibleCount); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT count(*) FROM im_users candidate
+			JOIN im_friendships friendship ON friendship.user_id=$2 AND friendship.friend_user_id=candidate.id
+			WHERE candidate.id=ANY($1::text[]) AND candidate.id<>$2 AND candidate.deleted_at IS NULL`, visibleIDs, input.AuthorID).Scan(&visibleCount); err != nil {
 			return nil, err
 		}
 		if visibleCount != len(visibleIDs) {
@@ -457,7 +452,8 @@ func (p *Postgres) ListMomentReminders(ctx context.Context, userID string, limit
 		reminder.type,COALESCE(reminder.comment_id,''),left(moment.content,160),reminder.read_at,reminder.created_at
 		FROM im_moment_reminders reminder JOIN im_users actor ON actor.id=reminder.actor_id
 		JOIN im_moments moment ON moment.id=reminder.moment_id
-		WHERE reminder.user_id=$1 ORDER BY reminder.created_at DESC,reminder.id DESC LIMIT $2`, strings.TrimSpace(userID), limit)
+		WHERE reminder.user_id=$1 AND im_can_access_moment($1,moment.id)
+		ORDER BY reminder.created_at DESC,reminder.id DESC LIMIT $2`, strings.TrimSpace(userID), limit)
 	if err != nil {
 		return nil, err
 	}
