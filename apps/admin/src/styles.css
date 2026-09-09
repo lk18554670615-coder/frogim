@@ -301,6 +301,9 @@ td strong { color: var(--ink); font-weight: 620; }
 .toggle-row input:checked + .toggle-control { background: var(--primary); }
 .toggle-row input:checked + .toggle-control::after { transform: translateX(16px); }
 .toggle-row input:focus-visible + .toggle-control { outline: 3px solid var(--color-focus-soft); outline-offset: 2px; }
+.toggle-row.disabled { cursor: not-allowed; }
+.toggle-row.disabled > div { opacity: .68; }
+.toggle-row input:disabled + .toggle-control { opacity: .58; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin-top: 18px; }
 .field-label { display: grid; gap: 7px; color: var(--color-ink-secondary); font-size: 11.5px; font-weight: 620; }
 .field-label input, .field-label select { width: 100%; }
@@ -391,6 +394,14 @@ td strong { color: var(--ink); font-weight: 620; }
 .detail-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 12px; }
 .detail-section-heading h3 { margin: 0 0 4px; font-size: 14px; }
 .detail-section-heading p { margin: 0; color: var(--muted); font-size: 11px; }
+.message-permission-section .detail-section-heading { margin-bottom: 10px; }
+.message-permission-card { overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-raised); }
+.message-permission-card .toggle-row { min-height: 76px; padding: 0 14px; border-bottom: 1px solid var(--line); }
+.message-permission-card .toggle-row strong { color: var(--ink); font-size: 13px; }
+.message-permission-card .toggle-row div span { max-width: 620px; font-size: 11.5px; line-height: 1.55; }
+.message-permission-meta { display: flex; flex-wrap: wrap; gap: 7px; padding: 10px 14px 12px; }
+.message-permission-meta span { padding: 4px 8px; border-radius: 999px; color: var(--primary-strong); background: var(--primary-soft); font-size: 10.5px; font-weight: 620; }
+.message-permission-readonly { margin: 9px 0 0; color: var(--muted); font-size: 11px; }
 .detail-search { width: min(310px, 100%); flex: 0 0 auto; }
 .detail-table { border: 1px solid var(--line); border-radius: 10px 10px 0 0; }
 .detail-table + .pagination { border: 1px solid var(--line); border-top: 0; border-radius: 0 0 10px 10px; }

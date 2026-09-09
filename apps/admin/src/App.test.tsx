@@ -356,6 +356,22 @@ describe('青蛙呱呱管理后台', () => {
     expect(screen.queryByRole('dialog', { name: '用户详情' })).not.toBeInTheDocument();
   });
 
+  it('用户详情使用带说明的消息权限开关并要求确认理由', async () => {
+    window.history.replaceState({}, '', '/users');
+    render(<App />);
+    await screen.findByText('林夏');
+    await userEvent.click(screen.getAllByRole('button', { name: '查看详情' })[0]);
+    const detail = await screen.findByRole('dialog', { name: '用户详情' });
+    const permission = within(detail).getByRole('checkbox', { name: '允许全端删除消息' });
+    expect(permission).not.toBeChecked();
+    expect(within(detail).getByText('未授权：用户只能使用本机删除和现有撤回功能。')).toBeInTheDocument();
+    expect(within(detail).getByText('不受撤回时限限制')).toBeInTheDocument();
+    await userEvent.click(permission);
+    const confirm = await screen.findByRole('dialog', { name: '授权全端删除消息' });
+    expect(within(confirm).getByRole('button', { name: '确认修改' })).toBeDisabled();
+    expect(within(confirm).getByLabelText('操作理由')).toBeInTheDocument();
+  });
+
   it('用户详情展示真实好友、黑名单和登记设备', async () => {
     window.history.replaceState({}, '', '/users');
     render(<App />);
