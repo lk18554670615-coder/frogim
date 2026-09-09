@@ -234,8 +234,8 @@ describe('青蛙呱呱管理后台', () => {
     expect(screen.queryByRole('columnheader', { name: '注册时间 / IP' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '113.210.105.80' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '150.228.145.1' })).toBeInTheDocument();
-    expect(screen.getByText('马来西亚 · 吉隆坡 · 吉隆坡 · Binariang Berhad')).toBeInTheDocument();
-    expect(screen.getByText('马来西亚 · 吉隆坡 · 吉隆坡 · SpaceX')).toBeInTheDocument();
+    expect(screen.getAllByText('马来西亚 · 吉隆坡')).toHaveLength(2);
+    expect(screen.queryByText(/Binariang Berhad|SpaceX/)).not.toBeInTheDocument();
   });
 
   it('用户反馈分类始终展示中文而不是服务端枚举', async () => {

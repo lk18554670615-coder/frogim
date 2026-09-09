@@ -8,9 +8,17 @@ export const ipSourceLabels: Record<string,string> = {registration:'注册 IP',l
 const methodLabels: Record<string,string> = {otp:'验证码',password:'密码',qr:'扫码',admin:'后台开户'};
 const failureLabels: Record<string,string> = {INVALID_CODE:'验证码不正确或已过期',INVALID_CREDENTIALS:'凭据验证失败',FORBIDDEN:'账号或操作不可用',ACCOUNT_EXISTS:'账号已存在',RATE_LIMITED:'认证尝试过于频繁',SMS_NOT_CONFIGURED:'验证码服务未配置',SMS_UNAVAILABLE:'验证码服务暂不可用',IM_UNAVAILABLE:'IM 服务暂不可用',QR_LOGIN_NOT_FOUND:'扫码凭据无效',QR_LOGIN_EXPIRED:'扫码凭据过期',QR_LOGIN_USED:'扫码凭据已使用',QR_LOGIN_ACCOUNT_UNAVAILABLE:'扫码账号不可用',INVALID_ARGUMENT:'认证参数不符合要求',AUTH_UNAVAILABLE:'认证服务暂不可用'};
 function timestamp(value?: string) { if(!value)return '未记录';const d=new Date(value);return Number.isNaN(d.getTime())?'未记录':new Intl.DateTimeFormat('zh-CN',{dateStyle:'medium',timeStyle:'short'}).format(d); }
+function locationParts(r: IPRegion) {
+  const result:string[]=[];const seen=new Set<string>();
+  for(const raw of [r.country,r.province,r.city]){
+    const value=raw?.trim().replace(/\s+/g,' ')??'';const key=value.toLowerCase();
+    if(value&&!seen.has(key)){seen.add(key);result.push(value);}
+  }
+  return result;
+}
 export function regionLabel(r?: IPRegion) {
   if(!r)return '归属地暂不可用';
-  if(r.status==='ok')return [r.country,r.province,r.city,r.isp].filter(Boolean).join(' · ') || '归属地未知';
+  if(r.status==='ok')return locationParts(r).join(' · ') || '归属地未知';
   return ({private:'内网地址',loopback:'回环地址',reserved:'保留地址',unknown:'未记录',not_found:'未查到归属地'} as Record<string,string>)[r.status] ?? '归属地暂不可用';
 }
 export function IPValue({ip,region,onIP,notify}:{ip?:string;region?:IPRegion;onIP:(ip:string)=>void;notify:Notify}) {

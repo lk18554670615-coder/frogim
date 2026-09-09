@@ -14,9 +14,13 @@ class PeerLoginInfo {
     final region = json['region'];
     final values = region is Map ? region : const {};
     final parts = <String>[];
-    for (final key in ['country', 'province', 'city', 'isp']) {
-      final value = (values[key] as String?)?.trim() ?? '';
-      if (value.isNotEmpty && !parts.contains(value)) parts.add(value);
+    final seen = <String>{};
+    for (final key in ['country', 'province', 'city']) {
+      final value = ((values[key] as String?) ?? '').trim().replaceAll(
+        RegExp(r'\s+'),
+        ' ',
+      );
+      if (value.isNotEmpty && seen.add(value.toLowerCase())) parts.add(value);
     }
     final label = switch (values['status']) {
       'ok' => parts.isEmpty ? '暂不可用' : parts.join(' · '),
@@ -24,6 +28,7 @@ class PeerLoginInfo {
       'loopback' => '本机回环地址',
       'reserved' => '保留地址',
       'unknown' => '未记录',
+      'not_found' => '未查到归属地',
       _ => '暂不可用',
     };
     return PeerLoginInfo(

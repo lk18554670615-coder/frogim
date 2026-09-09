@@ -23,9 +23,17 @@ describe('用户 IP 与认证记录',()=>{
   it('后台来源和未知注册 IP 如实显示，不从登录补造',()=>{
     render(<UserAccessSummary access={{...user.access!,registrationSource:'admin',registrationIp:undefined}} full notify={notify} onIP={onIP}/>);
     expect(screen.getByText('后台创建')).toBeInTheDocument();expect(screen.getByText('未记录')).toBeInTheDocument();
-    expect(screen.queryByText('1.1.1.1')).not.toBeInTheDocument();expect(screen.getByText('中国 · 广东 · 深圳 · 电信')).toBeInTheDocument();
+    expect(screen.queryByText('1.1.1.1')).not.toBeInTheDocument();expect(screen.getByText('中国 · 广东 · 深圳')).toBeInTheDocument();
     expect(regionLabel({status:'private',version:''})).toBe('内网地址');
     expect(regionLabel({status:'loopback',version:''})).toBe('回环地址');
+  });
+  it('归属地仅显示地区，规范空白并忽略大小写去重',()=>{
+    expect(regionLabel({status:'ok',version:'',country:' Malaysia ',province:'Kuala   Lumpur',city:'kuala lumpur',isp:'SpaceX'})).toBe('Malaysia · Kuala Lumpur');
+    expect(regionLabel({status:'ok',version:'',country:'中国',province:'上海',city:'上海',isp:'电信'})).toBe('中国 · 上海');
+    expect(regionLabel({status:'ok',version:'',country:'Australia',isp:'Cloudflare'})).toBe('Australia');
+    expect(regionLabel({status:'ok',version:'',isp:'SpaceX'})).toBe('归属地未知');
+    expect(regionLabel({status:'not_found',version:''})).toBe('未查到归属地');
+    expect(regionLabel({status:'reserved',version:''})).toBe('保留地址');
   });
   it('失败身份、未知账号、稳定游标分页和筛选',async()=>{
     const getLogs=vi.fn().mockResolvedValueOnce({...empty,nextCursor:'cursor_2',items:[{id:'1',user,result:'failed',event:'login',method:'password',failureCode:'INVALID_CREDENTIALS',platform:'android',occurredAt:'2026-09-02T02:00:00Z',ip:'1.1.1.1'},{id:'2',result:'failed',event:'login',method:'qr',platform:'web',occurredAt:'2026-09-02T02:00:00Z'}]}).mockResolvedValue(empty);

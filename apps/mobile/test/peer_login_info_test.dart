@@ -23,7 +23,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 const _info = PeerLoginInfo(
   userId: 'peer',
   lastLoginIp: '2001:4860:4860::8888',
-  regionLabel: '中国 · 广东省 · 深圳市 · 电信',
+  regionLabel: '中国 · 广东省 · 深圳市',
 );
 
 void main() {
@@ -113,14 +113,14 @@ void main() {
     });
     expect(info.userId, 'peer');
     expect(info.lastLoginIp, '2001:4860:4860::8888');
-    expect(info.regionLabel, '中国 · 上海 · 电信');
+    expect(info.regionLabel, '中国 · 上海');
     for (final pair in {
       'private': '内网地址',
       'loopback': '本机回环地址',
       'reserved': '保留地址',
       'unknown': '未记录',
       'unavailable': '暂不可用',
-      'not_found': '暂不可用',
+      'not_found': '未查到归属地',
     }.entries) {
       expect(
         PeerLoginInfo.fromJson({
@@ -130,6 +130,31 @@ void main() {
       );
     }
     expect(PeerLoginInfo.fromJson({}).lastLoginIp, isEmpty);
+  });
+
+  test('海外归属地保留原文，规范空白并忽略大小写去重', () {
+    final info = PeerLoginInfo.fromJson({
+      'region': {
+        'status': 'ok',
+        'country': ' Malaysia ',
+        'province': 'Kuala   Lumpur',
+        'city': 'kuala lumpur',
+        'isp': 'SpaceX',
+      },
+    });
+    expect(info.regionLabel, 'Malaysia · Kuala Lumpur');
+    expect(
+      PeerLoginInfo.fromJson({
+        'region': {'status': 'ok', 'country': 'Australia', 'isp': 'Cloudflare'},
+      }).regionLabel,
+      'Australia',
+    );
+    expect(
+      PeerLoginInfo.fromJson({
+        'region': {'status': 'ok', 'isp': 'SpaceX'},
+      }).regionLabel,
+      '暂不可用',
+    );
   });
 
   test('真实仓库调用会话专用认证接口，不把 IP 合并到普通用户缓存', () async {
