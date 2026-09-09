@@ -231,6 +231,12 @@ describe('青蛙呱呱管理后台', () => {
 
     expect(screen.getByRole('columnheader', { name: '注册 IP / 地址' })).toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: '登录 IP / 地址' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: '好友 IP 授权' })).toBeInTheDocument();
+    expect(screen.getAllByRole('switch', { name: '允许查看好友登录 IP' }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('checkbox', { name: '选择当前页全部用户' })).not.toBeInTheDocument();
+    expect(screen.queryByText('选择此账号进行批量权限设置')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '批量授权' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '批量取消' })).not.toBeInTheDocument();
     expect(screen.queryByRole('columnheader', { name: '注册时间 / IP' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '113.210.105.80' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '150.228.145.1' })).toBeInTheDocument();
