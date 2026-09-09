@@ -215,7 +215,7 @@ func (s *accessAdminStore) ListUserAccessLogs(_ context.Context, q store.UserAcc
 	s.query = q
 	return store.UserAccessPage{Items: []store.UserAccessLog{{ID: "e", Event: "login", Result: "failed", Method: "password", FailureCode: "INVALID_CREDENTIALS", IP: "192.168.1.1", OccurredAt: time.Now().UTC()}}}, nil
 }
-func (s *accessAdminStore) ListAdminUsersByIP(context.Context, string, string, string, int, string, string) ([]*model.User, int64, string, error) {
+func (s *accessAdminStore) ListAdminUsersByIP(context.Context, string, string, string, int, string, string, string) ([]*model.User, int64, string, error) {
 	return []*model.User{}, 0, "", nil
 }
 func TestUserAccessAdminReadPermissionsValidationAndAudit(t *testing.T) {

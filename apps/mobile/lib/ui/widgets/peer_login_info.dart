@@ -7,19 +7,22 @@ import '../../core/app_controller.dart';
 import '../../core/app_theme.dart';
 import '../../core/models.dart';
 import '../../core/peer_login_info.dart';
+import '../../data/live_repository.dart' show ImApiException;
 
-bool showPeerLoginInfoFor(BuildContext context, Conversation conversation) {
+bool showPeerLoginInfoFor(
+  BuildContext context,
+  Conversation conversation, {
+  required AppUser? viewer,
+  bool? webOverride,
+}) {
+  if (!(webOverride ?? kIsWeb) || viewer?.canViewFriendLoginIP != true) {
+    return false;
+  }
   if (conversation.kind != ConversationKind.direct ||
       conversation.isBusinessChannel) {
     return false;
   }
-  if (kIsWeb) return useLinliDesktopLayout(MediaQuery.sizeOf(context).width);
-  return switch (Theme.of(context).platform) {
-    TargetPlatform.macOS ||
-    TargetPlatform.windows ||
-    TargetPlatform.linux => true,
-    _ => false,
-  };
+  return useLinliDesktopLayout(MediaQuery.sizeOf(context).width);
 }
 
 /// Keeps IP data only in this visible conversation header, never in user or
@@ -44,9 +47,12 @@ class _PeerLoginInfoLabelState extends State<PeerLoginInfoLabel>
   bool _active = false;
   bool _foreground = true;
   bool _inFlight = false;
+  bool _permissionAllowed = false;
+  bool _accessDenied = false;
   int _generation = 0;
   String? _accountId;
   Timer? _timer;
+  StreamSubscription<ImEvent>? _eventSubscription;
 
   @override
   void initState() {
@@ -55,8 +61,20 @@ class _PeerLoginInfoLabelState extends State<PeerLoginInfoLabel>
         WidgetsBinding.instance.lifecycleState == null ||
         WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
     _accountId = widget.controller.currentUser?.id;
+    _permissionAllowed =
+        widget.controller.currentUser?.canViewFriendLoginIP == true;
     widget.controller.addListener(_accountChanged);
+    _subscribeToRelationshipChanges();
     WidgetsBinding.instance.addObserver(this);
+  }
+
+  void _subscribeToRelationshipChanges() {
+    _eventSubscription?.cancel();
+    _eventSubscription = widget.controller.repository.events.listen((event) {
+      if (!mounted || event.type != ImEventType.friendChanged) return;
+      setState(_reset);
+      _sync();
+    });
   }
 
   @override
@@ -72,7 +90,9 @@ class _PeerLoginInfoLabelState extends State<PeerLoginInfoLabel>
       _active &&
       _foreground &&
       widget.controller.authenticated &&
-      _accountId != null;
+      _accountId != null &&
+      _permissionAllowed &&
+      !_accessDenied;
 
   void _sync() {
     if (!_enabled) {
@@ -94,13 +114,20 @@ class _PeerLoginInfoLabelState extends State<PeerLoginInfoLabel>
     _inFlight = false;
     _info = null;
     _failed = false;
+    _accessDenied = false;
   }
 
   void _accountChanged() {
     final id = widget.controller.currentUser?.id;
-    if (id == _accountId && widget.controller.authenticated) return;
+    final allowed = widget.controller.currentUser?.canViewFriendLoginIP == true;
+    if (id == _accountId &&
+        allowed == _permissionAllowed &&
+        widget.controller.authenticated) {
+      return;
+    }
     setState(() {
       _accountId = id;
+      _permissionAllowed = allowed;
       _reset();
     });
     _sync();
@@ -115,7 +142,10 @@ class _PeerLoginInfoLabelState extends State<PeerLoginInfoLabel>
     }
     oldWidget.controller.removeListener(_accountChanged);
     widget.controller.addListener(_accountChanged);
+    _subscribeToRelationshipChanges();
     _accountId = widget.controller.currentUser?.id;
+    _permissionAllowed =
+        widget.controller.currentUser?.canViewFriendLoginIP == true;
     _reset();
     _sync();
   }
@@ -139,8 +169,19 @@ class _PeerLoginInfoLabelState extends State<PeerLoginInfoLabel>
         _info = info;
         _failed = false;
       });
-    } catch (_) {
+    } catch (error) {
       if (!mounted || generation != _generation || !_enabled) return;
+      if (error is ImApiException &&
+          (error.statusCode == 403 || error.statusCode == 404)) {
+        setState(() {
+          _info = null;
+          _failed = false;
+          _accessDenied = true;
+          _timer?.cancel();
+          _timer = null;
+        });
+        return;
+      }
       setState(() {
         _info = null;
         _failed = true;
@@ -153,6 +194,7 @@ class _PeerLoginInfoLabelState extends State<PeerLoginInfoLabel>
   @override
   void dispose() {
     _reset();
+    _eventSubscription?.cancel();
     widget.controller.removeListener(_accountChanged);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -160,7 +202,10 @@ class _PeerLoginInfoLabelState extends State<PeerLoginInfoLabel>
 
   @override
   Widget build(BuildContext context) {
-    if (!_enabled) return const SizedBox.shrink();
+    if (!_enabled ||
+        widget.controller.currentUser?.canViewFriendLoginIP != true) {
+      return const SizedBox.shrink();
+    }
     final value = _info == null
         ? (_failed ? '暂不可用' : '正在查询…')
         : (_info!.lastLoginIp.isEmpty ? '未记录' : _info!.lastLoginIp);

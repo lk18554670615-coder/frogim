@@ -28,7 +28,7 @@ type Postgres struct {
 	historyBoundary GroupHistoryBoundaryReader
 }
 
-const schemaVersion = 66
+const schemaVersion = 67
 
 type PostgresOptions struct {
 	MaxConns          int32
@@ -873,29 +873,33 @@ func nextPageCursor(offset, count int, total int64) string {
 }
 
 func (p *Postgres) ListAdminUsers(ctx context.Context, q, status, cursor string, limit int) ([]*model.User, int64, string, error) {
-	return p.listAdminUsers(ctx, q, status, cursor, limit, "", "any")
+	return p.listAdminUsers(ctx, q, status, cursor, limit, "", "any", "")
 }
-func (p *Postgres) listAdminUsers(ctx context.Context, q, status, cursor string, limit int, ip, source string) ([]*model.User, int64, string, error) {
+func (p *Postgres) listAdminUsers(ctx context.Context, q, status, cursor string, limit int, ip, source, friendIPPermission string) ([]*model.User, int64, string, error) {
 	offset, limit := pageOffset(cursor, limit)
 	pattern := "%" + q + "%"
 	var total int64
 	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_users u LEFT JOIN im_wukong_presence presence ON presence.user_id=u.id
 		WHERE ($1='' OR u.name ILIKE $2 OR u.phone ILIKE $2 OR u.id ILIKE $2 OR COALESCE(u.handle,'') ILIKE $2)
 		AND ($3='' OR ($3='active' AND NOT (u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))) OR ($3='banned' AND u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))
-			OR ($3='online' AND COALESCE(presence.online,false)) OR ($3='offline' AND NOT COALESCE(presence.online,false))) AND `+userAccessIPFilter, q, pattern, status, ip, source).Scan(&total); err != nil {
+			OR ($3='online' AND COALESCE(presence.online,false)) OR ($3='offline' AND NOT COALESCE(presence.online,false)))
+		AND ($6='' OR ($6='allowed' AND u.can_view_friend_login_ip) OR ($6='denied' AND NOT u.can_view_friend_login_ip))
+		AND `+userAccessIPFilter, q, pattern, status, ip, source, friendIPPermission).Scan(&total); err != nil {
 		return nil, 0, "", err
 	}
 	rows, err := p.pool.Query(ctx, `SELECT u.id,u.phone,u.name,COALESCE(u.handle,''),u.handle_change_count,u.avatar_url,u.gender,
 		(u.banned AND (u.banned_until IS NULL OR u.banned_until>now())),u.banned_until,u.created_at,
 		COALESCE(presence.online,false),COALESCE(presence.total_online_count,0),presence.last_offline_at,
-		latest.installation_id,latest.platform,latest.device_name,latest.device_model,latest.os_version,latest.app_version,latest.last_seen_at,u.can_delete_messages_for_everyone
+		latest.installation_id,latest.platform,latest.device_name,latest.device_model,latest.os_version,latest.app_version,latest.last_seen_at,
+		u.can_delete_messages_for_everyone,u.can_view_friend_login_ip
 		FROM im_users u LEFT JOIN im_wukong_presence presence ON presence.user_id=u.id
 		LEFT JOIN LATERAL (SELECT installation_id,platform,device_name,device_model,os_version,app_version,last_seen_at
 			FROM im_client_devices device WHERE device.user_id=u.id ORDER BY last_seen_at DESC,installation_id LIMIT 1) latest ON true
 		WHERE ($1='' OR u.name ILIKE $2 OR u.phone ILIKE $2 OR u.id ILIKE $2 OR COALESCE(u.handle,'') ILIKE $2)
 		AND ($3='' OR ($3='active' AND NOT (u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))) OR ($3='banned' AND u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))
 			OR ($3='online' AND COALESCE(presence.online,false)) OR ($3='offline' AND NOT COALESCE(presence.online,false)))
-		AND `+userAccessIPFilter+` ORDER BY u.created_at DESC,u.id LIMIT $6 OFFSET $7`, q, pattern, status, ip, source, limit, offset)
+		AND ($6='' OR ($6='allowed' AND u.can_view_friend_login_ip) OR ($6='denied' AND NOT u.can_view_friend_login_ip))
+		AND `+userAccessIPFilter+` ORDER BY u.created_at DESC,u.id LIMIT $7 OFFSET $8`, q, pattern, status, ip, source, friendIPPermission, limit, offset)
 	if err != nil {
 		return nil, 0, "", err
 	}
@@ -906,7 +910,8 @@ func (p *Postgres) listAdminUsers(ctx context.Context, q, status, cursor string,
 		var installationID, platform, deviceName, deviceModel, osVersion, appVersion *string
 		var deviceLastSeen *time.Time
 		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.AvatarURL, &u.Gender, &u.Banned, &u.BannedUntil, &u.CreatedAt, &u.Online, &u.OnlineConnections, &u.LastOfflineAt,
-			&installationID, &platform, &deviceName, &deviceModel, &osVersion, &appVersion, &deviceLastSeen, &u.CanDeleteMessagesForEveryone); err != nil {
+			&installationID, &platform, &deviceName, &deviceModel, &osVersion, &appVersion, &deviceLastSeen,
+			&u.CanDeleteMessagesForEveryone, &u.CanViewFriendLoginIP); err != nil {
 			return nil, 0, "", err
 		}
 		if installationID != nil {

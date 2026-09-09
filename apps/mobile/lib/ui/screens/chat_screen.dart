@@ -874,7 +874,12 @@ class _ChatScreenState extends State<ChatScreen> {
           appBar: AppBar(
             backgroundColor: context.linli.navigation,
             foregroundColor: context.linli.primary,
-            toolbarHeight: showPeerLoginInfoFor(context, widget.conversation)
+            toolbarHeight:
+                showPeerLoginInfoFor(
+                  context,
+                  widget.conversation,
+                  viewer: widget.controller.currentUser,
+                )
                 ? 16 +
                       MediaQuery.textScalerOf(context).scale(24) +
                       3 * MediaQuery.textScalerOf(context).scale(16)
@@ -960,7 +965,11 @@ class _ChatScreenState extends State<ChatScreen> {
                           );
                         },
                       ),
-                      if (showPeerLoginInfoFor(context, widget.conversation))
+                      if (showPeerLoginInfoFor(
+                        context,
+                        widget.conversation,
+                        viewer: widget.controller.currentUser,
+                      ))
                         PeerLoginInfoLabel(
                           key: ValueKey('peer-login-${widget.conversation.id}'),
                           controller: widget.controller,

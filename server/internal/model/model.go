@@ -4,6 +4,7 @@ import "time"
 
 type User struct {
 	CanDeleteMessagesForEveryone bool                 `json:"canDeleteMessagesForEveryone"`
+	CanViewFriendLoginIP         bool                 `json:"-"`
 	ID                           string               `json:"id"`
 	Phone                        string               `json:"phone,omitempty"`
 	Name                         string               `json:"name"`

@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'support/atomic_golden_comparator.dart';
 
@@ -145,7 +144,7 @@ void main() {
             jsonEncode({
               'accessToken': 'access',
               'refreshToken': 'refresh',
-              'user': {'id': 'me', 'name': 'Me'},
+              'user': {'id': 'me', 'name': 'Me', 'canViewFriendLoginIp': true},
             }),
             200,
           );
@@ -172,6 +171,7 @@ void main() {
     expect(info.lastLoginIp, '192.168.1.5');
     expect(info.regionLabel, '内网地址');
     expect(repository.currentUser!.id, 'me');
+    expect(repository.currentUser!.canViewFriendLoginIP, isTrue);
     expect(calls.length, 2);
   });
 
@@ -235,6 +235,12 @@ void main() {
     controller.authenticated = true;
     controller.refreshPushConfiguration();
     await tester.pump();
+    expect(find.byKey(const Key('peer-login-ip')), findsNothing);
+    controller.currentUser = DemoImRepository.people.first.copyWith(
+      canViewFriendLoginIP: true,
+    );
+    controller.refreshPushConfiguration();
+    await tester.pump();
     expect(find.text('最近登录 IP：未记录'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
@@ -262,6 +268,23 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('好友关系事件立即清除旧值并重新向服务端校验', (tester) async {
+    final repository = _PeerRepository();
+    final controller = _controller(repository);
+    addTearDown(controller.dispose);
+    await _pumpLabel(tester, controller);
+    expect(find.text('最近登录 IP：${_info.lastLoginIp}'), findsOneWidget);
+    repository.value = const PeerLoginInfo(userId: 'peer');
+    repository.emit(
+      const ImEvent(type: ImEventType.friendChanged, payload: {}),
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(repository.requests, ['direct', 'direct']);
+    expect(find.text('最近登录 IP：未记录'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   for (final platform in [
     TargetPlatform.android,
     TargetPlatform.iOS,
@@ -269,24 +292,57 @@ void main() {
     TargetPlatform.macOS,
     TargetPlatform.linux,
   ]) {
-    testWidgets('$platform 仅 PC 普通单聊显示，不扩大到群或业务频道', (tester) async {
-      final expected = [
-        TargetPlatform.windows,
-        TargetPlatform.macOS,
-        TargetPlatform.linux,
-      ].contains(platform);
+    testWidgets('$platform 原生客户端不展示，Web 仅桌面普通单聊展示', (tester) async {
+      tester.view.physicalSize = const Size(1280, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final viewer = DemoImRepository.demoUser.copyWith(
+        canViewFriendLoginIP: true,
+      );
       await tester.pumpWidget(
         MaterialApp(
           theme: buildLinliTheme(Brightness.light).copyWith(platform: platform),
           home: Builder(
             builder: (context) {
-              expect(showPeerLoginInfoFor(context, _conversation()), expected);
               expect(
-                showPeerLoginInfoFor(context, _conversation(group: true)),
+                showPeerLoginInfoFor(context, _conversation(), viewer: viewer),
                 isFalse,
               );
               expect(
-                showPeerLoginInfoFor(context, _conversation(channelType: 10)),
+                showPeerLoginInfoFor(
+                  context,
+                  _conversation(),
+                  viewer: viewer,
+                  webOverride: true,
+                ),
+                isTrue,
+              );
+              expect(
+                showPeerLoginInfoFor(
+                  context,
+                  _conversation(group: true),
+                  viewer: viewer,
+                  webOverride: true,
+                ),
+                isFalse,
+              );
+              expect(
+                showPeerLoginInfoFor(
+                  context,
+                  _conversation(channelType: 10),
+                  viewer: viewer,
+                  webOverride: true,
+                ),
+                isFalse,
+              );
+              expect(
+                showPeerLoginInfoFor(
+                  context,
+                  _conversation(),
+                  viewer: DemoImRepository.demoUser,
+                  webOverride: true,
+                ),
                 isFalse,
               );
               return const SizedBox();
@@ -339,18 +395,14 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.byType(PeerLoginInfoLabel), findsOneWidget);
-      expect(find.text('最近登录 IP：${_info.lastLoginIp}'), findsOneWidget);
-      expect(find.byType(SelectableText), findsOneWidget);
+      final expectedCount = kIsWeb ? 1 : 0;
+      expect(find.byType(PeerLoginInfoLabel), findsNWidgets(expectedCount));
+      expect(
+        find.text('最近登录 IP：${_info.lastLoginIp}'),
+        findsNWidgets(expectedCount),
+      );
+      expect(find.byType(SelectableText), findsNWidgets(expectedCount));
       expect(tester.takeException(), isNull);
-      if (!kIsWeb && Platform.isWindows) {
-        await expectLater(
-          find.byType(AppBar),
-          matchesGoldenFile(
-            'goldens/windows/peer-login-header-${width.toInt()}.png',
-          ),
-        );
-      }
       await tester.pumpWidget(const SizedBox());
     });
   }
@@ -374,10 +426,14 @@ Future<void> _pumpLabel(
   await tester.pump();
 }
 
-AppController _controller(_PeerRepository repository) =>
-    AppController(repository)
-      ..authenticated = true
-      ..currentUser = DemoImRepository.demoUser;
+AppController _controller(_PeerRepository repository) {
+  addTearDown(repository.closeEvents);
+  return AppController(repository)
+    ..authenticated = true
+    ..currentUser = DemoImRepository.demoUser.copyWith(
+      canViewFriendLoginIP: true,
+    );
+}
 
 Conversation _conversation({bool group = false, int channelType = 1}) =>
     Conversation(
@@ -392,10 +448,15 @@ Conversation _conversation({bool group = false, int channelType = 1}) =>
 
 class _PeerRepository extends DemoImRepository {
   _PeerRepository() : super(latency: Duration.zero);
+  final _testEvents = StreamController<ImEvent>.broadcast();
   final requests = <String>[];
   PeerLoginInfo value = _info;
   Completer<PeerLoginInfo>? pending;
   bool fail = false;
+  @override
+  Stream<ImEvent> get events => _testEvents.stream;
+  void emit(ImEvent event) => _testEvents.add(event);
+  Future<void> closeEvents() => _testEvents.close();
   @override
   Future<PeerLoginInfo> peerLoginInfo(String conversationId) async {
     requests.add(conversationId);

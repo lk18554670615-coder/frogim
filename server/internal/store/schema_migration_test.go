@@ -220,6 +220,15 @@ func TestMomentFriendOnlyAccessSchemaIsVersioned(t *testing.T) {
 	}
 }
 
+func TestFriendLoginIPPermissionSchemaIsVersioned(t *testing.T) {
+	if schemaVersion < 67 {
+		t.Fatalf("friend login IP permission requires schema version 67 or newer, got %d", schemaVersion)
+	}
+	if !strings.Contains(normalizedSchema, "ALTER TABLE im_users ADD COLUMN IF NOT EXISTS can_view_friend_login_ip boolean NOT NULL DEFAULT false") {
+		t.Fatal("friend login IP permission column is missing or does not default to false")
+	}
+}
+
 func TestPublicGuaguaHandleMigrationIsVersioned(t *testing.T) {
 	if schemaVersion < 49 {
 		t.Fatalf("public Guagua handles require schema version 49 or newer, got %d", schemaVersion)

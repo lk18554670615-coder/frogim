@@ -926,6 +926,9 @@ DROP TABLE IF EXISTS im_messages;
 DROP TABLE IF EXISTS im_message_fanout;
 -- Schema 62: a capability granted only through administrator user management.
 ALTER TABLE im_users ADD COLUMN IF NOT EXISTS can_delete_messages_for_everyone boolean NOT NULL DEFAULT false;
+-- Schema 67: only explicitly authorized viewers may inspect a current friend's
+-- last successful login IP from the PC Web direct-chat header.
+ALTER TABLE im_users ADD COLUMN IF NOT EXISTS can_view_friend_login_ip boolean NOT NULL DEFAULT false;
 CREATE OR REPLACE FUNCTION im_message_is_deleted(mid text) RETURNS boolean LANGUAGE sql STABLE AS $$
  SELECT EXISTS(SELECT 1 FROM im_wukong_message_extensions
  WHERE message_id = CASE

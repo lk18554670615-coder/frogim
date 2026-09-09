@@ -31,6 +31,27 @@ describe('live API adapter', () => {
     expect(fetchMock.mock.calls[1][1]?.method).toBe('PUT');
     expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({canDeleteMessagesForEveryone:false,reason:'撤销授权',confirmed:true});
   });
+
+  it('好友登录 IP 权限支持列表筛选、单个和批量审计请求', async () => {
+    const fetchMock=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>({ok:true,status:200,headers:new Headers(),json:async()=>{
+      if(!init?.method)return {items:[{id:'u1',name:'已授权',canViewFriendLoginIp:true},{id:'u2',name:'默认关闭'}],total:2};
+      const body=JSON.parse(String(init.body));
+      const ids=body.userIds??[decodeURIComponent(String(input).split('/users/')[1].split('/')[0])];
+      return {batchId:'ip_permission_1',allowed:body.allowed,requested:ids.length,changed:ids.length,unchanged:0,userIds:ids};
+    }}));
+    vi.stubGlobal('fetch',fetchMock);const api=getApi('token');
+    const users=await api.getUsers('','',1,20,'','','any','allowed');
+    expect(users.items[0].canViewFriendLoginIp).toBe(true);
+    expect(users.items[1].canViewFriendLoginIp).toBe(false);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('friendLoginIPPermission=allowed');
+    const single=await api.setUserFriendLoginIPPermission('u/1',true,'客服工单');
+    const batch=await api.setUsersFriendLoginIPPermission(['u1','u2'],false,'季度权限复核');
+    expect(single).toMatchObject({allowed:true,requested:1,changed:1,userIds:['u/1']});
+    expect(batch).toMatchObject({allowed:false,requested:2,changed:2,userIds:['u1','u2']});
+    expect(String(fetchMock.mock.calls[1][0])).toContain('/users/u%2F1/friend-login-ip-permission');
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({allowed:true,reason:'客服工单',confirmed:true});
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toEqual({userIds:['u1','u2'],allowed:false,reason:'季度权限复核',confirmed:true});
+  });
   afterEach(() => { vi.unstubAllGlobals(); });
 
   it('IP 筛选与登录日志使用真实接口，保留 IPv6、UTC 时间、游标和失败身份', async () => {

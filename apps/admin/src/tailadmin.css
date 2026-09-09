@@ -59,6 +59,29 @@ textarea:focus-visible {
   transition: width var(--dur-medium) var(--ease-out), transform var(--dur-medium) var(--ease-out);
 }
 
+/* User capability selection intentionally stays page-scoped. */
+.users-table { min-width: 1380px; }
+.users-table th:nth-child(1) { width: 46px; }
+.users-table th:nth-child(2) { width: 210px; }
+.users-table th:nth-child(3) { width: 145px; }
+.users-table th:nth-child(4) { width: 145px; }
+.users-table th:nth-child(5) { width: 190px; }
+.users-table th:nth-child(6) { width: 195px; }
+.users-table th:nth-child(7) { width: 195px; }
+.users-table th:nth-child(8) { width: 190px; }
+.table-select-cell { padding-inline: 10px; text-align: center; }
+.table-select-cell input,
+.user-card-selection input { width: 17px; height: 17px; accent-color: var(--color-brand); }
+.user-permission-batch-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--color-brand-line); border-radius: 10px; background: var(--color-brand-soft); }
+.user-permission-batch-bar > span { color: var(--color-ink-secondary); font-size: 12px; }
+.user-permission-batch-bar .row-actions { margin-left: auto; }
+.user-card-selection { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--color-ink-secondary); font-size: 12px; }
+
+@media (max-width: 640px) {
+  .user-permission-batch-bar { align-items: stretch; }
+  .user-permission-batch-bar .row-actions { width: 100%; margin-left: 0; flex-wrap: wrap; }
+}
+
 .tailadmin-shell .brand {
   min-height: 104px;
   display: flex;

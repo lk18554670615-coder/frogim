@@ -32,6 +32,7 @@ import type {
   GroupRecord,
   FriendshipRecord,
   FeedbackRecord,
+  FriendLoginIPPermissionUpdate,
   HealthService,
   MediaRecord,
   MessageRecord,
@@ -252,11 +253,24 @@ function adaptUser(value: unknown): UserRecord {
   } : undefined;
   return {
     canDeleteMessagesForEveryone: boolean(raw.canDeleteMessagesForEveryone),
+    canViewFriendLoginIp: boolean(raw.canViewFriendLoginIp),
     id: string(raw.id, 'unknown'), nickname, phone: string(raw.phone, '未提供'), handle: string(raw.handle, '未设置'), remark: string(raw.remark), tags: list(raw.tags).map((tag) => string(tag)).filter(Boolean), gender, handleChangeCount: number(raw.handleChangeCount), bannedUntil: string(raw.bannedUntil) || undefined,
     avatar: string(raw.avatar, initial(nickname)), avatarUrl: string(raw.avatarUrl), status,
     online: boolean(raw.online), onlineConnections: number(raw.onlineConnections), lastOfflineAt,
     registeredAt: formatDate(raw.registeredAt ?? raw.createdAt), lastSeen: string(raw.lastSeen, lastOfflineAt ? formatDate(lastOfflineAt) : '暂无'),
     deviceCount: number(raw.deviceCount), messageCount: number(raw.messageCount), latestDevice, access:adaptUserAccess(raw.access),
+  };
+}
+
+function adaptFriendLoginIPPermissionUpdate(value: unknown): FriendLoginIPPermissionUpdate {
+  const raw = object(value);
+  return {
+    batchId: string(raw.batchId),
+    allowed: boolean(raw.allowed),
+    requested: number(raw.requested),
+    changed: number(raw.changed),
+    unchanged: number(raw.unchanged),
+    userIds: list(raw.userIds).map((item) => string(item)).filter(Boolean),
   };
 }
 
@@ -994,6 +1008,8 @@ function liveApi(token: string): AdminApi {
   return {
     async setUserInviteRelation(id, inviteCode, reason, expectedVersion) { await request(`/users/${encodeURIComponent(id)}/invite-relation`, token, { method: 'PUT', body: JSON.stringify({inviteCode: inviteCode.trim().toUpperCase(), reason: reason.trim(), expectedVersion, confirmed: true}) }); },
     async setUserMessagePermissions(id, allowed, reason) { await request(`/users/${encodeURIComponent(id)}/message-permissions`, token, {method:'PUT', body:JSON.stringify({canDeleteMessagesForEveryone:allowed,reason,confirmed:true})}); },
+    async setUserFriendLoginIPPermission(id, allowed, reason) { return adaptFriendLoginIPPermissionUpdate(await request(`/users/${encodeURIComponent(id)}/friend-login-ip-permission`, token, {method:'PUT', body:JSON.stringify({allowed,reason,confirmed:true})})); },
+    async setUsersFriendLoginIPPermission(userIds, allowed, reason) { return adaptFriendLoginIPPermissionUpdate(await request('/users/friend-login-ip-permissions', token, {method:'PUT', body:JSON.stringify({userIds,allowed,reason,confirmed:true})})); },
     async getCurrentAdmin() { return adaptAdminIdentity(await request('/auth/me', token)); },
     async changeCurrentAdminPassword(currentPassword, newPassword) { await request('/auth/change-password', token, { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }); },
     async getAdministrators(q = '', status = '', page = 1, pageSize = 50, cursor = '') { const payload = await request(`/administrators?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptAdministrator, page, pageSize); },
@@ -1005,7 +1021,7 @@ function liveApi(token: string): AdminApi {
     async updateAdministratorRole(id, input, reason) { return adaptAdministratorRole(await request(`/roles/${encodeURIComponent(id)}`, token, { method: 'PATCH', body: JSON.stringify({ ...input, reason, confirmed: true }) })); },
     async deleteAdministratorRole(id, reason) { await request(`/roles/${encodeURIComponent(id)}`, token, { method: 'DELETE', body: JSON.stringify({ reason, confirmed: true }) }); },
     async getDashboard() { return adaptDashboard(await request('/dashboard', token)); },
-    async getUsers(q = '', status = '', page = 1, pageSize = 20, cursor = '', ip = '', ipSource = 'any') { const suffix=ip||ipSource!=='any'?`&ip=${encodeURIComponent(ip)}&ipSource=${encodeURIComponent(ipSource)}`:''; const payload = await request(`/users?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}${suffix}`, token); return serverPage(payload, adaptUser, page, pageSize); },
+    async getUsers(q = '', status = '', page = 1, pageSize = 20, cursor = '', ip = '', ipSource = 'any', friendLoginIPPermission = '') { const params=new URLSearchParams({q,status,cursor,limit:String(pageSize)});if(ip||ipSource!=='any'){params.set('ip',ip);params.set('ipSource',ipSource);}if(friendLoginIPPermission)params.set('friendLoginIPPermission',friendLoginIPPermission);const payload = await request(`/users?${params}`, token); return serverPage(payload, adaptUser, page, pageSize); },
     async getUserAccessLogs(filters) {
       const params=new URLSearchParams();for(const [key,value] of Object.entries(filters)){if(value!==undefined&&value!=='')params.set(key,String(value));}
       const r=object(await request(`/user-access-logs?${params}`,token));

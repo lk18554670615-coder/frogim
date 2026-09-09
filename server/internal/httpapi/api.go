@@ -431,8 +431,10 @@ func (x *API) routes() {
 	x.mux.Handle("GET /v2/admin/user-access-logs", x.requireAdmin(http.HandlerFunc(x.adminUserAccessLogs)))
 	x.mux.Handle("POST /v2/admin/users", x.requireAdmin(http.HandlerFunc(x.createAdminUser)))
 	x.mux.Handle("POST /v2/admin/users/batch", x.requireAdmin(http.HandlerFunc(x.createAdminUsersBatch)))
+	x.mux.Handle("PUT /v2/admin/users/friend-login-ip-permissions", x.requireAdmin(http.HandlerFunc(x.setFriendLoginIPPermissions)))
 	x.mux.Handle("GET /v2/admin/users/{id}", x.requireAdmin(http.HandlerFunc(x.adminUserOverview)))
 	x.mux.Handle("PUT /v2/admin/users/{id}/message-permissions", x.requireAdmin(http.HandlerFunc(x.adminMessagePermissions)))
+	x.mux.Handle("PUT /v2/admin/users/{id}/friend-login-ip-permission", x.requireAdmin(http.HandlerFunc(x.setFriendLoginIPPermission)))
 	x.mux.Handle("GET /v2/admin/users/{id}/friends", x.requireAdmin(http.HandlerFunc(x.adminUserFriends)))
 	x.mux.Handle("GET /v2/admin/users/{id}/blocks", x.requireAdmin(http.HandlerFunc(x.adminUserBlocks)))
 	x.mux.Handle("GET /v2/admin/users/{id}/devices", x.requireAdmin(http.HandlerFunc(x.adminUserDevices)))
@@ -1737,7 +1739,12 @@ func (x *API) imSession(w http.ResponseWriter, r *http.Request) {
 
 // Every response used as the current user's profile must include the same
 // derived capabilities. Copy first: in-memory stores may return shared users.
-func (x *API) ownProfile(user *model.User) *model.User {
+type ownProfileResponse struct {
+	*model.User
+	CanViewFriendLoginIP bool `json:"canViewFriendLoginIp"`
+}
+
+func (x *API) ownProfile(user *model.User) *ownProfileResponse {
 	if user == nil {
 		return nil
 	}
@@ -1745,7 +1752,8 @@ func (x *API) ownProfile(user *model.User) *model.User {
 	x.signAvatarURL(&profile)
 	x.app.DecorateOwnProfile(&profile)
 	profile.CanDeleteMessagesForEveryone, _ = x.app.MessageDeletionPermission(context.Background(), profile.ID)
-	return &profile
+	profile.CanViewFriendLoginIP, _ = x.app.FriendLoginIPPermission(context.Background(), profile.ID)
+	return &ownProfileResponse{User: &profile, CanViewFriendLoginIP: profile.CanViewFriendLoginIP}
 }
 
 func (x *API) me(w http.ResponseWriter, r *http.Request) {
@@ -3022,14 +3030,15 @@ func (x *API) adminUsers(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(query.Get("limit"))
 	ip, ok := parseAccessIP(query.Get("ip"))
 	source := query.Get("ipSource")
+	friendIPPermission := query.Get("friendLoginIPPermission")
 	if source == "" {
 		source = "any"
 	}
-	if !ok || !memberOf(source, "any", "registration", "last_login", "history") {
+	if !ok || !memberOf(source, "any", "registration", "last_login", "history") || !memberOf(friendIPPermission, "", "allowed", "denied") {
 		writeError(w, 400, "INVALID_ARGUMENT", "invalid IP filter")
 		return
 	}
-	items, total, next, err := x.app.AdminUsersByIP(r.Context(), query.Get("q"), query.Get("status"), query.Get("cursor"), limit, ip, source)
+	items, total, next, err := x.app.AdminUsersByIP(r.Context(), query.Get("q"), query.Get("status"), query.Get("cursor"), limit, ip, source, friendIPPermission)
 	if err != nil {
 		handleErr(w, err)
 		return
@@ -3042,7 +3051,7 @@ func (x *API) adminUsers(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
-	x.app.RecordAdminAudit(uid(r), "user.ip.viewed", "user_access", "users", "success", x.clientIP(r), map[string]any{"ip": ip, "ipSource": source, "q": query.Get("q"), "status": query.Get("status"), "returned": len(items)})
+	x.app.RecordAdminAudit(uid(r), "user.ip.viewed", "user_access", "users", "success", x.clientIP(r), map[string]any{"ip": ip, "ipSource": source, "friendLoginIPPermission": friendIPPermission, "q": query.Get("q"), "status": query.Get("status"), "returned": len(items)})
 	write(w, 200, map[string]any{"items": decorated, "total": total, "nextCursor": next})
 }
 func (x *API) adminUserOverview(w http.ResponseWriter, r *http.Request) {
@@ -3053,6 +3062,11 @@ func (x *API) adminUserOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	if user, ok := item["user"].(*model.User); ok {
 		user.CanDeleteMessagesForEveryone, err = x.app.MessageDeletionPermission(r.Context(), user.ID)
+		if err != nil {
+			handleErr(w, err)
+			return
+		}
+		user.CanViewFriendLoginIP, err = x.app.FriendLoginIPPermission(r.Context(), user.ID)
 		if err != nil {
 			handleErr(w, err)
 			return

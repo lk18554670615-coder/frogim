@@ -102,7 +102,8 @@ type adminAccessProfile struct {
 }
 type adminAccessUser struct {
 	*model.User
-	Access adminAccessProfile `json:"access"`
+	CanViewFriendLoginIP bool               `json:"canViewFriendLoginIp"`
+	Access               adminAccessProfile `json:"access"`
 }
 
 func (x *API) adminAccessUsers(ctx context.Context, users []*model.User, ip string) ([]adminAccessUser, error) {
@@ -120,7 +121,11 @@ func (x *API) adminAccessUsers(ctx context.Context, users []*model.User, ip stri
 		if !ok {
 			p = store.UserAccessProfile{RegistrationSource: "unknown", MatchedSources: []string{}}
 		}
-		result = append(result, adminAccessUser{u, adminAccessProfile{p, x.ipRegion.Lookup(p.RegistrationIP), x.ipRegion.Lookup(p.LastLoginIP)}})
+		result = append(result, adminAccessUser{
+			User:                 u,
+			CanViewFriendLoginIP: u.CanViewFriendLoginIP,
+			Access:               adminAccessProfile{p, x.ipRegion.Lookup(p.RegistrationIP), x.ipRegion.Lookup(p.LastLoginIP)},
+		})
 	}
 	return result, nil
 }

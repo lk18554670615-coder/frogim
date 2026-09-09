@@ -200,6 +200,7 @@ class AppUser {
     this.allowSearchByHandle = true,
     this.allowSearchByPhone = false,
     this.canDeleteMessagesForEveryone = false,
+    this.canViewFriendLoginIP = false,
   });
 
   final String id;
@@ -222,6 +223,7 @@ class AppUser {
   final bool allowSearchByHandle;
   final bool allowSearchByPhone;
   final bool canDeleteMessagesForEveryone;
+  final bool canViewFriendLoginIP;
 
   AppUser copyWith({
     String? name,
@@ -240,6 +242,7 @@ class AppUser {
     bool? allowSearchByHandle,
     bool? allowSearchByPhone,
     bool? canDeleteMessagesForEveryone,
+    bool? canViewFriendLoginIP,
   }) => AppUser(
     id: id,
     name: name ?? this.name,
@@ -260,6 +263,7 @@ class AppUser {
     allowSearchByPhone: allowSearchByPhone ?? this.allowSearchByPhone,
     canDeleteMessagesForEveryone:
         canDeleteMessagesForEveryone ?? this.canDeleteMessagesForEveryone,
+    canViewFriendLoginIP: canViewFriendLoginIP ?? this.canViewFriendLoginIP,
   );
 }
 

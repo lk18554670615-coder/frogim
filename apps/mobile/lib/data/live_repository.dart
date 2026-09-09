@@ -2207,6 +2207,8 @@ class LiveImRepository
       'message.recalled' => ImEventType.messageRecalled,
       'user.message_permissions.updated' =>
         ImEventType.messagePermissionsChanged,
+      'user.friend_login_ip_permission.updated' =>
+        ImEventType.messagePermissionsChanged,
       'message.delivered' => ImEventType.messageDelivered,
       'message.read' || 'conversation.read' => ImEventType.messageRead,
       'message.expired' => ImEventType.messageExpired,
@@ -2901,6 +2903,7 @@ class LiveImRepository
 
   AppUser _user(Map<String, Object?> item) => AppUser(
     canDeleteMessagesForEveryone: item['canDeleteMessagesForEveryone'] == true,
+    canViewFriendLoginIP: item['canViewFriendLoginIp'] == true,
     id: item['id']! as String,
     name: item['name'] as String? ?? item['id']! as String,
     handle:
@@ -4582,6 +4585,7 @@ class LiveImRepository
 
   Map<String, Object?> _storedUser(AppUser user) => {
     'canDeleteMessagesForEveryone': user.canDeleteMessagesForEveryone,
+    'canViewFriendLoginIp': user.canViewFriendLoginIP,
     'id': user.id,
     'name': user.name,
     'handle': user.handle,

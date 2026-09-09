@@ -122,7 +122,7 @@ func TestPostgresUserAccess(t *testing.T) {
 	if profiles[uid].RegistrationIP != "203.0.113.1" || profiles[uid].LastLoginIP != "2001:db8::1" || profiles[peer].LastLoginIP != "" {
 		t.Fatalf("%+v", profiles)
 	}
-	users, total, _, err := p.ListAdminUsersByIP(ctx, suffix, "", "", 20, "2001:db8::1", "any")
+	users, total, _, err := p.ListAdminUsersByIP(ctx, suffix, "", "", 20, "2001:db8::1", "any", "")
 	if err != nil || total != 1 || len(users) != 1 || users[0].ID != uid {
 		t.Fatalf("users=%+v total=%d err=%v", users, total, err)
 	}

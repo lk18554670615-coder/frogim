@@ -44,7 +44,7 @@ type UserAccessStore interface {
 	RecordUserAccess(context.Context, UserAccessLog) error
 	UserAccessProfiles(context.Context, []string, string) (map[string]UserAccessProfile, error)
 	ListUserAccessLogs(context.Context, UserAccessQuery) (UserAccessPage, error)
-	ListAdminUsersByIP(context.Context, string, string, string, int, string, string) ([]*model.User, int64, string, error)
+	ListAdminUsersByIP(context.Context, string, string, string, int, string, string, string) ([]*model.User, int64, string, error)
 }
 
 func (p *WithRedis) RecordUserAccess(ctx context.Context, e UserAccessLog) error {
@@ -65,9 +65,9 @@ func (p *WithRedis) ListUserAccessLogs(ctx context.Context, q UserAccessQuery) (
 	}
 	return UserAccessPage{}, ErrUnsupported
 }
-func (p *WithRedis) ListAdminUsersByIP(ctx context.Context, q, status, cursor string, limit int, ip, source string) ([]*model.User, int64, string, error) {
+func (p *WithRedis) ListAdminUsersByIP(ctx context.Context, q, status, cursor string, limit int, ip, source, friendIPPermission string) ([]*model.User, int64, string, error) {
 	if s, ok := p.base.(UserAccessStore); ok {
-		return s.ListAdminUsersByIP(ctx, q, status, cursor, limit, ip, source)
+		return s.ListAdminUsersByIP(ctx, q, status, cursor, limit, ip, source, friendIPPermission)
 	}
 	return nil, 0, "", ErrUnsupported
 }
