@@ -15,7 +15,7 @@ bool showPeerLoginInfoFor(
   required AppUser? viewer,
   bool? webOverride,
 }) {
-  if (!(webOverride ?? kIsWeb) || viewer?.canViewFriendLoginIP != true) {
+  if (!(webOverride ?? kIsWeb) || viewer?.isInternalUser != true) {
     return false;
   }
   if (conversation.kind != ConversationKind.direct ||
@@ -61,8 +61,7 @@ class _PeerLoginInfoLabelState extends State<PeerLoginInfoLabel>
         WidgetsBinding.instance.lifecycleState == null ||
         WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
     _accountId = widget.controller.currentUser?.id;
-    _permissionAllowed =
-        widget.controller.currentUser?.canViewFriendLoginIP == true;
+    _permissionAllowed = widget.controller.currentUser?.isInternalUser == true;
     widget.controller.addListener(_accountChanged);
     _subscribeToRelationshipChanges();
     WidgetsBinding.instance.addObserver(this);
@@ -119,7 +118,7 @@ class _PeerLoginInfoLabelState extends State<PeerLoginInfoLabel>
 
   void _accountChanged() {
     final id = widget.controller.currentUser?.id;
-    final allowed = widget.controller.currentUser?.canViewFriendLoginIP == true;
+    final allowed = widget.controller.currentUser?.isInternalUser == true;
     if (id == _accountId &&
         allowed == _permissionAllowed &&
         widget.controller.authenticated) {
@@ -144,8 +143,7 @@ class _PeerLoginInfoLabelState extends State<PeerLoginInfoLabel>
     widget.controller.addListener(_accountChanged);
     _subscribeToRelationshipChanges();
     _accountId = widget.controller.currentUser?.id;
-    _permissionAllowed =
-        widget.controller.currentUser?.canViewFriendLoginIP == true;
+    _permissionAllowed = widget.controller.currentUser?.isInternalUser == true;
     _reset();
     _sync();
   }
@@ -202,8 +200,7 @@ class _PeerLoginInfoLabelState extends State<PeerLoginInfoLabel>
 
   @override
   Widget build(BuildContext context) {
-    if (!_enabled ||
-        widget.controller.currentUser?.canViewFriendLoginIP != true) {
+    if (!_enabled || widget.controller.currentUser?.isInternalUser != true) {
       return const SizedBox.shrink();
     }
     final value = _info == null

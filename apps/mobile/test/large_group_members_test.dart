@@ -91,14 +91,14 @@ void main() {
     testWidgets('$width：查看全部11位成员直接打开完整列表，搜索末尾成员并查看资料', (tester) async {
       final repo = _Repository();
       await _open(tester, repo, width: width, info: true);
-      expect(find.text('查看全部 11 位成员'), findsOneWidget);
+      expect(find.byKey(const Key('group-members-entry')), findsOneWidget);
       expect(find.byKey(const Key('chat-info-member-g8')), findsOneWidget);
       expect(
         find.byKey(const Key('chat-info-member-g10')),
         findsNothing,
         reason: '顶部保留简洁预览',
       );
-      await tester.tap(find.byKey(const Key('chat-info-all-members')));
+      await tester.tap(find.byKey(const Key('group-members-entry')));
       await tester.pumpAndSettle();
       expect(find.text('群成员 · 11'), findsOneWidget);
       await tester.enterText(
@@ -175,7 +175,9 @@ void main() {
           payload: {'message': _message(11).toJson()},
         ),
       );
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await _waitUntil(
+        () => controller.groupMemberFor('c-team', 'g11') != null,
+      );
     });
     await tester.pumpAndSettle();
     expect(
@@ -195,7 +197,9 @@ void main() {
           payload: {'conversationId': 'c-team', 'groupSendPolicyChanged': true},
         ),
       );
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await _waitUntil(
+        () => controller.groupMemberFor('c-team', 'g9') == null,
+      );
     });
     await tester.pumpAndSettle();
     expect(controller.groupMemberFor('c-team', 'g9'), isNull);
@@ -205,10 +209,10 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('聊天信息加载失败保留预览和全部入口，并可原地重试', (tester) async {
+  testWidgets('聊天信息加载失败保留预览和群成员入口，并可原地重试', (tester) async {
     final repo = _Repository()..fail = true;
     final controller = await _open(tester, repo, info: true);
-    expect(find.text('查看全部 11 位成员'), findsOneWidget);
+    expect(find.byKey(const Key('group-members-entry')), findsOneWidget);
     expect(find.byKey(const Key('chat-info-members-retry')), findsOneWidget);
     repo.fail = false;
     await tester.tap(find.byKey(const Key('chat-info-members-retry')));
@@ -279,6 +283,16 @@ Future<AppController> _open(
   );
   await tester.pumpAndSettle();
   return controller;
+}
+
+Future<void> _waitUntil(bool Function() predicate) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 2));
+  while (!predicate()) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException('condition was not met before the deadline');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
 }
 
 class _Repository extends DemoImRepository {

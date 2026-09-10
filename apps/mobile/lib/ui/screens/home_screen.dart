@@ -190,12 +190,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _wideConversationWorkspace(double width) {
-    final available = widget.controller.conversations
-        .where((item) => !item.archived)
-        .toList();
     final selected = selectedConversationId == null
         ? null
-        : available
+        : widget.controller.conversations
               .where((item) => item.id == selectedConversationId)
               .firstOrNull;
     final showDetails = desktopDetailsVisible && width >= 1200;
@@ -1890,7 +1887,11 @@ class _ConversationBody extends StatelessWidget {
     }
     final showConversationEmpty = conversations.isEmpty;
     final canStartConversation = emptyTitle == '这里还没有对话';
-    final leadingItemCount = showSystemNotifications ? 1 : 0;
+    final displaySystemNotifications =
+        showSystemNotifications &&
+        (controller.announcements.isNotEmpty ||
+            controller.announcementsLoadError != null);
+    final leadingItemCount = displaySystemNotifications ? 1 : 0;
     return RefreshIndicator(
       onRefresh: controller.refresh,
       color: context.linli.primary,
@@ -1903,7 +1904,7 @@ class _ConversationBody extends StatelessWidget {
               conversations.length +
               (showConversationEmpty ? 1 : 0),
           itemBuilder: (context, index) {
-            if (showSystemNotifications && index == 0) {
+            if (displaySystemNotifications && index == 0) {
               return KeyedSubtree(
                 key: const Key('system-notification-section'),
                 child: SystemNotificationTile(controller: controller),

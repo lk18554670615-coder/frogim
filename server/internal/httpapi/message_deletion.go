@@ -2,22 +2,6 @@ package httpapi
 
 import "net/http"
 
-func (x *API) adminMessagePermissions(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Allowed   *bool  `json:"canDeleteMessagesForEveryone"`
-		Reason    string `json:"reason"`
-		Confirmed bool   `json:"confirmed"`
-	}
-	if decode(r, &input) != nil || input.Allowed == nil || !confirmedReason(input.Confirmed, input.Reason) {
-		writeError(w, 400, "CONFIRMATION_REQUIRED", "permission, confirmation and reason are required")
-		return
-	}
-	if err := x.app.SetMessageDeletionPermission(r.Context(), uid(r), r.PathValue("id"), *input.Allowed, input.Reason, x.clientIP(r)); err != nil {
-		handleErr(w, err)
-		return
-	}
-	write(w, 200, map[string]any{"canDeleteMessagesForEveryone": *input.Allowed})
-}
 func (x *API) deleteMessagesForEveryone(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		ConversationID string   `json:"conversationId"`

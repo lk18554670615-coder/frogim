@@ -27,6 +27,8 @@ class GroupRemoveMembersScreen extends StatefulWidget {
 
 class _GroupRemoveMembersScreenState extends State<GroupRemoveMembersScreen> {
   late final String? _accountId;
+  late final TextEditingController _searchController;
+  late final FocusNode _searchFocusNode;
   List<GroupMember> _members = const [];
   final Set<String> _selected = {};
   final Map<String, String> _failures = {};
@@ -69,7 +71,29 @@ class _GroupRemoveMembersScreenState extends State<GroupRemoveMembersScreen> {
   void initState() {
     super.initState();
     _accountId = widget.controller.currentUser?.id;
+    _searchController = TextEditingController()..addListener(_onSearchChanged);
+    _searchFocusNode = FocusNode(debugLabel: 'group-remove-search');
     unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _searchController
+      ..removeListener(_onSearchChanged)
+      ..dispose();
+    _searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _onSearchChanged() {
+    if (!mounted) return;
+    final value = _searchController.value;
+    // Rebuilding a Web text field while a Chinese/Japanese/Korean IME is
+    // composing can cancel the browser's active composition. Keep the field
+    // stable and filter only after the composition is committed.
+    if (value.composing.isValid && !value.composing.isCollapsed) return;
+    if (_query == value.text) return;
+    setState(() => _query = value.text);
   }
 
   Future<bool> _load() async {
@@ -222,6 +246,8 @@ class _GroupRemoveMembersScreenState extends State<GroupRemoveMembersScreen> {
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
                     child: CupertinoSearchTextField(
+                      controller: _searchController,
+                      focusNode: _searchFocusNode,
                       style: TextStyle(color: context.linli.text),
                       placeholderStyle: TextStyle(
                         color: context.linli.secondaryText,
@@ -231,7 +257,9 @@ class _GroupRemoveMembersScreenState extends State<GroupRemoveMembersScreen> {
                       key: const Key('group-remove-search'),
                       enabled: !_busy,
                       placeholder: '搜索群成员',
-                      onChanged: (value) => setState(() => _query = value),
+                      onSubmitted: (value) {
+                        if (_query != value) setState(() => _query = value);
+                      },
                     ),
                   ),
                   Padding(

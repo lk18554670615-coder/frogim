@@ -172,13 +172,6 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
                     ),
                   ),
                   SettingTile(
-                    key: const Key('group-members-entry'),
-                    icon: CupertinoIcons.person_2,
-                    title: '群成员',
-                    subtitle: '${members.length} 位成员',
-                    onTap: () => _openMembers(),
-                  ),
-                  SettingTile(
                     key: const Key('group-administrators-entry'),
                     icon: CupertinoIcons.shield,
                     title: '群管理员',
@@ -260,6 +253,15 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
                 SectionHeader(isOwner ? '群主管理' : '群管理员操作'),
                 SectionCard(
                   children: [
+                    SettingTile(
+                      key: const Key('group-message-rate-limit'),
+                      icon: CupertinoIcons.speedometer,
+                      title: '成员发言频率',
+                      subtitle: groupMessageRateLimitLabel(
+                        value.memberMessageRateLimitPerMinute,
+                      ),
+                      onTap: busy ? null : _changeMessageRateLimit,
+                    ),
                     if (value.canReviewJoinRequests)
                       SettingTile(
                         key: const Key('group-join-requests-entry'),
@@ -315,16 +317,6 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
                         ),
                       ),
                     ],
-                    SettingTile(
-                      key: const Key('group-mute-all'),
-                      icon: CupertinoIcons.speaker_slash,
-                      title: '全员禁言',
-                      subtitle: value.allMuted ? '仅群主和管理员可发言' : '所有成员可发言',
-                      trailing: CupertinoSwitch(
-                        value: value.allMuted,
-                        onChanged: busy ? null : _setAllMuted,
-                      ),
-                    ),
                   ],
                 ),
               ],
@@ -620,6 +612,49 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
     if (mounted) await _load(showLoading: false);
   }
 
+  Future<void> _changeMessageRateLimit() async {
+    final selected = await showCupertinoModalPopup<int>(
+      context: context,
+      builder: (context) => CupertinoActionSheet(
+        title: const Text('成员发言频率'),
+        message: const Text('仅限制普通成员，群主和群管理员不受限制。'),
+        actions: [
+          for (final limit in const [0, 5, 10, 20])
+            CupertinoActionSheetAction(
+              isDefaultAction:
+                  profile!.memberMessageRateLimitPerMinute == limit,
+              onPressed: () => Navigator.pop(context, limit),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (profile!.memberMessageRateLimitPerMinute == limit) ...[
+                    const Icon(CupertinoIcons.check_mark, size: 18),
+                    const SizedBox(width: 8),
+                  ],
+                  Text(groupMessageRateLimitOptionLabel(limit)),
+                ],
+              ),
+            ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+      ),
+    );
+    if (selected == null ||
+        selected == profile!.memberMessageRateLimitPerMinute ||
+        !mounted) {
+      return;
+    }
+    await _runProfileUpdate(
+      () => widget.controller.updateGroupProfile(
+        widget.conversation.id,
+        memberMessageRateLimitPerMinute: selected,
+      ),
+    );
+  }
+
   Future<void> _setHistoryVisibility(bool value) async {
     final confirmed = await _confirm(
       title: value ? '开放入群前历史？' : '隐藏入群前历史？',
@@ -643,20 +678,6 @@ class _GroupManagementScreenState extends State<GroupManagementScreen> {
       allowMemberAddFriend: value,
     ),
   );
-
-  Future<void> _setAllMuted(bool value) async {
-    setState(() => busy = true);
-    final updated = await widget.controller.setGroupAllMuted(
-      widget.conversation.id,
-      value,
-    );
-    if (!mounted) return;
-    setState(() {
-      busy = false;
-      if (updated != null) profile = updated;
-    });
-    if (updated == null) _showError();
-  }
 
   Future<void> _runProfileUpdate(
     Future<GroupProfile?> Function() operation,
@@ -1379,23 +1400,22 @@ class _GroupMembersManagementScreenState
         groupNickname: member.groupNickname,
       ),
     ),
-    subtitle: UserPresence(
-      controller: widget.controller,
-      userId: member.user.id,
-      groupId: widget.conversationId,
-      builder: (context, status) => Wrap(
-        spacing: 8,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          Text(
-            member.isMuted
-                ? '${_roleLabel(member.role)} · 已禁言'
-                : _roleLabel(member.role),
-          ),
-          PresenceLabel(status),
-        ],
-      ),
-    ),
+    subtitle:
+        widget.controller.canViewGroupMemberPresence(widget.conversationId)
+        ? UserPresence(
+            controller: widget.controller,
+            userId: member.user.id,
+            groupId: widget.conversationId,
+            builder: (context, status) => Wrap(
+              spacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Text(_memberStatusLabel(member)),
+                PresenceLabel(status),
+              ],
+            ),
+          )
+        : Text(_memberStatusLabel(member)),
     trailing: widget.administratorMode
         ? isOwner && !member.isOwner
               ? CupertinoSwitch(
@@ -1431,6 +1451,18 @@ class _GroupMembersManagementScreenState
     if (member.user.id == widget.controller.currentUser?.id) return false;
     if (isOwner) return true;
     return isAdmin && !member.isOwner && !member.isAdmin;
+  }
+
+  String _memberStatusLabel(GroupMember member) {
+    final role = _roleLabel(member.role);
+    if (!member.isMuted) return role;
+    if (member.mutedPermanently) return '$role · 已永久禁言';
+    final until = member.mutedUntil?.toLocal();
+    if (until == null) return '$role · 已禁言';
+    final localizations = MaterialLocalizations.of(context);
+    final date = localizations.formatShortDate(until);
+    final time = localizations.formatTimeOfDay(TimeOfDay.fromDateTime(until));
+    return '$role · 禁言至 $date $time';
   }
 
   Future<void> _pickMembers() async {
@@ -1469,15 +1501,18 @@ class _GroupMembersManagementScreenState
                 onTap: () => Navigator.pop(context, 'transfer'),
               ),
             ListTile(
-              leading: Icon(
-                member.isMuted
-                    ? CupertinoIcons.speaker_2
-                    : CupertinoIcons.speaker_slash,
-              ),
-              title: Text(member.isMuted ? '解除禁言' : '禁言 1 小时'),
-              onTap: () =>
-                  Navigator.pop(context, member.isMuted ? 'unmute' : 'mute'),
+              key: const Key('group-member-mute-action'),
+              leading: const Icon(CupertinoIcons.speaker_slash),
+              title: Text(member.isMuted ? '调整禁言时长' : '设置禁言'),
+              onTap: () => Navigator.pop(context, 'mute'),
             ),
+            if (member.isMuted)
+              ListTile(
+                key: const Key('group-member-unmute-action'),
+                leading: const Icon(CupertinoIcons.speaker_2),
+                title: const Text('解除禁言'),
+                onTap: () => Navigator.pop(context, 'unmute'),
+              ),
             ListTile(
               leading: const Icon(
                 CupertinoIcons.person_crop_circle_badge_minus,
@@ -1497,6 +1532,14 @@ class _GroupMembersManagementScreenState
     if (action == 'admin' || action == 'member') {
       await _setAdministrator(member);
       return;
+    }
+    DateTime? muteUntil;
+    var mutePermanently = false;
+    if (action == 'mute') {
+      final selection = await _pickMuteSelection(member);
+      if (selection == null || !mounted) return;
+      muteUntil = selection.until;
+      mutePermanently = selection.permanently;
     }
     if (action == 'transfer') {
       if (!mounted) return;
@@ -1535,7 +1578,8 @@ class _GroupMembersManagementScreenState
       'mute' => await widget.controller.setGroupMemberMuted(
         widget.conversationId,
         member.user,
-        DateTime.now().add(const Duration(hours: 1)),
+        muteUntil,
+        permanently: mutePermanently,
       ),
       'unmute' => await widget.controller.setGroupMemberMuted(
         widget.conversationId,
@@ -1551,6 +1595,138 @@ class _GroupMembersManagementScreenState
       setState(() => loading = false);
       _showFeedback(widget.controller.error ?? '操作失败，请稍后重试');
     }
+  }
+
+  Future<_MemberMuteSelection?> _pickMuteSelection(GroupMember member) async {
+    final option = await showModalBottomSheet<_MemberMuteOption>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.82,
+          ),
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              ListTile(
+                title: Text(
+                  '禁言 ${widget.controller.displayNameFor(member.user, groupNickname: member.groupNickname)}',
+                  style: Theme.of(sheetContext).textTheme.titleMedium,
+                ),
+                subtitle: const Text('请选择禁言时长'),
+              ),
+              _muteOptionTile(
+                sheetContext,
+                key: 'group-member-mute-10-minutes',
+                option: _MemberMuteOption.tenMinutes,
+                title: '10 分钟',
+              ),
+              _muteOptionTile(
+                sheetContext,
+                key: 'group-member-mute-1-hour',
+                option: _MemberMuteOption.oneHour,
+                title: '1 小时',
+              ),
+              _muteOptionTile(
+                sheetContext,
+                key: 'group-member-mute-24-hours',
+                option: _MemberMuteOption.twentyFourHours,
+                title: '24 小时',
+              ),
+              _muteOptionTile(
+                sheetContext,
+                key: 'group-member-mute-7-days',
+                option: _MemberMuteOption.sevenDays,
+                title: '7 天',
+              ),
+              _muteOptionTile(
+                sheetContext,
+                key: 'group-member-mute-custom',
+                option: _MemberMuteOption.custom,
+                title: '自定义结束时间',
+                icon: CupertinoIcons.calendar,
+              ),
+              _muteOptionTile(
+                sheetContext,
+                key: 'group-member-mute-permanent',
+                option: _MemberMuteOption.permanent,
+                title: '永久禁言',
+                icon: CupertinoIcons.infinite,
+                destructive: true,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (option == null || !mounted) return null;
+    final now = DateTime.now();
+    return switch (option) {
+      _MemberMuteOption.tenMinutes => _MemberMuteSelection(
+        until: now.add(const Duration(minutes: 10)),
+      ),
+      _MemberMuteOption.oneHour => _MemberMuteSelection(
+        until: now.add(const Duration(hours: 1)),
+      ),
+      _MemberMuteOption.twentyFourHours => _MemberMuteSelection(
+        until: now.add(const Duration(hours: 24)),
+      ),
+      _MemberMuteOption.sevenDays => _MemberMuteSelection(
+        until: now.add(const Duration(days: 7)),
+      ),
+      _MemberMuteOption.permanent => const _MemberMuteSelection(
+        permanently: true,
+      ),
+      _MemberMuteOption.custom => await _pickCustomMuteUntil(now),
+    };
+  }
+
+  Widget _muteOptionTile(
+    BuildContext sheetContext, {
+    required String key,
+    required _MemberMuteOption option,
+    required String title,
+    IconData icon = CupertinoIcons.clock,
+    bool destructive = false,
+  }) => ListTile(
+    key: Key(key),
+    leading: Icon(icon, color: destructive ? LinliColors.systemRed : null),
+    title: Text(
+      title,
+      style: destructive ? const TextStyle(color: LinliColors.systemRed) : null,
+    ),
+    onTap: () => Navigator.pop(sheetContext, option),
+  );
+
+  Future<_MemberMuteSelection?> _pickCustomMuteUntil(DateTime now) async {
+    final initial = now.add(const Duration(days: 1));
+    final date = await showDatePicker(
+      context: context,
+      initialDate: DateUtils.dateOnly(initial),
+      firstDate: DateUtils.dateOnly(now),
+      lastDate: DateTime(now.year + 10, 12, 31),
+      helpText: '选择禁言结束日期',
+    );
+    if (date == null || !mounted) return null;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(initial),
+      helpText: '选择禁言结束时间',
+    );
+    if (time == null || !mounted) return null;
+    final until = DateTime(
+      date.year,
+      date.month,
+      date.day,
+      time.hour,
+      time.minute,
+    );
+    if (!until.isAfter(DateTime.now())) {
+      _showFeedback('禁言结束时间必须晚于当前时间');
+      return null;
+    }
+    return _MemberMuteSelection(until: until);
   }
 
   void _showFeedback(String message) {
@@ -1695,6 +1871,28 @@ String groupJoinPolicyLabel(String policy) => switch (policy) {
   'closed' => '暂停加入',
   _ => '仅成员邀请',
 };
+
+String groupMessageRateLimitOptionLabel(int limit) =>
+    limit <= 0 ? '不限' : '每分钟最多 $limit 条';
+
+String groupMessageRateLimitLabel(int limit) =>
+    limit <= 0 ? '不限制普通成员的发言频率' : '普通成员每分钟最多 $limit 条';
+
+enum _MemberMuteOption {
+  tenMinutes,
+  oneHour,
+  twentyFourHours,
+  sevenDays,
+  custom,
+  permanent,
+}
+
+class _MemberMuteSelection {
+  const _MemberMuteSelection({this.until, this.permanently = false});
+
+  final DateTime? until;
+  final bool permanently;
+}
 
 String groupJoinPolicyDescription(String policy) => switch (policy) {
   'manager_invite' => '只有群主和管理员可直接添加好友',

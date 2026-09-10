@@ -180,6 +180,6 @@ const userAccessIPFilter = `($4='' OR EXISTS(SELECT 1 FROM im_user_access_profil
  (($5 IN ('any','registration') AND ap.registration_ip=NULLIF($4,'')::inet) OR ($5 IN ('any','last_login') AND ap.last_login_ip=NULLIF($4,'')::inet)))
  OR ($5 IN ('any','history') AND EXISTS(SELECT 1 FROM im_user_access_logs al WHERE al.user_id=u.id AND al.ip=NULLIF($4,'')::inet AND al.result='success' AND al.occurred_at >= now()-interval '180 days')))`
 
-func (p *Postgres) ListAdminUsersByIP(ctx context.Context, q, status, cursor string, limit int, ip, source, friendIPPermission string) ([]*model.User, int64, string, error) {
-	return p.listAdminUsers(ctx, q, status, cursor, limit, ip, source, friendIPPermission)
+func (p *Postgres) ListAdminUsersByIP(ctx context.Context, q, status, cursor string, limit int, ip, source, internalUser string) ([]*model.User, int64, string, error) {
+	return p.listAdminUsers(ctx, q, status, cursor, limit, ip, source, internalUser)
 }

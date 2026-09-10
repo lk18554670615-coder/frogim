@@ -43,20 +43,20 @@ func TestMessageDeletionRequestBoundaryAndNoSelfElevation(t *testing.T) {
 			t.Fatalf("invalid batch status=%d", response.StatusCode)
 		}
 	}
-	response := authenticatedRequest(t, http.MethodPatch, ts.URL+"/v2/users/me", token, `{"canDeleteMessagesForEveryone":true}`)
+	response := authenticatedRequest(t, http.MethodPatch, ts.URL+"/v2/users/me", token, `{"isInternalUser":true}`)
 	response.Body.Close()
 	if response.StatusCode != 400 {
 		t.Fatalf("self elevation status=%d", response.StatusCode)
 	}
 	response = authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/users/me", token, "")
 	var profile struct {
-		Allowed bool `json:"canDeleteMessagesForEveryone"`
+		Internal bool `json:"isInternalUser"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&profile); err != nil {
 		t.Fatal(err)
 	}
 	response.Body.Close()
-	if profile.Allowed {
+	if profile.Internal {
 		t.Fatal("self elevation changed capability")
 	}
 	support, err := api.auth.IssueAdmin("support-1", "support", time.Hour, 1)
@@ -67,7 +67,7 @@ func TestMessageDeletionRequestBoundaryAndNoSelfElevation(t *testing.T) {
 		token  string
 		status int
 	}{{token, 401}, {support, 403}} {
-		response = authenticatedRequest(t, http.MethodPut, ts.URL+"/v2/admin/users/usr_alice/message-permissions", caller.token, `{"canDeleteMessagesForEveryone":true,"reason":"unauthorized","confirmed":true}`)
+		response = authenticatedRequest(t, http.MethodPut, ts.URL+"/v2/admin/users/usr_alice/internal-user", caller.token, `{"isInternalUser":true,"reason":"unauthorized","confirmed":true}`)
 		response.Body.Close()
 		if response.StatusCode != caller.status {
 			t.Fatalf("unauthorized permission change status=%d", response.StatusCode)

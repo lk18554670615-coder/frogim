@@ -47,6 +47,10 @@ func (x *API) startMessageStream(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
+	if _, err = x.app.ConsumeGroupMessageRate(r.Context(), userID, route); err != nil {
+		handleErr(w, err)
+		return
+	}
 	result, err := x.wukongClient.SendStreamMessage(r.Context(), wukong.StoredMessageRequest{
 		ClientMsgNo: input.ClientMsgNo, FromUID: userID,
 		ChannelID: route.ChannelID, ChannelType: route.ChannelType,

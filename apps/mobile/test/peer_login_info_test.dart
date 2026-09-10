@@ -169,7 +169,7 @@ void main() {
             jsonEncode({
               'accessToken': 'access',
               'refreshToken': 'refresh',
-              'user': {'id': 'me', 'name': 'Me', 'canViewFriendLoginIp': true},
+              'user': {'id': 'me', 'name': 'Me', 'isInternalUser': true},
             }),
             200,
           );
@@ -196,7 +196,7 @@ void main() {
     expect(info.lastLoginIp, '192.168.1.5');
     expect(info.regionLabel, '内网地址');
     expect(repository.currentUser!.id, 'me');
-    expect(repository.currentUser!.canViewFriendLoginIP, isTrue);
+    expect(repository.currentUser!.isInternalUser, isTrue);
     expect(calls.length, 2);
   });
 
@@ -262,7 +262,7 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('peer-login-ip')), findsNothing);
     controller.currentUser = DemoImRepository.people.first.copyWith(
-      canViewFriendLoginIP: true,
+      isInternalUser: true,
     );
     controller.refreshPushConfiguration();
     await tester.pump();
@@ -322,9 +322,7 @@ void main() {
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-      final viewer = DemoImRepository.demoUser.copyWith(
-        canViewFriendLoginIP: true,
-      );
+      final viewer = DemoImRepository.demoUser.copyWith(isInternalUser: true);
       await tester.pumpWidget(
         MaterialApp(
           theme: buildLinliTheme(Brightness.light).copyWith(platform: platform),
@@ -455,9 +453,7 @@ AppController _controller(_PeerRepository repository) {
   addTearDown(repository.closeEvents);
   return AppController(repository)
     ..authenticated = true
-    ..currentUser = DemoImRepository.demoUser.copyWith(
-      canViewFriendLoginIP: true,
-    );
+    ..currentUser = DemoImRepository.demoUser.copyWith(isInternalUser: true);
 }
 
 Conversation _conversation({bool group = false, int channelType = 1}) =>

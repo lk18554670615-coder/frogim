@@ -8,6 +8,7 @@ import 'package:linli_im/core/app_theme.dart';
 import 'package:linli_im/core/group_message_policy.dart';
 import 'package:linli_im/core/models.dart';
 import 'package:linli_im/data/demo_repository.dart';
+import 'package:linli_im/data/im_repository.dart';
 import 'package:linli_im/data/secure_local_store.dart';
 import 'package:linli_im/ui/screens/chat_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -42,6 +43,7 @@ ChatMessage message(
   conversationSeq: seq,
   deliveredCount: 12,
   readCount: 7,
+  unreadCount: 5,
   status: status,
   kind: voice ? MessageContentKind.voice : MessageContentKind.text,
   durationSeconds: voice ? 4 : null,
@@ -145,7 +147,7 @@ void main() {
           isGroupManager(role) ? findsOneWidget : findsNothing,
         );
         expect(
-          find.text('已送达 12 · 已读 7'),
+          find.text('已读 7 · 未读 5'),
           isGroupManager(role) ? findsOneWidget : findsNothing,
         );
         if (!isGroupManager(role)) {
@@ -260,7 +262,7 @@ void main() {
         isGroupManager(role) ? findsOneWidget : findsNothing,
       );
       expect(
-        find.text('已送达 12 · 已读 7'),
+        find.text('已读 7 · 未读 5'),
         isGroupManager(role) ? findsOneWidget : findsNothing,
       );
       if (role == 'member') {
@@ -277,6 +279,67 @@ void main() {
     });
   }
 
+  testWidgets('手机群主点击回执后查看已读和未读成员', (tester) async {
+    final repo = _ReceiptRepository()..role = 'owner';
+    final c = AppController(repo);
+    addTearDown(c.dispose);
+    await tester.runAsync(c.loginAsDemo);
+    await showPage(
+      tester,
+      ChatScreen(controller: c, conversation: c.conversations.single),
+    );
+
+    await tester.tap(find.byKey(const Key('group-receipt-summary')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('group-receipt-title')), findsOneWidget);
+    expect(find.text('仅群主和管理员可见'), findsOneWidget);
+    expect(find.text('已读成员'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('group-receipt-unread-tab')));
+    await tester.pumpAndSettle();
+    expect(find.text('未读成员'), findsOneWidget);
+    expect(find.text('消息发送者'), findsNothing);
+  });
+
+  testWidgets('桌面群管理员从回执打开右侧阅读详情面板', (tester) async {
+    final repo = _ReceiptRepository()..role = 'admin';
+    final c = AppController(repo);
+    addTearDown(c.dispose);
+    await tester.runAsync(c.loginAsDemo);
+    await showPage(
+      tester,
+      ChatScreen(controller: c, conversation: c.conversations.single),
+      width: 1280,
+    );
+
+    await tester.tap(find.byKey(const Key('group-receipt-summary')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('group-receipt-desktop-panel')),
+      findsOneWidget,
+    );
+    expect(find.text('已读成员'), findsOneWidget);
+  });
+
+  testWidgets('群主可以从他人群消息菜单查看阅读详情', (tester) async {
+    final repo = _ReceiptRepository()..role = 'owner';
+    final c = AppController(repo);
+    addTearDown(c.dispose);
+    await tester.runAsync(c.loginAsDemo);
+    await showPage(
+      tester,
+      ChatScreen(controller: c, conversation: c.conversations.single),
+    );
+
+    await tester.longPress(find.text('回执消息 3'));
+    await tester.pumpAndSettle();
+    expect(find.text('阅读详情'), findsOneWidget);
+    await tester.tap(find.text('阅读详情'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('group-receipt-title')), findsOneWidget);
+    expect(repo.lastReceiptMessageId, 'receipt-3');
+  });
+
   testWidgets('降级或角色重新同步立刻隐藏语音回执，不保留淡出动画，晋升后恢复', (tester) async {
     final repo = _ReceiptRepository()
       ..role = 'owner'
@@ -290,7 +353,7 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 400));
     await tester.pumpAndSettle();
-    expect(find.text('已送达 12 · 已读 7'), findsOneWidget);
+    expect(find.text('已读 7 · 未读 5'), findsOneWidget);
     repo.role = 'member';
     repo.bus.add(
       const ImEvent(
@@ -326,7 +389,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(c.conversations.single.currentUserRole, 'admin');
     expect(c.canDisplayMessageReceipts('receipt-chat'), isTrue);
-    expect(find.text('已送达 12 · 已读 7'), findsOneWidget);
+    expect(find.text('已读 7 · 未读 5'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -372,7 +435,7 @@ void main() {
       tester,
       ChatScreen(controller: c, conversation: c.conversations.single),
     );
-    expect(find.text('已送达 12 · 已读 7'), findsOneWidget);
+    expect(find.text('已读 7 · 未读 5'), findsOneWidget);
     final initialLoads = repo.messageLoads;
     repo
       ..authoritativeDeliveredCount = 14
@@ -390,7 +453,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(repo.messageLoads, greaterThan(initialLoads));
-    expect(find.text('已送达 14 · 已读 9'), findsOneWidget);
+    expect(find.text('已读 9 · 未读 5'), findsOneWidget);
   });
 }
 
@@ -412,14 +475,43 @@ Future<void> showPage(
   await tester.pumpAndSettle();
 }
 
-class _ReceiptRepository extends DemoImRepository {
+class _ReceiptRepository extends DemoImRepository
+    implements GroupMessageReceiptRepository {
   _ReceiptRepository() : super(latency: Duration.zero, store: _MemoryStore());
   String role = 'member';
   bool voice = false;
   int messageLoads = 0;
   int authoritativeDeliveredCount = 12;
   int authoritativeReadCount = 7;
+  String? lastReceiptMessageId;
   final bus = StreamController<ImEvent>.broadcast(sync: true);
+
+  @override
+  Future<GroupMessageReceiptPage> groupMessageReceipts(
+    String messageId, {
+    String status = 'read',
+    String cursor = '',
+    int limit = 50,
+  }) async {
+    lastReceiptMessageId = messageId;
+    return GroupMessageReceiptPage(
+      messageId: messageId,
+      conversationId: 'receipt-chat',
+      readCount: 1,
+      unreadCount: 1,
+      total: 2,
+      items: [
+        GroupMessageReceiptMember(
+          userId: status == 'read' ? 'read-member' : 'unread-member',
+          name: status == 'read' ? '已读成员' : '未读成员',
+          displayName: status == 'read' ? '已读成员' : '未读成员',
+          role: status == 'read' ? 'admin' : 'member',
+          read: status == 'read',
+        ),
+      ],
+    );
+  }
+
   @override
   Stream<ImEvent> get events => bus.stream;
   @override
@@ -431,10 +523,12 @@ class _ReceiptRepository extends DemoImRepository {
       message(1).copyWith(
         deliveredCount: authoritativeDeliveredCount,
         readCount: authoritativeReadCount,
+        unreadCount: authoritativeDeliveredCount - authoritativeReadCount,
       ),
       message(2, voice: voice).copyWith(
         deliveredCount: authoritativeDeliveredCount,
         readCount: authoritativeReadCount,
+        unreadCount: authoritativeDeliveredCount - authoritativeReadCount,
       ),
       message(3, mine: false),
     ];

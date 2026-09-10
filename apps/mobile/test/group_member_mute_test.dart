@@ -60,6 +60,12 @@ void main() {
     final until = DateTime.utc(2026, 8, 13, 9, 30);
 
     await repository.setGroupMemberMuted('group-1', 'member-1', until);
+    await repository.setGroupMemberMuted(
+      'group-1',
+      'member-1',
+      null,
+      permanently: true,
+    );
     await repository.setGroupMemberMuted('group-1', 'member-1', null);
     await repository.setGroupRole('group-1', 'member-1', 'admin');
     await repository.setGroupRole('group-1', 'member-1', 'member');
@@ -67,12 +73,20 @@ void main() {
     final muteRequests = requests
         .where((request) => request.url.path.endsWith('/member-1/mute'))
         .toList();
-    expect(muteRequests, hasLength(2));
+    expect(muteRequests, hasLength(3));
     expect(muteRequests.first.method, 'PUT');
     expect(jsonDecode(muteRequests.first.body), {
       'until': '2026-08-13T09:30:00.000Z',
+      'permanent': false,
     });
-    expect(jsonDecode(muteRequests.last.body), {'until': null});
+    expect(jsonDecode(muteRequests[1].body), {
+      'until': null,
+      'permanent': true,
+    });
+    expect(jsonDecode(muteRequests.last.body), {
+      'until': null,
+      'permanent': false,
+    });
     final roleRequests = requests
         .where((request) => request.url.path.endsWith('/member-1/role'))
         .toList();
@@ -103,11 +117,26 @@ void main() {
     expect(muted.isMuted, isTrue);
     expect(muted.mutedUntil, until);
 
+    await repository.setGroupMemberMuted(
+      'c-team',
+      target.user.id,
+      null,
+      permanently: true,
+    );
+    await repository.setGroupRole('c-team', target.user.id, 'member');
+    final permanentlyMuted = (await repository.groupMembers(
+      'c-team',
+    )).firstWhere((member) => member.user.id == target.user.id);
+    expect(permanentlyMuted.isMuted, isTrue);
+    expect(permanentlyMuted.mutedPermanently, isTrue);
+    expect(permanentlyMuted.mutedUntil, isNull);
+
     await repository.setGroupMemberMuted('c-team', target.user.id, null);
     final unmuted = (await repository.groupMembers(
       'c-team',
     )).firstWhere((member) => member.user.id == target.user.id);
     expect(unmuted.isMuted, isFalse);
+    expect(unmuted.mutedPermanently, isFalse);
     expect(unmuted.mutedUntil, isNull);
     await repository.close();
   });

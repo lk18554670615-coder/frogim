@@ -22,35 +22,21 @@ describe('live API adapter', () => {
     await expect(getApi('token').setUserInviteRelation('u2','ABCDEF88','纠错',2)).rejects.toMatchObject({code:'INVITE_RELATION_CHANGED',message:'邀请来源已被其他管理员修改，请刷新用户详情后重试'});
   });
 
-  it('全端删除授权使用专用接口，默认关闭，保留审核标记', async () => {
-    const fetchMock=vi.fn(async (_input:RequestInfo|URL, init?:RequestInit)=>({ok:true,status:200,headers:new Headers(),json:async()=>init?.body?JSON.parse(String(init.body)):{items:[{id:'u1',name:'测试',canDeleteMessagesForEveryone:true},{id:'u2',name:'默认关闭'}],total:2}}));
-    vi.stubGlobal('fetch',fetchMock);const api=getApi('token');
-    const users=await api.getUsers();expect(users.items[0].canDeleteMessagesForEveryone).toBe(true);expect(users.items[1].canDeleteMessagesForEveryone).toBe(false);
-    await api.setUserMessagePermissions('u1',false,'撤销授权');
-    expect(String(fetchMock.mock.calls[1][0])).toContain('/users/u1/message-permissions');
-    expect(fetchMock.mock.calls[1][1]?.method).toBe('PUT');
-    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({canDeleteMessagesForEveryone:false,reason:'撤销授权',confirmed:true});
-  });
-
-  it('好友登录 IP 权限支持列表筛选、单个和批量审计请求', async () => {
+  it('内部用户统一控制两项特殊能力并支持列表筛选', async () => {
     const fetchMock=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>({ok:true,status:200,headers:new Headers(),json:async()=>{
-      if(!init?.method)return {items:[{id:'u1',name:'已授权',canViewFriendLoginIp:true},{id:'u2',name:'默认关闭'}],total:2};
+      if(!init?.method)return {items:[{id:'u1',name:'内部账号',isInternalUser:true},{id:'u2',name:'普通账号',isInternalUser:false}],total:2};
       const body=JSON.parse(String(init.body));
-      const ids=body.userIds??[decodeURIComponent(String(input).split('/users/')[1].split('/')[0])];
-      return {batchId:'ip_permission_1',allowed:body.allowed,requested:ids.length,changed:ids.length,unchanged:0,userIds:ids};
+      return {userId:decodeURIComponent(String(input).split('/users/')[1].split('/')[0]),isInternalUser:body.isInternalUser,changed:true};
     }}));
     vi.stubGlobal('fetch',fetchMock);const api=getApi('token');
-    const users=await api.getUsers('','',1,20,'','','any','allowed');
-    expect(users.items[0].canViewFriendLoginIp).toBe(true);
-    expect(users.items[1].canViewFriendLoginIp).toBe(false);
-    expect(String(fetchMock.mock.calls[0][0])).toContain('friendLoginIPPermission=allowed');
-    const single=await api.setUserFriendLoginIPPermission('u/1',true,'客服工单');
-    const batch=await api.setUsersFriendLoginIPPermission(['u1','u2'],false,'季度权限复核');
-    expect(single).toMatchObject({allowed:true,requested:1,changed:1,userIds:['u/1']});
-    expect(batch).toMatchObject({allowed:false,requested:2,changed:2,userIds:['u1','u2']});
-    expect(String(fetchMock.mock.calls[1][0])).toContain('/users/u%2F1/friend-login-ip-permission');
-    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({allowed:true,reason:'客服工单',confirmed:true});
-    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toEqual({userIds:['u1','u2'],allowed:false,reason:'季度权限复核',confirmed:true});
+    const users=await api.getUsers('','',1,20,'','','any','internal');
+    expect(users.items[0]).toMatchObject({isInternalUser:true});
+    expect(users.items[1].isInternalUser).toBe(false);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('internalUser=internal');
+    const update=await api.setUserInternalStatus('u/1',false,'调整为普通账号');
+    expect(update).toMatchObject({userId:'u/1',isInternalUser:false,changed:true});
+    expect(String(fetchMock.mock.calls[1][0])).toContain('/users/u%2F1/internal-user');
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({isInternalUser:false,reason:'调整为普通账号',confirmed:true});
   });
   afterEach(() => { vi.unstubAllGlobals(); });
 

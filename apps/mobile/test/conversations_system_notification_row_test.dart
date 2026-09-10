@@ -73,24 +73,59 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('没有通知时会话首行给出清晰空状态并可进入空通知中心', (tester) async {
+  testWidgets('没有通知时不占用消息列表首行', (tester) async {
     final controller = await _pumpConversations(
       tester,
       announcements: const [],
     );
     addTearDown(controller.dispose);
 
-    final entry = find.byKey(const Key('system-notifications-entry'));
-    expect(find.text('暂无新通知'), findsOneWidget);
-    expect(find.bySemanticsLabel(RegExp(r'系统通知.*暂无新通知')), findsOneWidget);
-    expect(tester.getSize(entry).height, 74);
-
-    await tester.tap(entry);
-    await tester.pumpAndSettle();
-    expect(find.byType(SystemNotificationsScreen), findsOneWidget);
-    expect(find.text('暂无系统通知'), findsOneWidget);
-    expect(find.text('平台公告和服务提醒会显示在这里。'), findsOneWidget);
+    expect(find.byKey(const Key('system-notifications-entry')), findsNothing);
+    expect(find.byKey(const Key('system-notification-section')), findsNothing);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('系统通知支持左滑删除，后续新通知会重新出现', (tester) async {
+    final controller = await _pumpConversations(
+      tester,
+      announcements: [
+        AppAnnouncement(
+          id: 'deletable-notice',
+          title: '可删除通知',
+          content: '删除仅影响当前用户。',
+          status: 'published',
+          pinned: false,
+          publishedAt: DateTime.now(),
+        ),
+      ],
+    );
+    addTearDown(controller.dispose);
+
+    final entry = find.byKey(const Key('system-notifications-entry'));
+    await tester.drag(entry, const Offset(-260, 0));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('system-notification-delete')));
+    await tester.pumpAndSettle();
+    expect(find.text('删除系统通知？'), findsOneWidget);
+    await tester.tap(find.text('删除').last);
+    await tester.pumpAndSettle();
+    expect(entry, findsNothing);
+    expect(controller.announcements, isEmpty);
+
+    controller.announcements = [
+      AppAnnouncement(
+        id: 'new-notice',
+        title: '后续新通知',
+        content: '新公告重新显示系统通知入口。',
+        status: 'published',
+        pinned: false,
+        publishedAt: DateTime.now(),
+      ),
+    ];
+    controller.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(entry, findsOneWidget);
+    expect(find.text('后续新通知'), findsOneWidget);
   });
 
   testWidgets('会话首行优先展示最新未读而不是较早的置顶通知', (tester) async {

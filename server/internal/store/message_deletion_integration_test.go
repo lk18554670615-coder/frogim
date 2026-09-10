@@ -91,16 +91,20 @@ func TestMessageDeletionPostgres(t *testing.T) {
 			t.Fatalf("allowed %s %s %v", uid, cid, ids)
 		}
 	}
+	setInternal := func(uid string, internal bool, reason string) {
+		t.Helper()
+		if _, e := p.SetInternalUser(ctx, "admin", uid, internal, reason, "127.0.0.1"); e != nil {
+			t.Fatal(e)
+		}
+	}
 	for _, uid := range []string{"owner", "admin", "member"} {
-		if ok, e := p.MessageDeletionPermission(ctx, uid); e != nil || ok {
+		if ok, e := p.InternalUser(ctx, uid); e != nil || ok {
 			t.Fatal("default", uid, ok, e)
 		}
 		deny(uid, "group", "201")
 	}
 	for _, uid := range []string{"owner", "admin", "member", "outside"} {
-		if e := p.SetMessageDeletionPermission(ctx, "admin", uid, true, "test grant", "127.0.0.1"); e != nil {
-			t.Fatal(e)
-		}
+		setInternal(uid, true, "test grant")
 	}
 	deny("member", "group", "202")
 	deny("outside", "group", "201")
@@ -131,20 +135,14 @@ func TestMessageDeletionPostgres(t *testing.T) {
 	deny("admin", "group", "206")
 	exec(`UPDATE im_wukong_message_index SET expires_at=now()-interval '1 minute' WHERE message_id=205`)
 	deny("owner", "group", "205")
-	if e = p.SetMessageDeletionPermission(ctx, "admin", "owner", false, "test revoke", ""); e != nil {
-		t.Fatal(e)
-	}
+	setInternal("owner", false, "test revoke")
 	deny("owner", "direct", "103")
-	if e = p.SetMessageDeletionPermission(ctx, "admin", "owner", true, "test grant", ""); e != nil {
-		t.Fatal(e)
-	}
+	setInternal("owner", true, "test grant")
 	// Grant -> revoke -> grant must produce three distinct refresh events.
 	// Repeating the current value does not create another event.
-	if e = p.SetMessageDeletionPermission(ctx, "admin", "owner", true, "unchanged", ""); e != nil {
-		t.Fatal(e)
-	}
+	setInternal("owner", true, "unchanged")
 	var permissionEvents int
-	if e = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_wukong_outbox WHERE payload->>'event'='user.message_permissions.updated' AND payload->'param'->'payload'->>'userId'='owner'`).Scan(&permissionEvents); e != nil || permissionEvents != 3 {
+	if e = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_wukong_outbox WHERE payload->>'event'='user.internal_status.updated' AND payload->'param'->'payload'->>'userId'='owner'`).Scan(&permissionEvents); e != nil || permissionEvents != 3 {
 		t.Fatal("permission transition notifications", permissionEvents, e)
 	}
 	for _, id := range []string{"video", "cover"} {
@@ -208,7 +206,7 @@ func TestMessageDeletionPostgres(t *testing.T) {
 	// A request already in flight must observe a committed permission/role
 	// change after waiting for the same row lock, not its original snapshot.
 	for _, change := range []struct{ uid, cid, id, sql string }{
-		{"owner", "direct", "101", `UPDATE im_users SET can_delete_messages_for_everyone=false WHERE id='owner'`},
+		{"owner", "direct", "101", `UPDATE im_users SET is_internal_user=false WHERE id='owner'`},
 		{"admin", "group", "206", `UPDATE im_members SET role='member' WHERE user_id='admin' AND conversation_id='group'`},
 	} {
 		exec(`UPDATE im_members SET role='admin',history_after_seq=0 WHERE user_id='admin' AND conversation_id='group'`)
@@ -239,9 +237,7 @@ func TestMessageDeletionPostgres(t *testing.T) {
 			t.Fatal("stale authorization", err)
 		}
 	}
-	if err = p.SetMessageDeletionPermission(ctx, "admin", "owner", true, "batch test", ""); err != nil {
-		t.Fatal(err)
-	}
+	setInternal("owner", true, "batch test")
 	batch := make([]string, 100)
 	for i := range batch {
 		id := int64(1000 + i)

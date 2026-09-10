@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,22 +45,20 @@ func (s *peerLoginStore) UserAccessProfiles(_ context.Context, ids []string, _ s
 	return out, nil
 }
 
-func (s *peerLoginStore) FriendLoginIPPermission(_ context.Context, uid string) (bool, error) {
+func (s *peerLoginStore) InternalUser(_ context.Context, uid string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	allowed, found := s.allowed[uid]
 	return !found || allowed, nil
 }
 
-func (s *peerLoginStore) SetFriendLoginIPPermission(_ context.Context, _ string, userIDs []string, allowed bool, _, _ string) (store.FriendLoginIPPermissionUpdate, error) {
+func (s *peerLoginStore) SetInternalUser(_ context.Context, _ string, userID string, internal bool, _, _ string) (store.InternalUserUpdate, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ids := append([]string(nil), userIDs...)
-	s.updates = append(s.updates, ids)
-	for _, id := range ids {
-		s.allowed[id] = allowed
-	}
-	return store.FriendLoginIPPermissionUpdate{BatchID: "ip_permission_test", Allowed: allowed, Requested: len(ids), Changed: len(ids), UserIDs: ids}, nil
+	previous := s.allowed[userID]
+	s.allowed[userID] = internal
+	s.updates = append(s.updates, []string{userID})
+	return store.InternalUserUpdate{UserID: userID, IsInternalUser: internal, Changed: previous != internal}, nil
 }
 
 func (s *peerLoginStore) ReadFriendLoginIP(_ context.Context, viewerID, conversationID, _ string) (string, string, error) {
@@ -81,7 +78,7 @@ func (s *peerLoginStore) ReadFriendLoginIP(_ context.Context, viewerID, conversa
 	return peerID, s.profiles[peerID].LastLoginIP, nil
 }
 
-func TestAdminFriendLoginIPPermissionEndpoints(t *testing.T) {
+func TestAdminInternalUserEndpoint(t *testing.T) {
 	s := &peerLoginStore{profiles: map[string]store.UserAccessProfile{}, allowed: map[string]bool{}, peers: map[string]map[string]string{}}
 	a, err := app.New(context.Background(), s)
 	if err != nil {
@@ -105,32 +102,13 @@ func TestAdminFriendLoginIPPermissionEndpoints(t *testing.T) {
 		}
 		return string(raw)
 	}
-	raw := put("/v2/admin/users/usr_alice/friend-login-ip-permission", `{"allowed":true,"reason":"support ticket","confirmed":true}`, http.StatusOK)
-	if !strings.Contains(raw, `"allowed":true`) || !strings.Contains(raw, `"changed":1`) {
-		t.Fatalf("single update response: %s", raw)
+	raw := put("/v2/admin/users/usr_alice/internal-user", `{"isInternalUser":true,"reason":"support ticket","confirmed":true}`, http.StatusOK)
+	if !strings.Contains(raw, `"isInternalUser":true`) || !strings.Contains(raw, `"changed":true`) {
+		t.Fatalf("internal-user update response: %s", raw)
 	}
-	raw = put("/v2/admin/users/friend-login-ip-permissions", `{"userIds":["usr_alice","usr_bob"],"allowed":false,"reason":"access review","confirmed":true}`, http.StatusOK)
-	if !strings.Contains(raw, `"requested":2`) || !strings.Contains(raw, `"changed":2`) {
-		t.Fatalf("batch update response: %s", raw)
-	}
-	put("/v2/admin/users/friend-login-ip-permissions", `{"userIds":["usr_alice","usr_alice"],"allowed":true,"reason":"duplicate","confirmed":true}`, http.StatusBadRequest)
-	maximum := make([]string, 100)
-	for index := range maximum {
-		maximum[index] = fmt.Sprintf("usr_%03d", index)
-	}
-	maximumBody, err := json.Marshal(map[string]any{"userIds": maximum, "allowed": true, "reason": "maximum batch", "confirmed": true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	put("/v2/admin/users/friend-login-ip-permissions", string(maximumBody), http.StatusOK)
-	tooMany, err := json.Marshal(map[string]any{"userIds": make([]string, 101), "allowed": true, "reason": "too many", "confirmed": true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	put("/v2/admin/users/friend-login-ip-permissions", string(tooMany), http.StatusBadRequest)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.updates) != 3 || len(s.updates[0]) != 1 || len(s.updates[1]) != 2 || len(s.updates[2]) != 100 {
+	if len(s.updates) != 1 || len(s.updates[0]) != 1 || s.updates[0][0] != "usr_alice" {
 		t.Fatalf("only valid updates reach persistence: %+v", s.updates)
 	}
 }
@@ -165,7 +143,7 @@ func TestConversationPeerLoginInfo(t *testing.T) {
 	me := authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/users/me", alice, "")
 	meRaw, err := io.ReadAll(me.Body)
 	me.Body.Close()
-	if err != nil || me.StatusCode != http.StatusOK || !strings.Contains(string(meRaw), `"canViewFriendLoginIp":true`) {
+	if err != nil || me.StatusCode != http.StatusOK || !strings.Contains(string(meRaw), `"isInternalUser":true`) || strings.Contains(string(meRaw), `"canDeleteMessagesForEveryone"`) || strings.Contains(string(meRaw), `"canViewFriendLoginIp"`) {
 		t.Fatalf("own profile must explicitly expose the granted capability: status=%d body=%s err=%v", me.StatusCode, meRaw, err)
 	}
 	path := func(cid string) string { return ts.URL + "/v2/channels/conversations/" + cid + "/peer-login-info" }

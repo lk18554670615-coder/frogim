@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS im_conversations(id text PRIMARY KEY,kind text NOT NU
 ALTER TABLE im_conversations ADD COLUMN IF NOT EXISTS member_count integer NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS im_direct_index(pair_key text PRIMARY KEY,conversation_id text UNIQUE NOT NULL REFERENCES im_conversations(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS im_members(conversation_id text NOT NULL REFERENCES im_conversations(id) ON DELETE CASCADE,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,role text NOT NULL,last_read_seq bigint NOT NULL DEFAULT 0,muted_until timestamptz,pinned boolean NOT NULL DEFAULT false,notifications_muted boolean NOT NULL DEFAULT false,manual_unread boolean NOT NULL DEFAULT false,hidden_until_seq bigint,joined_at timestamptz NOT NULL,PRIMARY KEY(conversation_id,user_id));
+ALTER TABLE im_members ADD COLUMN IF NOT EXISTS muted_permanently boolean NOT NULL DEFAULT false;
 ALTER TABLE im_members ADD COLUMN IF NOT EXISTS pinned boolean NOT NULL DEFAULT false;
 ALTER TABLE im_members ADD COLUMN IF NOT EXISTS saved boolean NOT NULL DEFAULT false;
 ALTER TABLE im_members ADD COLUMN IF NOT EXISTS notifications_muted boolean NOT NULL DEFAULT false;
@@ -105,6 +106,7 @@ ALTER TABLE im_members ADD COLUMN IF NOT EXISTS group_nickname text NOT NULL DEF
 ALTER TABLE im_members ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
 ALTER TABLE im_members ADD COLUMN IF NOT EXISTS last_delivered_seq bigint NOT NULL DEFAULT 0;
 ALTER TABLE im_members ADD COLUMN IF NOT EXISTS expires_at timestamptz;
+ALTER TABLE im_members ADD COLUMN IF NOT EXISTS screenshot_notices_enabled boolean NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS im_members_user_idx ON im_members(user_id,joined_at DESC);
 CREATE INDEX IF NOT EXISTS im_members_conversation_joined_idx ON im_members(conversation_id,joined_at,user_id);
 CREATE INDEX IF NOT EXISTS im_members_expiry_idx ON im_members(expires_at,conversation_id,user_id) WHERE expires_at IS NOT NULL;
@@ -135,6 +137,10 @@ ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS banned_by text NOT NULL DEFAULT '
 ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS ban_reason text NOT NULL DEFAULT '';
 ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS history_visible_to_new_members boolean NOT NULL DEFAULT false;
 ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS history_policy_version bigint NOT NULL DEFAULT 1;
+ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS member_message_rate_limit_per_minute smallint NOT NULL DEFAULT 0;
+ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS message_rate_limit_version bigint NOT NULL DEFAULT 1;
+ALTER TABLE im_groups DROP CONSTRAINT IF EXISTS im_groups_member_message_rate_limit_check;
+ALTER TABLE im_groups ADD CONSTRAINT im_groups_member_message_rate_limit_check CHECK(member_message_rate_limit_per_minute IN (0,5,10,20));
 ALTER TABLE im_members ADD COLUMN IF NOT EXISTS history_after_seq bigint CHECK(history_after_seq >= 0);
 -- Central read predicate, intentionally independent of member role. NULL join
 -- sequences are legacy rows; same-second messages are conservatively hidden.
@@ -642,6 +648,7 @@ CREATE TABLE IF NOT EXISTS im_announcements(
 );
 CREATE INDEX IF NOT EXISTS im_announcements_status_idx ON im_announcements(status,scheduled_at,pinned DESC,created_at DESC);
 CREATE TABLE IF NOT EXISTS im_announcement_reads(announcement_id text NOT NULL REFERENCES im_announcements(id) ON DELETE CASCADE,user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,read_at timestamptz NOT NULL,PRIMARY KEY(announcement_id,user_id));
+ALTER TABLE im_announcement_reads ADD COLUMN IF NOT EXISTS dismissed_at timestamptz;
 CREATE TABLE IF NOT EXISTS im_favorites(user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,message_id text NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(user_id,message_id));
 ALTER TABLE im_favorites DROP CONSTRAINT IF EXISTS im_favorites_message_id_fkey;
 CREATE INDEX IF NOT EXISTS im_favorites_user_idx ON im_favorites(user_id,created_at DESC);
@@ -833,11 +840,13 @@ CREATE TABLE IF NOT EXISTS im_wukong_channel_member_events(
  user_id text NOT NULL REFERENCES im_users(id) ON DELETE CASCADE,
  role text NOT NULL,
  muted_until timestamptz,
+ muted_permanently boolean NOT NULL DEFAULT false,
  group_nickname text NOT NULL DEFAULT '',
  is_deleted boolean NOT NULL DEFAULT false,
  created_at timestamptz NOT NULL,
  updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE im_wukong_channel_member_events ADD COLUMN IF NOT EXISTS muted_permanently boolean NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS im_wukong_channel_member_events_sync_idx ON im_wukong_channel_member_events(conversation_id,version);
 
 CREATE OR REPLACE FUNCTION im_wukong_record_member_event() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -845,15 +854,16 @@ DECLARE source_row im_members%ROWTYPE;
 BEGIN
   IF TG_OP='UPDATE' AND OLD.role=NEW.role
      AND OLD.muted_until IS NOT DISTINCT FROM NEW.muted_until
+     AND OLD.muted_permanently=NEW.muted_permanently
      AND OLD.group_nickname=NEW.group_nickname THEN
     RETURN NULL;
   END IF;
   IF TG_OP='DELETE' THEN source_row := OLD; ELSE source_row := NEW; END IF;
   INSERT INTO im_wukong_channel_member_events(
-    conversation_id,user_id,role,muted_until,group_nickname,is_deleted,created_at,updated_at
+    conversation_id,user_id,role,muted_until,muted_permanently,group_nickname,is_deleted,created_at,updated_at
   ) VALUES(
     source_row.conversation_id,source_row.user_id,source_row.role,source_row.muted_until,
-    source_row.group_nickname,TG_OP='DELETE',source_row.joined_at,now()
+    source_row.muted_permanently,source_row.group_nickname,TG_OP='DELETE',source_row.joined_at,now()
   );
   RETURN NULL;
 END $$;
@@ -867,8 +877,8 @@ BEGIN
     RETURN NULL;
   END IF;
   INSERT INTO im_wukong_channel_member_events(
-    conversation_id,user_id,role,muted_until,group_nickname,is_deleted,created_at,updated_at
-  ) SELECT conversation_id,user_id,role,muted_until,group_nickname,false,joined_at,now()
+    conversation_id,user_id,role,muted_until,muted_permanently,group_nickname,is_deleted,created_at,updated_at
+  ) SELECT conversation_id,user_id,role,muted_until,muted_permanently,group_nickname,false,joined_at,now()
     FROM im_members WHERE user_id=NEW.id;
   RETURN NULL;
 END $$;
@@ -877,10 +887,10 @@ CREATE TRIGGER im_wukong_user_member_event AFTER UPDATE OF name,handle,avatar_ur
 FOR EACH ROW EXECUTE FUNCTION im_wukong_record_user_member_events();
 
 INSERT INTO im_wukong_channel_member_events(
- conversation_id,user_id,role,muted_until,group_nickname,is_deleted,created_at,updated_at
+ conversation_id,user_id,role,muted_until,muted_permanently,group_nickname,is_deleted,created_at,updated_at
 )
 SELECT member.conversation_id,member.user_id,member.role,member.muted_until,
- member.group_nickname,false,member.joined_at,now()
+ member.muted_permanently,member.group_nickname,false,member.joined_at,now()
 FROM im_members member
 WHERE COALESCE((
  SELECT event.is_deleted FROM im_wukong_channel_member_events event
@@ -925,10 +935,20 @@ DROP TABLE IF EXISTS im_user_cursors;
 DROP TABLE IF EXISTS im_messages;
 DROP TABLE IF EXISTS im_message_fanout;
 -- Schema 62: a capability granted only through administrator user management.
-ALTER TABLE im_users ADD COLUMN IF NOT EXISTS can_delete_messages_for_everyone boolean NOT NULL DEFAULT false;
--- Schema 67: only explicitly authorized viewers may inspect a current friend's
--- last successful login IP from the PC Web direct-chat header.
-ALTER TABLE im_users ADD COLUMN IF NOT EXISTS can_view_friend_login_ip boolean NOT NULL DEFAULT false;
+-- Schema 68: one administrator-controlled classification grants both sensitive
+-- capabilities. Migrate either legacy grant before removing both old columns.
+ALTER TABLE im_users ADD COLUMN IF NOT EXISTS is_internal_user boolean NOT NULL DEFAULT false;
+DO $$
+BEGIN
+ IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='im_users' AND column_name='can_delete_messages_for_everyone') THEN
+  EXECUTE 'UPDATE im_users SET is_internal_user=is_internal_user OR COALESCE(can_delete_messages_for_everyone,false)';
+ END IF;
+ IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='im_users' AND column_name='can_view_friend_login_ip') THEN
+  EXECUTE 'UPDATE im_users SET is_internal_user=is_internal_user OR COALESCE(can_view_friend_login_ip,false)';
+ END IF;
+END $$;
+ALTER TABLE im_users DROP COLUMN IF EXISTS can_delete_messages_for_everyone;
+ALTER TABLE im_users DROP COLUMN IF EXISTS can_view_friend_login_ip;
 CREATE OR REPLACE FUNCTION im_message_is_deleted(mid text) RETURNS boolean LANGUAGE sql STABLE AS $$
  SELECT EXISTS(SELECT 1 FROM im_wukong_message_extensions
  WHERE message_id = CASE

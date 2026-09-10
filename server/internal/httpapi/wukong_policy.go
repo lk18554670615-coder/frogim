@@ -82,6 +82,24 @@ func (x *API) wukongSendPolicy(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		if err = x.app.ValidateMediaChannelBinding(store.MediaChannelBinding{
+			MediaID: mediaID, ChannelID: route.ChannelID,
+			ChannelType: route.ChannelType, SenderID: request.FromUID,
+		}); err != nil {
+			reason, code = wukongPolicyError(err)
+			write(w, http.StatusOK, wukongPolicySendResponse{ReasonCode: reason, Code: code})
+			return
+		}
+	}
+	if wukongMessageConsumesGroupRate(input.ContentType) {
+		_, err = x.app.ConsumeGroupMessageRate(r.Context(), request.FromUID, route)
+	}
+	if err != nil {
+		reason, code = wukongPolicyError(err)
+		write(w, http.StatusOK, wukongPolicySendResponse{ReasonCode: reason, Code: code})
+		return
+	}
+	if mediaID != "" {
 		if err = x.app.BindMediaChannel(store.MediaChannelBinding{
 			MediaID: mediaID, ChannelID: route.ChannelID,
 			ChannelType: route.ChannelType, SenderID: request.FromUID,
@@ -92,6 +110,14 @@ func (x *API) wukongSendPolicy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	write(w, http.StatusOK, wukongPolicySendResponse{Allowed: true, ReasonCode: wukong.ReasonSuccess, Code: "ALLOW"})
+}
+
+func wukongMessageConsumesGroupRate(contentType int) bool {
+	return contentType != wukong.ContentTypeCommand &&
+		contentType != wukong.ContentTypeSystemEvent &&
+		contentType != wukong.ContentTypeCallEvent &&
+		contentType != wukong.ContentTypeSupportEvent &&
+		contentType != wukong.ContentTypeScreenshot
 }
 
 func (x *API) authorizedWukongInternal(r *http.Request) bool {
@@ -326,6 +352,8 @@ func wukongJSONFloat(value any) (float64, bool) {
 
 func wukongPolicyError(err error) (uint8, string) {
 	switch {
+	case errors.Is(err, store.ErrGroupMessageRateLimited):
+		return wukong.ReasonRateLimit, "GROUP_MESSAGE_RATE_LIMITED"
 	case errors.Is(err, app.ErrNotFound), errors.Is(err, store.ErrNotFound):
 		return wukong.ReasonChannelNotExist, "CHANNEL_NOT_FOUND"
 	case errors.Is(err, store.ErrUnsupported):

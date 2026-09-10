@@ -8,6 +8,7 @@ import 'package:linli_im/core/app_theme.dart';
 import 'package:linli_im/core/models.dart';
 import 'package:linli_im/data/demo_repository.dart';
 import 'package:linli_im/data/secure_local_store.dart';
+import 'package:linli_im/ui/screens/chat_screen.dart';
 import 'package:linli_im/ui/screens/group_management_screens.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -182,9 +183,43 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('群成员支持预设时长和永久禁言，并可解除', (tester) async {
+    final repository = _RoleRepository();
+    await _open(tester, repository, administratorMode: false);
+    final memberRow = find.byKey(const Key('group-member-u1'));
+
+    await tester.tap(
+      find.descendant(of: memberRow, matching: find.byTooltip('管理成员')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('group-member-mute-action')));
+    await tester.pumpAndSettle();
+    expect(find.text('10 分钟'), findsOneWidget);
+    expect(find.text('自定义结束时间'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('group-member-mute-permanent')));
+    await tester.pumpAndSettle();
+    final muted = (await repository.groupMembers(
+      'c-team',
+    )).firstWhere((member) => member.user.id == 'u1');
+    expect(muted.mutedPermanently, isTrue);
+    expect(find.textContaining('已永久禁言'), findsOneWidget);
+
+    await tester.tap(
+      find.descendant(of: memberRow, matching: find.byTooltip('管理成员')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('group-member-unmute-action')));
+    await tester.pumpAndSettle();
+    final unmuted = (await repository.groupMembers(
+      'c-team',
+    )).firstWhere((member) => member.user.id == 'u1');
+    expect(unmuted.isMuted, isFalse);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('群管理员可操作全员禁言但看不到群主专属设置', (tester) async {
     final repository = _RoleRepository(currentRole: 'admin');
-    await _open(tester, repository, overview: true);
+    await _open(tester, repository, chatInfo: true);
     final muteRow = find.byKey(const Key('group-mute-all'));
     await tester.scrollUntilVisible(muteRow, 250);
     expect(muteRow, findsOneWidget);
@@ -202,8 +237,60 @@ void main() {
 
   testWidgets('普通群成员没有全员禁言入口', (tester) async {
     final repository = _RoleRepository(currentRole: 'member');
+    await _open(tester, repository, chatInfo: true);
+    expect(find.byKey(const Key('group-mute-all')), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('群聊资料与管理不再重复显示全员禁言', (tester) async {
+    final repository = _RoleRepository();
     await _open(tester, repository, overview: true);
     expect(find.byKey(const Key('group-mute-all')), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  for (final role in ['owner', 'admin']) {
+    testWidgets('$role 可设置普通成员每分钟发言数', (tester) async {
+      final repository = _RoleRepository(currentRole: role);
+      await _open(tester, repository, overview: true);
+      final entry = find.byKey(const Key('group-message-rate-limit'));
+      await tester.scrollUntilVisible(entry, 250);
+      expect(entry, findsOneWidget);
+      expect(find.text('不限制普通成员的发言频率'), findsOneWidget);
+
+      await tester.tap(entry);
+      await tester.pumpAndSettle();
+      expect(find.text('每分钟最多 5 条'), findsOneWidget);
+      expect(find.text('每分钟最多 10 条'), findsOneWidget);
+      expect(find.text('每分钟最多 20 条'), findsOneWidget);
+      await tester.tap(find.text('每分钟最多 10 条'));
+      await tester.pumpAndSettle();
+
+      expect(repository.rateLimit, 10);
+      expect(find.text('普通成员每分钟最多 10 条'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets('普通成员看不到发言频率设置', (tester) async {
+    final repository = _RoleRepository(currentRole: 'member');
+    await _open(tester, repository, overview: true);
+    expect(find.byKey(const Key('group-message-rate-limit')), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('群成员入口位于聊天信息且群聊资料不再重复显示', (tester) async {
+    final repository = _RoleRepository();
+    await _open(tester, repository, chatInfo: true);
+    final entry = find.byKey(const Key('group-members-entry'));
+    expect(entry, findsOneWidget);
+    await tester.tap(entry);
+    await tester.pumpAndSettle();
+    expect(find.text('群成员 · 4'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await _open(tester, repository, overview: true);
+    expect(find.byKey(const Key('group-members-entry')), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 }
@@ -212,6 +299,7 @@ Future<AppController> _open(
   WidgetTester tester,
   _RoleRepository repository, {
   bool overview = false,
+  bool chatInfo = false,
   bool administratorMode = true,
   double width = 390,
   double textScale = 1,
@@ -237,7 +325,16 @@ Future<AppController> _open(
         ).copyWith(textScaler: TextScaler.linear(textScale)),
         child: child!,
       ),
-      home: overview
+      home: chatInfo
+          ? ChatInfoScreen(
+              controller: controller,
+              conversation: conversation,
+              onSearch: () {},
+              onClearLocal: () async {},
+              onBlock: () async {},
+              onScheduledMessages: () {},
+            )
+          : overview
           ? GroupManagementScreen(
               controller: controller,
               conversation: conversation,
@@ -263,8 +360,22 @@ class _RoleRepository extends DemoImRepository {
   }
   final roles = {'me': 'owner', 'u1': 'member', 'u2': 'admin', 'u3': 'member'};
   final changes = <(String, String)>[];
+  final mutedUntil = <String, DateTime?>{};
+  final permanentlyMuted = <String, bool>{};
   bool fail = false;
   Completer<void>? pendingChange;
+  int rateLimit = 0;
+  int rateVersion = 1;
+
+  @override
+  Future<List<Conversation>> conversations() async =>
+      (await super.conversations())
+          .map(
+            (conversation) => conversation.id == 'c-team'
+                ? conversation.copyWith(currentUserRole: roles['me'])
+                : conversation,
+          )
+          .toList();
 
   @override
   Future<GroupProfile> groupProfile(String conversationId) async =>
@@ -277,9 +388,30 @@ class _RoleRepository extends DemoImRepository {
         announcement: '',
         announcementVersion: 0,
         joinPolicy: 'invite',
+        memberMessageRateLimitPerMinute: rateLimit,
+        messageRateLimitVersion: rateVersion,
         allowMemberAddFriend: true,
         updatedAt: DateTime.now(),
       );
+
+  @override
+  Future<GroupProfile> updateGroupProfile(
+    String conversationId, {
+    String? name,
+    String? avatarMediaId,
+    String? joinPolicy,
+    bool? allowMemberAddFriend,
+    bool? historyVisibleToNewMembers,
+    int? memberMessageRateLimitPerMinute,
+    bool rotateQr = false,
+  }) async {
+    if (memberMessageRateLimitPerMinute != null &&
+        memberMessageRateLimitPerMinute != rateLimit) {
+      rateLimit = memberMessageRateLimitPerMinute;
+      rateVersion++;
+    }
+    return groupProfile(conversationId);
+  }
 
   @override
   Future<List<GroupMember>> groupMembers(String conversationId) async => [
@@ -287,8 +419,25 @@ class _RoleRepository extends DemoImRepository {
       DemoImRepository.demoUser,
       ...DemoImRepository.people.take(3),
     ])
-      GroupMember(user: user, role: roles[user.id]!, joinedAt: DateTime(2026)),
+      GroupMember(
+        user: user,
+        role: roles[user.id]!,
+        joinedAt: DateTime(2026),
+        mutedUntil: mutedUntil[user.id],
+        mutedPermanently: permanentlyMuted[user.id] ?? false,
+      ),
   ];
+
+  @override
+  Future<void> setGroupMemberMuted(
+    String conversationId,
+    String userId,
+    DateTime? until, {
+    bool permanently = false,
+  }) async {
+    mutedUntil[userId] = until;
+    permanentlyMuted[userId] = permanently;
+  }
 
   @override
   Future<void> setGroupRole(

@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func TestFriendLoginIPPermissionPostgres(t *testing.T) {
+func TestInternalUserFriendLoginIPPostgres(t *testing.T) {
 	url := os.Getenv("IM_TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("isolated PostgreSQL required")
@@ -54,34 +54,36 @@ func TestFriendLoginIPPermissionPostgres(t *testing.T) {
 	exec(`INSERT INTO im_friendships(user_id,friend_user_id) VALUES('viewer','peer'),('peer','viewer')`)
 	exec(`INSERT INTO im_user_access_profiles(user_id,last_login_ip,last_login_at,last_login_event_id) VALUES('peer','2001:4860:4860::8888',now(),'login')`)
 
-	allowed, err := p.FriendLoginIPPermission(ctx, "viewer")
+	allowed, err := p.InternalUser(ctx, "viewer")
 	if err != nil || allowed {
 		t.Fatalf("permission must default off: allowed=%v err=%v", allowed, err)
 	}
 	if _, _, err = p.ReadFriendLoginIP(ctx, "viewer", "direct", "127.0.0.1"); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("ungranted viewer must be denied: %v", err)
 	}
-	result, err := p.SetFriendLoginIPPermission(ctx, "operator", []string{"viewer", "peer"}, true, "support case", "127.0.0.1")
-	if err != nil || result.Changed != 2 || result.Unchanged != 0 || result.Requested != 2 {
-		t.Fatalf("grant failed: result=%+v err=%v", result, err)
+	for _, uid := range []string{"viewer", "peer"} {
+		result, setErr := p.SetInternalUser(ctx, "operator", uid, true, "support case", "127.0.0.1")
+		if setErr != nil || !result.Changed {
+			t.Fatalf("grant failed for %s: result=%+v err=%v", uid, result, setErr)
+		}
 	}
-	granted, total, _, err := p.ListAdminUsersByIP(ctx, "", "", "", 20, "", "any", "allowed")
-	if err != nil || total != 2 || len(granted) != 2 || !granted[0].CanViewFriendLoginIP || !granted[1].CanViewFriendLoginIP {
+	granted, total, _, err := p.ListAdminUsersByIP(ctx, "", "", "", 20, "", "any", "internal")
+	if err != nil || total != 2 || len(granted) != 2 || !granted[0].IsInternalUser || !granted[1].IsInternalUser {
 		t.Fatalf("allowed admin filter failed: total=%d users=%+v err=%v", total, granted, err)
 	}
-	denied, total, _, err := p.ListAdminUsersByIP(ctx, "", "", "", 20, "", "any", "denied")
-	if err != nil || total != 1 || len(denied) != 1 || denied[0].ID != "other" || denied[0].CanViewFriendLoginIP {
+	denied, total, _, err := p.ListAdminUsersByIP(ctx, "", "", "", 20, "", "any", "regular")
+	if err != nil || total != 1 || len(denied) != 1 || denied[0].ID != "other" || denied[0].IsInternalUser {
 		t.Fatalf("denied admin filter failed: total=%d users=%+v err=%v", total, denied, err)
 	}
-	repeated, err := p.SetFriendLoginIPPermission(ctx, "operator", []string{"viewer"}, true, "idempotent review", "")
-	if err != nil || repeated.Changed != 0 || repeated.Unchanged != 1 {
+	repeated, err := p.SetInternalUser(ctx, "operator", "viewer", true, "idempotent review", "")
+	if err != nil || repeated.Changed {
 		t.Fatalf("repeated grant must be an audited no-op: result=%+v err=%v", repeated, err)
 	}
 	var permissionAudits, permissionEvents int
-	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_audits WHERE action='user.friend_login_ip_permission.updated' AND target_id='viewer'`).Scan(&permissionAudits); err != nil || permissionAudits != 2 {
+	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_audits WHERE action='user.internal_status.updated' AND target_id='viewer'`).Scan(&permissionAudits); err != nil || permissionAudits != 2 {
 		t.Fatalf("initial and no-op permission decisions must both be audited: count=%d err=%v", permissionAudits, err)
 	}
-	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_wukong_outbox WHERE payload->>'event'='user.friend_login_ip_permission.updated'`).Scan(&permissionEvents); err != nil || permissionEvents != 2 {
+	if err = p.pool.QueryRow(ctx, `SELECT count(*) FROM im_wukong_outbox WHERE payload->>'event'='user.internal_status.updated'`).Scan(&permissionEvents); err != nil || permissionEvents != 2 {
 		t.Fatalf("only real permission transitions should notify clients: count=%d err=%v", permissionEvents, err)
 	}
 	peerID, loginIP, err := p.ReadFriendLoginIP(ctx, "viewer", "direct", "203.0.113.9")
@@ -117,11 +119,11 @@ func TestFriendLoginIPPermissionPostgres(t *testing.T) {
 		t.Fatal("unban must restore the persisted grant", err)
 	}
 
-	if _, err = p.SetFriendLoginIPPermission(ctx, "operator", []string{"viewer", "missing"}, false, "invalid batch", ""); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("batch with missing user must fail atomically: %v", err)
+	if _, err = p.SetInternalUser(ctx, "operator", "missing", false, "invalid user", ""); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing user must fail: %v", err)
 	}
-	allowed, err = p.FriendLoginIPPermission(ctx, "viewer")
+	allowed, err = p.InternalUser(ctx, "viewer")
 	if err != nil || !allowed {
-		t.Fatalf("failed batch must not partially revoke: allowed=%v err=%v", allowed, err)
+		t.Fatalf("failed update must not revoke another user: allowed=%v err=%v", allowed, err)
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -20,8 +19,6 @@ type MessageDeletionResult struct {
 
 type MessageDeletionStore interface {
 	DeletedUnreadCount(context.Context, string, string, uint8, int64, int64) (int, error)
-	MessageDeletionPermission(context.Context, string) (bool, error)
-	SetMessageDeletionPermission(context.Context, string, string, bool, string, string) error
 	DeleteMessagesForEveryone(context.Context, string, string, []string, string) (MessageDeletionResult, error)
 }
 
@@ -40,15 +37,6 @@ func (p *WithRedis) DeletedUnreadCount(ctx context.Context, uid, ch string, kind
 	return 0, ErrUnsupported
 }
 
-func (p *Postgres) MessageDeletionPermission(ctx context.Context, uid string) (bool, error) {
-	var allowed bool
-	err := p.pool.QueryRow(ctx, `SELECT can_delete_messages_for_everyone FROM im_users WHERE id=$1 AND deleted_at IS NULL`, uid).Scan(&allowed)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, ErrNotFound
-	}
-	return allowed, err
-}
-
 func deletionAudit(ctx context.Context, tx pgx.Tx, actor, action, targetType, target, ip string, data any) error {
 	id, err := secureOpaqueToken("aud_")
 	if err != nil {
@@ -60,41 +48,6 @@ func deletionAudit(ctx context.Context, tx pgx.Tx, actor, action, targetType, ta
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO im_audits(id,actor_id,action,target_type,target_id,metadata,result,ip,created_at) VALUES($1,$2,$3,$4,$5,$6,'success',$7,now())`, id, actor, action, targetType, target, raw, ip)
 	return err
-}
-
-func (p *Postgres) SetMessageDeletionPermission(ctx context.Context, actor, uid string, allowed bool, reason, ip string) error {
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	var previous bool
-	err = tx.QueryRow(ctx, `SELECT can_delete_messages_for_everyone FROM im_users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, uid).Scan(&previous)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
-	}
-	if err != nil {
-		return err
-	}
-	if _, err = tx.Exec(ctx, `UPDATE im_users SET can_delete_messages_for_everyone=$2,updated_at=now() WHERE id=$1`, uid, allowed); err != nil {
-		return err
-	}
-	if err = deletionAudit(ctx, tx, actor, "user.message_permissions.updated", "user", uid, ip, map[string]any{"before": previous, "after": allowed, "reason": strings.TrimSpace(reason)}); err != nil {
-		return err
-	}
-	if previous != allowed {
-		// Outbox deduplication is based on the payload. Each committed permission
-		// transition needs its own identity; retries of that event reuse this ID.
-		changeID, err := secureOpaqueToken("permission_")
-		if err != nil {
-			return err
-		}
-		payload, _ := json.Marshal(map[string]any{"userId": uid, "changeId": changeID})
-		if err = appendUserBusinessEvent(ctx, tx, uid, "user.message_permissions.updated", payload, time.Now().UTC()); err != nil {
-			return err
-		}
-	}
-	return tx.Commit(ctx)
 }
 
 func (p *Postgres) DeleteMessagesForEveryone(ctx context.Context, uid, cid string, ids []string, ip string) (MessageDeletionResult, error) {
@@ -136,7 +89,7 @@ func (p *Postgres) DeleteMessagesForEveryone(ctx context.Context, uid, cid strin
 	defer tx.Rollback(ctx)
 	// Permission revocation takes the same row lock; authorization is never JWT cached.
 	var allowed bool
-	err = tx.QueryRow(ctx, `SELECT can_delete_messages_for_everyone FROM im_users WHERE id=$1 AND NOT banned AND deleted_at IS NULL FOR SHARE`, uid).Scan(&allowed)
+	err = tx.QueryRow(ctx, `SELECT is_internal_user FROM im_users WHERE id=$1 AND NOT banned AND deleted_at IS NULL FOR SHARE`, uid).Scan(&allowed)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !allowed) {
 		return result, ErrForbidden
 	}
@@ -218,18 +171,6 @@ func (p *Postgres) DeleteMessagesForEveryone(ctx context.Context, uid, cid strin
 	return result, tx.Commit(ctx)
 }
 
-func (p *WithRedis) MessageDeletionPermission(ctx context.Context, uid string) (bool, error) {
-	if s, ok := p.base.(MessageDeletionStore); ok {
-		return s.MessageDeletionPermission(ctx, uid)
-	}
-	return false, ErrForbidden
-}
-func (p *WithRedis) SetMessageDeletionPermission(ctx context.Context, actor, uid string, allowed bool, reason, ip string) error {
-	if s, ok := p.base.(MessageDeletionStore); ok {
-		return s.SetMessageDeletionPermission(ctx, actor, uid, allowed, reason, ip)
-	}
-	return ErrForbidden
-}
 func (p *WithRedis) DeleteMessagesForEveryone(ctx context.Context, uid, cid string, ids []string, ip string) (MessageDeletionResult, error) {
 	if s, ok := p.base.(MessageDeletionStore); ok {
 		return s.DeleteMessagesForEveryone(ctx, uid, cid, ids, ip)

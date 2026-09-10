@@ -94,6 +94,30 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
       (presenceGroupId == null && widget.requestSource != 'group') ||
       widget.controller.canViewGroupMemberHandle(presenceGroupId);
 
+  Widget _profileHeader() {
+    final groupId = presenceGroupId;
+    if (groupId != null &&
+        !widget.controller.canViewGroupMemberPresence(groupId)) {
+      return _ProfileHeader(
+        user: user,
+        displayName: displayName,
+        status: UserPresenceStatus.hidden,
+        showHandle: showHandle,
+      );
+    }
+    return UserPresence(
+      controller: widget.controller,
+      userId: user.id,
+      groupId: groupId,
+      builder: (context, status) => _ProfileHeader(
+        user: user,
+        displayName: displayName,
+        status: status,
+        showHandle: showHandle,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: widget.controller,
@@ -102,17 +126,7 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
         children: [
-          UserPresence(
-            controller: widget.controller,
-            userId: user.id,
-            groupId: presenceGroupId,
-            builder: (context, status) => _ProfileHeader(
-              user: user,
-              displayName: displayName,
-              status: status,
-              showHandle: showHandle,
-            ),
-          ),
+          _profileHeader(),
           const SizedBox(height: 24),
           Row(
             children: [

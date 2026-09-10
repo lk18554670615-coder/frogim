@@ -66,6 +66,7 @@ class LiveImRepository
         GroupHistoryRepository,
         GroupInvitePolicyRepository,
         GroupJoinReviewRepository,
+        GroupMessageReceiptRepository,
         PaginatedMessageRepository,
         CallRepository,
         BusinessFeatureRepository {
@@ -677,6 +678,7 @@ class LiveImRepository
       'QR_LOGIN_USED' => '这个登录二维码已使用，请在电脑端重新获取',
       'QR_LOGIN_ACCOUNT_UNAVAILABLE' => '当前账号暂时无法用于扫码登录',
       'RATE_LIMITED' => '操作过于频繁，请稍后再试',
+      'GROUP_MESSAGE_RATE_LIMITED' => '发送过于频繁，请稍后重试',
       'SMS_NOT_CONFIGURED' || 'SMS_UNAVAILABLE' => '短信验证码服务暂时不可用，请稍后重试',
       'MAINTENANCE' => '服务正在维护，请稍后再试',
       'IM_DISABLED' ||
@@ -1256,6 +1258,12 @@ class LiveImRepository
     'POST',
     '/v2/announcements/$announcementId/read',
   ).then((_) {});
+
+  @override
+  Future<void> dismissAnnouncements(List<String> announcementIds) =>
+      _sendRequest('POST', '/v2/announcements/dismiss', {
+        'announcementIds': announcementIds,
+      }).then((_) {});
 
   Future<bool> _refreshAccessToken() async {
     final inFlight = _refreshInFlight;
@@ -2205,10 +2213,7 @@ class LiveImRepository
       'message.pinned' ||
       'message.unpinned' => ImEventType.messageChanged,
       'message.recalled' => ImEventType.messageRecalled,
-      'user.message_permissions.updated' =>
-        ImEventType.messagePermissionsChanged,
-      'user.friend_login_ip_permission.updated' =>
-        ImEventType.messagePermissionsChanged,
+      'user.internal_status.updated' => ImEventType.messagePermissionsChanged,
       'message.delivered' => ImEventType.messageDelivered,
       'message.read' || 'conversation.read' => ImEventType.messageRead,
       'message.expired' => ImEventType.messageExpired,
@@ -2217,6 +2222,7 @@ class LiveImRepository
       'group.created' ||
       'group.system' ||
       'group.profile.updated' ||
+      'group.message_rate.updated' ||
       'group.announcement.updated' ||
       'group.member_added' ||
       'group.member.joined' ||
@@ -2529,6 +2535,8 @@ class LiveImRepository
       pinned: membership?['pinned'] as bool? ?? false,
       saved: membership?['saved'] as bool? ?? false,
       archived: membership?['archived'] as bool? ?? false,
+      screenshotNoticesEnabled:
+          membership?['screenshotNoticesEnabled'] as bool? ?? false,
       lastMessageSeq:
           (raw['lastMessageSeq'] as num?)?.toInt() ??
           (last?['conversationSeq'] as num?)?.toInt() ??
@@ -2902,8 +2910,7 @@ class LiveImRepository
   }
 
   AppUser _user(Map<String, Object?> item) => AppUser(
-    canDeleteMessagesForEveryone: item['canDeleteMessagesForEveryone'] == true,
-    canViewFriendLoginIP: item['canViewFriendLoginIp'] == true,
+    isInternalUser: item['isInternalUser'] == true,
     id: item['id']! as String,
     name: item['name'] as String? ?? item['id']! as String,
     handle:
@@ -3107,6 +3114,10 @@ class LiveImRepository
     canReviewJoinRequests: item['canReviewJoinRequests'] == true,
     pendingJoinRequestCount:
         (item['pendingJoinRequestCount'] as num?)?.toInt() ?? 0,
+    memberMessageRateLimitPerMinute:
+        (item['memberMessageRateLimitPerMinute'] as num?)?.toInt() ?? 0,
+    messageRateLimitVersion:
+        (item['messageRateLimitVersion'] as num?)?.toInt() ?? 1,
     allowMemberAddFriend: item['allowMemberAddFriend'] as bool? ?? true,
     allMutedUntil: _tryDate(item['allMutedUntil']),
     qrToken: item['qrToken'] as String?,
@@ -3125,6 +3136,7 @@ class LiveImRepository
     String? joinPolicy,
     bool? allowMemberAddFriend,
     bool? historyVisibleToNewMembers,
+    int? memberMessageRateLimitPerMinute,
     bool rotateQr = false,
   }) async {
     final sessionUserId = _userId;
@@ -3135,6 +3147,7 @@ class LiveImRepository
           'joinPolicy': ?joinPolicy,
           'allowMemberAddFriend': ?allowMemberAddFriend,
           'historyVisibleToNewMembers': ?historyVisibleToNewMembers,
+          'memberMessageRateLimitPerMinute': ?memberMessageRateLimitPerMinute,
           if (rotateQr) 'rotateQr': true,
         });
     // Avatar/name/profile mutations must not be reported as failed after the
@@ -3146,6 +3159,13 @@ class LiveImRepository
     }
     return _groupProfile(raw);
   }
+
+  @override
+  Future<GroupMessageRateStatus> groupMessageRateStatus(
+    String conversationId,
+  ) async => GroupMessageRateStatus.fromJson(
+    await _get('/v2/channels/groups/$conversationId/message-rate-status'),
+  );
 
   @override
   Future<GroupProfile> setGroupAnnouncement(
@@ -3201,6 +3221,7 @@ class LiveImRepository
         role: item['role'] as String? ?? 'member',
         joinedAt: _tryDate(item['joinedAt']) ?? DateTime.now(),
         mutedUntil: _tryDate(item['mutedUntil']),
+        mutedPermanently: item['mutedPermanently'] == true,
         groupNickname: item['groupNickname'] as String? ?? '',
       );
     }).toList();
@@ -3381,11 +3402,12 @@ class LiveImRepository
   Future<void> setGroupMemberMuted(
     String conversationId,
     String userId,
-    DateTime? until,
-  ) => _sendRequest(
+    DateTime? until, {
+    bool permanently = false,
+  }) => _sendRequest(
     'PUT',
     '/v2/channels/groups/$conversationId/members/$userId/mute',
-    {'until': until?.toUtc().toIso8601String()},
+    {'until': until?.toUtc().toIso8601String(), 'permanent': permanently},
   ).then((_) {});
 
   @override
@@ -3912,6 +3934,10 @@ class LiveImRepository
           (item['readCount'] as num?)?.toInt() ??
           (body['readCount'] as num?)?.toInt() ??
           0,
+      unreadCount:
+          (item['unreadCount'] as num?)?.toInt() ??
+          (body['unreadCount'] as num?)?.toInt() ??
+          0,
       linkPreview: previewRaw == null ? null : LinkPreview.fromJson(previewRaw),
       sentAt: parseLocalDateTime(
         (item['createdAt'] ?? item['sentAt'])! as String,
@@ -4078,6 +4104,25 @@ class LiveImRepository
           );
         })
         .toList(growable: false);
+  }
+
+  @override
+  Future<GroupMessageReceiptPage> groupMessageReceipts(
+    String messageId, {
+    String status = 'read',
+    String cursor = '',
+    int limit = 50,
+  }) async {
+    final query = <String, String>{
+      'status': status,
+      'limit': '$limit',
+      if (cursor.isNotEmpty) 'cursor': cursor,
+    };
+    final path = Uri(
+      path: '/v2/messages/${Uri.encodeComponent(messageId)}/receipts',
+      queryParameters: query,
+    ).toString();
+    return GroupMessageReceiptPage.fromJson(await _get(path));
   }
 
   @override
@@ -4434,6 +4479,7 @@ class LiveImRepository
     bool? notificationsMuted,
     bool? manualUnread,
     bool? archived,
+    bool? screenshotNoticesEnabled,
   }) {
     final payload = <String, Object?>{};
     if (pinned != null) payload['pinned'] = pinned;
@@ -4443,6 +4489,9 @@ class LiveImRepository
     }
     if (manualUnread != null) payload['manualUnread'] = manualUnread;
     if (archived != null) payload['archived'] = archived;
+    if (screenshotNoticesEnabled != null) {
+      payload['screenshotNoticesEnabled'] = screenshotNoticesEnabled;
+    }
     return _sendRequest(
       'PATCH',
       '/v2/channels/conversations/$conversationId/preferences',
@@ -4584,8 +4633,7 @@ class LiveImRepository
   });
 
   Map<String, Object?> _storedUser(AppUser user) => {
-    'canDeleteMessagesForEveryone': user.canDeleteMessagesForEveryone,
-    'canViewFriendLoginIp': user.canViewFriendLoginIP,
+    'isInternalUser': user.isInternalUser,
     'id': user.id,
     'name': user.name,
     'handle': user.handle,
@@ -4768,6 +4816,7 @@ class ResilientImRepository
         GroupHistoryRepository,
         GroupInvitePolicyRepository,
         GroupJoinReviewRepository,
+        GroupMessageReceiptRepository,
         PaginatedMessageRepository,
         CallRepository,
         BusinessFeatureRepository {
@@ -5376,6 +5425,9 @@ class ResilientImRepository
   Future<void> markAnnouncementRead(String announcementId) =>
       _active.markAnnouncementRead(announcementId);
   @override
+  Future<void> dismissAnnouncements(List<String> announcementIds) =>
+      _active.dismissAnnouncements(announcementIds);
+  @override
   Future<void> connect() => _active.connect();
   @override
   Future<void> syncNow() => _active.syncNow();
@@ -5458,6 +5510,7 @@ class ResilientImRepository
     String? joinPolicy,
     bool? allowMemberAddFriend,
     bool? historyVisibleToNewMembers,
+    int? memberMessageRateLimitPerMinute,
     bool rotateQr = false,
   }) => _active.updateGroupProfile(
     conversationId,
@@ -5466,8 +5519,13 @@ class ResilientImRepository
     joinPolicy: joinPolicy,
     allowMemberAddFriend: allowMemberAddFriend,
     historyVisibleToNewMembers: historyVisibleToNewMembers,
+    memberMessageRateLimitPerMinute: memberMessageRateLimitPerMinute,
     rotateQr: rotateQr,
   );
+  @override
+  Future<GroupMessageRateStatus> groupMessageRateStatus(
+    String conversationId,
+  ) => _active.groupMessageRateStatus(conversationId);
   @override
   Future<GroupProfile> setGroupAnnouncement(
     String conversationId,
@@ -5536,8 +5594,14 @@ class ResilientImRepository
   Future<void> setGroupMemberMuted(
     String conversationId,
     String userId,
-    DateTime? until,
-  ) => _active.setGroupMemberMuted(conversationId, userId, until);
+    DateTime? until, {
+    bool permanently = false,
+  }) => _active.setGroupMemberMuted(
+    conversationId,
+    userId,
+    until,
+    permanently: permanently,
+  );
   @override
   Future<void> transferGroupOwner(String conversationId, String userId) =>
       _active.transferGroupOwner(conversationId, userId);
@@ -5595,6 +5659,18 @@ class ResilientImRepository
   @override
   Future<List<MessageEditRevision>> messageEditHistory(String messageId) =>
       _active.messageEditHistory(messageId);
+  @override
+  Future<GroupMessageReceiptPage> groupMessageReceipts(
+    String messageId, {
+    String status = 'read',
+    String cursor = '',
+    int limit = 50,
+  }) => (_active as GroupMessageReceiptRepository).groupMessageReceipts(
+    messageId,
+    status: status,
+    cursor: cursor,
+    limit: limit,
+  );
   @override
   Future<ChatMessage> setMessageReaction(
     String messageId,
@@ -5657,6 +5733,7 @@ class ResilientImRepository
     bool? notificationsMuted,
     bool? manualUnread,
     bool? archived,
+    bool? screenshotNoticesEnabled,
   }) => _active.updateConversationPreferences(
     conversationId,
     pinned: pinned,
@@ -5664,6 +5741,7 @@ class ResilientImRepository
     notificationsMuted: notificationsMuted,
     manualUnread: manualUnread,
     archived: archived,
+    screenshotNoticesEnabled: screenshotNoticesEnabled,
   );
   @override
   Future<List<ScheduledMessage>> scheduledMessages(String conversationId) =>

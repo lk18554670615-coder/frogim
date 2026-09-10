@@ -127,6 +127,7 @@ type AdminOperationsStore interface {
 type AdminGroupMemberAction struct {
 	ActorID, ConversationID, TargetID, Action, Role, Reason string
 	MutedUntil                                              *time.Time
+	MutePermanently                                         bool
 	At                                                      time.Time
 }
 
@@ -736,8 +737,10 @@ type WukongClientMessageInput struct {
 }
 
 type WukongMessageRoute struct {
-	ChannelID   string
-	ChannelType uint8
+	ChannelID                      string
+	ChannelType                    uint8
+	GroupMessageRateLimitPerMinute int
+	GroupMessageRateLimitVersion   int64
 }
 
 type WukongMessageRouteStore interface {
@@ -764,6 +767,32 @@ type WukongForwardSourceStore interface {
 type WukongMessageExtensionStore interface {
 	LoadWukongMessageExtensions(context.Context, string, []string) (map[string]map[string]any, error)
 	SyncWukongMessageExtras(context.Context, string, string, uint8, int64, int) ([]WukongMessageExtra, error)
+}
+
+// GroupMessageReceiptStore exposes the member-level read state for one group
+// message. Authorization is deliberately enforced in the store transaction so
+// a stale client role can never be used to reveal another member's activity.
+type GroupMessageReceiptStore interface {
+	GroupMessageReceipts(context.Context, string, string, string, string, int) (*GroupMessageReceiptPage, error)
+}
+
+type GroupMessageReceiptMember struct {
+	UserID      string `json:"userId"`
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+	AvatarURL   string `json:"avatarUrl,omitempty"`
+	Role        string `json:"role"`
+	Read        bool   `json:"read"`
+}
+
+type GroupMessageReceiptPage struct {
+	MessageID      string                      `json:"messageId"`
+	ConversationID string                      `json:"conversationId"`
+	ReadCount      int64                       `json:"readCount"`
+	UnreadCount    int64                       `json:"unreadCount"`
+	Total          int64                       `json:"total"`
+	Items          []GroupMessageReceiptMember `json:"items"`
+	NextCursor     string                      `json:"nextCursor,omitempty"`
 }
 
 type WukongReminderStore interface {
@@ -1295,12 +1324,14 @@ type GroupProfileUpdate struct {
 	HistoryVisibleToNewMembers      *bool
 	Name, AvatarMediaID, JoinPolicy *string
 	AllowMemberAddFriend            *bool
+	MemberMessageRateLimitPerMinute *int
 	AllMutedUntil                   *time.Time
 	RotateQR                        bool
 }
 type GroupMemberAction struct {
 	ActorID, ConversationID, TargetID, Action, Role, Nickname, Reason string
 	MutedUntil                                                        *time.Time
+	MutePermanently                                                   bool
 	At                                                                time.Time
 }
 type FriendMetadata struct {
@@ -1318,6 +1349,7 @@ type AnnouncementStore interface {
 	PromoteDueAnnouncements(context.Context, time.Time) (int, error)
 	ListAnnouncements(context.Context, string, time.Time) ([]*model.Announcement, error)
 	MarkAnnouncementRead(context.Context, string, string, time.Time) error
+	DismissAnnouncements(context.Context, string, []string, time.Time) error
 	ListAdminAnnouncements(context.Context, string, string, string, int, time.Time) ([]*model.Announcement, int64, string, error)
 	CreateAnnouncement(context.Context, AnnouncementInput, time.Time) (*model.Announcement, error)
 	UpdateAnnouncement(context.Context, string, AnnouncementInput, time.Time) (*model.Announcement, error)
@@ -1403,6 +1435,13 @@ func (p *WithRedis) PromoteDueAnnouncements(ctx context.Context, now time.Time) 
 func (p *WithRedis) MarkAnnouncementRead(ctx context.Context, uid, id string, at time.Time) error {
 	if s, ok := p.base.(AnnouncementStore); ok {
 		return s.MarkAnnouncementRead(ctx, uid, id, at)
+	}
+	return ErrUnsupported
+}
+
+func (p *WithRedis) DismissAnnouncements(ctx context.Context, uid string, ids []string, at time.Time) error {
+	if s, ok := p.base.(AnnouncementStore); ok {
+		return s.DismissAnnouncements(ctx, uid, ids, at)
 	}
 	return ErrUnsupported
 }
@@ -1656,11 +1695,12 @@ type BanExpiryStore interface {
 }
 
 type ConversationPreferences struct {
-	Pinned             *bool `json:"pinned,omitempty"`
-	Saved              *bool `json:"saved,omitempty"`
-	Archived           *bool `json:"archived,omitempty"`
-	NotificationsMuted *bool `json:"notificationsMuted,omitempty"`
-	ManualUnread       *bool `json:"manualUnread,omitempty"`
+	Pinned                   *bool `json:"pinned,omitempty"`
+	Saved                    *bool `json:"saved,omitempty"`
+	Archived                 *bool `json:"archived,omitempty"`
+	NotificationsMuted       *bool `json:"notificationsMuted,omitempty"`
+	ManualUnread             *bool `json:"manualUnread,omitempty"`
+	ScreenshotNoticesEnabled *bool `json:"screenshotNoticesEnabled,omitempty"`
 }
 
 func (p *WithRedis) EditMessage(ctx context.Context, uid, mid, editID string, body, originalBody map[string]any, at time.Time, window time.Duration) (*model.Message, bool, error) {

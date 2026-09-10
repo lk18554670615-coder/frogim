@@ -220,12 +220,64 @@ func TestMomentFriendOnlyAccessSchemaIsVersioned(t *testing.T) {
 	}
 }
 
-func TestFriendLoginIPPermissionSchemaIsVersioned(t *testing.T) {
-	if schemaVersion < 67 {
-		t.Fatalf("friend login IP permission requires schema version 67 or newer, got %d", schemaVersion)
+func TestInternalUserSchemaIsVersioned(t *testing.T) {
+	if schemaVersion < 68 {
+		t.Fatalf("internal-user permissions require schema version 68 or newer, got %d", schemaVersion)
 	}
-	if !strings.Contains(normalizedSchema, "ALTER TABLE im_users ADD COLUMN IF NOT EXISTS can_view_friend_login_ip boolean NOT NULL DEFAULT false") {
-		t.Fatal("friend login IP permission column is missing or does not default to false")
+	if !strings.Contains(normalizedSchema, "ALTER TABLE im_users ADD COLUMN IF NOT EXISTS is_internal_user boolean NOT NULL DEFAULT false") {
+		t.Fatal("internal-user column is missing or does not default to false")
+	}
+	for _, legacy := range []string{"can_delete_messages_for_everyone", "can_view_friend_login_ip"} {
+		if !strings.Contains(normalizedSchema, "ALTER TABLE im_users DROP COLUMN IF EXISTS "+legacy) {
+			t.Fatalf("legacy permission column %s is not removed", legacy)
+		}
+	}
+}
+
+func TestAnnouncementDismissalSchemaIsVersioned(t *testing.T) {
+	if schemaVersion < 69 {
+		t.Fatalf("announcement dismissal requires schema version 69 or newer, got %d", schemaVersion)
+	}
+	if !strings.Contains(normalizedSchema, "ALTER TABLE im_announcement_reads ADD COLUMN IF NOT EXISTS dismissed_at timestamptz") {
+		t.Fatal("announcement dismissal timestamp is missing")
+	}
+}
+
+func TestScreenshotNoticePreferenceSchemaIsVersioned(t *testing.T) {
+	if schemaVersion < 70 {
+		t.Fatalf("screenshot notice preference requires schema version 70 or newer, got %d", schemaVersion)
+	}
+	if !strings.Contains(normalizedSchema, "ALTER TABLE im_members ADD COLUMN IF NOT EXISTS screenshot_notices_enabled boolean NOT NULL DEFAULT false") {
+		t.Fatal("member screenshot notice preference must default to disabled")
+	}
+}
+
+func TestPermanentMemberMuteSchemaIsVersioned(t *testing.T) {
+	if schemaVersion < 71 {
+		t.Fatalf("permanent member mute requires schema version 71 or newer, got %d", schemaVersion)
+	}
+	for _, fragment := range []string{
+		"ALTER TABLE im_members ADD COLUMN IF NOT EXISTS muted_permanently boolean NOT NULL DEFAULT false",
+		"ALTER TABLE im_wukong_channel_member_events ADD COLUMN IF NOT EXISTS muted_permanently boolean NOT NULL DEFAULT false",
+	} {
+		if !strings.Contains(normalizedSchema, fragment) {
+			t.Fatalf("permanent member mute schema is missing %q", fragment)
+		}
+	}
+}
+
+func TestGroupMessageRateLimitSchemaIsVersioned(t *testing.T) {
+	if schemaVersion < 72 {
+		t.Fatalf("group message rate limit requires schema version 72 or newer, got %d", schemaVersion)
+	}
+	for _, fragment := range []string{
+		"ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS member_message_rate_limit_per_minute smallint NOT NULL DEFAULT 0",
+		"ALTER TABLE im_groups ADD COLUMN IF NOT EXISTS message_rate_limit_version bigint NOT NULL DEFAULT 1",
+		"member_message_rate_limit_per_minute IN (0,5,10,20)",
+	} {
+		if !strings.Contains(normalizedSchema, fragment) {
+			t.Fatalf("group message rate limit schema is missing %q", fragment)
+		}
 	}
 }
 

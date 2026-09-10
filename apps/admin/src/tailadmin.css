@@ -68,7 +68,7 @@ textarea:focus-visible {
 .users-table th:nth-child(6) { width: 195px; }
 .users-table th:nth-child(7) { width: 195px; }
 .users-table th:nth-child(8) { width: 190px; }
-.friend-ip-permission-cell { white-space: nowrap; }
+.internal-user-cell { white-space: nowrap; }
 .compact-permission-switch { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; cursor: pointer; user-select: none; }
 .compact-permission-switch input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
 .compact-permission-switch-control { position: relative; width: 36px; height: 20px; flex: 0 0 36px; border-radius: 999px; background: var(--color-rule-strong); transition: background 160ms ease-out; }

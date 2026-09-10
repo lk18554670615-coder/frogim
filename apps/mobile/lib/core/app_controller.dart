@@ -150,6 +150,8 @@ class AppController extends ChangeNotifier {
 
   final Map<String, GroupSendPolicy> _groupSendPolicies = {};
   final Map<String, int> _groupSendPolicyRequests = {};
+  final Map<String, Map<String, DateTime>> _successfulGroupSends = {};
+  final Map<String, DateTime> _groupRateBlockedUntil = {};
   int groupSendPolicyRevision = 0;
 
   GroupSendPolicy? groupSendPolicyFor(String conversationId) =>
@@ -174,10 +176,117 @@ class AppController extends ChangeNotifier {
         userId == currentUser?.id &&
         revision == groupSendPolicyRevision &&
         request == _groupSendPolicyRequests[conversationId]) {
+      final previousVersion =
+          _groupSendPolicies[conversationId]?.profile.messageRateLimitVersion;
+      if (previousVersion != null &&
+          previousVersion != policy.profile.messageRateLimitVersion) {
+        _clearGroupMessageRateState(conversationId);
+      }
       _groupSendPolicies[conversationId] = policy;
       notifyListeners();
     }
     return policy;
+  }
+
+  bool _isOrdinaryRateLimitedGroup(String conversationId) {
+    final policy = _groupSendPolicies[conversationId];
+    final member = policy?.member;
+    return policy != null &&
+        member != null &&
+        !member.isOwner &&
+        !member.isAdmin &&
+        policy.profile.memberMessageRateLimitPerMinute > 0;
+  }
+
+  void _clearGroupMessageRateState(String conversationId) {
+    _successfulGroupSends.remove(conversationId);
+    _groupRateBlockedUntil.remove(conversationId);
+  }
+
+  Map<String, DateTime> _pruneSuccessfulGroupSends(
+    String conversationId,
+    DateTime now,
+  ) {
+    final sends = _successfulGroupSends.putIfAbsent(
+      conversationId,
+      () => <String, DateTime>{},
+    );
+    final cutoff = now.subtract(const Duration(seconds: 60));
+    sends.removeWhere((_, sentAt) => !sentAt.isAfter(cutoff));
+    return sends;
+  }
+
+  String? groupMessageRateRestriction(String conversationId, {DateTime? at}) {
+    if (!_isOrdinaryRateLimitedGroup(conversationId)) return null;
+    final now = at ?? DateTime.now();
+    final blockedUntil = _groupRateBlockedUntil[conversationId];
+    if (blockedUntil != null) {
+      if (blockedUntil.isAfter(now)) {
+        final seconds = max(1, blockedUntil.difference(now).inSeconds + 1);
+        return '发送过于频繁，请在 $seconds 秒后重试';
+      }
+      _groupRateBlockedUntil.remove(conversationId);
+    }
+    final policy = _groupSendPolicies[conversationId]!;
+    final sends = _pruneSuccessfulGroupSends(conversationId, now);
+    if (sends.length < policy.profile.memberMessageRateLimitPerMinute) {
+      return null;
+    }
+    final oldest = sends.values.reduce(
+      (left, right) => left.isBefore(right) ? left : right,
+    );
+    final retryAt = oldest.add(const Duration(seconds: 60));
+    final seconds = max(1, retryAt.difference(now).inSeconds + 1);
+    return '发送过于频繁，请在 $seconds 秒后重试';
+  }
+
+  DateTime? groupMessageRateNextChange(String conversationId, {DateTime? at}) {
+    if (!_isOrdinaryRateLimitedGroup(conversationId)) return null;
+    final now = at ?? DateTime.now();
+    final candidates = <DateTime>[];
+    final blockedUntil = _groupRateBlockedUntil[conversationId];
+    if (blockedUntil?.isAfter(now) == true) candidates.add(blockedUntil!);
+    final policy = _groupSendPolicies[conversationId]!;
+    final sends = _pruneSuccessfulGroupSends(conversationId, now);
+    if (sends.length >= policy.profile.memberMessageRateLimitPerMinute) {
+      final oldest = sends.values.reduce(
+        (left, right) => left.isBefore(right) ? left : right,
+      );
+      candidates.add(oldest.add(const Duration(seconds: 60)));
+    }
+    if (candidates.isEmpty) return null;
+    candidates.sort();
+    return candidates.first;
+  }
+
+  Future<GroupMessageRateStatus?> refreshGroupMessageRateStatus(
+    String conversationId,
+  ) async {
+    final userId = currentUser?.id;
+    try {
+      final status = await repository.groupMessageRateStatus(conversationId);
+      if (_disposed || userId != currentUser?.id) return null;
+      if (status.retryAfterSeconds > 0) {
+        _groupRateBlockedUntil[conversationId] = DateTime.now().add(
+          Duration(seconds: status.retryAfterSeconds),
+        );
+      } else {
+        _groupRateBlockedUntil.remove(conversationId);
+      }
+      notifyListeners();
+      return status;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _recordSuccessfulGroupSend(ChatMessage message) {
+    if (!_isOrdinaryRateLimitedGroup(message.conversationId)) return;
+    final sends = _pruneSuccessfulGroupSends(
+      message.conversationId,
+      DateTime.now(),
+    );
+    sends.putIfAbsent(message.clientMessageId, DateTime.now);
   }
 
   final Set<String> _untrustedGroupRoles = {};
@@ -353,7 +462,7 @@ class AppController extends ChangeNotifier {
   bool canDeleteForEveryone(ChatMessage message) {
     final c = _conversationFor(message.conversationId);
     if (!authenticated ||
-        currentUser?.canDeleteMessagesForEveryone != true ||
+        currentUser?.isInternalUser != true ||
         repository is! MessageDeletionRepository ||
         c == null ||
         c.isBusinessChannel ||
@@ -431,15 +540,60 @@ class AppController extends ChangeNotifier {
         roleTrusted: !_untrustedGroupRoles.contains(conversationId),
       );
 
-  /// Group-context presentation only; contact/direct profiles keep their
-  /// existing public handle. Unknown or stale group roles fail closed.
-  bool canViewGroupMemberHandle(String? conversationId) {
+  Future<GroupMessageReceiptPage> groupMessageReceipts(
+    String conversationId,
+    String messageId, {
+    String status = 'read',
+    String cursor = '',
+    int limit = 50,
+  }) async {
+    final source = repository;
+    if (!canDisplayMessageReceipts(conversationId) ||
+        source is! GroupMessageReceiptRepository) {
+      throw StateError('只有群主和管理员可以查看阅读详情');
+    }
+    final receipts = source as GroupMessageReceiptRepository;
+    final accountId = currentUser?.id;
+    final roleEpoch = _groupRoleEpoch;
+    final page = await receipts.groupMessageReceipts(
+      messageId,
+      status: status,
+      cursor: cursor,
+      limit: limit,
+    );
+    if (_disposed ||
+        accountId == null ||
+        currentUser?.id != accountId ||
+        roleEpoch != _groupRoleEpoch ||
+        page.conversationId != conversationId ||
+        !canDisplayMessageReceipts(conversationId)) {
+      throw StateError('群角色已变化，请重新打开阅读详情');
+    }
+    return page;
+  }
+
+  bool _canViewManagerOnlyGroupMemberData(String? conversationId) {
     if (!authenticated || conversationId == null) return false;
     final conversation = _conversationFor(conversationId);
     return isManagedGroup(conversation) &&
         !_untrustedGroupRoles.contains(conversationId) &&
         isGroupManager(conversation?.currentUserRole);
   }
+
+  /// Group-context presentation only; contact/direct profiles keep their
+  /// existing public handle. Unknown or stale group roles fail closed.
+  bool canViewGroupMemberHandle(String? conversationId) =>
+      _canViewManagerOnlyGroupMemberData(conversationId);
+
+  /// Presence requested in a group context is restricted to the current
+  /// group's owner and administrators. Direct/friend presence is unchanged.
+  bool canViewGroupMemberPresence(String? conversationId) =>
+      _canViewManagerOnlyGroupMemberData(conversationId);
+
+  /// Sensitive group-wide controls are available only while the current role
+  /// is a trusted owner or administrator role.
+  bool canManageGroup(String? conversationId) =>
+      _canViewManagerOnlyGroupMemberData(conversationId);
 
   ChatMessage _displayMessage(ChatMessage message) {
     message = _currentVersion(message);
@@ -1567,6 +1721,24 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<bool> dismissSystemNotifications([Iterable<String>? ids]) async {
+    final requested = (ids ?? announcements.map((item) => item.id))
+        .where((id) => id.trim().isNotEmpty)
+        .toSet()
+        .toList();
+    if (requested.isEmpty) return true;
+    try {
+      await repository.dismissAnnouncements(requested);
+      announcements.removeWhere((item) => requested.contains(item.id));
+      notifyListeners();
+      return true;
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '系统通知删除失败，请稍后重试');
+      notifyListeners();
+      return false;
+    }
+  }
+
   Future<void> refreshAnnouncements() async {
     announcementsLoadError = null;
     notifyListeners();
@@ -2491,6 +2663,10 @@ class AppController extends ChangeNotifier {
       if (!isCurrentAttempt()) return sent;
       sent = _preserveConfirmedSend(_queuedMessage(pending)!, sent);
       _replaceMessage(pending.conversationId, pending.clientMessageId, sent);
+      if (sent.status != MessageStatus.failed &&
+          sent.status != MessageStatus.sending) {
+        _recordSuccessfulGroupSend(sent);
+      }
       if (sent.mediaId?.isNotEmpty == true ||
           (sent.status != MessageStatus.failed &&
               sent.status != MessageStatus.sending)) {
@@ -2598,6 +2774,18 @@ class AppController extends ChangeNotifier {
     reason ??= exception == null
         ? message.sendError ?? '消息发送失败，请稍后重试'
         : _messageFor(exception, fallback: '消息发送失败，请稍后重试');
+    final rateLimited =
+        message.sendError?.contains('发送过于频繁') == true ||
+        exception is ImApiException &&
+            exception.code == 'GROUP_MESSAGE_RATE_LIMITED' ||
+        reason.contains('发送过于频繁');
+    if (conversation?.kind == ConversationKind.group && rateLimited) {
+      final status = await refreshGroupMessageRateStatus(
+        message.conversationId,
+      );
+      final seconds = status?.retryAfterSeconds ?? 0;
+      reason = seconds > 0 ? '发送过于频繁，请在 $seconds 秒后重试' : '发送过于频繁，请稍后重试';
+    }
     return message.copyWith(sendError: reason);
   }
 
@@ -2660,6 +2848,18 @@ class AppController extends ChangeNotifier {
 
   Future<void> retryMessage(ChatMessage message) async {
     if (!canRetryMessage(message)) return;
+    final rateRestriction = groupMessageRateRestriction(message.conversationId);
+    if (rateRestriction != null) {
+      final current = _queuedMessage(message)!;
+      _replaceMessage(
+        message.conversationId,
+        message.clientMessageId,
+        current.copyWith(sendError: rateRestriction),
+      );
+      error = rateRestriction;
+      notifyListeners();
+      return;
+    }
     // Resolve the live row, not a stale widget callback captured before an ACK.
     final sending = _queuedMessage(
       message,
@@ -3363,6 +3563,20 @@ class AppController extends ChangeNotifier {
     );
   }
 
+  Future<bool> toggleConversationScreenshotNotices(String id) {
+    final conversation = conversations.firstWhere(
+      (item) => item.id == id,
+      orElse: () => throw StateError('conversation not found'),
+    );
+    final enabled = !conversation.screenshotNoticesEnabled;
+    return _updateConversationPreferences(
+      id,
+      screenshotNoticesEnabled: enabled,
+      localUpdate: (item) => item.copyWith(screenshotNoticesEnabled: enabled),
+      fallback: '截屏提示设置更新失败，请稍后重试',
+    );
+  }
+
   Future<bool> toggleConversationArchived(String id) {
     final conversation = conversations.firstWhere(
       (item) => item.id == id,
@@ -3400,6 +3614,7 @@ class AppController extends ChangeNotifier {
     bool? notificationsMuted,
     bool? manualUnread,
     bool? archived,
+    bool? screenshotNoticesEnabled,
     required Conversation Function(Conversation conversation) localUpdate,
     required String fallback,
   }) async {
@@ -3417,6 +3632,7 @@ class AppController extends ChangeNotifier {
         notificationsMuted: notificationsMuted,
         manualUnread: manualUnread,
         archived: archived,
+        screenshotNoticesEnabled: screenshotNoticesEnabled,
       );
       return true;
     } catch (exception) {
@@ -3706,6 +3922,7 @@ class AppController extends ChangeNotifier {
     String? joinPolicy,
     bool? allowMemberAddFriend,
     bool? historyVisibleToNewMembers,
+    int? memberMessageRateLimitPerMinute,
     bool rotateQr = false,
   }) async {
     try {
@@ -3719,6 +3936,7 @@ class AppController extends ChangeNotifier {
         joinPolicy: joinPolicy,
         allowMemberAddFriend: allowMemberAddFriend,
         historyVisibleToNewMembers: historyVisibleToNewMembers,
+        memberMessageRateLimitPerMinute: memberMessageRateLimitPerMinute,
         rotateQr: rotateQr,
       );
       if (name != null || avatarMediaId != null) {
@@ -3731,6 +3949,20 @@ class AppController extends ChangeNotifier {
             avatarUrl: profile.avatarUrl,
           );
         }
+      }
+      if (memberMessageRateLimitPerMinute != null) {
+        final currentPolicy = _groupSendPolicies[conversationId];
+        if (currentPolicy != null) {
+          if (currentPolicy.profile.messageRateLimitVersion !=
+              profile.messageRateLimitVersion) {
+            _clearGroupMessageRateState(conversationId);
+          }
+          _groupSendPolicies[conversationId] = GroupSendPolicy(
+            profile: profile,
+            member: currentPolicy.member,
+          );
+        }
+        groupSendPolicyRevision++;
       }
       notifyListeners();
       return profile;
@@ -3947,10 +4179,16 @@ class AppController extends ChangeNotifier {
   Future<bool> setGroupMemberMuted(
     String conversationId,
     AppUser user,
-    DateTime? until,
-  ) async {
+    DateTime? until, {
+    bool permanently = false,
+  }) async {
     try {
-      await repository.setGroupMemberMuted(conversationId, user.id, until);
+      await repository.setGroupMemberMuted(
+        conversationId,
+        user.id,
+        until,
+        permanently: permanently,
+      );
       return true;
     } catch (exception) {
       error = _messageFor(exception, fallback: '群成员禁言设置失败');
@@ -4378,6 +4616,8 @@ class AppController extends ChangeNotifier {
     _invalidateGroupMembers();
     _groupSendPolicies.clear();
     _groupSendPolicyRequests.clear();
+    _successfulGroupSends.clear();
+    _groupRateBlockedUntil.clear();
     groupSendPolicyRevision++;
     _recalledMessageIds.clear();
     _deletedMessageIds.clear();
@@ -4804,6 +5044,7 @@ class AppController extends ChangeNotifier {
     final list = _messages[conversationId] ?? const <ChatMessage>[];
     final deliveredCount = (payload['deliveredCount'] as num?)?.toInt();
     final readCount = (payload['readCount'] as num?)?.toInt();
+    final unreadCount = (payload['unreadCount'] as num?)?.toInt();
     for (var i = 0; i < list.length; i++) {
       final message = list[i];
       if (!message.isMine ||
@@ -4823,6 +5064,7 @@ class AppController extends ChangeNotifier {
             : MessageStatus.read,
         deliveredCount: deliveredCount,
         readCount: readCount,
+        unreadCount: unreadCount,
       );
     }
   }
@@ -5003,6 +5245,7 @@ class AppController extends ChangeNotifier {
       expiresAt: tryParseLocalDateTime(raw['expiresAt'] ?? body['expiresAt']),
       deliveredCount: (raw['deliveredCount'] as num?)?.toInt() ?? 0,
       readCount: (raw['readCount'] as num?)?.toInt() ?? 0,
+      unreadCount: (raw['unreadCount'] as num?)?.toInt() ?? 0,
       linkPreview: previewRaw == null ? null : LinkPreview.fromJson(previewRaw),
       sentAt: parseLocalDateTime(raw['createdAt']! as String),
       isMine: senderId == currentUser?.id,

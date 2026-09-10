@@ -78,6 +78,17 @@ class DeletionRepo extends DemoImRepository
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('internal-user flag is the single special-permission source', () {
+    const internal = AppUser(
+      id: 'internal',
+      name: '内部用户',
+      handle: 'internal',
+      presence: '',
+      isInternalUser: true,
+    );
+    expect(internal.isInternalUser, isTrue);
+  });
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     FlutterSecureStorage.setMockInitialValues({});
@@ -136,9 +147,7 @@ void main() {
       );
       c.conversations = [conversation()];
       expect(c.canDeleteForEveryone(message()), false);
-      c.currentUser = c.currentUser!.copyWith(
-        canDeleteMessagesForEveryone: true,
-      );
+      c.currentUser = c.currentUser!.copyWith(isInternalUser: true);
       for (final role in ['owner', 'admin', 'member']) {
         c.conversations = [conversation(role: role)];
         for (final mine in [true, false]) {
@@ -174,7 +183,7 @@ void main() {
         name: '我',
         handle: 'me',
         presence: '',
-        canDeleteMessagesForEveryone: true,
+        isInternalUser: true,
       );
       c.conversations = [conversation(group: false)];
       repo.fail = true;
@@ -204,7 +213,7 @@ void main() {
           name: '我',
           handle: 'me',
           presence: '',
-          canDeleteMessagesForEveryone: allowed,
+          isInternalUser: allowed,
         );
         c.conversations = [conversation(group: false)];
         await tester.pumpWidget(

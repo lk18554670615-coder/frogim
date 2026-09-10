@@ -746,14 +746,25 @@ func (p *Postgres) LoadWukongMessageExtensions(ctx context.Context, userID strin
 				COALESCE((SELECT count(*) FROM im_members reader
 					WHERE reader.conversation_id=i.conversation_id
 						AND reader.user_id<>i.sender_id
+						AND reader.joined_at<=i.message_timestamp
+						AND (reader.expires_at IS NULL OR reader.expires_at>i.message_timestamp)
 						AND reader.last_read_seq>=i.message_seq),0)
 			ELSE 0 END AS read_count,
 			CASE WHEN (i.channel_type=1 AND i.sender_id=$1) OR (i.channel_type=2 AND member.role IN ('owner','admin')) THEN
 				COALESCE((SELECT count(*) FROM im_members recipient
 					WHERE recipient.conversation_id=i.conversation_id
 						AND recipient.user_id<>i.sender_id
+						AND recipient.joined_at<=i.message_timestamp
+						AND (recipient.expires_at IS NULL OR recipient.expires_at>i.message_timestamp)
 						AND GREATEST(recipient.last_delivered_seq,recipient.last_read_seq)>=i.message_seq),0)
-			ELSE 0 END AS delivered_count
+			ELSE 0 END AS delivered_count,
+			CASE WHEN (i.channel_type=1 AND i.sender_id=$1) OR (i.channel_type=2 AND member.role IN ('owner','admin')) THEN
+				COALESCE((SELECT count(*) FROM im_members recipient
+					WHERE recipient.conversation_id=i.conversation_id
+						AND recipient.user_id<>i.sender_id
+						AND recipient.joined_at<=i.message_timestamp
+						AND (recipient.expires_at IS NULL OR recipient.expires_at>i.message_timestamp)),0)
+			ELSE 0 END AS recipient_count
 		FROM im_wukong_message_index i
 		JOIN im_members member ON member.conversation_id=i.conversation_id AND member.user_id=$1
 		LEFT JOIN im_wukong_message_extensions ext ON ext.message_id=i.message_id AND ext.channel_id=i.channel_id AND ext.channel_type=i.channel_type
@@ -770,8 +781,8 @@ func (p *Postgres) LoadWukongMessageExtensions(ctx context.Context, userID strin
 		var raw []byte
 		var pinnedBy *string
 		var pinnedAt *time.Time
-		var readCount, deliveredCount int
-		if err = rows.Scan(&messageID, &version, &raw, &pinnedBy, &pinnedAt, &readCount, &deliveredCount); err != nil {
+		var readCount, deliveredCount, recipientCount int
+		if err = rows.Scan(&messageID, &version, &raw, &pinnedBy, &pinnedAt, &readCount, &deliveredCount, &recipientCount); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -783,6 +794,7 @@ func (p *Postgres) LoadWukongMessageExtensions(ctx context.Context, userID strin
 		extension["version"] = version
 		extension["readCount"] = readCount
 		extension["deliveredCount"] = deliveredCount
+		extension["unreadCount"] = max(0, recipientCount-readCount)
 		if pinnedBy != nil {
 			extension["isPinned"], extension["pinnedBy"], extension["pinnedAt"] = true, *pinnedBy, pinnedAt.UTC().Format(time.RFC3339Nano)
 		}
@@ -841,15 +853,24 @@ func (p *Postgres) SyncWukongMessageExtras(ctx context.Context, userID, channelI
 		extension.sync_version,extension.payload,
 		CASE WHEN (message_index.channel_type=1 AND message_index.sender_id=$2) OR (message_index.channel_type=2 AND viewer.role IN ('owner','admin')) THEN
 			COALESCE((SELECT count(*) FROM im_members reader WHERE reader.conversation_id=message_index.conversation_id
-				AND reader.user_id<>message_index.sender_id AND reader.last_read_seq>=message_index.message_seq),0)
+				AND reader.user_id<>message_index.sender_id
+				AND reader.joined_at<=message_index.message_timestamp
+				AND (reader.expires_at IS NULL OR reader.expires_at>message_index.message_timestamp)
+				AND reader.last_read_seq>=message_index.message_seq),0)
 		ELSE 0 END,
 		CASE WHEN (message_index.channel_type=1 AND message_index.sender_id=$2) OR (message_index.channel_type=2 AND viewer.role IN ('owner','admin')) THEN
 			COALESCE((SELECT count(*) FROM im_members recipient WHERE recipient.conversation_id=message_index.conversation_id
 				AND recipient.user_id<>message_index.sender_id
+				AND recipient.joined_at<=message_index.message_timestamp
+				AND (recipient.expires_at IS NULL OR recipient.expires_at>message_index.message_timestamp)
 				AND GREATEST(recipient.last_delivered_seq,recipient.last_read_seq)>=message_index.message_seq),0)
 		ELSE 0 END,
 		CASE WHEN (message_index.channel_type=1 AND message_index.sender_id=$2) OR (message_index.channel_type=2 AND viewer.role IN ('owner','admin')) THEN
-			GREATEST((SELECT count(*)-1 FROM im_members member_count WHERE member_count.conversation_id=message_index.conversation_id),0)
+			GREATEST((SELECT count(*) FROM im_members member_count
+				WHERE member_count.conversation_id=message_index.conversation_id
+				AND member_count.user_id<>message_index.sender_id
+				AND member_count.joined_at<=message_index.message_timestamp
+				AND (member_count.expires_at IS NULL OR member_count.expires_at>message_index.message_timestamp)),0)
 		ELSE 0 END,
 		COALESCE((SELECT own.last_read_seq>=message_index.message_seq FROM im_members own
 			WHERE own.conversation_id=message_index.conversation_id AND own.user_id=$2),false)
@@ -885,6 +906,7 @@ func (p *Postgres) SyncWukongMessageExtras(ctx context.Context, userID, channelI
 		item.Extra["readCount"] = item.ReadCount
 		item.Extra["deliveredCount"] = item.DeliveredCount
 		item.UnreadCount = max(0, recipientCount-item.ReadCount)
+		item.Extra["unreadCount"] = item.UnreadCount
 		item.Recalled = item.Extra["recalledAt"] != nil
 		item.Revoker = wukongStringValue(item.Extra["revoker"])
 		if item.Revoker == "" {
@@ -1117,15 +1139,18 @@ func (p *Postgres) AuthorizeWukongMessage(ctx context.Context, input WukongMessa
 	}
 	var kind, role string
 	var mutedUntil, allMutedUntil, dissolvedAt *time.Time
-	var userBanned, groupBanned bool
+	var userBanned, groupBanned, mutedPermanently bool
+	var groupMessageRateLimit int
+	var groupMessageRateVersion int64
 	err := p.pool.QueryRow(ctx, `
-		SELECT c.kind,m.role,m.muted_until,u.banned,g.all_muted_until,g.dissolved_at,COALESCE(g.banned,false)
+		SELECT c.kind,m.role,m.muted_until,m.muted_permanently,u.banned,g.all_muted_until,g.dissolved_at,COALESCE(g.banned,false),
+			COALESCE(g.member_message_rate_limit_per_minute,0),COALESCE(g.message_rate_limit_version,1)
 		FROM im_conversations c
 		JOIN im_members m ON m.conversation_id=c.id AND m.user_id=$2
 		JOIN im_users u ON u.id=m.user_id
 		LEFT JOIN im_groups g ON g.conversation_id=c.id
 		WHERE c.id=$1
-	`, input.ConversationID, input.UserID).Scan(&kind, &role, &mutedUntil, &userBanned, &allMutedUntil, &dissolvedAt, &groupBanned)
+	`, input.ConversationID, input.UserID).Scan(&kind, &role, &mutedUntil, &mutedPermanently, &userBanned, &allMutedUntil, &dissolvedAt, &groupBanned, &groupMessageRateLimit, &groupMessageRateVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WukongMessageRoute{}, ErrForbidden
 	}
@@ -1133,7 +1158,7 @@ func (p *Postgres) AuthorizeWukongMessage(ctx context.Context, input WukongMessa
 		return WukongMessageRoute{}, err
 	}
 	now := time.Now()
-	if userBanned || groupBanned || dissolvedAt != nil || (mutedUntil != nil && mutedUntil.After(now)) ||
+	if userBanned || groupBanned || dissolvedAt != nil || mutedPermanently || (mutedUntil != nil && mutedUntil.After(now)) ||
 		(allMutedUntil != nil && allMutedUntil.After(now) && role != "owner" && role != "admin") {
 		return WukongMessageRoute{}, ErrForbidden
 	}
@@ -1170,7 +1195,12 @@ func (p *Postgres) AuthorizeWukongMessage(ctx context.Context, input WukongMessa
 		}
 	}
 	if kind == "group" {
-		return WukongMessageRoute{ChannelID: input.ConversationID, ChannelType: wukong.ChannelGroup}, nil
+		route := WukongMessageRoute{ChannelID: input.ConversationID, ChannelType: wukong.ChannelGroup}
+		if role != "owner" && role != "admin" {
+			route.GroupMessageRateLimitPerMinute = groupMessageRateLimit
+			route.GroupMessageRateLimitVersion = groupMessageRateVersion
+		}
+		return route, nil
 	}
 	if kind != "direct" {
 		return WukongMessageRoute{}, ErrUnsupported
@@ -1460,16 +1490,17 @@ func (p *Postgres) LoadWukongChannelInfo(ctx context.Context, userID, channelID 
 		info.Extra["userId"] = channelID
 	case wukong.ChannelGroup:
 		var ownerID string
-		var allMutedUntil *time.Time
+		var allMutedUntil, mutedUntil *time.Time
+		var mutedPermanently bool
 		var memberCount int
 		err = p.pool.QueryRow(ctx, `SELECT conversation.title,conversation.avatar_url,conversation.created_at,
 			GREATEST(conversation.updated_at,group_row.updated_at),group_row.owner_id,group_row.all_muted_until,
-			member.notifications_muted,member.pinned,conversation.member_count
+			member.notifications_muted,member.pinned,conversation.member_count,member.muted_until,member.muted_permanently
 			FROM im_conversations conversation JOIN im_groups group_row ON group_row.conversation_id=conversation.id
 			JOIN im_members member ON member.conversation_id=conversation.id AND member.user_id=$2
 			WHERE conversation.id=$1 AND conversation.kind='group'`, conversationID, userID).Scan(
 			&info.Name, &info.AvatarURL, &info.CreatedAt, &info.UpdatedAt, &ownerID, &allMutedUntil,
-			&notificationsMuted, &pinned, &memberCount,
+			&notificationsMuted, &pinned, &memberCount, &mutedUntil, &mutedPermanently,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return WukongChannelInfo{}, ErrForbidden
@@ -1481,6 +1512,13 @@ func (p *Postgres) LoadWukongChannelInfo(ctx context.Context, userID, channelID 
 		if allMutedUntil != nil && allMutedUntil.After(time.Now()) {
 			info.Forbidden = 1
 			info.Extra["allMutedUntil"] = allMutedUntil.UTC().Format(time.RFC3339Nano)
+		}
+		if mutedPermanently || (mutedUntil != nil && mutedUntil.After(time.Now())) {
+			info.Forbidden = 1
+			info.Extra["mutedPermanently"] = mutedPermanently
+			if mutedUntil != nil {
+				info.Extra["mutedUntil"] = mutedUntil.UTC().Format(time.RFC3339Nano)
+			}
 		}
 		info.Extra["ownerId"] = ownerID
 		info.Extra["memberCount"] = memberCount
@@ -1563,7 +1601,7 @@ func (p *Postgres) SyncWukongChannelMembers(ctx context.Context, userID, channel
 	if version == 0 {
 		rows, err = p.pool.Query(ctx, `SELECT member.user_id,user_row.name,member.group_nickname,user_row.avatar_url,
 			member.role,user_row.banned,false,event.version,member.joined_at,
-			GREATEST(user_row.updated_at,event.updated_at),member.muted_until,COALESCE(user_row.handle,'')
+			GREATEST(user_row.updated_at,event.updated_at),member.muted_until,member.muted_permanently,COALESCE(user_row.handle,'')
 			FROM im_members member JOIN im_users user_row ON user_row.id=member.user_id
 			JOIN LATERAL (SELECT version,updated_at FROM im_wukong_channel_member_events
 				WHERE conversation_id=member.conversation_id AND user_id=member.user_id AND NOT is_deleted
@@ -1573,7 +1611,7 @@ func (p *Postgres) SyncWukongChannelMembers(ctx context.Context, userID, channel
 	} else {
 		rows, err = p.pool.Query(ctx, `SELECT event.user_id,user_row.name,event.group_nickname,user_row.avatar_url,
 			event.role,user_row.banned,event.is_deleted,event.version,event.created_at,
-			GREATEST(user_row.updated_at,event.updated_at),event.muted_until,COALESCE(user_row.handle,'')
+			GREATEST(user_row.updated_at,event.updated_at),event.muted_until,event.muted_permanently,COALESCE(user_row.handle,'')
 			FROM im_wukong_channel_member_events event JOIN im_users user_row ON user_row.id=event.user_id
 			WHERE event.conversation_id=$1 AND event.version>$2 ORDER BY event.version LIMIT $3`, conversationID, version, limit)
 	}
@@ -1584,11 +1622,11 @@ func (p *Postgres) SyncWukongChannelMembers(ctx context.Context, userID, channel
 	items := make([]WukongChannelMember, 0, limit)
 	for rows.Next() {
 		item := WukongChannelMember{ChannelID: channelID, ChannelType: channelType, Extra: map[string]any{}}
-		var banned, deleted bool
+		var banned, deleted, mutedPermanently bool
 		var mutedUntil *time.Time
 		var handle string
 		if err = rows.Scan(&item.UserID, &item.Name, &item.Remark, &item.AvatarURL, &item.Role,
-			&banned, &deleted, &item.Version, &item.CreatedAt, &item.UpdatedAt, &mutedUntil, &handle); err != nil {
+			&banned, &deleted, &item.Version, &item.CreatedAt, &item.UpdatedAt, &mutedUntil, &mutedPermanently, &handle); err != nil {
 			return nil, err
 		}
 		if banned {
@@ -1600,6 +1638,7 @@ func (p *Postgres) SyncWukongChannelMembers(ctx context.Context, userID, channel
 		if mutedUntil != nil {
 			item.Extra["mutedUntil"] = mutedUntil.UTC().Format(time.RFC3339Nano)
 		}
+		item.Extra["mutedPermanently"] = mutedPermanently
 		item.Extra["handle"] = handle
 		items = append(items, item)
 	}

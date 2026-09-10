@@ -47,11 +47,7 @@ class Fixture {
             data = {
               'accessToken': uid,
               'refreshToken': uid,
-              'user': {
-                'id': uid,
-                'name': uid,
-                'canDeleteMessagesForEveryone': true,
-              },
+              'user': {'id': uid, 'name': uid, 'isInternalUser': true},
               'imSession': {
                 'uid': uid,
                 'token': 'wk1_test',
@@ -167,7 +163,7 @@ void main() {
       final permission = f.repo.events.firstWhere(
         (e) => e.type == ImEventType.messagePermissionsChanged,
       );
-      f.command('user.message_permissions.updated', {
+      f.command('user.internal_status.updated', {
         'userId': 'me',
         'changeId': 'unique',
       });

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_slidable/flutter_slidable.dart';
 
 import '../../core/app_controller.dart';
 import '../../core/app_theme.dart';
@@ -27,138 +28,163 @@ class SystemNotificationTile extends StatelessWidget {
           : _notificationDate(latest!.publishedAt!);
       return KeyedSubtree(
         key: error == null ? null : const Key('announcement-load-error'),
-        child: Semantics(
-          button: true,
-          label: '系统通知${unread > 0 ? '，$unread 条未读' : ''}，$subtitle',
-          child: Material(
-            key: const Key('system-notification-surface'),
-            color: dark
-                ? LinliColors.darkPinnedSurface
-                : LinliColors.selectedSurface,
-            child: InkWell(
-              key: const Key('system-notifications-entry'),
-              overlayColor: WidgetStatePropertyAll(
-                LinliColors.primary.withValues(alpha: .12),
-              ),
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) =>
-                      SystemNotificationsScreen(controller: controller),
-                ),
-              ),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(minHeight: 74),
-                child: Row(
+        child: Slidable(
+          key: const Key('system-notification-slidable'),
+          endActionPane: controller.announcements.isEmpty
+              ? null
+              : ActionPane(
+                  extentRatio: .24,
+                  motion: const DrawerMotion(),
                   children: [
-                    Padding(
-                      padding: const EdgeInsets.only(left: 16, right: 12),
-                      child: Container(
-                        width: 48,
-                        height: 48,
-                        decoration: BoxDecoration(
-                          color: LinliColors.primary,
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        alignment: Alignment.center,
-                        child: const Icon(
-                          CupertinoIcons.bell_fill,
-                          size: 22,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      child: Container(
-                        key: const Key('system-notification-content'),
-                        constraints: const BoxConstraints(minHeight: 74),
-                        padding: const EdgeInsets.fromLTRB(0, 9, 14, 9),
-                        decoration: BoxDecoration(
-                          border: Border(
-                            bottom: BorderSide(
-                              color: dark
-                                  ? LinliColors.darkSeparator
-                                  : LinliColors.separator,
-                              width: .75,
-                            ),
-                          ),
-                        ),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    '系统通知',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.titleMedium,
-                                  ),
-                                ),
-                                if (time.isNotEmpty) ...[
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    time,
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.labelSmall,
-                                  ),
-                                ],
-                              ],
-                            ),
-                            const SizedBox(height: 5),
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    subtitle,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodyMedium
-                                        ?.copyWith(
-                                          color: error == null
-                                              ? context.linli.secondaryText
-                                              : LinliColors.systemRed,
-                                          fontSize: 14,
-                                        ),
-                                  ),
-                                ),
-                                if (unread > 0) ...[
-                                  const SizedBox(width: 8),
-                                  Container(
-                                    constraints: const BoxConstraints(
-                                      minWidth: 21,
-                                      minHeight: 21,
-                                    ),
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 6,
-                                    ),
-                                    alignment: Alignment.center,
-                                    decoration: BoxDecoration(
-                                      color: LinliColors.unread,
-                                      borderRadius: BorderRadius.circular(999),
-                                    ),
-                                    child: Text(
-                                      unread > 99 ? '99+' : '$unread',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
+                    SlidableAction(
+                      key: const Key('system-notification-delete'),
+                      onPressed: (_) => _confirmDismiss(context),
+                      backgroundColor: LinliColors.systemRed,
+                      foregroundColor: Colors.white,
+                      icon: CupertinoIcons.delete,
+                      label: '删除',
                     ),
                   ],
+                ),
+          child: Semantics(
+            button: true,
+            label: '系统通知${unread > 0 ? '，$unread 条未读' : ''}，$subtitle',
+            child: Material(
+              key: const Key('system-notification-surface'),
+              color: dark
+                  ? LinliColors.darkPinnedSurface
+                  : LinliColors.selectedSurface,
+              child: InkWell(
+                key: const Key('system-notifications-entry'),
+                onSecondaryTapDown: controller.announcements.isEmpty
+                    ? null
+                    : (details) =>
+                          _showDesktopMenu(context, details.globalPosition),
+                overlayColor: WidgetStatePropertyAll(
+                  LinliColors.primary.withValues(alpha: .12),
+                ),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        SystemNotificationsScreen(controller: controller),
+                  ),
+                ),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: 74),
+                  child: Row(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.only(left: 16, right: 12),
+                        child: Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: LinliColors.primary,
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          alignment: Alignment.center,
+                          child: const Icon(
+                            CupertinoIcons.bell_fill,
+                            size: 22,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: Container(
+                          key: const Key('system-notification-content'),
+                          constraints: const BoxConstraints(minHeight: 74),
+                          padding: const EdgeInsets.fromLTRB(0, 9, 14, 9),
+                          decoration: BoxDecoration(
+                            border: Border(
+                              bottom: BorderSide(
+                                color: dark
+                                    ? LinliColors.darkSeparator
+                                    : LinliColors.separator,
+                                width: .75,
+                              ),
+                            ),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      '系统通知',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.titleMedium,
+                                    ),
+                                  ),
+                                  if (time.isNotEmpty) ...[
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      time,
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.labelSmall,
+                                    ),
+                                  ],
+                                ],
+                              ),
+                              const SizedBox(height: 5),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      subtitle,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodyMedium
+                                          ?.copyWith(
+                                            color: error == null
+                                                ? context.linli.secondaryText
+                                                : LinliColors.systemRed,
+                                            fontSize: 14,
+                                          ),
+                                    ),
+                                  ),
+                                  if (unread > 0) ...[
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      constraints: const BoxConstraints(
+                                        minWidth: 21,
+                                        minHeight: 21,
+                                      ),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                      ),
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                        color: LinliColors.unread,
+                                        borderRadius: BorderRadius.circular(
+                                          999,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        unread > 99 ? '99+' : '$unread',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -167,6 +193,52 @@ class SystemNotificationTile extends StatelessWidget {
       );
     },
   );
+
+  Future<void> _confirmDismiss(BuildContext context) async {
+    final confirmed = await showCupertinoDialog<bool>(
+      context: context,
+      builder: (dialogContext) => CupertinoAlertDialog(
+        title: const Text('删除系统通知？'),
+        content: const Text('当前已有系统通知会从你的消息列表和通知中心移除；后续新通知仍会出现。'),
+        actions: [
+          CupertinoDialogAction(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          CupertinoDialogAction(
+            isDestructiveAction: true,
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final ok = await controller.dismissSystemNotifications();
+    if (!ok && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(controller.error ?? '系统通知删除失败，请稍后重试')),
+      );
+    }
+  }
+
+  Future<void> _showDesktopMenu(BuildContext context, Offset position) async {
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(position.dx, position.dy, 1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: const [
+        PopupMenuItem(
+          value: 'delete',
+          child: Text('删除系统通知', style: TextStyle(color: LinliColors.systemRed)),
+        ),
+      ],
+    );
+    if (action == 'delete' && context.mounted) await _confirmDismiss(context);
+  }
 }
 
 AppAnnouncement? _notificationPreview(List<AppAnnouncement> announcements) {
@@ -279,99 +351,165 @@ class _SystemNotificationRow extends StatelessWidget {
   final AppAnnouncement announcement;
 
   @override
-  Widget build(BuildContext context) => InkWell(
-    onTap: () => Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => AnnouncementDetailsScreen(
-          controller: controller,
-          announcement: announcement,
+  Widget build(BuildContext context) => Slidable(
+    key: ValueKey('system-notification-${announcement.id}'),
+    endActionPane: ActionPane(
+      extentRatio: .24,
+      motion: const DrawerMotion(),
+      children: [
+        SlidableAction(
+          key: ValueKey('system-notification-delete-${announcement.id}'),
+          onPressed: (_) => _confirmDismiss(context),
+          backgroundColor: LinliColors.systemRed,
+          foregroundColor: Colors.white,
+          icon: CupertinoIcons.delete,
+          label: '删除',
+        ),
+      ],
+    ),
+    child: InkWell(
+      onSecondaryTapDown: (details) =>
+          _showDesktopMenu(context, details.globalPosition),
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => AnnouncementDetailsScreen(
+            controller: controller,
+            announcement: announcement,
+          ),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              alignment: Alignment.center,
+              child: Icon(
+                announcement.pinned
+                    ? CupertinoIcons.pin_fill
+                    : CupertinoIcons.speaker_2_fill,
+                size: 19,
+                color: context.linli.primary,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          announcement.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(
+                                fontWeight: announcement.unread
+                                    ? FontWeight.w700
+                                    : FontWeight.w500,
+                              ),
+                        ),
+                      ),
+                      if (announcement.publishedAt != null)
+                        Text(
+                          _notificationDate(announcement.publishedAt!),
+                          style: Theme.of(context).textTheme.labelSmall,
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          announcement.content,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurface.withValues(alpha: .58),
+                                height: 1.35,
+                              ),
+                        ),
+                      ),
+                      if (announcement.unread) ...[
+                        const SizedBox(width: 10),
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: const BoxDecoration(
+                            color: LinliColors.unread,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     ),
-    child: Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            alignment: Alignment.center,
-            child: Icon(
-              announcement.pinned
-                  ? CupertinoIcons.pin_fill
-                  : CupertinoIcons.speaker_2_fill,
-              size: 19,
-              color: context.linli.primary,
-            ),
+  );
+
+  Future<void> _confirmDismiss(BuildContext context) async {
+    final confirmed = await showCupertinoDialog<bool>(
+      context: context,
+      builder: (dialogContext) => CupertinoAlertDialog(
+        title: const Text('删除这条系统通知？'),
+        content: const Text('删除后仅对你不可见，且无法恢复。'),
+        actions: [
+          CupertinoDialogAction(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        announcement.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(
-                              fontWeight: announcement.unread
-                                  ? FontWeight.w700
-                                  : FontWeight.w500,
-                            ),
-                      ),
-                    ),
-                    if (announcement.publishedAt != null)
-                      Text(
-                        _notificationDate(announcement.publishedAt!),
-                        style: Theme.of(context).textTheme.labelSmall,
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        announcement.content,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.onSurface.withValues(alpha: .58),
-                          height: 1.35,
-                        ),
-                      ),
-                    ),
-                    if (announcement.unread) ...[
-                      const SizedBox(width: 10),
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: const BoxDecoration(
-                          color: LinliColors.unread,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ],
-            ),
+          CupertinoDialogAction(
+            isDestructiveAction: true,
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('删除'),
           ),
         ],
       ),
-    ),
-  );
+    );
+    if (confirmed != true) return;
+    final ok = await controller.dismissSystemNotifications([announcement.id]);
+    if (!ok && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(controller.error ?? '系统通知删除失败，请稍后重试')),
+      );
+    }
+  }
+
+  Future<void> _showDesktopMenu(BuildContext context, Offset position) async {
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(position.dx, position.dy, 1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: const [
+        PopupMenuItem(
+          value: 'delete',
+          child: Text('删除通知', style: TextStyle(color: LinliColors.systemRed)),
+        ),
+      ],
+    );
+    if (action == 'delete' && context.mounted) await _confirmDismiss(context);
+  }
 }
 
 String _notificationDate(DateTime value) {

@@ -33,7 +33,8 @@ async function liveFixture(input: RequestInfo | URL, init?: RequestInit) {
   if (url.includes('/users/u_10291/blocks')) return response({ items: [{ user: { id: 'u_blocked', name: '被屏蔽用户', handle: 'blocked-user' }, remark: '旧备注', blockedAt: '2026-08-03T08:00:00Z' }] });
   if (url.includes('/users/u_10291/devices')) return response({ items: [{ userId: 'u_10291', installationId: 'install_android_1', platform: 'android', deviceName: 'Pixel 9', deviceModel: 'tokay', osVersion: 'Android 16', appVersion: '1.0.0', firstSeenAt: '2026-08-15T08:00:00Z', lastSeenAt: '2026-08-16T08:00:00Z' }], pushRegistrations: [{ id: 'device_android_1', userId: 'u_10291', platform: 'android', provider: 'fcm', notificationsEnabled: true, previewEnabled: false, soundEnabled: true, vibrationEnabled: true, updatedAt: '2026-08-16T08:00:00Z' }] });
   if (url.includes('/users/u_10291/system-message') && method === 'POST') return response({ targetUid: 'u_10291', senderUid: 'u_notice', conversationId: 'conv_notice_1', messageId: 1001, clientMsgNo: 'admin-notice-1' }, 201);
-  if (url.includes('/users/u_10291')) return response({ user: { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia', signature: '在青蛙呱呱保持联系', gender: 'female', handleChangeCount: 1, online: true, onlineConnections: 2, createdAt: '2026-08-01T08:00:00Z' }, deviceCount: 2, friendCount: 18, groupCount: 4, handleChangesUsed: 1, handleChangesRemaining: 1 });
+  if (url.includes('/users/u_10291/internal-user') && method === 'PUT') { const body=JSON.parse(String(init?.body)); return response({userId:'u_10291',isInternalUser:body.isInternalUser,changed:true}); }
+  if (url.includes('/users/u_10291')) return response({ user: { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia', signature: '在青蛙呱呱保持联系', gender: 'female', handleChangeCount: 1, isInternalUser: false, online: true, onlineConnections: 2, createdAt: '2026-08-01T08:00:00Z' }, deviceCount: 2, friendCount: 18, groupCount: 4, handleChangesUsed: 1, handleChangesRemaining: 1 });
   if (url.endsWith('/users/batch') && method === 'POST') {
     const body = JSON.parse(String(init?.body)) as { items: Array<{ clientRow: number; phone: string; name: string; gender: string }> };
     return response({ batchId: 'batch_fixture', total: body.items.length, succeeded: body.items.length, failed: 0, items: body.items.map((item) => ({ clientRow: item.clientRow, status: 'created', user: { id: `u_batch_${item.clientRow}`, name: item.name, phone: item.phone, handle: `gg_batch_${item.clientRow}`, gender: item.gender, status: 'active', createdAt: '2026-09-01T08:00:00Z' } })) });
@@ -42,7 +43,7 @@ async function liveFixture(input: RequestInfo | URL, init?: RequestInit) {
   if (url.includes('/users')) {
     const query = new URL(url, 'http://localhost').searchParams.get('q') ?? '';
     const users = [
-      { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia', status: 'active', online: true, onlineConnections: 2, createdAt: '2026-08-01T08:00:00Z', access: { registrationSource: 'app', registrationIp: '113.210.105.80', lastLoginIp: '150.228.145.1', lastLoginAt: '2026-09-03T02:21:00Z', registrationRegion: { status: 'ok', country: '马来西亚', province: '吉隆坡', city: '吉隆坡', isp: 'Binariang Berhad' }, lastLoginRegion: { status: 'ok', country: '马来西亚', province: '吉隆坡', city: '吉隆坡', isp: 'SpaceX' } } },
+      { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia', status: 'active', isInternalUser: false, online: true, onlineConnections: 2, createdAt: '2026-08-01T08:00:00Z', access: { registrationSource: 'app', registrationIp: '113.210.105.80', lastLoginIp: '150.228.145.1', lastLoginAt: '2026-09-03T02:21:00Z', registrationRegion: { status: 'ok', country: '马来西亚', province: '吉隆坡', city: '吉隆坡', isp: 'Binariang Berhad' }, lastLoginRegion: { status: 'ok', country: '马来西亚', province: '吉隆坡', city: '吉隆坡', isp: 'SpaceX' } } },
       { id: 'u_10288', name: '江宁', phone: '13800001002', handle: 'jiangning', status: 'active', online: false, lastOfflineAt: '2026-08-16T08:00:00Z', createdAt: '2026-08-02T08:00:00Z' },
     ].filter((item) => !query || `${item.name}${item.id}${item.phone}`.includes(query));
     return response({ items: users, total: users.length });
@@ -231,8 +232,8 @@ describe('青蛙呱呱管理后台', () => {
 
     expect(screen.getByRole('columnheader', { name: '注册 IP / 地址' })).toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: '登录 IP / 地址' })).toBeInTheDocument();
-    expect(screen.getByRole('columnheader', { name: '好友 IP 授权' })).toBeInTheDocument();
-    expect(screen.getAllByRole('switch', { name: '允许查看好友登录 IP' }).length).toBeGreaterThan(0);
+    expect(screen.getByRole('columnheader', { name: '内部用户' })).toBeInTheDocument();
+    expect(screen.getAllByRole('switch', { name: '内部用户' }).length).toBeGreaterThan(0);
     expect(screen.queryByRole('checkbox', { name: '选择当前页全部用户' })).not.toBeInTheDocument();
     expect(screen.queryByText('选择此账号进行批量权限设置')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '批量授权' })).not.toBeInTheDocument();
@@ -362,18 +363,18 @@ describe('青蛙呱呱管理后台', () => {
     expect(screen.queryByRole('dialog', { name: '用户详情' })).not.toBeInTheDocument();
   });
 
-  it('用户详情使用带说明的消息权限开关并要求确认理由', async () => {
+  it('用户详情只读展示用户类型，列表开关要求确认理由', async () => {
     window.history.replaceState({}, '', '/users');
     render(<App />);
     await screen.findByText('林夏');
     await userEvent.click(screen.getAllByRole('button', { name: '查看详情' })[0]);
     const detail = await screen.findByRole('dialog', { name: '用户详情' });
-    const permission = within(detail).getByRole('checkbox', { name: '允许全端删除消息' });
-    expect(permission).not.toBeChecked();
-    expect(within(detail).getByText('未授权：用户只能使用本机删除和现有撤回功能。')).toBeInTheDocument();
-    expect(within(detail).getByText('不受撤回时限限制')).toBeInTheDocument();
-    await userEvent.click(permission);
-    const confirm = await screen.findByRole('dialog', { name: '授权全端删除消息' });
+    expect(within(detail).getByText('普通用户')).toBeInTheDocument();
+    expect(within(detail).getByText('该用户不具备全端删除消息和查看好友登录 IP 的特殊权限。')).toBeInTheDocument();
+    expect(within(detail).queryByRole('switch', { name: '内部用户' })).not.toBeInTheDocument();
+    fireEvent.keyDown(detail, { key: 'Escape' });
+    await userEvent.click(screen.getAllByRole('switch', { name: '内部用户' })[0]);
+    const confirm = await screen.findByRole('dialog', { name: '设为内部用户' });
     expect(within(confirm).getByRole('button', { name: '确认修改' })).toBeDisabled();
     expect(within(confirm).getByLabelText('操作理由')).toBeInTheDocument();
   });

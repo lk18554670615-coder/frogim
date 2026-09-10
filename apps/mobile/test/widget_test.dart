@@ -1919,6 +1919,22 @@ void main() {
     expect(find.text('联系人资料'), findsNothing);
     expect(find.text('置顶聊天'), findsOneWidget);
     expect(find.text('消息免打扰'), findsOneWidget);
+    expect(find.text('截屏提示'), findsOneWidget);
+    expect(find.textContaining('已关闭'), findsOneWidget);
+    final screenshotTile = find.byKey(const Key('screenshot-detection-status'));
+    final screenshotSwitch = find.descendant(
+      of: screenshotTile,
+      matching: find.byType(CupertinoSwitch),
+    );
+    expect(tester.widget<CupertinoSwitch>(screenshotSwitch).value, isFalse);
+    await tester.tap(screenshotSwitch);
+    await tester.pumpAndSettle();
+    expect(
+      controller.conversations
+          .firstWhere((conversation) => conversation.id == direct.id)
+          .screenshotNoticesEnabled,
+      isTrue,
+    );
     expect(find.text('加入黑名单'), findsOneWidget);
     expect(find.text('群聊资料'), findsNothing);
   });

@@ -278,6 +278,7 @@ func (x *API) routes() {
 	x.mux.Handle("POST /v2/messages/{id}/recall", x.requireAuth(http.HandlerFunc(x.recall)))
 	x.mux.Handle("PATCH /v2/messages/{id}", x.requireAuth(http.HandlerFunc(x.editMessage)))
 	x.mux.Handle("GET /v2/messages/{id}/edits", x.requireAuth(http.HandlerFunc(x.messageEdits)))
+	x.mux.Handle("GET /v2/messages/{id}/receipts", x.requireAuth(http.HandlerFunc(x.groupMessageReceipts)))
 	x.mux.Handle("PUT /v2/messages/{id}/reactions/{emoji}", x.requireAuth(http.HandlerFunc(x.messageReaction)))
 	x.mux.Handle("DELETE /v2/messages/{id}/reactions/{emoji}", x.requireAuth(http.HandlerFunc(x.messageReaction)))
 	x.mux.Handle("GET /v2/messages/favorites", x.requireAuth(http.HandlerFunc(x.favorites)))
@@ -311,6 +312,7 @@ func (x *API) routes() {
 	x.mux.Handle("POST /v2/channels/groups", x.requireAuth(http.HandlerFunc(x.createGroup)))
 	x.mux.Handle("GET /v2/channels/groups/{id}", x.requireAuth(http.HandlerFunc(x.groupProfile)))
 	x.mux.Handle("PATCH /v2/channels/groups/{id}", x.requireAuth(http.HandlerFunc(x.updateGroupProfile)))
+	x.mux.Handle("GET /v2/channels/groups/{id}/message-rate-status", x.requireAuth(http.HandlerFunc(x.groupMessageRateStatus)))
 	x.mux.Handle("PUT /v2/channels/groups/{id}/announcement", x.requireAuth(http.HandlerFunc(x.groupAnnouncement)))
 	x.mux.Handle("POST /v2/channels/groups/{id}/announcement/read", x.requireAuth(http.HandlerFunc(x.readGroupAnnouncement)))
 	x.mux.Handle("POST /v2/channels/groups/{id}/invites", x.requireAuth(http.HandlerFunc(x.groupInvite)))
@@ -425,16 +427,15 @@ func (x *API) routes() {
 	x.mux.Handle("POST /v2/reports", x.requireAuth(http.HandlerFunc(x.report)))
 	x.mux.Handle("GET /v2/announcements", x.requireAuth(http.HandlerFunc(x.announcements)))
 	x.mux.Handle("POST /v2/announcements/{id}/read", x.requireAuth(http.HandlerFunc(x.readAnnouncement)))
+	x.mux.Handle("POST /v2/announcements/dismiss", x.requireAuth(http.HandlerFunc(x.dismissAnnouncements)))
 	x.mux.Handle("GET /v2/admin/stats", x.requireAdmin(http.HandlerFunc(x.adminStats)))
 	x.mux.Handle("GET /v2/admin/dashboard", x.requireAdmin(http.HandlerFunc(x.adminStats)))
 	x.mux.Handle("GET /v2/admin/users", x.requireAdmin(http.HandlerFunc(x.adminUsers)))
 	x.mux.Handle("GET /v2/admin/user-access-logs", x.requireAdmin(http.HandlerFunc(x.adminUserAccessLogs)))
 	x.mux.Handle("POST /v2/admin/users", x.requireAdmin(http.HandlerFunc(x.createAdminUser)))
 	x.mux.Handle("POST /v2/admin/users/batch", x.requireAdmin(http.HandlerFunc(x.createAdminUsersBatch)))
-	x.mux.Handle("PUT /v2/admin/users/friend-login-ip-permissions", x.requireAdmin(http.HandlerFunc(x.setFriendLoginIPPermissions)))
 	x.mux.Handle("GET /v2/admin/users/{id}", x.requireAdmin(http.HandlerFunc(x.adminUserOverview)))
-	x.mux.Handle("PUT /v2/admin/users/{id}/message-permissions", x.requireAdmin(http.HandlerFunc(x.adminMessagePermissions)))
-	x.mux.Handle("PUT /v2/admin/users/{id}/friend-login-ip-permission", x.requireAdmin(http.HandlerFunc(x.setFriendLoginIPPermission)))
+	x.mux.Handle("PUT /v2/admin/users/{id}/internal-user", x.requireAdmin(http.HandlerFunc(x.setInternalUser)))
 	x.mux.Handle("GET /v2/admin/users/{id}/friends", x.requireAdmin(http.HandlerFunc(x.adminUserFriends)))
 	x.mux.Handle("GET /v2/admin/users/{id}/blocks", x.requireAdmin(http.HandlerFunc(x.adminUserBlocks)))
 	x.mux.Handle("GET /v2/admin/users/{id}/devices", x.requireAdmin(http.HandlerFunc(x.adminUserDevices)))
@@ -1027,6 +1028,12 @@ func handleErr(w http.ResponseWriter, err error) {
 		writeError(w, 403, "GROUP_JOIN_POLICY_RESTRICTED", "当前入群方式不允许此操作")
 	case errors.Is(err, app.ErrJoinRequestExpired), errors.Is(err, store.ErrJoinRequestExpired):
 		writeError(w, 409, "GROUP_JOIN_REQUEST_EXPIRED", "入群审核申请已过期")
+	case errors.Is(err, store.ErrGroupMessageRateLimited):
+		var limited *store.GroupMessageRateLimitError
+		if errors.As(err, &limited) && limited.RetryAfterSeconds > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(limited.RetryAfterSeconds))
+		}
+		writeError(w, http.StatusTooManyRequests, "GROUP_MESSAGE_RATE_LIMITED", "发送过于频繁，请稍后重试")
 	case errors.Is(err, app.ErrInvalid):
 		writeError(w, 400, "INVALID_ARGUMENT", err.Error())
 	case errors.Is(err, app.ErrForbidden), errors.Is(err, store.ErrForbidden):
@@ -1741,7 +1748,7 @@ func (x *API) imSession(w http.ResponseWriter, r *http.Request) {
 // derived capabilities. Copy first: in-memory stores may return shared users.
 type ownProfileResponse struct {
 	*model.User
-	CanViewFriendLoginIP bool `json:"canViewFriendLoginIp"`
+	IsInternalUser bool `json:"isInternalUser"`
 }
 
 func (x *API) ownProfile(user *model.User) *ownProfileResponse {
@@ -1751,9 +1758,8 @@ func (x *API) ownProfile(user *model.User) *ownProfileResponse {
 	profile := *user
 	x.signAvatarURL(&profile)
 	x.app.DecorateOwnProfile(&profile)
-	profile.CanDeleteMessagesForEveryone, _ = x.app.MessageDeletionPermission(context.Background(), profile.ID)
-	profile.CanViewFriendLoginIP, _ = x.app.FriendLoginIPPermission(context.Background(), profile.ID)
-	return &ownProfileResponse{User: &profile, CanViewFriendLoginIP: profile.CanViewFriendLoginIP}
+	profile.IsInternalUser, _ = x.app.InternalUser(context.Background(), profile.ID)
+	return &ownProfileResponse{User: &profile, IsInternalUser: profile.IsInternalUser}
 }
 
 func (x *API) me(w http.ResponseWriter, r *http.Request) {
@@ -2481,13 +2487,14 @@ func (x *API) updateGroupProfile(w http.ResponseWriter, r *http.Request) {
 		HistoryVisibleToNewMembers      *bool
 		Name, AvatarMediaID, JoinPolicy *string
 		AllowMemberAddFriend            *bool
+		MemberMessageRateLimitPerMinute *int
 		RotateQR                        bool
 	}
 	if decode(r, &p) != nil {
 		writeError(w, 400, "INVALID_ARGUMENT", "invalid request")
 		return
 	}
-	g, err := x.app.UpdateGroupProfile(uid(r), r.PathValue("id"), store.GroupProfileUpdate{HistoryVisibleToNewMembers: p.HistoryVisibleToNewMembers, Name: p.Name, AvatarMediaID: p.AvatarMediaID, JoinPolicy: p.JoinPolicy, AllowMemberAddFriend: p.AllowMemberAddFriend, RotateQR: p.RotateQR})
+	g, err := x.app.UpdateGroupProfile(uid(r), r.PathValue("id"), store.GroupProfileUpdate{HistoryVisibleToNewMembers: p.HistoryVisibleToNewMembers, Name: p.Name, AvatarMediaID: p.AvatarMediaID, JoinPolicy: p.JoinPolicy, AllowMemberAddFriend: p.AllowMemberAddFriend, MemberMessageRateLimitPerMinute: p.MemberMessageRateLimitPerMinute, RotateQR: p.RotateQR})
 	if err != nil {
 		handleErr(w, err)
 		return
@@ -2496,6 +2503,15 @@ func (x *API) updateGroupProfile(w http.ResponseWriter, r *http.Request) {
 		g.AvatarURL = x.signedAvatarValue(mediaID)
 	}
 	write(w, 200, g)
+}
+
+func (x *API) groupMessageRateStatus(w http.ResponseWriter, r *http.Request) {
+	status, err := x.app.GroupMessageRateStatus(r.Context(), uid(r), r.PathValue("id"))
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	write(w, http.StatusOK, status)
 }
 func (x *API) groupAnnouncement(w http.ResponseWriter, r *http.Request) {
 	var p struct{ Content string }
@@ -2699,12 +2715,23 @@ func (x *API) groupRole(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, p)
 }
 func (x *API) mute(w http.ResponseWriter, r *http.Request) {
-	var p struct{ Until *time.Time }
+	var p struct {
+		Until     *time.Time `json:"until"`
+		Permanent bool       `json:"permanent"`
+	}
 	if decode(r, &p) != nil {
 		writeError(w, 400, "INVALID_ARGUMENT", "invalid request")
 		return
 	}
-	if err := x.app.MuteMember(uid(r), r.PathValue("id"), r.PathValue("userId"), p.Until); err != nil {
+	if p.Permanent && p.Until != nil {
+		writeError(w, 400, "INVALID_ARGUMENT", "permanent mute must not include until")
+		return
+	}
+	if p.Until != nil && !p.Until.After(time.Now()) {
+		writeError(w, 400, "INVALID_ARGUMENT", "mute end time must be in the future")
+		return
+	}
+	if err := x.app.MuteMember(uid(r), r.PathValue("id"), r.PathValue("userId"), p.Until, p.Permanent); err != nil {
 		handleErr(w, err)
 		return
 	}
@@ -2882,6 +2909,17 @@ func (x *API) messageEdits(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, http.StatusOK, map[string]any{"items": items})
 }
+func (x *API) groupMessageReceipts(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	item, err := x.app.GroupMessageReceipts(
+		r.Context(), uid(r), r.PathValue("id"), r.URL.Query().Get("status"), r.URL.Query().Get("cursor"), limit,
+	)
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	write(w, http.StatusOK, item)
+}
 func (x *API) messageReaction(w http.ResponseWriter, r *http.Request) {
 	summary, duplicate, err := x.app.SetMessageReaction(uid(r), r.PathValue("id"), r.PathValue("emoji"), r.Method == http.MethodPut)
 	if err != nil {
@@ -3004,6 +3042,33 @@ func (x *API) readAnnouncement(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+func (x *API) dismissAnnouncements(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		AnnouncementIDs []string `json:"announcementIds"`
+	}
+	if decode(r, &body) != nil || len(body.AnnouncementIDs) == 0 || len(body.AnnouncementIDs) > 100 {
+		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "announcementIds must contain 1–100 items")
+		return
+	}
+	seen := make(map[string]bool, len(body.AnnouncementIDs))
+	ids := make([]string, 0, len(body.AnnouncementIDs))
+	for _, id := range body.AnnouncementIDs {
+		if strings.TrimSpace(id) != id || id == "" || len(id) > 200 {
+			writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid announcement ID")
+			return
+		}
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if err := x.app.DismissAnnouncements(uid(r), ids); err != nil {
+		handleErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
 func (x *API) adminStats(w http.ResponseWriter, r *http.Request) {
 	stats, err := x.app.AdminStatsContext(r.Context())
 	if err != nil {
@@ -3030,15 +3095,15 @@ func (x *API) adminUsers(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(query.Get("limit"))
 	ip, ok := parseAccessIP(query.Get("ip"))
 	source := query.Get("ipSource")
-	friendIPPermission := query.Get("friendLoginIPPermission")
+	internalUser := query.Get("internalUser")
 	if source == "" {
 		source = "any"
 	}
-	if !ok || !memberOf(source, "any", "registration", "last_login", "history") || !memberOf(friendIPPermission, "", "allowed", "denied") {
+	if !ok || !memberOf(source, "any", "registration", "last_login", "history") || !memberOf(internalUser, "", "internal", "regular") {
 		writeError(w, 400, "INVALID_ARGUMENT", "invalid IP filter")
 		return
 	}
-	items, total, next, err := x.app.AdminUsersByIP(r.Context(), query.Get("q"), query.Get("status"), query.Get("cursor"), limit, ip, source, friendIPPermission)
+	items, total, next, err := x.app.AdminUsersByIP(r.Context(), query.Get("q"), query.Get("status"), query.Get("cursor"), limit, ip, source, internalUser)
 	if err != nil {
 		handleErr(w, err)
 		return
@@ -3051,7 +3116,7 @@ func (x *API) adminUsers(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
-	x.app.RecordAdminAudit(uid(r), "user.ip.viewed", "user_access", "users", "success", x.clientIP(r), map[string]any{"ip": ip, "ipSource": source, "friendLoginIPPermission": friendIPPermission, "q": query.Get("q"), "status": query.Get("status"), "returned": len(items)})
+	x.app.RecordAdminAudit(uid(r), "user.ip.viewed", "user_access", "users", "success", x.clientIP(r), map[string]any{"ip": ip, "ipSource": source, "internalUser": internalUser, "q": query.Get("q"), "status": query.Get("status"), "returned": len(items)})
 	write(w, 200, map[string]any{"items": decorated, "total": total, "nextCursor": next})
 }
 func (x *API) adminUserOverview(w http.ResponseWriter, r *http.Request) {
@@ -3061,12 +3126,7 @@ func (x *API) adminUserOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if user, ok := item["user"].(*model.User); ok {
-		user.CanDeleteMessagesForEveryone, err = x.app.MessageDeletionPermission(r.Context(), user.ID)
-		if err != nil {
-			handleErr(w, err)
-			return
-		}
-		user.CanViewFriendLoginIP, err = x.app.FriendLoginIPPermission(r.Context(), user.ID)
+		user.IsInternalUser, err = x.app.InternalUser(r.Context(), user.ID)
 		if err != nil {
 			handleErr(w, err)
 			return

@@ -371,7 +371,7 @@ func (p *Postgres) ListAdminGroupMembers(ctx context.Context, id, q, cursor stri
 	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM im_members m JOIN im_users u ON u.id=m.user_id WHERE `+where, id, q, pattern).Scan(&total); err != nil {
 		return nil, 0, "", err
 	}
-	rows, err := p.pool.Query(ctx, `SELECT m.conversation_id,m.user_id,u.phone,u.name,COALESCE(u.handle,''),u.avatar_url,m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.group_nickname,m.joined_at FROM im_members m JOIN im_users u ON u.id=m.user_id WHERE `+where+` ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,m.joined_at,m.user_id LIMIT $4 OFFSET $5`, id, q, pattern, limit, offset)
+	rows, err := p.pool.Query(ctx, `SELECT m.conversation_id,m.user_id,u.phone,u.name,COALESCE(u.handle,''),u.avatar_url,m.role,m.muted_until,m.muted_permanently,m.last_read_seq,m.last_delivered_seq,m.group_nickname,m.joined_at FROM im_members m JOIN im_users u ON u.id=m.user_id WHERE `+where+` ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,m.joined_at,m.user_id LIMIT $4 OFFSET $5`, id, q, pattern, limit, offset)
 	if err != nil {
 		return nil, 0, "", err
 	}
@@ -379,7 +379,7 @@ func (p *Postgres) ListAdminGroupMembers(ctx context.Context, id, q, cursor stri
 	items := make([]*model.ConversationMember, 0, limit)
 	for rows.Next() {
 		item := new(model.ConversationMember)
-		if err = rows.Scan(&item.ConversationID, &item.UserID, &item.Phone, &item.Name, &item.Handle, &item.AvatarURL, &item.Role, &item.MutedUntil, &item.LastReadSeq, &item.LastDeliveredSeq, &item.GroupNickname, &item.JoinedAt); err != nil {
+		if err = rows.Scan(&item.ConversationID, &item.UserID, &item.Phone, &item.Name, &item.Handle, &item.AvatarURL, &item.Role, &item.MutedUntil, &item.MutedPermanently, &item.LastReadSeq, &item.LastDeliveredSeq, &item.GroupNickname, &item.JoinedAt); err != nil {
 			return nil, 0, "", err
 		}
 		item.ID = item.UserID

@@ -157,6 +157,7 @@ class MessageMapper {
       expiresAt: expiresAt,
       deliveredCount: (payload['deliveredCount'] as num?)?.toInt() ?? 0,
       readCount: (payload['readCount'] as num?)?.toInt() ?? 0,
+      unreadCount: (payload['unreadCount'] as num?)?.toInt() ?? 0,
     );
   }
 

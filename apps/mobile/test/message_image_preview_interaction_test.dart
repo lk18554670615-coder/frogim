@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:linli_im/core/app_theme.dart';
@@ -22,6 +23,10 @@ void main() {
     expect(close.hitTestable(), findsOneWidget);
     expect(more.hitTestable(), findsOneWidget);
     expect(edit.hitTestable(), findsOneWidget);
+    expect(
+      find.byKey(const Key('copy-message-image-preview')),
+      kIsWeb ? findsOneWidget : findsNothing,
+    );
 
     final center = tester.getCenter(
       find.byKey(const Key('message-image-preview-render')),

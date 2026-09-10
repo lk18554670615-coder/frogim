@@ -12,6 +12,7 @@ import 'package:linli_im/ui/screens/chat_screen.dart';
 import 'package:linli_im/ui/screens/group_management_screens.dart';
 import 'package:linli_im/ui/screens/group_invite_members_screen.dart';
 import 'package:linli_im/ui/screens/relationship_screens.dart';
+import 'package:linli_im/ui/widgets/user_presence.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -28,6 +29,10 @@ void main() {
       testWidgets('$role / $width 群成员头像打开资料时按当前角色显示呱呱号', (tester) async {
         final repo = _Repository(role);
         await _open(tester, repo, width: width);
+        expect(
+          find.byType(PresenceLabel),
+          role == 'member' ? findsNothing : findsWidgets,
+        );
         await tester.tap(find.byKey(const Key('chat-info-member-u1')));
         await tester.pumpAndSettle();
         expect(find.byType(FriendProfileScreen), findsOneWidget);
@@ -48,6 +53,10 @@ void main() {
     testWidgets('$role 群成员列表和 @ 面板不绕过呱呱号限制', (tester) async {
       final repo = _Repository(role);
       final controller = await _open(tester, repo, screen: 'members');
+      expect(
+        find.byType(PresenceLabel),
+        role == 'member' ? findsNothing : findsWidgets,
+      );
       await tester.enterText(
         find.byKey(const Key('group-member-search')),
         'linyu',

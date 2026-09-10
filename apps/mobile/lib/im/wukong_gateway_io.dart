@@ -473,6 +473,13 @@ class IoWukongGateway
         channelId == _session?.uid) {
       channelId = item.fromUID;
     }
+    final payload = _payload(item.content);
+    final receipt = item.wkMsgExtra;
+    if (receipt != null) {
+      payload['readCount'] = receipt.readedCount;
+      payload['unreadCount'] = receipt.unreadCount;
+      payload['is_mutual_deleted'] = receipt.isMutualDeleted;
+    }
     return WukongMessage(
       messageId: item.messageID,
       messageSeq: item.messageSeq,
@@ -481,7 +488,7 @@ class IoWukongGateway
       fromUid: item.fromUID,
       channel: WukongChannel(id: channelId, type: item.channelType),
       timestamp: _fromSeconds(item.timestamp),
-      payload: _payload(item.content),
+      payload: payload,
       state: item.status == full.WKSendMsgResult.sendLoading
           ? WukongMessageState.sending
           : item.status == full.WKSendMsgResult.sendSuccess

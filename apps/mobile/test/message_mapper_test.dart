@@ -204,6 +204,7 @@ void main() {
         'content': '群回执',
         'deliveredCount': 8,
         'readCount': 5,
+        'unreadCount': 3,
       },
     });
 
@@ -215,8 +216,10 @@ void main() {
 
     expect(mapped.deliveredCount, 8);
     expect(mapped.readCount, 5);
+    expect(mapped.unreadCount, 3);
     expect(ChatMessage.fromJson(mapped.toJson()).deliveredCount, 8);
     expect(ChatMessage.fromJson(mapped.toJson()).readCount, 5);
+    expect(ChatMessage.fromJson(mapped.toJson()).unreadCount, 3);
   });
 
   test('normalizes WuKong and cached UTC timestamps for local display', () {

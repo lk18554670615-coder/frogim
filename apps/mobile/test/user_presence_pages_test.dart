@@ -103,7 +103,7 @@ void main() {
           ),
         );
         expect(find.text('我的搭档'), findsOneWidget);
-        expect(find.textContaining('已禁言'), findsOneWidget);
+        expect(find.textContaining('禁言至'), findsOneWidget);
         final row = find.byKey(const ValueKey('group-member-u1'));
         expect(
           tester

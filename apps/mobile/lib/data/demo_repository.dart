@@ -425,6 +425,13 @@ class DemoImRepository
   }
 
   @override
+  Future<void> dismissAnnouncements(List<String> announcementIds) async {
+    await Future<void>.delayed(latency);
+    final ids = announcementIds.toSet();
+    _announcements.removeWhere((item) => ids.contains(item.id));
+  }
+
+  @override
   Future<void> logout() async {
     _connection.add(false);
     await _store.clearAccountData();
@@ -614,6 +621,7 @@ class DemoImRepository
     String? joinPolicy,
     bool? allowMemberAddFriend,
     bool? historyVisibleToNewMembers,
+    int? memberMessageRateLimitPerMinute,
     bool rotateQr = false,
   }) async {
     final old = await groupProfile(conversationId);
@@ -640,6 +648,16 @@ class DemoImRepository
               ?.where((request) => request.pending)
               .length ??
           0,
+      memberMessageRateLimitPerMinute:
+          memberMessageRateLimitPerMinute ??
+          old.memberMessageRateLimitPerMinute,
+      messageRateLimitVersion:
+          old.messageRateLimitVersion +
+          (memberMessageRateLimitPerMinute == null ||
+                  memberMessageRateLimitPerMinute ==
+                      old.memberMessageRateLimitPerMinute
+              ? 0
+              : 1),
       allowMemberAddFriend: allowMemberAddFriend ?? old.allowMemberAddFriend,
       historyVisibleToNewMembers:
           historyVisibleToNewMembers ?? old.historyVisibleToNewMembers,
@@ -655,6 +673,19 @@ class DemoImRepository
     );
     _groupProfiles[conversationId] = updated;
     return updated;
+  }
+
+  @override
+  Future<GroupMessageRateStatus> groupMessageRateStatus(
+    String conversationId,
+  ) async {
+    final profile = await groupProfile(conversationId);
+    return GroupMessageRateStatus(
+      limitPerMinute: profile.memberMessageRateLimitPerMinute,
+      used: 0,
+      remaining: profile.memberMessageRateLimitPerMinute,
+      retryAfterSeconds: 0,
+    );
   }
 
   @override
@@ -676,6 +707,8 @@ class DemoImRepository
       canSubmitJoinRequest: old.canSubmitJoinRequest,
       canReviewJoinRequests: old.canReviewJoinRequests,
       pendingJoinRequestCount: old.pendingJoinRequestCount,
+      memberMessageRateLimitPerMinute: old.memberMessageRateLimitPerMinute,
+      messageRateLimitVersion: old.messageRateLimitVersion,
       allowMemberAddFriend: old.allowMemberAddFriend,
       historyVisibleToNewMembers: old.historyVisibleToNewMembers,
       historyPolicyVersion: old.historyPolicyVersion,
@@ -703,6 +736,8 @@ class DemoImRepository
       canSubmitJoinRequest: old.canSubmitJoinRequest,
       canReviewJoinRequests: old.canReviewJoinRequests,
       pendingJoinRequestCount: old.pendingJoinRequestCount,
+      memberMessageRateLimitPerMinute: old.memberMessageRateLimitPerMinute,
+      messageRateLimitVersion: old.messageRateLimitVersion,
       allowMemberAddFriend: old.allowMemberAddFriend,
       historyVisibleToNewMembers: old.historyVisibleToNewMembers,
       historyPolicyVersion: old.historyPolicyVersion,
@@ -903,6 +938,7 @@ class DemoImRepository
         role: role,
         joinedAt: old.joinedAt,
         mutedUntil: old.mutedUntil,
+        mutedPermanently: old.mutedPermanently,
         groupNickname: old.groupNickname,
       );
       _groupMemberState[conversationId] = members;
@@ -913,8 +949,9 @@ class DemoImRepository
   Future<void> setGroupMemberMuted(
     String conversationId,
     String userId,
-    DateTime? until,
-  ) async {
+    DateTime? until, {
+    bool permanently = false,
+  }) async {
     final members = await groupMembers(conversationId);
     final index = members.indexWhere((member) => member.user.id == userId);
     if (index < 0) return;
@@ -924,6 +961,7 @@ class DemoImRepository
       role: old.role,
       joinedAt: old.joinedAt,
       mutedUntil: until,
+      mutedPermanently: permanently,
       groupNickname: old.groupNickname,
     );
     _groupMemberState[conversationId] = members;
@@ -960,6 +998,8 @@ class DemoImRepository
       canSubmitJoinRequest: old.canSubmitJoinRequest,
       canReviewJoinRequests: old.canReviewJoinRequests,
       pendingJoinRequestCount: old.pendingJoinRequestCount,
+      memberMessageRateLimitPerMinute: old.memberMessageRateLimitPerMinute,
+      messageRateLimitVersion: old.messageRateLimitVersion,
       allowMemberAddFriend: old.allowMemberAddFriend,
       historyVisibleToNewMembers: old.historyVisibleToNewMembers,
       historyPolicyVersion: old.historyPolicyVersion,
@@ -1352,6 +1392,7 @@ class DemoImRepository
     bool? notificationsMuted,
     bool? manualUnread,
     bool? archived,
+    bool? screenshotNoticesEnabled,
   }) async {
     await Future<void>.delayed(latency);
     final index = _conversations.indexWhere(
@@ -1364,6 +1405,7 @@ class DemoImRepository
       saved: saved,
       muted: notificationsMuted,
       archived: archived,
+      screenshotNoticesEnabled: screenshotNoticesEnabled,
       unread: manualUnread == true
           ? (current.unread > 0 ? current.unread : 1)
           : null,

@@ -28,7 +28,7 @@ type Postgres struct {
 	historyBoundary GroupHistoryBoundaryReader
 }
 
-const schemaVersion = 67
+const schemaVersion = 72
 
 type PostgresOptions struct {
 	MaxConns          int32
@@ -268,13 +268,13 @@ func (p *Postgres) Load(ctx context.Context) (*model.State, error) {
 		s.DirectIndex[k] = v
 	}
 	rows.Close()
-	rows, err = p.pool.Query(ctx, `SELECT conversation_id,user_id,role,last_read_seq,last_delivered_seq,muted_until,pinned,saved,archived,notifications_muted,manual_unread,hidden_until_seq,group_nickname,joined_at,history_after_seq FROM im_members`)
+	rows, err = p.pool.Query(ctx, `SELECT conversation_id,user_id,role,last_read_seq,last_delivered_seq,muted_until,muted_permanently,pinned,saved,archived,notifications_muted,manual_unread,screenshot_notices_enabled,hidden_until_seq,group_nickname,joined_at,history_after_seq FROM im_members`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		m := &model.ConversationMember{}
-		if err = rows.Scan(&m.ConversationID, &m.UserID, &m.Role, &m.LastReadSeq, &m.LastDeliveredSeq, &m.MutedUntil, &m.Pinned, &m.Saved, &m.Archived, &m.NotificationsMuted, &m.ManualUnread, &m.HiddenUntilSeq, &m.GroupNickname, &m.JoinedAt, &m.HistoryAfterSeq); err != nil {
+		if err = rows.Scan(&m.ConversationID, &m.UserID, &m.Role, &m.LastReadSeq, &m.LastDeliveredSeq, &m.MutedUntil, &m.MutedPermanently, &m.Pinned, &m.Saved, &m.Archived, &m.NotificationsMuted, &m.ManualUnread, &m.ScreenshotNoticesEnabled, &m.HiddenUntilSeq, &m.GroupNickname, &m.JoinedAt, &m.HistoryAfterSeq); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -422,7 +422,7 @@ func (p *Postgres) Save(ctx context.Context, s *model.State) error {
 	}
 	for cid, xs := range s.Members {
 		for _, m := range xs {
-			_, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,last_read_seq,last_delivered_seq,muted_until,pinned,saved,archived,notifications_muted,manual_unread,hidden_until_seq,group_nickname,joined_at,history_after_seq) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(conversation_id,user_id) DO UPDATE SET role=excluded.role,last_read_seq=GREATEST(im_members.last_read_seq,excluded.last_read_seq),last_delivered_seq=GREATEST(im_members.last_delivered_seq,excluded.last_delivered_seq),muted_until=excluded.muted_until,pinned=excluded.pinned,saved=excluded.saved,archived=excluded.archived,notifications_muted=excluded.notifications_muted,manual_unread=excluded.manual_unread,hidden_until_seq=excluded.hidden_until_seq,group_nickname=excluded.group_nickname`, cid, m.UserID, m.Role, m.LastReadSeq, m.LastDeliveredSeq, m.MutedUntil, m.Pinned, m.Saved, m.Archived, m.NotificationsMuted, m.ManualUnread, m.HiddenUntilSeq, m.GroupNickname, m.JoinedAt, m.HistoryAfterSeq)
+			_, err = tx.Exec(ctx, `INSERT INTO im_members(conversation_id,user_id,role,last_read_seq,last_delivered_seq,muted_until,muted_permanently,pinned,saved,archived,notifications_muted,manual_unread,screenshot_notices_enabled,hidden_until_seq,group_nickname,joined_at,history_after_seq) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT(conversation_id,user_id) DO UPDATE SET role=excluded.role,last_read_seq=GREATEST(im_members.last_read_seq,excluded.last_read_seq),last_delivered_seq=GREATEST(im_members.last_delivered_seq,excluded.last_delivered_seq),muted_until=excluded.muted_until,muted_permanently=excluded.muted_permanently,pinned=excluded.pinned,saved=excluded.saved,archived=excluded.archived,notifications_muted=excluded.notifications_muted,manual_unread=excluded.manual_unread,screenshot_notices_enabled=excluded.screenshot_notices_enabled,hidden_until_seq=excluded.hidden_until_seq,group_nickname=excluded.group_nickname`, cid, m.UserID, m.Role, m.LastReadSeq, m.LastDeliveredSeq, m.MutedUntil, m.MutedPermanently, m.Pinned, m.Saved, m.Archived, m.NotificationsMuted, m.ManualUnread, m.ScreenshotNoticesEnabled, m.HiddenUntilSeq, m.GroupNickname, m.JoinedAt, m.HistoryAfterSeq)
 			if err != nil {
 				return err
 			}
@@ -875,7 +875,7 @@ func nextPageCursor(offset, count int, total int64) string {
 func (p *Postgres) ListAdminUsers(ctx context.Context, q, status, cursor string, limit int) ([]*model.User, int64, string, error) {
 	return p.listAdminUsers(ctx, q, status, cursor, limit, "", "any", "")
 }
-func (p *Postgres) listAdminUsers(ctx context.Context, q, status, cursor string, limit int, ip, source, friendIPPermission string) ([]*model.User, int64, string, error) {
+func (p *Postgres) listAdminUsers(ctx context.Context, q, status, cursor string, limit int, ip, source, internalUser string) ([]*model.User, int64, string, error) {
 	offset, limit := pageOffset(cursor, limit)
 	pattern := "%" + q + "%"
 	var total int64
@@ -883,23 +883,23 @@ func (p *Postgres) listAdminUsers(ctx context.Context, q, status, cursor string,
 		WHERE ($1='' OR u.name ILIKE $2 OR u.phone ILIKE $2 OR u.id ILIKE $2 OR COALESCE(u.handle,'') ILIKE $2)
 		AND ($3='' OR ($3='active' AND NOT (u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))) OR ($3='banned' AND u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))
 			OR ($3='online' AND COALESCE(presence.online,false)) OR ($3='offline' AND NOT COALESCE(presence.online,false)))
-		AND ($6='' OR ($6='allowed' AND u.can_view_friend_login_ip) OR ($6='denied' AND NOT u.can_view_friend_login_ip))
-		AND `+userAccessIPFilter, q, pattern, status, ip, source, friendIPPermission).Scan(&total); err != nil {
+		AND ($6='' OR ($6='internal' AND u.is_internal_user) OR ($6='regular' AND NOT u.is_internal_user))
+		AND `+userAccessIPFilter, q, pattern, status, ip, source, internalUser).Scan(&total); err != nil {
 		return nil, 0, "", err
 	}
 	rows, err := p.pool.Query(ctx, `SELECT u.id,u.phone,u.name,COALESCE(u.handle,''),u.handle_change_count,u.avatar_url,u.gender,
 		(u.banned AND (u.banned_until IS NULL OR u.banned_until>now())),u.banned_until,u.created_at,
 		COALESCE(presence.online,false),COALESCE(presence.total_online_count,0),presence.last_offline_at,
 		latest.installation_id,latest.platform,latest.device_name,latest.device_model,latest.os_version,latest.app_version,latest.last_seen_at,
-		u.can_delete_messages_for_everyone,u.can_view_friend_login_ip
+		u.is_internal_user
 		FROM im_users u LEFT JOIN im_wukong_presence presence ON presence.user_id=u.id
 		LEFT JOIN LATERAL (SELECT installation_id,platform,device_name,device_model,os_version,app_version,last_seen_at
 			FROM im_client_devices device WHERE device.user_id=u.id ORDER BY last_seen_at DESC,installation_id LIMIT 1) latest ON true
 		WHERE ($1='' OR u.name ILIKE $2 OR u.phone ILIKE $2 OR u.id ILIKE $2 OR COALESCE(u.handle,'') ILIKE $2)
 		AND ($3='' OR ($3='active' AND NOT (u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))) OR ($3='banned' AND u.banned AND (u.banned_until IS NULL OR u.banned_until>now()))
 			OR ($3='online' AND COALESCE(presence.online,false)) OR ($3='offline' AND NOT COALESCE(presence.online,false)))
-		AND ($6='' OR ($6='allowed' AND u.can_view_friend_login_ip) OR ($6='denied' AND NOT u.can_view_friend_login_ip))
-		AND `+userAccessIPFilter+` ORDER BY u.created_at DESC,u.id LIMIT $7 OFFSET $8`, q, pattern, status, ip, source, friendIPPermission, limit, offset)
+		AND ($6='' OR ($6='internal' AND u.is_internal_user) OR ($6='regular' AND NOT u.is_internal_user))
+		AND `+userAccessIPFilter+` ORDER BY u.created_at DESC,u.id LIMIT $7 OFFSET $8`, q, pattern, status, ip, source, internalUser, limit, offset)
 	if err != nil {
 		return nil, 0, "", err
 	}
@@ -911,7 +911,7 @@ func (p *Postgres) listAdminUsers(ctx context.Context, q, status, cursor string,
 		var deviceLastSeen *time.Time
 		if err = rows.Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.AvatarURL, &u.Gender, &u.Banned, &u.BannedUntil, &u.CreatedAt, &u.Online, &u.OnlineConnections, &u.LastOfflineAt,
 			&installationID, &platform, &deviceName, &deviceModel, &osVersion, &appVersion, &deviceLastSeen,
-			&u.CanDeleteMessagesForEveryone, &u.CanViewFriendLoginIP); err != nil {
+			&u.IsInternalUser); err != nil {
 			return nil, 0, "", err
 		}
 		if installationID != nil {
@@ -1112,7 +1112,7 @@ func (p *Postgres) ListConversations(ctx context.Context, uid string, limit int)
 		GREATEST(c.current_seq,COALESCE(wk.last_message_seq,0)),
 		GREATEST(c.last_message_seq,COALESCE(wk.last_message_seq,0)),c.created_at,
 		GREATEST(c.updated_at,COALESCE(wk.last_message_at,c.updated_at)),
-		m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.pinned,m.saved,m.archived,m.notifications_muted,m.manual_unread,m.hidden_until_seq,m.joined_at,
+		m.role,m.muted_until,m.muted_permanently,m.last_read_seq,m.last_delivered_seq,m.pinned,m.saved,m.archived,m.notifications_muted,m.manual_unread,m.screenshot_notices_enabled,m.hidden_until_seq,m.joined_at,
 		COALESCE(mention_stats.unread_count,0),c.member_count,COALESCE(g.history_policy_version,1),COALESCE(g.history_visible_to_new_members,false),m.history_after_seq,COALESCE(wk.unread_count,0)
 		FROM im_members m
 		JOIN im_conversations c ON c.id=m.conversation_id
@@ -1143,7 +1143,7 @@ func (p *Postgres) ListConversations(ctx context.Context, uid string, limit int)
 		history := &model.HistoryAccess{}
 		var visibleUnread int64
 		if err = rows.Scan(&c.ID, &c.Type, &c.Title, &c.AvatarURL, &c.Seq, &c.LastMessageSeq, &c.CreatedAt, &c.UpdatedAt,
-			&m.Role, &m.MutedUntil, &m.LastReadSeq, &m.LastDeliveredSeq, &m.Pinned, &m.Saved, &m.Archived, &m.NotificationsMuted, &m.ManualUnread, &m.HiddenUntilSeq, &m.JoinedAt,
+			&m.Role, &m.MutedUntil, &m.MutedPermanently, &m.LastReadSeq, &m.LastDeliveredSeq, &m.Pinned, &m.Saved, &m.Archived, &m.NotificationsMuted, &m.ManualUnread, &m.ScreenshotNoticesEnabled, &m.HiddenUntilSeq, &m.JoinedAt,
 			&mentionUnreadCount, &memberCount, &history.Version, &history.VisibleAll, &history.AfterSeq, &visibleUnread); err != nil {
 			return nil, err
 		}
@@ -1168,10 +1168,10 @@ func (p *Postgres) ListConversations(ctx context.Context, uid string, limit int)
 		return out, nil
 	}
 	membersByConversation := make(map[string][]*model.ConversationMember, len(conversationIDs))
-	memberRows, err := p.pool.Query(ctx, `SELECT preview.conversation_id,preview.user_id,preview.name,preview.handle,preview.avatar_url,preview.role,preview.muted_until,preview.last_read_seq,preview.last_delivered_seq,preview.group_nickname,preview.joined_at
+	memberRows, err := p.pool.Query(ctx, `SELECT preview.conversation_id,preview.user_id,preview.name,preview.handle,preview.avatar_url,preview.role,preview.muted_until,preview.muted_permanently,preview.last_read_seq,preview.last_delivered_seq,preview.group_nickname,preview.joined_at
 		FROM unnest($1::text[]) WITH ORDINALITY requested(conversation_id,position)
 		JOIN LATERAL (
-			SELECT m.conversation_id,m.user_id,u.name,COALESCE(u.handle,'') AS handle,u.avatar_url,m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.group_nickname,m.joined_at
+			SELECT m.conversation_id,m.user_id,u.name,COALESCE(u.handle,'') AS handle,u.avatar_url,m.role,m.muted_until,m.muted_permanently,m.last_read_seq,m.last_delivered_seq,m.group_nickname,m.joined_at
 			FROM im_members m JOIN im_users u ON u.id=m.user_id
 			WHERE m.conversation_id=requested.conversation_id
 			ORDER BY CASE WHEN m.user_id=$2 THEN 0 WHEN m.role='owner' THEN 1 ELSE 2 END,m.joined_at,m.user_id LIMIT 8
@@ -1183,7 +1183,7 @@ func (p *Postgres) ListConversations(ctx context.Context, uid string, limit int)
 	defer memberRows.Close()
 	for memberRows.Next() {
 		member := &model.ConversationMember{}
-		if err = memberRows.Scan(&member.ConversationID, &member.UserID, &member.Name, &member.Handle, &member.AvatarURL, &member.Role, &member.MutedUntil, &member.LastReadSeq, &member.LastDeliveredSeq, &member.GroupNickname, &member.JoinedAt); err != nil {
+		if err = memberRows.Scan(&member.ConversationID, &member.UserID, &member.Name, &member.Handle, &member.AvatarURL, &member.Role, &member.MutedUntil, &member.MutedPermanently, &member.LastReadSeq, &member.LastDeliveredSeq, &member.GroupNickname, &member.JoinedAt); err != nil {
 			return nil, err
 		}
 		member.ID = member.UserID
@@ -1256,7 +1256,7 @@ func (p *Postgres) ListConversationMembersPage(ctx context.Context, uid, cid, cu
 		return nil, "", ErrForbidden
 	}
 	offset, limit := pageOffset(cursor, limit)
-	rows, err := p.pool.Query(ctx, `SELECT m.conversation_id,m.user_id,u.name,COALESCE(u.handle,''),u.avatar_url,m.role,m.muted_until,m.last_read_seq,m.last_delivered_seq,m.group_nickname,m.joined_at
+	rows, err := p.pool.Query(ctx, `SELECT m.conversation_id,m.user_id,u.name,COALESCE(u.handle,''),u.avatar_url,m.role,m.muted_until,m.muted_permanently,m.last_read_seq,m.last_delivered_seq,m.group_nickname,m.joined_at
 		FROM im_members m JOIN im_users u ON u.id=m.user_id WHERE m.conversation_id=$1 ORDER BY m.joined_at,m.user_id LIMIT $2 OFFSET $3`, cid, limit+1, offset)
 	if err != nil {
 		return nil, "", err
@@ -1265,7 +1265,7 @@ func (p *Postgres) ListConversationMembersPage(ctx context.Context, uid, cid, cu
 	var out []*model.ConversationMember
 	for rows.Next() {
 		m := &model.ConversationMember{}
-		if err = rows.Scan(&m.ConversationID, &m.UserID, &m.Name, &m.Handle, &m.AvatarURL, &m.Role, &m.MutedUntil, &m.LastReadSeq, &m.LastDeliveredSeq, &m.GroupNickname, &m.JoinedAt); err != nil {
+		if err = rows.Scan(&m.ConversationID, &m.UserID, &m.Name, &m.Handle, &m.AvatarURL, &m.Role, &m.MutedUntil, &m.MutedPermanently, &m.LastReadSeq, &m.LastDeliveredSeq, &m.GroupNickname, &m.JoinedAt); err != nil {
 			return nil, "", err
 		}
 		m.ID = m.UserID
@@ -1887,19 +1887,21 @@ func (p *Postgres) UpdateConversationPreferences(ctx context.Context, uid, cid s
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var pinned, saved, archived, muted, unread bool
+	var pinned, saved, archived, muted, unread, screenshotNoticesEnabled bool
 	err = tx.QueryRow(ctx, `UPDATE im_members SET
 		pinned=COALESCE($3,pinned), saved=COALESCE($4,saved), archived=COALESCE($5,archived),
-		notifications_muted=COALESCE($6,notifications_muted), manual_unread=COALESCE($7,manual_unread)
+		notifications_muted=COALESCE($6,notifications_muted), manual_unread=COALESCE($7,manual_unread),
+		screenshot_notices_enabled=COALESCE($8,screenshot_notices_enabled)
 		WHERE conversation_id=$1 AND user_id=$2 AND (
 			($3::boolean IS NOT NULL AND pinned IS DISTINCT FROM $3) OR
 			($4::boolean IS NOT NULL AND saved IS DISTINCT FROM $4) OR
 			($5::boolean IS NOT NULL AND archived IS DISTINCT FROM $5) OR
 			($6::boolean IS NOT NULL AND notifications_muted IS DISTINCT FROM $6) OR
-			($7::boolean IS NOT NULL AND manual_unread IS DISTINCT FROM $7))
-		RETURNING pinned,saved,archived,notifications_muted,manual_unread`, cid, uid, preferences.Pinned, preferences.Saved, preferences.Archived, preferences.NotificationsMuted, preferences.ManualUnread).Scan(&pinned, &saved, &archived, &muted, &unread)
+			($7::boolean IS NOT NULL AND manual_unread IS DISTINCT FROM $7) OR
+			($8::boolean IS NOT NULL AND screenshot_notices_enabled IS DISTINCT FROM $8))
+		RETURNING pinned,saved,archived,notifications_muted,manual_unread,screenshot_notices_enabled`, cid, uid, preferences.Pinned, preferences.Saved, preferences.Archived, preferences.NotificationsMuted, preferences.ManualUnread, preferences.ScreenshotNoticesEnabled).Scan(&pinned, &saved, &archived, &muted, &unread, &screenshotNoticesEnabled)
 	if errors.Is(err, pgx.ErrNoRows) {
-		err = tx.QueryRow(ctx, `SELECT pinned,saved,archived,notifications_muted,manual_unread FROM im_members WHERE conversation_id=$1 AND user_id=$2`, cid, uid).Scan(&pinned, &saved, &archived, &muted, &unread)
+		err = tx.QueryRow(ctx, `SELECT pinned,saved,archived,notifications_muted,manual_unread,screenshot_notices_enabled FROM im_members WHERE conversation_id=$1 AND user_id=$2`, cid, uid).Scan(&pinned, &saved, &archived, &muted, &unread, &screenshotNoticesEnabled)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrForbidden
 		}
@@ -1911,7 +1913,7 @@ func (p *Postgres) UpdateConversationPreferences(ctx context.Context, uid, cid s
 	if err != nil {
 		return err
 	}
-	payload, _ := json.Marshal(map[string]any{"conversationId": cid, "pinned": pinned, "saved": saved, "archived": archived, "notificationsMuted": muted, "manualUnread": unread})
+	payload, _ := json.Marshal(map[string]any{"conversationId": cid, "pinned": pinned, "saved": saved, "archived": archived, "notificationsMuted": muted, "manualUnread": unread, "screenshotNoticesEnabled": screenshotNoticesEnabled})
 	if err = appendUserBusinessEvent(ctx, tx, uid, "conversation.preferences.updated", payload, time.Now()); err != nil {
 		return err
 	}
@@ -3024,11 +3026,11 @@ func (p *Postgres) ExpireFriendRequests(ctx context.Context, at time.Time, limit
 	return items, nil
 }
 
-const groupProfileColumns = `g.conversation_id,g.owner_id,c.title,c.avatar_url,g.announcement,g.announcement_version,r.read_at,g.join_policy,g.join_policy_version,g.allow_member_add_friend,g.all_muted_until,g.banned,g.banned_at,g.banned_by,g.ban_reason,COALESCE(g.qr_token,''),g.qr_expires_at,g.dissolved_at,g.updated_at,g.history_visible_to_new_members,g.history_policy_version`
+const groupProfileColumns = `g.conversation_id,g.owner_id,c.title,c.avatar_url,g.announcement,g.announcement_version,r.read_at,g.join_policy,g.join_policy_version,g.allow_member_add_friend,g.member_message_rate_limit_per_minute,g.message_rate_limit_version,g.all_muted_until,g.banned,g.banned_at,g.banned_by,g.ban_reason,COALESCE(g.qr_token,''),g.qr_expires_at,g.dissolved_at,g.updated_at,g.history_visible_to_new_members,g.history_policy_version`
 
 func scanGroupProfile(row callRow) (*model.GroupProfile, error) {
 	g := &model.GroupProfile{}
-	err := row.Scan(&g.ConversationID, &g.OwnerID, &g.Name, &g.AvatarURL, &g.Announcement, &g.AnnouncementVersion, &g.AnnouncementReadAt, &g.JoinPolicy, &g.JoinPolicyVersion, &g.AllowMemberAddFriend, &g.AllMutedUntil, &g.Banned, &g.BannedAt, &g.BannedBy, &g.BanReason, &g.QRToken, &g.QRExpiresAt, &g.DissolvedAt, &g.UpdatedAt, &g.HistoryVisibleToNewMembers, &g.HistoryPolicyVersion)
+	err := row.Scan(&g.ConversationID, &g.OwnerID, &g.Name, &g.AvatarURL, &g.Announcement, &g.AnnouncementVersion, &g.AnnouncementReadAt, &g.JoinPolicy, &g.JoinPolicyVersion, &g.AllowMemberAddFriend, &g.MemberMessageRateLimitPerMinute, &g.MessageRateLimitVersion, &g.AllMutedUntil, &g.Banned, &g.BannedAt, &g.BannedBy, &g.BanReason, &g.QRToken, &g.QRExpiresAt, &g.DissolvedAt, &g.UpdatedAt, &g.HistoryVisibleToNewMembers, &g.HistoryPolicyVersion)
 	return g, err
 }
 func groupInviteColumns(prefix string) string {
@@ -3225,6 +3227,12 @@ func (p *Postgres) UpdateGroupProfile(ctx context.Context, actor, cid string, u 
 			return nil, err
 		}
 	}
+	previousRateLimit := 0
+	if u.MemberMessageRateLimitPerMinute != nil {
+		if err = tx.QueryRow(ctx, `SELECT member_message_rate_limit_per_minute FROM im_groups WHERE conversation_id=$1 FOR UPDATE`, cid).Scan(&previousRateLimit); err != nil {
+			return nil, err
+		}
+	}
 	var avatarURL *string
 	if u.AvatarMediaID != nil {
 		value := ""
@@ -3261,7 +3269,9 @@ func (p *Postgres) UpdateGroupProfile(ctx context.Context, actor, cid string, u 
 	if setAllMuted && u.AllMutedUntil.After(at) {
 		allMutedUntil = u.AllMutedUntil
 	}
-	if _, err = tx.Exec(ctx, `UPDATE im_groups SET allow_member_add_friend=COALESCE($2,allow_member_add_friend),all_muted_until=CASE WHEN $3::boolean THEN $4 ELSE all_muted_until END,qr_token=COALESCE($5,qr_token),qr_expires_at=CASE WHEN $5::text IS NULL THEN qr_expires_at ELSE $6 END,updated_at=$7 WHERE conversation_id=$1`, cid, u.AllowMemberAddFriend, setAllMuted, allMutedUntil, token, at.Add(24*time.Hour), at); err != nil {
+	var currentRateLimit int
+	var currentRateVersion int64
+	if err = tx.QueryRow(ctx, `UPDATE im_groups SET allow_member_add_friend=COALESCE($2,allow_member_add_friend),all_muted_until=CASE WHEN $3::boolean THEN $4 ELSE all_muted_until END,qr_token=COALESCE($5,qr_token),qr_expires_at=CASE WHEN $5::text IS NULL THEN qr_expires_at ELSE $6 END,member_message_rate_limit_per_minute=COALESCE($7,member_message_rate_limit_per_minute),message_rate_limit_version=CASE WHEN $7::integer IS NOT NULL AND member_message_rate_limit_per_minute IS DISTINCT FROM $7 THEN message_rate_limit_version+1 ELSE message_rate_limit_version END,updated_at=$8 WHERE conversation_id=$1 RETURNING member_message_rate_limit_per_minute,message_rate_limit_version`, cid, u.AllowMemberAddFriend, setAllMuted, allMutedUntil, token, at.Add(24*time.Hour), u.MemberMessageRateLimitPerMinute, at).Scan(&currentRateLimit, &currentRateVersion); err != nil {
 		return nil, err
 	}
 	if u.AllMutedUntil != nil {
@@ -3269,8 +3279,24 @@ func (p *Postgres) UpdateGroupProfile(ctx context.Context, actor, cid string, u 
 			return nil, err
 		}
 	}
-	if err = emitGroupSystem(ctx, tx, cid, actor, "group.profile.updated", map[string]any{}, at); err != nil {
-		return nil, err
+	rateChanged := u.MemberMessageRateLimitPerMinute != nil && previousRateLimit != currentRateLimit
+	if rateChanged {
+		data, _ := json.Marshal(map[string]any{
+			"conversationId": cid, "memberMessageRateLimitPerMinute": currentRateLimit,
+			"messageRateLimitVersion": currentRateVersion,
+		})
+		if _, err = appendMemberBusinessEvent(ctx, tx, cid, "group.message_rate.updated", data, at); err != nil {
+			return nil, err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO im_audits(id,actor_id,action,target_type,target_id,metadata,created_at) VALUES($1,$2,'group.message_rate.updated','group',$3,$4,$5)`, "aud_group_message_rate_"+strconv.FormatInt(at.UnixNano(), 36), actor, cid, data, at); err != nil {
+			return nil, err
+		}
+	}
+	rateOnly := u.MemberMessageRateLimitPerMinute != nil && u.HistoryVisibleToNewMembers == nil && u.Name == nil && u.AvatarMediaID == nil && u.JoinPolicy == nil && u.AllowMemberAddFriend == nil && u.AllMutedUntil == nil && !u.RotateQR
+	if !rateOnly {
+		if err = emitGroupSystem(ctx, tx, cid, actor, "group.profile.updated", map[string]any{}, at); err != nil {
+			return nil, err
+		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return nil, err
@@ -3546,7 +3572,10 @@ func (p *Postgres) ApplyGroupMemberAction(ctx context.Context, a GroupMemberActi
 		if targetRole == "owner" || (role == "admin" && targetRole == "admin") {
 			return ErrForbidden
 		}
-		_, err = tx.Exec(ctx, `UPDATE im_members SET muted_until=$3 WHERE conversation_id=$1 AND user_id=$2`, a.ConversationID, a.TargetID, a.MutedUntil)
+		if a.MutePermanently && a.MutedUntil != nil {
+			return ErrConflict
+		}
+		_, err = tx.Exec(ctx, `UPDATE im_members SET muted_until=$3,muted_permanently=$4 WHERE conversation_id=$1 AND user_id=$2`, a.ConversationID, a.TargetID, a.MutedUntil, a.MutePermanently)
 	case "nickname":
 		if a.ActorID != a.TargetID {
 			return ErrForbidden
@@ -3560,8 +3589,9 @@ func (p *Postgres) ApplyGroupMemberAction(ctx context.Context, a GroupMemberActi
 	}
 	eventData := map[string]any{"userId": a.TargetID, "role": a.Role}
 	if a.Action == "mute" {
-		eventData["muted"] = a.MutedUntil != nil && a.MutedUntil.After(a.At)
+		eventData["muted"] = a.MutePermanently || (a.MutedUntil != nil && a.MutedUntil.After(a.At))
 		eventData["mutedUntil"] = a.MutedUntil
+		eventData["mutedPermanently"] = a.MutePermanently
 	}
 	if a.Action == "nickname" {
 		eventData["nickname"] = a.Nickname
@@ -3609,16 +3639,19 @@ func (p *Postgres) AdminApplyGroupMemberAction(ctx context.Context, a AdminGroup
 		}
 		_, err = tx.Exec(ctx, `UPDATE im_members SET role=$3 WHERE conversation_id=$1 AND user_id=$2`, a.ConversationID, a.TargetID, a.Role)
 	case "mute":
-		_, err = tx.Exec(ctx, `UPDATE im_members SET muted_until=$3 WHERE conversation_id=$1 AND user_id=$2`, a.ConversationID, a.TargetID, a.MutedUntil)
+		if a.MutePermanently && a.MutedUntil != nil {
+			return ErrConflict
+		}
+		_, err = tx.Exec(ctx, `UPDATE im_members SET muted_until=$3,muted_permanently=$4 WHERE conversation_id=$1 AND user_id=$2`, a.ConversationID, a.TargetID, a.MutedUntil, a.MutePermanently)
 	default:
 		return ErrUnsupported
 	}
 	if err != nil {
 		return err
 	}
-	eventData := map[string]any{"userId": a.TargetID, "role": a.Role, "mutedUntil": a.MutedUntil, "reason": a.Reason, "source": "admin"}
+	eventData := map[string]any{"userId": a.TargetID, "role": a.Role, "mutedUntil": a.MutedUntil, "mutedPermanently": a.MutePermanently, "reason": a.Reason, "source": "admin"}
 	if a.Action == "mute" {
-		eventData["muted"] = a.MutedUntil != nil && a.MutedUntil.After(a.At)
+		eventData["muted"] = a.MutePermanently || (a.MutedUntil != nil && a.MutedUntil.After(a.At))
 	}
 	if err = emitGroupSystem(ctx, tx, a.ConversationID, a.ActorID, "group.member."+a.Action, eventData, a.At); err != nil {
 		return err
@@ -3752,7 +3785,7 @@ func (p *Postgres) ListAnnouncements(ctx context.Context, uid string, at time.Ti
 		return nil, err
 	}
 	rows, err := tx.Query(ctx, `SELECT `+announcementColumns+`,r.read_at FROM im_announcements a LEFT JOIN im_announcement_reads r ON r.announcement_id=a.id AND r.user_id=$1
-		WHERE a.status='published' AND (a.target_type='all' OR a.target_user_ids ? $1) ORDER BY a.pinned DESC,a.published_at DESC,a.id LIMIT 100`, uid)
+		WHERE a.status='published' AND (a.target_type='all' OR a.target_user_ids ? $1) AND r.dismissed_at IS NULL ORDER BY a.pinned DESC,a.published_at DESC,a.id LIMIT 100`, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -3792,6 +3825,33 @@ func (p *Postgres) MarkAnnouncementRead(ctx context.Context, uid, id string, at 
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (p *Postgres) DismissAnnouncements(ctx context.Context, uid string, ids []string, at time.Time) error {
+	if len(ids) == 0 {
+		return ErrNotFound
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var eligible int
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM im_announcements
+		WHERE id=ANY($1::text[]) AND status='published' AND (target_type='all' OR target_user_ids ? $2)`, ids, uid).Scan(&eligible); err != nil {
+		return err
+	}
+	if eligible != len(ids) {
+		return ErrNotFound
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO im_announcement_reads(announcement_id,user_id,read_at,dismissed_at)
+		SELECT id,$2,$3,$3 FROM im_announcements WHERE id=ANY($1::text[])
+		ON CONFLICT(announcement_id,user_id) DO UPDATE SET
+		 read_at=LEAST(im_announcement_reads.read_at,excluded.read_at),
+		 dismissed_at=COALESCE(im_announcement_reads.dismissed_at,excluded.dismissed_at)`, ids, uid, at); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (p *Postgres) ListAdminAnnouncements(ctx context.Context, q, status, cursor string, limit int, at time.Time) ([]*model.Announcement, int64, string, error) {

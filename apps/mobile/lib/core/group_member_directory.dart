@@ -79,7 +79,17 @@ class GroupMemberDirectory {
     }
     _missingRetryAfter[id] = _now().add(const Duration(seconds: 10));
     try {
+      final coalescedWithExistingLoad = _pending.containsKey(id);
       await load(id, force: true);
+      // A message can arrive while the initial page load is still returning a
+      // snapshot captured before that member joined. Waiting for that request
+      // is not sufficient: retry once after it settles so the new sender does
+      // not remain anonymous until the next manual refresh.
+      if (!_disposed &&
+          coalescedWithExistingLoad &&
+          member(id, senderId) == null) {
+        await load(id, force: true);
+      }
     } catch (_) {
       // Failed identity hydration must not prevent message delivery.
     }

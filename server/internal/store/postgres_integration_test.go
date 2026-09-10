@@ -1272,8 +1272,12 @@ func TestPostgresRuntimeModerationReceiptsAndOutboxRecovery(t *testing.T) {
 	if favorites, favoriteErr = p.ListFavorites(ctx, u2, 10); favoriteErr != nil || len(favorites) != 0 {
 		t.Fatalf("favorites after delete=%v err=%v", favorites, favoriteErr)
 	}
-	pinned, saved, mutedNotifications, manualUnread := true, true, true, true
-	if err = p.UpdateConversationPreferences(ctx, u2, cid, ConversationPreferences{Pinned: &pinned, Saved: &saved, NotificationsMuted: &mutedNotifications, ManualUnread: &manualUnread}); err != nil {
+	var defaultScreenshotNoticesEnabled bool
+	if err = p.pool.QueryRow(ctx, `SELECT screenshot_notices_enabled FROM im_members WHERE conversation_id=$1 AND user_id=$2`, cid, u2).Scan(&defaultScreenshotNoticesEnabled); err != nil || defaultScreenshotNoticesEnabled {
+		t.Fatalf("screenshot notices must default to disabled: value=%v err=%v", defaultScreenshotNoticesEnabled, err)
+	}
+	pinned, saved, mutedNotifications, manualUnread, screenshotNoticesEnabled := true, true, true, true, true
+	if err = p.UpdateConversationPreferences(ctx, u2, cid, ConversationPreferences{Pinned: &pinned, Saved: &saved, NotificationsMuted: &mutedNotifications, ManualUnread: &manualUnread, ScreenshotNoticesEnabled: &screenshotNoticesEnabled}); err != nil {
 		t.Fatal(err)
 	}
 	conversations, err := p.ListConversations(ctx, u2, 10)
@@ -1281,7 +1285,7 @@ func TestPostgresRuntimeModerationReceiptsAndOutboxRecovery(t *testing.T) {
 		t.Fatalf("preferences list=%v err=%v", conversations, err)
 	}
 	membership := conversations[0]["membership"].(*model.ConversationMember)
-	if !membership.Pinned || !membership.Saved || !membership.NotificationsMuted || !membership.ManualUnread {
+	if !membership.Pinned || !membership.Saved || !membership.NotificationsMuted || !membership.ManualUnread || !membership.ScreenshotNoticesEnabled {
 		t.Fatalf("preferences not persisted: %+v", membership)
 	}
 	conversationMembers, ok := conversations[0]["members"].([]*model.ConversationMember)
@@ -2963,6 +2967,25 @@ func TestPostgresGroupManagementPermissionsInvitesQRAndAudit(t *testing.T) {
 	if !found {
 		t.Fatalf("members=%+v", members)
 	}
+	if err = p.ApplyGroupMemberAction(ctx, GroupMemberAction{ActorID: users[1], ConversationID: cid, TargetID: users[2], Action: "mute", MutePermanently: true, At: now.Add(9*time.Second + time.Millisecond)}); err != nil {
+		t.Fatal(err)
+	}
+	members, err = p.ListConversationMembers(ctx, users[0], cid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	permanentFound := false
+	for _, m := range members {
+		if m.UserID == users[2] && m.MutedPermanently && m.MutedUntil == nil {
+			permanentFound = true
+		}
+	}
+	if !permanentFound {
+		t.Fatalf("permanent mute missing from members=%+v", members)
+	}
+	if err = p.ApplyGroupMemberAction(ctx, GroupMemberAction{ActorID: users[1], ConversationID: cid, TargetID: users[2], Action: "mute", At: now.Add(9*time.Second + 2*time.Millisecond)}); err != nil {
+		t.Fatal(err)
+	}
 	if err = p.JoinGroupByQR(ctx, users[3], g.QRToken, now.Add(10*time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -3073,14 +3096,24 @@ func TestAnnouncementPostgresLifecycleAndPushOutbox(t *testing.T) {
 	if err != nil || len(items) != 1 || items[0].ReadAt == nil {
 		t.Fatalf("published list=%v err=%v", items, err)
 	}
-	if _, err = p.WithdrawAnnouncement(ctx, input.ID, "admin", now.Add(4*time.Second)); err != nil {
+	if err = p.DismissAnnouncements(ctx, uid, []string{input.ID}, now.Add(4*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	items, err = p.ListAnnouncements(ctx, uid, now.Add(5*time.Second))
+	if err = p.DismissAnnouncements(ctx, uid, []string{input.ID}, now.Add(5*time.Second)); err != nil {
+		t.Fatalf("repeated dismissal must be idempotent: %v", err)
+	}
+	items, err = p.ListAnnouncements(ctx, uid, now.Add(6*time.Second))
+	if err != nil || len(items) != 0 {
+		t.Fatalf("dismissed list=%v err=%v", items, err)
+	}
+	if _, err = p.WithdrawAnnouncement(ctx, input.ID, "admin", now.Add(7*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	items, err = p.ListAnnouncements(ctx, uid, now.Add(8*time.Second))
 	if err != nil || len(items) != 0 {
 		t.Fatalf("withdrawn list=%v err=%v", items, err)
 	}
-	if err = p.DeleteAnnouncement(ctx, input.ID, "admin", now.Add(6*time.Second)); err != nil {
+	if err = p.DeleteAnnouncement(ctx, input.ID, "admin", now.Add(9*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	due := now.Add(10 * time.Second)

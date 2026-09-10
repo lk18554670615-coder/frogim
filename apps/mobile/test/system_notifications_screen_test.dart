@@ -70,6 +70,43 @@ void main() {
     expect(find.text('暂无系统通知'), findsOneWidget);
     expect(find.text('平台公告和服务提醒会显示在这里。'), findsOneWidget);
   });
+
+  testWidgets('通知中心支持逐条删除且不产生占位', (tester) async {
+    final repository = DemoImRepository(latency: Duration.zero);
+    final controller = AppController(repository)
+      ..authenticated = true
+      ..currentUser = DemoImRepository.demoUser
+      ..announcements = [
+        AppAnnouncement(
+          id: 'notice-delete',
+          title: '待删除通知',
+          content: '这条通知允许当前用户删除。',
+          status: 'published',
+          pinned: false,
+          publishedAt: DateTime(2026, 9, 10, 9),
+        ),
+      ];
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: SystemNotificationsScreen(controller: controller),
+      ),
+    );
+    await _settle(tester);
+
+    final row = find.byKey(const ValueKey('system-notification-notice-delete'));
+    await tester.drag(row, const Offset(-240, 0));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('system-notification-delete-notice-delete')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除').last);
+    await tester.pumpAndSettle();
+    expect(find.text('待删除通知'), findsNothing);
+    expect(find.text('暂无系统通知'), findsOneWidget);
+  });
 }
 
 Future<void> _settle(WidgetTester tester) async {

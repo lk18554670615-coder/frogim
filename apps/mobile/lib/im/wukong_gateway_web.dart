@@ -747,6 +747,18 @@ class WebWukongGateway
       ..setProperty('streamFlag'.toJS, _int(value['stream_flag']).toJS)
       ..setProperty('status'.toJS, 1.toJS)
       ..setProperty('content'.toJS, content);
+    final extra = _map(value['message_extra']);
+    if (extra.isNotEmpty) {
+      final remoteExtra = _object(message, 'remoteExtra');
+      remoteExtra
+        ..setProperty('readedCount'.toJS, _int(extra['readed_count']).toJS)
+        ..setProperty('unreadCount'.toJS, _int(extra['unread_count']).toJS)
+        ..setProperty(
+          'isMutualDeleted'.toJS,
+          (_int(extra['is_mutual_deleted']) == 1).toJS,
+        )
+        ..setProperty('extraVersion'.toJS, _int(extra['extra_version']).toJS);
+    }
     return message;
   }
 
@@ -762,6 +774,16 @@ class WebWukongGateway
     final payload = _map(
       content.getProperty<JSAny?>('contentObj'.toJS)?.dartify(),
     );
+    final remoteExtra = raw.getProperty<JSObject?>('remoteExtra'.toJS);
+    if (remoteExtra != null) {
+      payload['readCount'] = _integer(remoteExtra, 'readedCount');
+      payload['unreadCount'] = _integer(remoteExtra, 'unreadCount');
+      payload['is_mutual_deleted'] =
+          remoteExtra.getProperty<JSAny?>('isMutualDeleted'.toJS)?.dartify() ==
+              true
+          ? 1
+          : 0;
+    }
     final status = _integer(raw, 'status');
     return WukongMessage(
       messageId: _valueString(raw.getProperty<JSAny?>('messageID'.toJS)),

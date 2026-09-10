@@ -30,6 +30,15 @@ abstract interface class GroupInvitePolicyRepository {
   );
 }
 
+abstract interface class GroupMessageReceiptRepository {
+  Future<GroupMessageReceiptPage> groupMessageReceipts(
+    String messageId, {
+    String status = 'read',
+    String cursor = '',
+    int limit = 50,
+  });
+}
+
 abstract interface class ImRepository {
   Stream<bool> get connectionChanges;
   Stream<ImEvent> get events;
@@ -123,6 +132,7 @@ abstract interface class ImRepository {
   });
   Future<List<AppAnnouncement>> announcements();
   Future<void> markAnnouncementRead(String announcementId);
+  Future<void> dismissAnnouncements(List<String> announcementIds);
   Future<List<Conversation>> conversations();
   Future<List<AppUser>> contacts();
   Future<List<AppUser>> searchUsers(String query, {String by = 'handle'});
@@ -161,8 +171,10 @@ abstract interface class ImRepository {
     String? joinPolicy,
     bool? allowMemberAddFriend,
     bool? historyVisibleToNewMembers,
+    int? memberMessageRateLimitPerMinute,
     bool rotateQr = false,
   });
+  Future<GroupMessageRateStatus> groupMessageRateStatus(String conversationId);
   Future<GroupProfile> setGroupAnnouncement(
     String conversationId,
     String content,
@@ -180,8 +192,9 @@ abstract interface class ImRepository {
   Future<void> setGroupMemberMuted(
     String conversationId,
     String userId,
-    DateTime? until,
-  );
+    DateTime? until, {
+    bool permanently = false,
+  });
   Future<void> transferGroupOwner(String conversationId, String userId);
   Future<void> setGroupNickname(String conversationId, String nickname);
   Future<GroupProfile> setGroupAllMuted(String conversationId, bool muted);
@@ -230,6 +243,7 @@ abstract interface class ImRepository {
     bool? notificationsMuted,
     bool? manualUnread,
     bool? archived,
+    bool? screenshotNoticesEnabled,
   });
   Future<List<ScheduledMessage>> scheduledMessages(String conversationId);
   Future<ScheduledMessage> scheduleMessage(

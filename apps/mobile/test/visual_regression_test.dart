@@ -422,7 +422,7 @@ void main() {
         ),
       );
       if (screen == 'all') {
-        await tester.tap(find.byKey(const Key('chat-info-all-members')));
+        await tester.tap(find.byKey(const Key('group-members-entry')));
         await tester.pumpAndSettle();
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 80)),

@@ -199,8 +199,7 @@ class AppUser {
     this.handleChangesRemaining = 0,
     this.allowSearchByHandle = true,
     this.allowSearchByPhone = false,
-    this.canDeleteMessagesForEveryone = false,
-    this.canViewFriendLoginIP = false,
+    this.isInternalUser = false,
   });
 
   final String id;
@@ -222,8 +221,7 @@ class AppUser {
   final int handleChangesRemaining;
   final bool allowSearchByHandle;
   final bool allowSearchByPhone;
-  final bool canDeleteMessagesForEveryone;
-  final bool canViewFriendLoginIP;
+  final bool isInternalUser;
 
   AppUser copyWith({
     String? name,
@@ -241,8 +239,7 @@ class AppUser {
     int? handleChangesRemaining,
     bool? allowSearchByHandle,
     bool? allowSearchByPhone,
-    bool? canDeleteMessagesForEveryone,
-    bool? canViewFriendLoginIP,
+    bool? isInternalUser,
   }) => AppUser(
     id: id,
     name: name ?? this.name,
@@ -261,9 +258,7 @@ class AppUser {
         handleChangesRemaining ?? this.handleChangesRemaining,
     allowSearchByHandle: allowSearchByHandle ?? this.allowSearchByHandle,
     allowSearchByPhone: allowSearchByPhone ?? this.allowSearchByPhone,
-    canDeleteMessagesForEveryone:
-        canDeleteMessagesForEveryone ?? this.canDeleteMessagesForEveryone,
-    canViewFriendLoginIP: canViewFriendLoginIP ?? this.canViewFriendLoginIP,
+    isInternalUser: isInternalUser ?? this.isInternalUser,
   );
 }
 
@@ -446,6 +441,7 @@ class ChatMessage {
     this.expiresAt,
     this.deliveredCount = 0,
     this.readCount = 0,
+    this.unreadCount = 0,
     this.linkPreview,
   }) : clientMessageId = clientMessageId ?? id;
 
@@ -501,6 +497,7 @@ class ChatMessage {
   final DateTime? expiresAt;
   final int deliveredCount;
   final int readCount;
+  final int unreadCount;
   final LinkPreview? linkPreview;
 
   /// 客户端重试和服务端回执替换消息 ID 时保持不变的界面身份。
@@ -552,6 +549,7 @@ class ChatMessage {
     DateTime? expiresAt,
     int? deliveredCount,
     int? readCount,
+    int? unreadCount,
     LinkPreview? linkPreview,
   }) => ChatMessage(
     id: id ?? this.id,
@@ -606,6 +604,7 @@ class ChatMessage {
     expiresAt: expiresAt ?? this.expiresAt,
     deliveredCount: deliveredCount ?? this.deliveredCount,
     readCount: readCount ?? this.readCount,
+    unreadCount: unreadCount ?? this.unreadCount,
     linkPreview: linkPreview ?? this.linkPreview,
   );
 
@@ -662,6 +661,7 @@ class ChatMessage {
     'expiresAt': expiresAt?.toIso8601String(),
     'deliveredCount': deliveredCount,
     'readCount': readCount,
+    'unreadCount': unreadCount,
     'linkPreview': linkPreview?.toJson(),
   };
 
@@ -729,6 +729,7 @@ class ChatMessage {
     expiresAt: tryParseLocalDateTime(json['expiresAt']),
     deliveredCount: (json['deliveredCount'] as num?)?.toInt() ?? 0,
     readCount: (json['readCount'] as num?)?.toInt() ?? 0,
+    unreadCount: (json['unreadCount'] as num?)?.toInt() ?? 0,
     linkPreview: json['linkPreview'] is Map<String, Object?>
         ? LinkPreview.fromJson(json['linkPreview']! as Map<String, Object?>)
         : null,
@@ -853,6 +854,7 @@ class Conversation {
     this.pinned = false,
     this.saved = false,
     this.archived = false,
+    this.screenshotNoticesEnabled = false,
     this.lastMessageSeq = 0,
     this.lastReadSeq = 0,
     this.mentionUnreadCount,
@@ -874,6 +876,7 @@ class Conversation {
   final bool pinned;
   final bool saved;
   final bool archived;
+  final bool screenshotNoticesEnabled;
   final int lastMessageSeq;
   final int lastReadSeq;
 
@@ -917,6 +920,7 @@ class Conversation {
     bool? pinned,
     bool? saved,
     bool? archived,
+    bool? screenshotNoticesEnabled,
     int? lastMessageSeq,
     int? lastReadSeq,
     int? mentionUnreadCount,
@@ -939,6 +943,8 @@ class Conversation {
     pinned: pinned ?? this.pinned,
     saved: saved ?? this.saved,
     archived: archived ?? this.archived,
+    screenshotNoticesEnabled:
+        screenshotNoticesEnabled ?? this.screenshotNoticesEnabled,
     lastMessageSeq: lastMessageSeq ?? this.lastMessageSeq,
     lastReadSeq: lastReadSeq ?? this.lastReadSeq,
     mentionUnreadCount: mentionUnreadCount ?? this.mentionUnreadCount,
@@ -1007,6 +1013,8 @@ class GroupProfile {
     this.canSubmitJoinRequest = false,
     this.canReviewJoinRequests = false,
     this.pendingJoinRequestCount = 0,
+    this.memberMessageRateLimitPerMinute = 0,
+    this.messageRateLimitVersion = 1,
     this.avatarUrl,
     this.announcementReadAt,
     this.allMutedUntil,
@@ -1030,6 +1038,8 @@ class GroupProfile {
   final bool canSubmitJoinRequest;
   final bool canReviewJoinRequests;
   final int pendingJoinRequestCount;
+  final int memberMessageRateLimitPerMinute;
+  final int messageRateLimitVersion;
   final bool allowMemberAddFriend;
   final DateTime? allMutedUntil;
   final String? qrToken;
@@ -1043,12 +1053,35 @@ class GroupProfile {
       allMutedUntil != null && allMutedUntil!.isAfter(DateTime.now());
 }
 
+class GroupMessageRateStatus {
+  const GroupMessageRateStatus({
+    required this.limitPerMinute,
+    required this.used,
+    required this.remaining,
+    required this.retryAfterSeconds,
+  });
+
+  factory GroupMessageRateStatus.fromJson(Map<String, Object?> json) =>
+      GroupMessageRateStatus(
+        limitPerMinute: (json['limitPerMinute'] as num?)?.toInt() ?? 0,
+        used: (json['used'] as num?)?.toInt() ?? 0,
+        remaining: (json['remaining'] as num?)?.toInt() ?? 0,
+        retryAfterSeconds: (json['retryAfterSeconds'] as num?)?.toInt() ?? 0,
+      );
+
+  final int limitPerMinute;
+  final int used;
+  final int remaining;
+  final int retryAfterSeconds;
+}
+
 class GroupMember {
   const GroupMember({
     required this.user,
     required this.role,
     required this.joinedAt,
     this.mutedUntil,
+    this.mutedPermanently = false,
     this.groupNickname = '',
   });
 
@@ -1056,11 +1089,77 @@ class GroupMember {
   final String role;
   final DateTime joinedAt;
   final DateTime? mutedUntil;
+  final bool mutedPermanently;
   final String groupNickname;
 
   bool get isOwner => role == 'owner';
   bool get isAdmin => role == 'admin';
-  bool get isMuted => mutedUntil != null && mutedUntil!.isAfter(DateTime.now());
+  bool get isMuted =>
+      mutedPermanently ||
+      (mutedUntil != null && mutedUntil!.isAfter(DateTime.now()));
+}
+
+class GroupMessageReceiptMember {
+  const GroupMessageReceiptMember({
+    required this.userId,
+    required this.name,
+    required this.displayName,
+    required this.role,
+    required this.read,
+    this.avatarUrl,
+  });
+
+  factory GroupMessageReceiptMember.fromJson(Map<String, Object?> json) =>
+      GroupMessageReceiptMember(
+        userId: json['userId'] as String? ?? '',
+        name: json['name'] as String? ?? '',
+        displayName:
+            json['displayName'] as String? ?? json['name'] as String? ?? '',
+        avatarUrl: json['avatarUrl'] as String?,
+        role: json['role'] as String? ?? 'member',
+        read: json['read'] as bool? ?? false,
+      );
+
+  final String userId;
+  final String name;
+  final String displayName;
+  final String? avatarUrl;
+  final String role;
+  final bool read;
+}
+
+class GroupMessageReceiptPage {
+  const GroupMessageReceiptPage({
+    required this.messageId,
+    required this.conversationId,
+    required this.readCount,
+    required this.unreadCount,
+    required this.total,
+    required this.items,
+    this.nextCursor = '',
+  });
+
+  factory GroupMessageReceiptPage.fromJson(Map<String, Object?> json) =>
+      GroupMessageReceiptPage(
+        messageId: json['messageId'] as String? ?? '',
+        conversationId: json['conversationId'] as String? ?? '',
+        readCount: (json['readCount'] as num?)?.toInt() ?? 0,
+        unreadCount: (json['unreadCount'] as num?)?.toInt() ?? 0,
+        total: (json['total'] as num?)?.toInt() ?? 0,
+        items: (json['items'] as List<Object?>? ?? const [])
+            .whereType<Map<String, Object?>>()
+            .map(GroupMessageReceiptMember.fromJson)
+            .toList(growable: false),
+        nextCursor: json['nextCursor'] as String? ?? '',
+      );
+
+  final String messageId;
+  final String conversationId;
+  final int readCount;
+  final int unreadCount;
+  final int total;
+  final List<GroupMessageReceiptMember> items;
+  final String nextCursor;
 }
 
 class GroupInvitation {

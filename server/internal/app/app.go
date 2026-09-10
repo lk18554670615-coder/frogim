@@ -129,35 +129,36 @@ type MessageHistoryLoader func(context.Context, string, string, int64, int) ([]*
 type ReadStateTransport func(context.Context, string, string, int64) (int64, error)
 
 type App struct {
-	mu                 sync.RWMutex
-	state              *model.State
-	persistence        store.Persistence
-	emitMu             sync.RWMutex
-	emit               EventSink
-	messageTransportMu sync.RWMutex
-	messageTransport   MessageTransport
-	messageSourceMu    sync.RWMutex
-	messageSource      MessageSourceLoader
-	messageSearchMu    sync.RWMutex
-	messageSearch      MessageSearchLoader
-	messageHistoryMu   sync.RWMutex
-	messageHistory     MessageHistoryLoader
-	readStateMu        sync.RWMutex
-	readState          ReadStateTransport
-	Metrics            Metrics
-	refreshSessions    map[string]refreshSession
-	qrLoginMu          sync.Mutex
-	qrLoginTickets     map[string]store.QRLoginTicket
-	passwordHashes     map[string]string
-	callMu             sync.Mutex
-	calls              map[string]*model.CallSession
-	announcements      map[string]*model.Announcement
-	announcementReads  map[string]map[string]time.Time
-	callInviteTTL      time.Duration
-	friendMetadata     map[string]store.FriendMetadata
-	mediaBindings      map[string][]store.MediaChannelBinding
-	policyRefreshing   atomic.Bool
-	policyLoadedAt     atomic.Int64
+	mu                     sync.RWMutex
+	state                  *model.State
+	persistence            store.Persistence
+	emitMu                 sync.RWMutex
+	emit                   EventSink
+	messageTransportMu     sync.RWMutex
+	messageTransport       MessageTransport
+	messageSourceMu        sync.RWMutex
+	messageSource          MessageSourceLoader
+	messageSearchMu        sync.RWMutex
+	messageSearch          MessageSearchLoader
+	messageHistoryMu       sync.RWMutex
+	messageHistory         MessageHistoryLoader
+	readStateMu            sync.RWMutex
+	readState              ReadStateTransport
+	Metrics                Metrics
+	refreshSessions        map[string]refreshSession
+	qrLoginMu              sync.Mutex
+	qrLoginTickets         map[string]store.QRLoginTicket
+	passwordHashes         map[string]string
+	callMu                 sync.Mutex
+	calls                  map[string]*model.CallSession
+	announcements          map[string]*model.Announcement
+	announcementReads      map[string]map[string]time.Time
+	announcementDismissals map[string]map[string]time.Time
+	callInviteTTL          time.Duration
+	friendMetadata         map[string]store.FriendMetadata
+	mediaBindings          map[string][]store.MediaChannelBinding
+	policyRefreshing       atomic.Bool
+	policyLoadedAt         atomic.Int64
 }
 type refreshSession struct {
 	UserID, SessionID, DeviceKind string
@@ -175,7 +176,7 @@ func New(ctx context.Context, p store.Persistence) (*App, error) {
 		}
 		s = loaded
 	}
-	a := &App{state: s, persistence: p, refreshSessions: map[string]refreshSession{}, qrLoginTickets: map[string]store.QRLoginTicket{}, passwordHashes: map[string]string{}, calls: map[string]*model.CallSession{}, announcements: map[string]*model.Announcement{}, announcementReads: map[string]map[string]time.Time{}, callInviteTTL: 30 * time.Second, friendMetadata: map[string]store.FriendMetadata{}, mediaBindings: map[string][]store.MediaChannelBinding{}}
+	a := &App{state: s, persistence: p, refreshSessions: map[string]refreshSession{}, qrLoginTickets: map[string]store.QRLoginTicket{}, passwordHashes: map[string]string{}, calls: map[string]*model.CallSession{}, announcements: map[string]*model.Announcement{}, announcementReads: map[string]map[string]time.Time{}, announcementDismissals: map[string]map[string]time.Time{}, callInviteTTL: 30 * time.Second, friendMetadata: map[string]store.FriendMetadata{}, mediaBindings: map[string][]store.MediaChannelBinding{}}
 	a.ensureMaps()
 	a.refreshPolicySettings(true)
 	return a, nil
@@ -401,7 +402,7 @@ func (a *App) AuthorizeWukongMessage(ctx context.Context, request MessageTranspo
 	conversation := a.state.Conversations[input.ConversationID]
 	membership := a.state.Members[input.ConversationID][input.UserID]
 	user := a.state.Users[input.UserID]
-	if membership == nil || user == nil || user.Banned || (membership.MutedUntil != nil && membership.MutedUntil.After(time.Now())) {
+	if membership == nil || user == nil || user.Banned || membership.MutedPermanently || (membership.MutedUntil != nil && membership.MutedUntil.After(time.Now())) {
 		return store.WukongMessageRoute{}, store.ErrForbidden
 	}
 	if conversation == nil {
@@ -766,6 +767,47 @@ func (a *App) AllowRate(ctx context.Context, key string, max int, window time.Du
 		return limiter.AllowRate(ctx, key, max, window)
 	}
 	return false, store.ErrUnsupported
+}
+
+func (a *App) ConsumeGroupMessageRate(ctx context.Context, userID string, route store.WukongMessageRoute) (store.GroupMessageRateStatus, error) {
+	limit := route.GroupMessageRateLimitPerMinute
+	if route.ChannelType != wukong.ChannelGroup || limit <= 0 {
+		return store.GroupMessageRateStatus{LimitPerMinute: max(0, limit)}, nil
+	}
+	limiter, ok := a.persistence.(store.GroupMessageRateLimiterStore)
+	if !ok {
+		return store.GroupMessageRateStatus{}, ErrUnavailable
+	}
+	status, err := limiter.ConsumeGroupMessageRate(ctx, route.ChannelID, userID, route.GroupMessageRateLimitVersion, limit, time.Minute)
+	if err != nil && !errors.Is(err, store.ErrGroupMessageRateLimited) {
+		return store.GroupMessageRateStatus{}, ErrUnavailable
+	}
+	return status, err
+}
+
+func (a *App) GroupMessageRateStatus(ctx context.Context, userID, conversationID string) (store.GroupMessageRateStatus, error) {
+	route, err := a.AuthorizeWukongMessage(ctx, MessageTransportRequest{
+		UserID: userID, ConversationID: conversationID, Type: "rate_status",
+	})
+	if err != nil {
+		return store.GroupMessageRateStatus{}, err
+	}
+	if route.ChannelType != wukong.ChannelGroup {
+		return store.GroupMessageRateStatus{}, ErrNotFound
+	}
+	limit := route.GroupMessageRateLimitPerMinute
+	if limit <= 0 {
+		return store.GroupMessageRateStatus{}, nil
+	}
+	limiter, ok := a.persistence.(store.GroupMessageRateLimiterStore)
+	if !ok {
+		return store.GroupMessageRateStatus{}, ErrUnavailable
+	}
+	status, err := limiter.GetGroupMessageRateStatus(ctx, route.ChannelID, userID, route.GroupMessageRateLimitVersion, limit, time.Minute)
+	if err != nil {
+		return store.GroupMessageRateStatus{}, ErrUnavailable
+	}
+	return status, nil
 }
 
 func (a *App) ensureMaps() {
@@ -2308,11 +2350,11 @@ func (a *App) SetGroupRole(actor, cid, uid, role string) error {
 	a.businessEventLocked(uid, "group.role", map[string]any{"conversationId": cid, "role": role})
 	return a.saveLocked()
 }
-func (a *App) MuteMember(actor, cid, uid string, until *time.Time) error {
+func (a *App) MuteMember(actor, cid, uid string, until *time.Time, permanently bool) error {
 	if groups, ok := a.persistence.(store.GroupStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := groups.ApplyGroupMemberAction(ctx, store.GroupMemberAction{ActorID: actor, ConversationID: cid, TargetID: uid, Action: "mute", MutedUntil: until, At: time.Now()}); err != nil {
+		if err := groups.ApplyGroupMemberAction(ctx, store.GroupMemberAction{ActorID: actor, ConversationID: cid, TargetID: uid, Action: "mute", MutedUntil: until, MutePermanently: permanently, At: time.Now()}); err != nil {
 			return mapStoreError(err)
 		}
 		return nil
@@ -2331,7 +2373,8 @@ func (a *App) MuteMember(actor, cid, uid string, until *time.Time) error {
 		return ErrForbidden
 	}
 	m.MutedUntil = until
-	a.businessEventLocked(uid, "group.mute", map[string]any{"conversationId": cid, "mutedUntil": until})
+	m.MutedPermanently = permanently
+	a.businessEventLocked(uid, "group.mute", map[string]any{"conversationId": cid, "mutedUntil": until, "mutedPermanently": permanently})
 	return a.saveLocked()
 }
 
@@ -2358,6 +2401,12 @@ func (a *App) UpdateGroupProfile(actor, cid string, u store.GroupProfileUpdate) 
 	}
 	if u.JoinPolicy != nil && *u.JoinPolicy != "invite" && *u.JoinPolicy != "manager_invite" && *u.JoinPolicy != "member_approval" && *u.JoinPolicy != "qr" && *u.JoinPolicy != "closed" {
 		return nil, ErrInvalid
+	}
+	if u.MemberMessageRateLimitPerMinute != nil {
+		limit := *u.MemberMessageRateLimitPerMinute
+		if limit != 0 && limit != 5 && limit != 10 && limit != 20 {
+			return nil, ErrInvalid
+		}
 	}
 	groups, ok := a.persistence.(store.GroupStore)
 	if !ok {
@@ -3261,6 +3310,23 @@ func (a *App) MessageEdits(uid, mid string) ([]*model.MessageEdit, error) {
 	return nil, ErrUnavailable
 }
 
+func (a *App) GroupMessageReceipts(parent context.Context, uid, mid, status, cursor string, limit int) (*store.GroupMessageReceiptPage, error) {
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status == "" {
+		status = "read"
+	}
+	if strings.TrimSpace(uid) == "" || strings.TrimSpace(mid) == "" || (status != "read" && status != "unread") {
+		return nil, ErrInvalid
+	}
+	if receipts, ok := a.persistence.(store.GroupMessageReceiptStore); ok {
+		ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+		defer cancel()
+		item, err := receipts.GroupMessageReceipts(ctx, uid, mid, status, cursor, limit)
+		return item, mapStoreError(err)
+	}
+	return nil, ErrUnavailable
+}
+
 func (a *App) SetMessageReaction(uid, mid, emoji string, add bool) (model.MessageReactionSummary, bool, error) {
 	if !allowedMessageReactions[emoji] {
 		return model.MessageReactionSummary{}, false, ErrInvalid
@@ -3587,7 +3653,7 @@ func (a *App) Delivered(uid, cid string, seq int64) (int64, error) {
 }
 
 func (a *App) UpdateConversationPreferences(uid, cid string, preferences store.ConversationPreferences) error {
-	if preferences.Pinned == nil && preferences.Saved == nil && preferences.Archived == nil && preferences.NotificationsMuted == nil && preferences.ManualUnread == nil {
+	if preferences.Pinned == nil && preferences.Saved == nil && preferences.Archived == nil && preferences.NotificationsMuted == nil && preferences.ManualUnread == nil && preferences.ScreenshotNoticesEnabled == nil {
 		return ErrInvalid
 	}
 	if s, ok := a.persistence.(store.RuntimeMutationStore); ok {
@@ -3625,7 +3691,10 @@ func (a *App) UpdateConversationPreferences(uid, cid string, preferences store.C
 	if preferences.ManualUnread != nil {
 		m.ManualUnread = *preferences.ManualUnread
 	}
-	a.businessEventLocked(uid, "conversation.preferences.updated", map[string]any{"conversationId": cid, "pinned": m.Pinned, "saved": m.Saved, "archived": m.Archived, "notificationsMuted": m.NotificationsMuted, "manualUnread": m.ManualUnread})
+	if preferences.ScreenshotNoticesEnabled != nil {
+		m.ScreenshotNoticesEnabled = *preferences.ScreenshotNoticesEnabled
+	}
+	a.businessEventLocked(uid, "conversation.preferences.updated", map[string]any{"conversationId": cid, "pinned": m.Pinned, "saved": m.Saved, "archived": m.Archived, "notificationsMuted": m.NotificationsMuted, "manualUnread": m.ManualUnread, "screenshotNoticesEnabled": m.ScreenshotNoticesEnabled})
 	return a.saveLocked()
 }
 
@@ -4873,6 +4942,11 @@ func (a *App) Announcements(uid string) ([]*model.Announcement, error) {
 			}
 		}
 		if item.Status == "published" && applies {
+			if dismissed := a.announcementDismissals[item.ID]; dismissed != nil {
+				if _, ok := dismissed[uid]; ok {
+					continue
+				}
+			}
 			copy := *item
 			if reads := a.announcementReads[item.ID]; reads != nil {
 				if readAt, ok := reads[uid]; ok {
@@ -4951,6 +5025,55 @@ func (a *App) MarkAnnouncementRead(uid, id string) error {
 	}
 	if _, ok := a.announcementReads[id][uid]; !ok {
 		a.announcementReads[id][uid] = time.Now()
+	}
+	return nil
+}
+
+func (a *App) DismissAnnouncements(uid string, ids []string) error {
+	if len(ids) == 0 {
+		return ErrInvalid
+	}
+	if s, ok := a.persistence.(store.AnnouncementStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		err := s.DismissAnnouncements(ctx, uid, ids, time.Now())
+		if err == store.ErrNotFound {
+			return ErrNotFound
+		}
+		return err
+	}
+	now := time.Now()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, id := range ids {
+		item := a.announcements[id]
+		if item == nil || item.Status != "published" {
+			return ErrNotFound
+		}
+		applies := item.TargetType == "all"
+		if item.TargetType == "users" {
+			for _, target := range item.TargetUserIDs {
+				if target == uid {
+					applies = true
+					break
+				}
+			}
+		}
+		if !applies {
+			return ErrNotFound
+		}
+	}
+	for _, id := range ids {
+		if a.announcementDismissals[id] == nil {
+			a.announcementDismissals[id] = map[string]time.Time{}
+		}
+		a.announcementDismissals[id][uid] = now
+		if a.announcementReads[id] == nil {
+			a.announcementReads[id] = map[string]time.Time{}
+		}
+		if _, ok := a.announcementReads[id][uid]; !ok {
+			a.announcementReads[id][uid] = now
+		}
 	}
 	return nil
 }
@@ -5123,6 +5246,7 @@ func (a *App) DeleteAnnouncement(actor, id string) error {
 	}
 	delete(a.announcements, id)
 	delete(a.announcementReads, id)
+	delete(a.announcementDismissals, id)
 	a.auditLocked(actor, "announcement.deleted", "announcement", id, nil)
 	return nil
 }
@@ -5458,7 +5582,7 @@ func (a *App) GetMedia(id string) (store.Media, error) {
 	return store.Media{ID: m.ID, OwnerID: m.OwnerID, ObjectKey: m.ObjectKey, MIME: m.MIME, Status: m.Status, Checksum: m.Checksum, Size: m.Size, CoverMediaID: m.CoverMediaID}, nil
 }
 
-func (a *App) BindMediaChannel(binding store.MediaChannelBinding) error {
+func (a *App) ValidateMediaChannelBinding(binding store.MediaChannelBinding) error {
 	media, err := a.GetMedia(binding.MediaID)
 	if err != nil {
 		return err
@@ -5475,6 +5599,13 @@ func (a *App) BindMediaChannel(binding store.MediaChannelBinding) error {
 	}
 	if !allowed {
 		return ErrForbidden
+	}
+	return nil
+}
+
+func (a *App) BindMediaChannel(binding store.MediaChannelBinding) error {
+	if err := a.ValidateMediaChannelBinding(binding); err != nil {
+		return err
 	}
 	if bindings, ok := a.persistence.(store.MediaChannelBindingStore); ok {
 		return bindings.BindMediaChannel(context.Background(), binding)

@@ -83,6 +83,14 @@ void main() {
       expect(policy.restrictionAt(now), personalMute);
       expect(policy.restrictionAt(now.add(const Duration(hours: 1))), isNull);
       repository.mutedUntil = null;
+      repository.mutedPermanently = true;
+      policy = await repository.policy();
+      expect(policy.restrictionAt(now), '你已被永久禁言，无法在该群发送消息');
+      expect(
+        policy.restrictionAt(now.add(const Duration(days: 365))),
+        '你已被永久禁言，无法在该群发送消息',
+      );
+      repository.mutedPermanently = false;
     }
     await repository.close();
   });
@@ -342,6 +350,53 @@ void main() {
     expect(controller.messagesFor('c-team').single.status, MessageStatus.sent);
   });
 
+  test('普通成员成功发送达到本机限额后预拦截，管理员豁免', () async {
+    final repository = _MuteRepository()
+      ..rateLimit = 5
+      ..sendStatus = MessageStatus.sent;
+    final controller = AppController(repository);
+    await controller.loginAsDemo();
+    addTearDown(controller.dispose);
+    await controller.loadGroupSendPolicy('c-team');
+
+    for (var index = 0; index < 5; index++) {
+      final sent = await controller.sendMessage('c-team', '消息 $index');
+      expect(sent?.status, MessageStatus.sent);
+    }
+    expect(
+      controller.groupMessageRateRestriction('c-team'),
+      contains('发送过于频繁'),
+    );
+    expect(controller.groupMessageRateNextChange('c-team'), isNotNull);
+
+    repository.role = 'admin';
+    await controller.loadGroupSendPolicy('c-team');
+    expect(controller.groupMessageRateRestriction('c-team'), isNull);
+  });
+
+  test('服务端频率拒绝会查询剩余时间并保留手动重试', () async {
+    final repository = _MuteRepository()
+      ..rateLimit = 5
+      ..rateRetryAfterSeconds = 37;
+    final controller = AppController(repository);
+    await controller.loginAsDemo();
+    addTearDown(controller.dispose);
+    await controller.loadGroupSendPolicy('c-team');
+
+    final failed = (await controller.sendMessage('c-team', '多设备并发'))!;
+    expect(failed.status, MessageStatus.failed);
+    expect(failed.sendError, '发送过于频繁，请在 37 秒后重试');
+    expect(repository.rateStatusCalls, 1);
+
+    await controller.retryMessage(failed);
+    expect(repository.sendCalls, 1);
+    expect(
+      controller.messagesFor('c-team').single.status,
+      MessageStatus.failed,
+    );
+    expect(controller.messagesFor('c-team').single.sendError, contains('秒后重试'));
+  });
+
   test('发送中 ACK 成功优先于稍晚返回的发送中快照，退出后不恢复旧消息', () async {
     final repository = _MuteRepository();
     final controller = AppController(repository);
@@ -561,6 +616,7 @@ class _MuteRepository extends DemoImRepository {
   _MuteRepository() : super(latency: Duration.zero, store: _MemoryStore());
   String role = 'member';
   DateTime? mutedUntil;
+  bool mutedPermanently = false;
   DateTime? allMutedUntil;
   bool failPolicy = false;
   bool throwOnSend = false;
@@ -569,6 +625,10 @@ class _MuteRepository extends DemoImRepository {
   int sendCalls = 0;
   int mediaCalls = 0;
   int policyLoads = 0;
+  int rateLimit = 0;
+  int rateVersion = 1;
+  int rateRetryAfterSeconds = 0;
+  int rateStatusCalls = 0;
   MediaUpload? lastUpload;
   String? uploadedMediaId;
   Completer<ChatMessage>? sendBarrier;
@@ -587,6 +647,8 @@ class _MuteRepository extends DemoImRepository {
       announcement: '',
       announcementVersion: 0,
       joinPolicy: 'invite',
+      memberMessageRateLimitPerMinute: rateLimit,
+      messageRateLimitVersion: rateVersion,
       allowMemberAddFriend: true,
       updatedAt: DateTime.now(),
       allMutedUntil: allMutedUntil,
@@ -600,6 +662,7 @@ class _MuteRepository extends DemoImRepository {
       role: role,
       joinedAt: DateTime(2026),
       mutedUntil: mutedUntil,
+      mutedPermanently: mutedPermanently,
     ),
   ];
   Future<GroupSendPolicy> policy() async => GroupSendPolicy(
@@ -613,7 +676,24 @@ class _MuteRepository extends DemoImRepository {
     sendCalls++;
     if (sendBarrier != null) return sendBarrier!.future;
     if (throwOnSend) throw const FormatException('forbidden');
-    return pending.copyWith(status: sendStatus, conversationSeq: sentSequence);
+    return pending.copyWith(
+      status: sendStatus,
+      conversationSeq: sentSequence,
+      sendError: rateRetryAfterSeconds > 0 ? '发送过于频繁，请稍后重试' : null,
+    );
+  }
+
+  @override
+  Future<GroupMessageRateStatus> groupMessageRateStatus(
+    String conversationId,
+  ) async {
+    rateStatusCalls++;
+    return GroupMessageRateStatus(
+      limitPerMinute: rateLimit,
+      used: rateLimit,
+      remaining: 0,
+      retryAfterSeconds: rateRetryAfterSeconds,
+    );
   }
 
   @override

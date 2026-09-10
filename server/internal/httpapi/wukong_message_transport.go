@@ -365,7 +365,19 @@ func newWukongMessageTransport(client *wukong.Client, application *app.App) app.
 		if len(existing) > 0 {
 			return existingWukongMessageResult(existing[0], request, route, payload)
 		}
-		if mediaID := wukongMessageMediaID(request); mediaID != "" {
+		mediaID := wukongMessageMediaID(request)
+		if mediaID != "" {
+			if err = application.ValidateMediaChannelBinding(store.MediaChannelBinding{
+				MediaID: mediaID, ChannelID: route.ChannelID,
+				ChannelType: route.ChannelType, SenderID: request.UserID,
+			}); err != nil {
+				return app.MessageTransportResult{}, err
+			}
+		}
+		if _, err = application.ConsumeGroupMessageRate(ctx, request.UserID, route); err != nil {
+			return app.MessageTransportResult{}, err
+		}
+		if mediaID != "" {
 			if err = application.BindMediaChannel(store.MediaChannelBinding{
 				MediaID: mediaID, ChannelID: route.ChannelID,
 				ChannelType: route.ChannelType, SenderID: request.UserID,

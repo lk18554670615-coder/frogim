@@ -88,6 +88,66 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     controller.dispose();
   });
+
+  testWidgets('成员列表刷新不会中断 Web 输入法组合态或夺走搜索焦点', (tester) async {
+    final repository = _RemovalRepository('owner');
+    final controller = AppController(repository);
+    await tester.runAsync(controller.loginAsDemo);
+    repository.delayNextMemberLoad = true;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GroupRemoveMembersScreen(
+          controller: controller,
+          conversationId: 'c-team',
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final search = find.byKey(const Key('group-remove-search'));
+    await tester.tap(search);
+    await tester.showKeyboard(search);
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'ping',
+        selection: TextSelection.collapsed(offset: 4),
+        composing: TextRange(start: 0, end: 4),
+      ),
+    );
+    await tester.pump();
+
+    EditableText editable() => tester.widget<EditableText>(
+      find.descendant(of: search, matching: find.byType(EditableText)),
+    );
+    expect(editable().controller.text, 'ping');
+    expect(
+      editable().controller.value.composing,
+      const TextRange(start: 0, end: 4),
+    );
+    expect(editable().focusNode.hasFocus, isTrue);
+
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(editable().controller.text, 'ping');
+    expect(
+      editable().controller.value.composing,
+      const TextRange(start: 0, end: 4),
+    );
+    expect(editable().focusNode.hasFocus, isTrue);
+
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '苹果',
+        selection: TextSelection.collapsed(offset: 2),
+      ),
+    );
+    await tester.pump();
+    expect(editable().controller.text, '苹果');
+    expect(editable().focusNode.hasFocus, isTrue);
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+  });
 }
 
 Future<AppController> _openInfo(
@@ -129,20 +189,27 @@ class _RemovalRepository extends DemoImRepository {
   final String actorRole;
   final Map<String, String> roles = {};
   final List<String> removed = [];
+  bool delayNextMemberLoad = false;
 
   AppUser _user(String id) => id == 'me'
       ? DemoImRepository.demoUser
       : DemoImRepository.people.firstWhere((user) => user.id == id);
 
   @override
-  Future<List<GroupMember>> groupMembers(String conversationId) async => [
-    for (final entry in roles.entries)
-      GroupMember(
-        user: _user(entry.key),
-        role: entry.value,
-        joinedAt: DateTime(2026),
-      ),
-  ];
+  Future<List<GroupMember>> groupMembers(String conversationId) async {
+    if (delayNextMemberLoad) {
+      delayNextMemberLoad = false;
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+    }
+    return [
+      for (final entry in roles.entries)
+        GroupMember(
+          user: _user(entry.key),
+          role: entry.value,
+          joinedAt: DateTime(2026),
+        ),
+    ];
+  }
 
   @override
   Future<List<Conversation>> conversations() async => [

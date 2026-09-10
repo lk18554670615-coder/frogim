@@ -78,7 +78,7 @@ func TestUserPresenceAuthorization(t *testing.T) {
 	if got := query(owner, group.ID)["usr_bob"]; got != "offline" {
 		t.Fatal(got)
 	}
-	if got := query(member, group.ID)["usr_alice"]; got != "hidden" {
+	if got := query(member, group.ID); got["usr_alice"] != "hidden" || got["usr_bob"] != "hidden" {
 		t.Fatal(got)
 	}
 	if err := a.SetGroupRole("usr_alice", group.ID, "usr_bob", "admin"); err != nil {
@@ -87,7 +87,7 @@ func TestUserPresenceAuthorization(t *testing.T) {
 	if got := query(member, group.ID)["usr_alice"]; got != "online" {
 		t.Fatal(got)
 	}
-	if got := query(member, "another_group")["usr_alice"]; got != "hidden" {
+	if got := query(member, "another_group"); got["usr_alice"] != "hidden" || got["usr_bob"] != "hidden" {
 		t.Fatal(got)
 	}
 	if err := a.SetGroupRole("usr_alice", group.ID, "usr_bob", "member"); err != nil {

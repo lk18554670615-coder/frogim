@@ -25,8 +25,14 @@ func (a *App) AllowedPresenceTargets(ctx context.Context, actor string, ids []st
 		if user == nil || user.DeletedAt != nil {
 			continue
 		}
+		if groupID != "" {
+			if manages && a.state.Members[groupID][id] != nil {
+				result[id] = true
+			}
+			continue
+		}
 		friend := a.state.Friends[actor][id] && !a.state.Blocks[actor][id] && !a.state.Blocks[id][actor]
-		if actor == id || friend || (manages && a.state.Members[groupID][id] != nil) {
+		if actor == id || friend {
 			result[id] = true
 		}
 	}

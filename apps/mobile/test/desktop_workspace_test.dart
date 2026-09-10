@@ -154,6 +154,35 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('桌面 Web 可从归档筛选打开会话并显示聊天内容', (tester) async {
+    final controller = await _pumpDesktopHome(
+      tester,
+      size: const Size(1440, 1000),
+    );
+    addTearDown(controller.dispose);
+
+    await tester.runAsync(
+      () => controller.toggleConversationArchived('c-team'),
+    );
+    await _pumpUi(tester);
+    expect(
+      find.byKey(const ValueKey('conversation-slidable-c-team')),
+      findsNothing,
+    );
+
+    await tester.tap(find.byKey(const Key('desktop-archived-filter')));
+    await _pumpUi(tester);
+    final archived = find.byKey(const ValueKey('conversation-slidable-c-team'));
+    expect(archived, findsOneWidget);
+
+    await tester.tap(archived);
+    await _pumpUi(tester);
+    expect(find.byKey(const Key('message-input')), findsOneWidget);
+    expect(find.text('邻里产品小组'), findsWidgets);
+    expect(find.text('选择一个对话'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('1280 联系人工作区保持约 320 像素主列表并可返回消息', (tester) async {
     final controller = await _pumpDesktopHome(
       tester,

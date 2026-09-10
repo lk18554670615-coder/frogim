@@ -11,6 +11,9 @@ class GroupSendPolicy {
     if (profile.dissolvedAt != null) return '群聊已解散，无法发送消息';
     final current = member;
     if (current == null) return '你已不在该群聊中，无法发送消息';
+    if (current.mutedPermanently) {
+      return '你已被永久禁言，无法在该群发送消息';
+    }
     if (current.mutedUntil?.isAfter(now) == true) {
       return '你已被禁言，暂时无法在该群发送消息';
     }

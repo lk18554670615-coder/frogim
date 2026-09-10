@@ -65,9 +65,9 @@ func (p *WithRedis) ListUserAccessLogs(ctx context.Context, q UserAccessQuery) (
 	}
 	return UserAccessPage{}, ErrUnsupported
 }
-func (p *WithRedis) ListAdminUsersByIP(ctx context.Context, q, status, cursor string, limit int, ip, source, friendIPPermission string) ([]*model.User, int64, string, error) {
+func (p *WithRedis) ListAdminUsersByIP(ctx context.Context, q, status, cursor string, limit int, ip, source, internalUser string) ([]*model.User, int64, string, error) {
 	if s, ok := p.base.(UserAccessStore); ok {
-		return s.ListAdminUsersByIP(ctx, q, status, cursor, limit, ip, source, friendIPPermission)
+		return s.ListAdminUsersByIP(ctx, q, status, cursor, limit, ip, source, internalUser)
 	}
 	return nil, 0, "", ErrUnsupported
 }

@@ -502,6 +502,7 @@ void main() {
                     expiresAt: now.add(const Duration(hours: 1)),
                     deliveredCount: 8,
                     readCount: 5,
+                    unreadCount: 3,
                     linkPreview: const LinkPreview(
                       url: 'https://example.com/a',
                       title: '服务端标题',
@@ -555,7 +556,7 @@ void main() {
         );
     expect(_tapRecognizerCount(interactiveText.text), 3);
     expect(find.byKey(const Key('group-receipt-summary')), findsOneWidget);
-    expect(find.text('已送达 8 · 已读 5'), findsOneWidget);
+    expect(find.text('已读 5 · 未读 3'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('消息已过期'),
       160,

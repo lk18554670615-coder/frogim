@@ -44,22 +44,18 @@ class VoiceComposerController extends ChangeNotifier {
     DateTime Function()? now,
     Future<Uint8List> Function(String)? readBytes,
   }) : _recorder = recorder ?? AudioRecorder(),
-       _player = player ?? AudioPlayer(),
+       _player = player,
        _now = now ?? DateTime.now,
        _readBytes = readBytes ?? ((path) => File(path).readAsBytes()) {
-    _playerComplete = _player.onPlayerComplete.listen((_) {
-      if (_disposed) return;
-      playing = false;
-      notifyListeners();
-    });
+    if (player != null) _bindPlayer(player);
   }
 
   final AudioRecorder _recorder;
-  final AudioPlayer _player;
+  AudioPlayer? _player;
   final DateTime Function() _now;
   final Future<Uint8List> Function(String) _readBytes;
   final samples = ValueNotifier<List<double>>(const []);
-  late final StreamSubscription<void> _playerComplete;
+  StreamSubscription<void>? _playerComplete;
   VoiceComposerPhase phase = VoiceComposerPhase.idle;
   VoiceComposerNotice? _notice;
   Timer? _clockTimer;
@@ -92,6 +88,23 @@ class VoiceComposerController extends ChangeNotifier {
     final notice = _notice;
     _notice = null;
     return notice;
+  }
+
+  AudioPlayer _ensurePlayer() {
+    final existing = _player;
+    if (existing != null) return existing;
+    final player = AudioPlayer();
+    _player = player;
+    _bindPlayer(player);
+    return player;
+  }
+
+  void _bindPlayer(AudioPlayer player) {
+    _playerComplete = player.onPlayerComplete.listen((_) {
+      if (_disposed) return;
+      playing = false;
+      notifyListeners();
+    });
   }
 
   void _setPhase(VoiceComposerPhase value, [VoiceComposerNotice? notice]) {
@@ -245,11 +258,12 @@ class VoiceComposerController extends ChangeNotifier {
     _previewBusy = true;
     notifyListeners();
     try {
+      final player = _ensurePlayer();
       if (playing) {
-        await _player.stop();
+        await player.stop();
         playing = false;
       } else {
-        await _player.play(DeviceFileSource(_draftPath!));
+        await player.play(DeviceFileSource(_draftPath!));
         playing = true;
       }
     } catch (_) {
@@ -267,7 +281,7 @@ class VoiceComposerController extends ChangeNotifier {
     notifyListeners();
     final path = _draftPath;
     try {
-      await _player.stop();
+      await _player?.stop();
     } catch (_) {
       // Discarding must still work when the preview player fails.
     }
@@ -286,7 +300,7 @@ class VoiceComposerController extends ChangeNotifier {
     try {
       final bytes = await _readBytes(path);
       if (bytes.isEmpty) throw const FileSystemException('Empty recording');
-      await _player.stop();
+      await _player?.stop();
       if (_disposed) {
         await _deleteFile(path);
         return;
@@ -343,13 +357,15 @@ class VoiceComposerController extends ChangeNotifier {
     _disposed = true;
     _pressing = false;
     _stopTimers();
-    unawaited(_playerComplete.cancel());
+    final playerComplete = _playerComplete;
+    if (playerComplete != null) unawaited(playerComplete.cancel());
     // A pending submission decides whether the queue or cleanup owns the file.
     if (phase != VoiceComposerPhase.submitting) {
       unawaited(_deleteFile(_draftPath));
     }
     unawaited(_disposeCapture());
-    unawaited(_player.dispose());
+    final player = _player;
+    if (player != null) unawaited(player.dispose());
     samples.dispose();
     super.dispose();
   }

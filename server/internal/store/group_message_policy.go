@@ -31,7 +31,7 @@ func (p *WithRedis) CanPresentPush(ctx context.Context, item OutboxItem) (bool, 
 }
 
 func (p *Postgres) CanPresentPush(ctx context.Context, item OutboxItem) (bool, error) {
-	if item.EventType == "messages.deleted" || item.EventType == "user.message_permissions.updated" {
+	if item.EventType == "messages.deleted" {
 		return false, nil
 	}
 	message, ok := item.Payload["message"].(map[string]any)

@@ -215,6 +215,37 @@ func TestWukongSendPolicyFailsClosedWithoutConfiguredSecret(t *testing.T) {
 	}
 }
 
+func TestWukongMessageRateCountingExcludesControlAndScreenshotContent(t *testing.T) {
+	for _, contentType := range []int{
+		wukong.ContentTypeCommand,
+		wukong.ContentTypeSystemEvent,
+		wukong.ContentTypeCallEvent,
+		wukong.ContentTypeSupportEvent,
+		wukong.ContentTypeScreenshot,
+	} {
+		if wukongMessageConsumesGroupRate(contentType) {
+			t.Fatalf("content type %d must not consume group message quota", contentType)
+		}
+	}
+	for _, contentType := range []int{
+		wukong.ContentTypeText,
+		wukong.ContentTypeImage,
+		wukong.ContentTypeGIF,
+		wukong.ContentTypeVoice,
+		wukong.ContentTypeVideo,
+		wukong.ContentTypeLocation,
+		wukong.ContentTypeCard,
+		wukong.ContentTypeFile,
+		wukong.ContentTypeMergedHistory,
+		wukong.ContentTypeStoreSticker,
+		wukong.ContentTypeMomentShare,
+	} {
+		if !wukongMessageConsumesGroupRate(contentType) {
+			t.Fatalf("content type %d must consume group message quota", contentType)
+		}
+	}
+}
+
 func callWukongPolicy(t *testing.T, baseURL, secret string, input wukongPolicySendRequest) wukongPolicySendResponse {
 	t.Helper()
 	body, err := json.Marshal(input)

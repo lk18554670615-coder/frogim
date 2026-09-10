@@ -25,6 +25,7 @@ import '../../core/app_config.dart';
 import '../../core/app_theme.dart';
 import '../../core/emoji_catalog.dart';
 import '../../core/group_send_policy.dart';
+import '../../core/image_clipboard.dart';
 import '../../core/image_export.dart';
 import '../../core/image_send_editor.dart';
 import '../../core/image_source_bytes.dart';
@@ -41,6 +42,7 @@ import '../widgets/linli_widgets.dart';
 import '../widgets/conversation_identity.dart';
 import '../widgets/user_presence.dart';
 import '../widgets/peer_login_info.dart';
+import '../widgets/group_message_receipt_panel.dart';
 import '../widgets/forward_conversation_sheet.dart';
 import '../widgets/media_send_widgets.dart';
 import '../widgets/video_message_card.dart';
@@ -252,6 +254,7 @@ class _ChatScreenState extends State<ChatScreen> {
   int _sendCapabilityRequest = 0;
   int _observedSendPolicyRevision = 0;
   GroupSendPolicy? _observedSendPolicy;
+  String? _observedRateRestriction;
   String? _highlightedMessageId;
   List<RobotProfile> _robotProfiles = const [];
   bool _robotMenusLoading = false;
@@ -351,7 +354,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  String? get _effectiveSendRestriction =>
+  String? get _policySendRestriction =>
       (_isOrdinaryGroup
           ? widget.controller
                 .groupSendPolicyFor(widget.conversation.id)
@@ -362,6 +365,14 @@ class _ChatScreenState extends State<ChatScreen> {
         widget.controller.messagesFor(widget.conversation.id),
       ) ??
       _sendRestriction;
+
+  String? get _effectiveSendRestriction =>
+      _policySendRestriction ??
+      (_isOrdinaryGroup
+          ? widget.controller.groupMessageRateRestriction(
+              widget.conversation.id,
+            )
+          : null);
 
   @override
   void initState() {
@@ -394,7 +405,9 @@ class _ChatScreenState extends State<ChatScreen> {
       _previousActiveConversationId = widget.controller.activeConversationId;
       widget.controller.setActiveConversation(widget.conversation.id);
       _registeredActiveConversation = true;
-      unawaited(ScreenshotDetection.instance.start());
+      unawaited(
+        _syncScreenshotDetection(widget.conversation.screenshotNoticesEnabled),
+      );
       _startInitialScrollPinning(window: const Duration(seconds: 2));
       unawaited(_loadInitialMessages());
     });
@@ -605,10 +618,20 @@ class _ChatScreenState extends State<ChatScreen> {
   void _scheduleSendPolicyExpiry() {
     _sendPolicyExpiryTimer?.cancel();
     final now = DateTime.now();
-    final next = widget.controller
+    if (!_isOrdinaryGroup) return;
+    final changes = <DateTime>[];
+    final policyChange = widget.controller
         .groupSendPolicyFor(widget.conversation.id)
         ?.nextChangeAfter(now);
-    if (!_isOrdinaryGroup || next == null) return;
+    final rateChange = widget.controller.groupMessageRateNextChange(
+      widget.conversation.id,
+      at: now,
+    );
+    if (policyChange != null) changes.add(policyChange);
+    if (rateChange != null) changes.add(rateChange);
+    changes.sort();
+    if (changes.isEmpty) return;
+    final next = changes.first;
     final delay = next.difference(now) + const Duration(milliseconds: 20);
     // Permanent mute uses a far-future timestamp; bound browser timer delays.
     _sendPolicyExpiryTimer = Timer(
@@ -678,6 +701,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _loadingSendCapability = false;
       _sendCapabilityFailed = false;
       _observedSendPolicy = null;
+      _observedRateRestriction = null;
       _observedSendPolicyRevision = widget.controller.groupSendPolicyRevision;
       unawaited(_loadSendCapability());
       _followingLatest = widget.initialMessageId == null;
@@ -694,6 +718,12 @@ class _ChatScreenState extends State<ChatScreen> {
         _startInitialScrollPinning(window: const Duration(seconds: 2));
         unawaited(_loadInitialMessages());
       });
+    }
+    if (oldWidget.conversation.screenshotNoticesEnabled !=
+        widget.conversation.screenshotNoticesEnabled) {
+      unawaited(
+        _syncScreenshotDetection(widget.conversation.screenshotNoticesEnabled),
+      );
     }
     _observedConversation = widget.conversation;
   }
@@ -720,19 +750,31 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     final latest = widget.conversation;
+    if (latest.screenshotNoticesEnabled !=
+        _observedConversation?.screenshotNoticesEnabled) {
+      unawaited(_syncScreenshotDetection(latest.screenshotNoticesEnabled));
+    }
     final policy = widget.controller.groupSendPolicyFor(latest.id);
     final policyChanged = !identical(policy, _observedSendPolicy);
     final revisionChanged =
         _observedSendPolicyRevision !=
         widget.controller.groupSendPolicyRevision;
+    final rateRestriction = _isOrdinaryGroup
+        ? widget.controller.groupMessageRateRestriction(latest.id)
+        : null;
+    final rateRestrictionChanged = rateRestriction != _observedRateRestriction;
     _observedSendPolicy = policy;
     _observedSendPolicyRevision = widget.controller.groupSendPolicyRevision;
-    if (policyChanged) _scheduleSendPolicyExpiry();
+    _observedRateRestriction = rateRestriction;
+    if (policyChanged || rateRestrictionChanged) {
+      _scheduleSendPolicyExpiry();
+    }
     if (revisionChanged && _isOrdinaryGroup) unawaited(_loadSendCapability());
     if (identical(latest, _observedConversation) &&
         listEquals(widget.controller.contacts, _observedContacts) &&
         !policyChanged &&
-        !revisionChanged) {
+        !revisionChanged &&
+        !rateRestrictionChanged) {
       return;
     }
     _observedConversation = latest;
@@ -741,7 +783,11 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _handleScreenshot(DateTime occurredAt) {
-    if (!mounted || _effectiveSendRestriction != null) return;
+    if (!mounted ||
+        !widget.conversation.screenshotNoticesEnabled ||
+        _policySendRestriction != null) {
+      return;
+    }
     final previous = _lastScreenshotNotice;
     if (previous != null &&
         occurredAt.difference(previous).abs().inSeconds < 2) {
@@ -757,6 +803,15 @@ class _ChatScreenState extends State<ChatScreen> {
         }
       }),
     );
+  }
+
+  Future<void> _syncScreenshotDetection(bool enabled) async {
+    if (enabled) {
+      await ScreenshotDetection.instance.start();
+    } else {
+      await ScreenshotDetection.instance.stop();
+    }
+    if (mounted) setState(() {});
   }
 
   bool _handleChatHardwareKey(KeyEvent event) {
@@ -1246,6 +1301,10 @@ class _ChatScreenState extends State<ChatScreen> {
       final reply = replyingTo;
       for (final file in files) {
         if (!mounted) return;
+        if (_effectiveSendRestriction case final restriction?) {
+          _showError(restriction);
+          return;
+        }
         final mime = file.mimeType == 'application/octet-stream'
             ? _mimeFor(file.name)
             : file.mimeType;
@@ -1429,6 +1488,9 @@ class _ChatScreenState extends State<ChatScreen> {
                       widget.conversation.id,
                     ) &&
                     message.id == latestMineId,
+                onReceiptTap: _canViewMessageReceiptDetails(message)
+                    ? () => _showMessageReceiptDetails(message)
+                    : null,
                 onRetry:
                     _effectiveSendRestriction == null &&
                         !_loadingSendCapability &&
@@ -2023,6 +2085,10 @@ class _ChatScreenState extends State<ChatScreen> {
       if (label == '表情') {
         final sticker = await showStickerPicker(context, widget.controller);
         if (!mounted || sticker == null) return;
+        if (_effectiveSendRestriction case final restriction?) {
+          _showError(restriction);
+          return;
+        }
         setState(() => showAttachments = false);
         unawaited(
           widget.controller.sendSticker(widget.conversation.id, sticker),
@@ -2033,6 +2099,10 @@ class _ChatScreenState extends State<ChatScreen> {
       if (label == '朋友圈') {
         final moment = await showMomentPicker(context, widget.controller);
         if (!mounted || moment == null) return;
+        if (_effectiveSendRestriction case final restriction?) {
+          _showError(restriction);
+          return;
+        }
         setState(() => showAttachments = false);
         unawaited(
           widget.controller.sendMomentShare(widget.conversation.id, moment),
@@ -2125,6 +2195,10 @@ class _ChatScreenState extends State<ChatScreen> {
         return;
       }
       if (upload == null) return;
+      if (_effectiveSendRestriction case final restriction?) {
+        _showError(restriction);
+        return;
+      }
       final reply = replyingTo;
       setState(() {
         replyingTo = null;
@@ -2214,6 +2288,10 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
     if (!mounted || confirmed != true) return;
+    if (_effectiveSendRestriction case final restriction?) {
+      _showError(restriction);
+      return;
+    }
     final reply = replyingTo;
     setState(() {
       replyingTo = null;
@@ -2325,6 +2403,10 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
     if (!mounted || confirmed != true) return;
+    if (_effectiveSendRestriction case final restriction?) {
+      _showError(restriction);
+      return;
+    }
     final reply = replyingTo;
     setState(() {
       replyingTo = null;
@@ -2510,6 +2592,7 @@ class _ChatScreenState extends State<ChatScreen> {
             !widget.conversation.isBusinessChannel &&
             !message.id.startsWith('local-') &&
             message.status != MessageStatus.recalled,
+        canViewReceipts: _canViewMessageReceiptDetails(message),
         onSelected: (value) => Navigator.pop(dialogContext, value),
       ),
       transitionBuilder: (dialogContext, animation, _, child) {
@@ -2541,6 +2624,8 @@ class _ChatScreenState extends State<ChatScreen> {
         await _editMessage(message);
       case _MessageMenuAction.editHistory:
         await _showMessageEditHistory(message);
+      case _MessageMenuAction.receipts:
+        await _showMessageReceiptDetails(message);
       case _MessageMenuAction.copy:
         await Clipboard.setData(ClipboardData(text: message.text));
         if (mounted) {
@@ -2548,6 +2633,8 @@ class _ChatScreenState extends State<ChatScreen> {
             context,
           ).showSnackBar(const SnackBar(content: Text('已复制')));
         }
+      case _MessageMenuAction.copyImage:
+        await _copyMessageImage(message);
       case _MessageMenuAction.selectText:
         await _showTextSelection(message);
       case _MessageMenuAction.forward:
@@ -2599,6 +2686,64 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         );
     }
+  }
+
+  Future<String> _resolveMessageImageSource(ChatMessage message) async {
+    var source = mediaAccess.source(message.mediaId, message.mediaUrl)?.trim();
+    if (source?.isNotEmpty == true) return source!;
+    try {
+      final refreshed = await widget.controller.repository.refreshMessageMedia(
+        message,
+      );
+      source = mediaAccess
+          .source(refreshed.mediaId, refreshed.mediaUrl)
+          ?.trim();
+    } catch (_) {
+      // The clipboard operation reports one stable, user-facing read failure.
+    }
+    if (source?.isNotEmpty == true) return source!;
+    throw const ImageClipboardException('图片地址暂不可用，请刷新后重试');
+  }
+
+  Future<void> _copyMessageImage(ChatMessage message) async {
+    try {
+      await copyImageSourceToClipboard(
+        () => _resolveMessageImageSource(message),
+        maxBytes: AppConfig.mediaMaxBytes,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('图片已复制')));
+    } on ImageClipboardException catch (error) {
+      if (mounted) _showError(error.message);
+    } catch (_) {
+      if (mounted) _showError('图片复制失败，请稍后重试');
+    }
+  }
+
+  bool _canViewMessageReceiptDetails(ChatMessage message) =>
+      _isOrdinaryGroup &&
+      widget.controller.canDisplayMessageReceipts(widget.conversation.id) &&
+      message.id.isNotEmpty &&
+      !message.id.startsWith('local-') &&
+      message.conversationSeq > 0 &&
+      message.status != MessageStatus.sending &&
+      message.status != MessageStatus.failed &&
+      message.status != MessageStatus.recalled &&
+      message.status != MessageStatus.expired &&
+      message.kind != MessageContentKind.system &&
+      message.kind != MessageContentKind.screenshotNotice &&
+      message.kind != MessageContentKind.liveEvent;
+
+  Future<void> _showMessageReceiptDetails(ChatMessage message) async {
+    if (!_canViewMessageReceiptDetails(message)) return;
+    await showGroupMessageReceiptDetails(
+      context,
+      controller: widget.controller,
+      conversationId: widget.conversation.id,
+      messageId: message.id,
+    );
   }
 
   Future<void> _showTextSelection(
@@ -2899,7 +3044,9 @@ enum _MessageMenuAction {
   react,
   edit,
   editHistory,
+  receipts,
   copy,
+  copyImage,
   selectText,
   forward,
   favorite,
@@ -2919,6 +3066,7 @@ class _MessageContextMenu extends StatelessWidget {
     required this.canRecall,
     required this.canEdit,
     required this.canPin,
+    required this.canViewReceipts,
     required this.onSelected,
   });
 
@@ -2928,6 +3076,7 @@ class _MessageContextMenu extends StatelessWidget {
   final bool canRecall;
   final bool canEdit;
   final bool canPin;
+  final bool canViewReceipts;
   final ValueChanged<_MessageMenuAction> onSelected;
 
   @override
@@ -2947,6 +3096,11 @@ class _MessageContextMenu extends StatelessWidget {
     final canCopy =
         message.kind == MessageContentKind.text ||
         message.kind == MessageContentKind.reply;
+    final canCopyImage =
+        kIsWeb &&
+        message.kind == MessageContentKind.image &&
+        message.status != MessageStatus.recalled &&
+        message.status != MessageStatus.expired;
     final canViewEditHistory =
         message.editedAt != null && !message.id.startsWith('local-');
     final primary = <_ContextActionSpec>[
@@ -2972,11 +3126,23 @@ class _MessageContextMenu extends StatelessWidget {
           icon: CupertinoIcons.time,
           label: '编辑记录',
         ),
+      if (canViewReceipts)
+        const _ContextActionSpec(
+          action: _MessageMenuAction.receipts,
+          icon: CupertinoIcons.checkmark_alt_circle,
+          label: '阅读详情',
+        ),
       if (canCopy)
         const _ContextActionSpec(
           action: _MessageMenuAction.copy,
           icon: CupertinoIcons.doc_on_doc,
           label: '复制',
+        ),
+      if (canCopyImage)
+        const _ContextActionSpec(
+          action: _MessageMenuAction.copyImage,
+          icon: CupertinoIcons.doc_on_clipboard,
+          label: '复制图片',
         ),
       if (canCopy)
         const _ContextActionSpec(
@@ -3528,6 +3694,40 @@ class ChatInfoScreen extends StatelessWidget {
               ),
             ],
           ),
+          if (group) ...[
+            const SectionHeader('群聊'),
+            SectionCard(
+              children: [
+                SettingTile(
+                  key: const Key('group-members-entry'),
+                  icon: CupertinoIcons.person_2,
+                  title: '群成员',
+                  subtitle: '${conversation.memberCount} 位成员',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => GroupMembersOverviewScreen(
+                        controller: controller,
+                        conversationId: conversation.id,
+                      ),
+                    ),
+                  ),
+                ),
+                SettingTile(
+                  icon: CupertinoIcons.group,
+                  title: '群聊资料与管理',
+                  subtitle: '群公告、管理员和入群设置',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => GroupDetailsScreen(
+                        controller: controller,
+                        conversation: conversation,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
           const SectionHeader('聊天内容'),
           SectionCard(
             children: [
@@ -3544,25 +3744,16 @@ class ChatInfoScreen extends StatelessWidget {
                 subtitle: '查看、取消或重试服务端定时任务',
                 onTap: onScheduledMessages,
               ),
-              if (group)
-                SettingTile(
-                  icon: CupertinoIcons.person_2,
-                  title: '群聊资料与管理',
-                  subtitle: '${conversation.memberCount} 位成员',
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => GroupDetailsScreen(
-                        controller: controller,
-                        conversation: conversation,
-                      ),
-                    ),
-                  ),
-                ),
             ],
           ),
           const SectionHeader('会话设置'),
           SectionCard(
             children: [
+              if (group && controller.canManageGroup(conversation.id))
+                _GroupMuteAllChatInfoTile(
+                  controller: controller,
+                  conversationId: conversation.id,
+                ),
               SettingTile(
                 icon: CupertinoIcons.pin,
                 title: '置顶聊天',
@@ -3592,7 +3783,14 @@ class ChatInfoScreen extends StatelessWidget {
                 key: const Key('screenshot-detection-status'),
                 icon: CupertinoIcons.device_phone_portrait,
                 title: '截屏提示',
-                subtitle: ScreenshotDetection.instance.description,
+                subtitle: conversation.screenshotNoticesEnabled
+                    ? '已开启；系统支持检测时，会在当前会话发送真实截屏提示'
+                    : '已关闭；不会检测或发送当前会话的截屏提示',
+                trailing: _AsyncToggle(
+                  initialValue: conversation.screenshotNoticesEnabled,
+                  onChanged: (_) => controller
+                      .toggleConversationScreenshotNotices(conversation.id),
+                ),
               ),
               SettingTile(
                 icon: CupertinoIcons.exclamationmark_triangle,
@@ -3759,6 +3957,119 @@ class _DirectContactSummary extends StatelessWidget {
   }
 }
 
+class _GroupMuteAllChatInfoTile extends StatefulWidget {
+  const _GroupMuteAllChatInfoTile({
+    required this.controller,
+    required this.conversationId,
+  });
+
+  final AppController controller;
+  final String conversationId;
+
+  @override
+  State<_GroupMuteAllChatInfoTile> createState() =>
+      _GroupMuteAllChatInfoTileState();
+}
+
+class _GroupMuteAllChatInfoTileState extends State<_GroupMuteAllChatInfoTile> {
+  GroupProfile? _profile;
+  bool _loading = true;
+  bool _busy = false;
+  int _observedPolicyRevision = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _observedPolicyRevision = widget.controller.groupSendPolicyRevision;
+    widget.controller.addListener(_handleControllerChange);
+    unawaited(_load());
+  }
+
+  @override
+  void didUpdateWidget(covariant _GroupMuteAllChatInfoTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_handleControllerChange);
+      widget.controller.addListener(_handleControllerChange);
+    }
+    if (oldWidget.controller != widget.controller ||
+        oldWidget.conversationId != widget.conversationId) {
+      _observedPolicyRevision = widget.controller.groupSendPolicyRevision;
+      unawaited(_load());
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_handleControllerChange);
+    super.dispose();
+  }
+
+  void _handleControllerChange() {
+    final revision = widget.controller.groupSendPolicyRevision;
+    if (revision == _observedPolicyRevision) return;
+    _observedPolicyRevision = revision;
+    unawaited(_load(showLoading: false));
+  }
+
+  Future<void> _load({bool showLoading = true}) async {
+    if (showLoading && mounted) setState(() => _loading = true);
+    final profile = await widget.controller.loadGroupProfile(
+      widget.conversationId,
+    );
+    if (!mounted) return;
+    setState(() {
+      _profile = profile;
+      _loading = false;
+    });
+  }
+
+  Future<void> _setMuted(bool value) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    final updated = await widget.controller.setGroupAllMuted(
+      widget.conversationId,
+      value,
+    );
+    if (!mounted) return;
+    setState(() {
+      if (updated != null) _profile = updated;
+      _busy = false;
+    });
+    if (updated == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(widget.controller.error ?? '全员禁言设置失败')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final profile = _profile;
+    return SettingTile(
+      key: const Key('group-mute-all'),
+      icon: CupertinoIcons.speaker_slash,
+      title: '全员禁言',
+      subtitle: profile == null
+          ? _loading
+                ? '正在读取群聊设置'
+                : '群聊设置暂不可用，点击重试'
+          : profile.allMuted
+          ? '已开启，仅群主和管理员可发言'
+          : '已关闭，所有成员可发言',
+      onTap: profile == null && !_loading ? _load : null,
+      trailing: _loading
+          ? const CupertinoActivityIndicator()
+          : profile == null
+          ? const Icon(CupertinoIcons.refresh)
+          : CupertinoSwitch(
+              value: profile.allMuted,
+              onChanged: _busy ? null : _setMuted,
+            ),
+    );
+  }
+}
+
 class _AsyncToggle extends StatefulWidget {
   const _AsyncToggle({required this.initialValue, required this.onChanged});
   final bool initialValue;
@@ -3858,7 +4169,6 @@ class _GroupMembersPreviewState extends State<_GroupMembersPreview> {
   Widget build(BuildContext context) {
     final loaded = widget.controller.cachedGroupMembers(widget.conversation.id);
     final people = widget.controller.conversationUsers(widget.conversation);
-    final count = loaded?.length ?? widget.conversation.memberCount;
     final accountId = widget.controller.currentUser?.id;
     final memberRole = loaded
         ?.where((member) => member.user.id == accountId)
@@ -3881,19 +4191,6 @@ class _GroupMembersPreviewState extends State<_GroupMembersPreview> {
           canRemoveMembers: canRemoveMembers,
           canInviteMembers: canInviteMembers,
         ),
-        if (count > 9 || count > people.length)
-          TextButton(
-            key: const Key('chat-info-all-members'),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => GroupMembersOverviewScreen(
-                  controller: widget.controller,
-                  conversationId: widget.conversation.id,
-                ),
-              ),
-            ),
-            child: Text('查看全部 $count 位成员'),
-          ),
         if (_failed)
           TextButton(
             key: const Key('chat-info-members-retry'),
@@ -4007,12 +4304,14 @@ class _ChatMemberMatrix extends StatelessWidget {
                           textAlign: TextAlign.center,
                           style: Theme.of(context).textTheme.labelSmall,
                         ),
-                        UserPresence(
-                          controller: controller,
-                          userId: members.isEmpty ? '' : user.id,
-                          groupId: groupId,
-                          builder: (context, status) => PresenceLabel(status),
-                        ),
+                        if (groupId == null ||
+                            controller.canViewGroupMemberPresence(groupId))
+                          UserPresence(
+                            controller: controller,
+                            userId: members.isEmpty ? '' : user.id,
+                            groupId: groupId,
+                            builder: (context, status) => PresenceLabel(status),
+                          ),
                       ],
                     ),
                   ),
@@ -4189,6 +4488,7 @@ class MessageBubble extends StatelessWidget {
     this.onAvatarTap,
     this.showSender = false,
     this.showGroupReceipt = false,
+    this.onReceiptTap,
     this.onRetry,
     this.onLongPress,
     this.onSelect,
@@ -4206,6 +4506,7 @@ class MessageBubble extends StatelessWidget {
   final VoidCallback? onAvatarTap;
   final bool showSender;
   final bool showGroupReceipt;
+  final VoidCallback? onReceiptTap;
   final VoidCallback? onRetry;
   final ValueChanged<Offset>? onLongPress;
   final VoidCallback? onSelect;
@@ -4552,6 +4853,12 @@ class MessageBubble extends StatelessWidget {
                                           : null,
                                       readCount: showReceiptCounts
                                           ? message.readCount
+                                          : null,
+                                      unreadCount: showReceiptCounts
+                                          ? message.unreadCount
+                                          : null,
+                                      onTap: showReceiptCounts
+                                          ? onReceiptTap
                                           : null,
                                     ),
                             ),
@@ -5049,6 +5356,44 @@ class _MessageImagePreviewState extends State<_MessageImagePreview> {
     return null;
   }
 
+  Future<String> _resolveCopySource() async {
+    final current = _source;
+    if (current.isNotEmpty) return current;
+    final controller = widget.controller;
+    if (controller != null) {
+      try {
+        final refreshed = await controller.repository.refreshMessageMedia(
+          _message,
+        );
+        final source = mediaAccess
+            .source(refreshed.mediaId, refreshed.mediaUrl)
+            ?.trim();
+        if (source?.isNotEmpty == true) return source!;
+      } catch (_) {
+        // The clipboard operation returns the consistent user-facing error.
+      }
+    }
+    throw const ImageClipboardException('图片地址暂不可用，请刷新后重试');
+  }
+
+  Future<void> _copy() async {
+    if (_busy || !kIsWeb) return;
+    setState(() => _busy = true);
+    try {
+      await copyImageSourceToClipboard(
+        _resolveCopySource,
+        maxBytes: AppConfig.mediaMaxBytes,
+      );
+      _showMessage('图片已复制');
+    } on ImageClipboardException catch (error) {
+      _showMessage(error.message);
+    } catch (_) {
+      _showMessage('图片复制失败，请稍后重试');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _save({Uint8List? editedBytes}) async {
     if (_busy) return;
     setState(() => _busy = true);
@@ -5190,6 +5535,11 @@ class _MessageImagePreviewState extends State<_MessageImagePreview> {
             onPressed: () => Navigator.pop(context, 'save'),
             child: const Text('保存原图'),
           ),
+          if (kIsWeb)
+            CupertinoActionSheetAction(
+              onPressed: () => Navigator.pop(context, 'copy'),
+              child: const Text('复制图片'),
+            ),
         ],
         cancelButton: CupertinoActionSheetAction(
           onPressed: () => Navigator.pop(context),
@@ -5201,6 +5551,7 @@ class _MessageImagePreviewState extends State<_MessageImagePreview> {
     if (action == 'edit') await _edit();
     if (action == 'forward') await _forward();
     if (action == 'save') await _save();
+    if (action == 'copy') await _copy();
   }
 
   @override
@@ -5344,6 +5695,7 @@ class _MessageImagePreviewState extends State<_MessageImagePreview> {
                         onEdit: _edit,
                         onForward: _forward,
                         onSave: () => _save(),
+                        onCopy: kIsWeb ? _copy : null,
                       ),
                     ),
                   ],
@@ -5463,12 +5815,14 @@ class _ImagePreviewToolbar extends StatelessWidget {
     required this.onEdit,
     required this.onForward,
     required this.onSave,
+    this.onCopy,
   });
 
   final bool busy;
   final VoidCallback onEdit;
   final VoidCallback onForward;
   final VoidCallback onSave;
+  final VoidCallback? onCopy;
 
   @override
   Widget build(BuildContext context) => DecoratedBox(
@@ -5497,6 +5851,13 @@ class _ImagePreviewToolbar extends StatelessWidget {
           label: '保存',
           onTap: busy ? null : onSave,
         ),
+        if (onCopy != null)
+          _ImagePreviewAction(
+            key: const Key('copy-message-image-preview'),
+            icon: CupertinoIcons.doc_on_clipboard,
+            label: '复制',
+            onTap: busy ? null : onCopy,
+          ),
       ],
     ),
   );
@@ -6624,10 +6985,14 @@ class _DeliveryLabel extends StatelessWidget {
     required this.status,
     this.deliveredCount,
     this.readCount,
+    this.unreadCount,
+    this.onTap,
   });
   final MessageStatus status;
   final int? deliveredCount;
   final int? readCount;
+  final int? unreadCount;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -6642,11 +7007,27 @@ class _DeliveryLabel extends StatelessWidget {
     };
     final receiptLabel = deliveredCount == null
         ? label
-        : '已送达 $deliveredCount · 已读 ${readCount ?? 0}';
-    return Text(
+        : '已读 ${readCount ?? 0} · 未读 ${unreadCount ?? 0}';
+    final text = Text(
       receiptLabel,
-      key: deliveredCount == null ? null : const Key('group-receipt-summary'),
       style: TextStyle(color: context.linli.secondaryText, fontSize: 10),
+    );
+    if (deliveredCount == null) return text;
+    if (onTap == null) {
+      return KeyedSubtree(key: const Key('group-receipt-summary'), child: text);
+    }
+    return Semantics(
+      button: true,
+      label: '$receiptLabel，查看阅读详情',
+      child: InkWell(
+        key: const Key('group-receipt-summary'),
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+          child: text,
+        ),
+      ),
     );
   }
 }

@@ -1440,14 +1440,14 @@ func TestConversationPreferencesAndHide(t *testing.T) {
 	aliceToken := loginToken(t, ts.URL, "13800000001")
 	cid := directConversation(t, ts.URL, aliceToken, "usr_bob")
 
-	preferenceBody := `{"pinned":true,"saved":true,"notificationsMuted":true,"manualUnread":true}`
+	preferenceBody := `{"pinned":true,"saved":true,"notificationsMuted":true,"manualUnread":true,"screenshotNoticesEnabled":true}`
 	res := authenticatedRequest(t, http.MethodPatch, ts.URL+"/v2/channels/conversations/"+cid+"/preferences", aliceToken, preferenceBody)
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("preference status=%d", res.StatusCode)
 	}
 	_ = res.Body.Close()
 	list := listConversations(t, ts.URL, aliceToken)
-	if len(list) == 0 || !list[0].Membership.Pinned || !list[0].Membership.Saved || !list[0].Membership.NotificationsMuted || !list[0].Membership.ManualUnread {
+	if len(list) == 0 || !list[0].Membership.Pinned || !list[0].Membership.Saved || !list[0].Membership.NotificationsMuted || !list[0].Membership.ManualUnread || !list[0].Membership.ScreenshotNoticesEnabled {
 		t.Fatalf("preferences missing from list: %+v", list)
 	}
 
@@ -1838,6 +1838,23 @@ func TestAnnouncementLifecycleTargetingAndReadReceipt(t *testing.T) {
 	if len(list.Items) != 1 || list.Items[0].ReadAt == nil {
 		t.Fatalf("read receipt missing: %+v", list.Items)
 	}
+	res = authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/announcements/dismiss", userToken, `{"announcementIds":["`+item.ID+`"]}`)
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("dismiss status=%d", res.StatusCode)
+	}
+	_ = res.Body.Close()
+	res = authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/announcements", userToken, "")
+	list.Items = nil
+	_ = json.NewDecoder(res.Body).Decode(&list)
+	_ = res.Body.Close()
+	if len(list.Items) != 0 {
+		t.Fatalf("dismissed announcement leaked: %+v", list.Items)
+	}
+	res = authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/announcements/dismiss", userToken, `{"announcementIds":["`+item.ID+`"]}`)
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("repeated dismiss status=%d", res.StatusCode)
+	}
+	_ = res.Body.Close()
 	res = authenticatedRequest(t, http.MethodPost, ts.URL+"/v2/admin/announcements/"+item.ID+"/withdraw", adminToken, `{"reason":"notice is no longer active","confirmed":true}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("withdraw status=%d", res.StatusCode)
@@ -1980,10 +1997,11 @@ type conversationListItem struct {
 		ID string `json:"id"`
 	} `json:"conversation"`
 	Membership struct {
-		Pinned             bool `json:"pinned"`
-		Saved              bool `json:"saved"`
-		NotificationsMuted bool `json:"notificationsMuted"`
-		ManualUnread       bool `json:"manualUnread"`
+		Pinned                   bool `json:"pinned"`
+		Saved                    bool `json:"saved"`
+		NotificationsMuted       bool `json:"notificationsMuted"`
+		ManualUnread             bool `json:"manualUnread"`
+		ScreenshotNoticesEnabled bool `json:"screenshotNoticesEnabled"`
 	} `json:"membership"`
 }
 
