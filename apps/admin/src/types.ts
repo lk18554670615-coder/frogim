@@ -401,6 +401,8 @@ export interface MediaRecord {
   status: string;
   size: number;
   checksum: string;
+  downloadUrl: string;
+  coverUrl?: string;
 }
 
 export interface OnlineRecord {

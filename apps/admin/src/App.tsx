@@ -441,7 +441,7 @@ function messageBodySummary(message: Pick<AdminDirectMessageRecord, 'body' | 'ty
 function messageMediaURL(message: Pick<AdminDirectMessageRecord, 'body'>) {
   for (const key of ['downloadUrl', 'url', 'fileUrl', 'imageUrl', 'videoUrl']) {
     const value = message.body[key];
-    if (typeof value === 'string' && /^https?:\/\//i.test(value)) return value;
+    if (typeof value === 'string' && (/^https?:\/\//i.test(value) || /^\/v2\/media-public\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/(content|cover)$/.test(value))) return value;
   }
   return '';
 }
@@ -1130,7 +1130,7 @@ function MediaPage() {
   const state = useResource(() => api.getMedia(deferredQuery, status, page, 20, cursors[page] ?? ''), [api, mode, deferredQuery, status, page, cursors]);
   const paginate = (nextPage: number) => { if (nextPage > page && state.data?.nextCursor) setCursors((current) => ({ ...current, [nextPage]: state.data?.nextCursor ?? '' })); setPage(nextPage); };
   return <><PageHeader title="文件与存储" description="检查上传归属、媒体状态、对象键和实际占用。" /><Toolbar query={query} setQuery={setQuery} placeholder="搜索媒体 ID、用户、对象键或 MIME"><select className="select-control" aria-label="媒体状态" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option value="pending">上传中</option><option value="ready">可用</option></select></Toolbar>
-    <DataPanel loading={state.loading} error={state.error} retry={state.reload} empty={!state.data?.items.length} emptyTitle="没有匹配的媒体文件" emptyDetail="上传完成的文件会显示在这里。"><div className="table-wrap"><table><thead><tr><th>媒体</th><th>归属用户</th><th>类型</th><th>大小</th><th>状态</th><th>校验值</th></tr></thead><tbody>{state.data?.items.map((media: MediaRecord) => <tr key={media.id}><td><div><strong className="mono">{media.id}</strong><small className="mono">{media.objectKey}</small></div></td><td className="mono">{media.ownerId}</td><td>{media.mime}</td><td>{formatBytes(media.size)}</td><td><Badge value={media.status === 'ready' ? 'active' : 'pending'} label={media.status === 'ready' ? '可用' : '上传中'} /></td><td className="mono">{media.checksum || '暂无'}</td></tr>)}</tbody></table></div><Pagination data={state.data} onPage={paginate} /></DataPanel>
+    <DataPanel loading={state.loading} error={state.error} retry={state.reload} empty={!state.data?.items.length} emptyTitle="没有匹配的媒体文件" emptyDetail="上传完成的文件会显示在这里。"><div className="table-wrap"><table><thead><tr><th>媒体</th><th>归属用户</th><th>类型</th><th>大小</th><th>状态</th><th>校验值</th><th>访问</th></tr></thead><tbody>{state.data?.items.map((media: MediaRecord) => <tr key={media.id}><td><div><strong className="mono">{media.id}</strong><small className="mono">{media.objectKey}</small></div></td><td className="mono">{media.ownerId}</td><td>{media.mime}</td><td>{formatBytes(media.size)}</td><td><Badge value={media.status === 'ready' ? 'active' : 'pending'} label={media.status === 'ready' ? '可用' : '上传中'} /></td><td className="mono">{media.checksum || '暂无'}</td><td>{media.status === 'ready' && media.downloadUrl ? <div className="row-actions"><a className="button secondary compact" href={media.downloadUrl} target="_blank" rel="noreferrer">原文件</a>{media.coverUrl && <a className="button secondary compact" href={media.coverUrl} target="_blank" rel="noreferrer">封面</a>}</div> : '—'}</td></tr>)}</tbody></table></div><Pagination data={state.data} onPage={paginate} /></DataPanel>
   </>;
 }
 

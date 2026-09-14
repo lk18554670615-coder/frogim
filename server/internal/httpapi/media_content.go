@@ -104,6 +104,12 @@ func (x *API) mediaContent(w http.ResponseWriter, r *http.Request) {
 		}
 		mediaID = parent.CoverMediaID
 	}
+	x.serveMediaContent(w, r, mediaID)
+}
+
+// serveMediaContent streams a stable business media resource without exposing
+// the object-store URL. Callers must finish their own authorization first.
+func (x *API) serveMediaContent(w http.ResponseWriter, r *http.Request, mediaID string) {
 	service, ok := x.media.(interface {
 		OpenContent(context.Context, string) (media.Content, error)
 	})

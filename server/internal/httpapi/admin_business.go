@@ -18,6 +18,24 @@ func validAdminMutation(input adminMutationConfirmation) bool {
 	return input.Confirmed && strings.TrimSpace(input.Reason) != "" && len(strings.TrimSpace(input.Reason)) <= 1000
 }
 
+func (x *API) adminBusinessChannelJSON(item *store.BusinessChannel) map[string]any {
+	value := businessChannelJSON(item)
+	value["avatarUrl"] = x.permanentLocalMediaValue(item.AvatarURL)
+	return value
+}
+
+func (x *API) adminBusinessChannelMemberJSON(item *store.BusinessChannelMember) map[string]any {
+	value := businessChannelMemberJSON(item)
+	value["avatarUrl"] = x.permanentLocalMediaValue(item.AvatarURL)
+	return value
+}
+
+func (x *API) adminSupportAgentJSON(item *store.SupportAgent) map[string]any {
+	value := supportAgentJSON(item)
+	value["avatarUrl"] = x.permanentLocalMediaValue(item.AvatarURL)
+	return value
+}
+
 func (x *API) registerBusinessAdminRoutes(prefix string) {
 	x.mux.Handle("GET "+prefix+"/channels", x.requireAdmin(http.HandlerFunc(x.adminBusinessChannels)))
 	x.mux.Handle("POST "+prefix+"/channels", x.requireAdmin(http.HandlerFunc(x.adminCreateBusinessChannel)))
@@ -60,7 +78,7 @@ func (x *API) adminBusinessChannels(w http.ResponseWriter, r *http.Request) {
 	}
 	result := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		result = append(result, businessChannelJSON(item))
+		result = append(result, x.adminBusinessChannelJSON(item))
 	}
 	write(w, http.StatusOK, map[string]any{"items": result, "total": total, "nextCursor": next})
 }
@@ -95,7 +113,7 @@ func (x *API) adminCreateBusinessChannel(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	x.app.RecordAdminAudit(uid(r), "channel.create", "business_channel", item.ID, "success", x.clientIP(r), map[string]any{"reason": strings.TrimSpace(request.Reason), "channelType": item.ChannelType, "ownerId": request.OwnerID})
-	write(w, http.StatusCreated, map[string]any{"item": businessChannelJSON(item)})
+	write(w, http.StatusCreated, map[string]any{"item": x.adminBusinessChannelJSON(item)})
 }
 
 func (x *API) adminUpdateBusinessChannel(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +161,7 @@ func (x *API) adminUpdateBusinessChannel(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	x.app.RecordAdminAudit(uid(r), "channel.update", "business_channel", item.ID, "success", x.clientIP(r), map[string]any{"reason": strings.TrimSpace(request.Reason), "channelType": channelType})
-	write(w, http.StatusOK, map[string]any{"item": businessChannelJSON(item)})
+	write(w, http.StatusOK, map[string]any{"item": x.adminBusinessChannelJSON(item)})
 }
 
 func (x *API) adminBusinessChannelMembers(w http.ResponseWriter, r *http.Request) {
@@ -165,7 +183,7 @@ func (x *API) adminBusinessChannelMembers(w http.ResponseWriter, r *http.Request
 	}
 	result := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		result = append(result, businessChannelMemberJSON(item))
+		result = append(result, x.adminBusinessChannelMemberJSON(item))
 	}
 	write(w, http.StatusOK, map[string]any{"items": result, "nextCursor": next})
 }
@@ -281,7 +299,7 @@ func (x *API) adminBusinessChannelAccess(w http.ResponseWriter, r *http.Request)
 	result := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		result = append(result, map[string]any{"channelId": item.ChannelID, "userId": item.UserID,
-			"name": item.Name, "handle": item.Handle, "avatarUrl": item.AvatarURL,
+			"name": item.Name, "handle": item.Handle, "avatarUrl": x.permanentLocalMediaValue(item.AvatarURL),
 			"accessType": item.AccessType, "reason": item.Reason, "createdBy": item.CreatedBy, "createdAt": item.CreatedAt})
 	}
 	write(w, http.StatusOK, map[string]any{"items": result, "nextCursor": next})
@@ -358,7 +376,7 @@ func (x *API) adminSupportAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	result := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		result = append(result, supportAgentJSON(item))
+		result = append(result, x.adminSupportAgentJSON(item))
 	}
 	write(w, http.StatusOK, map[string]any{"items": result})
 }
@@ -380,7 +398,7 @@ func (x *API) adminSaveSupportAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	x.app.RecordAdminAudit(uid(r), "support.agent.save", "support_agent", item.UserID, "success", x.clientIP(r), map[string]any{"reason": strings.TrimSpace(request.Reason)})
-	write(w, http.StatusOK, map[string]any{"item": supportAgentJSON(item)})
+	write(w, http.StatusOK, map[string]any{"item": x.adminSupportAgentJSON(item)})
 }
 
 func (x *API) adminSupportSessions(w http.ResponseWriter, r *http.Request) {

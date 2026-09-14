@@ -13,6 +13,7 @@ import (
 	"github.com/linli/im/server/internal/app"
 	"github.com/linli/im/server/internal/config"
 	"github.com/linli/im/server/internal/media"
+	"github.com/linli/im/server/internal/model"
 	"github.com/linli/im/server/internal/store"
 	"github.com/linli/im/server/internal/teststore"
 )
@@ -160,4 +161,76 @@ func TestFixedMediaContentSessionRangeAndPermissions(t *testing.T) {
 	}
 	check("revoked media session", "GET", path, "Media "+credential, "", nil, 401, "")
 	check("revoked cookie", "GET", path, "", "", cookie, 401, "")
+}
+
+func TestPermanentMediaURLIsStableAndDirectlyAccessible(t *testing.T) {
+	a, _ := app.New(t.Context(), teststore.Memory{})
+	for _, item := range []store.Media{
+		{ID: "med_cover", OwnerID: "owner", MIME: "image/jpeg", Size: 10, Status: "ready"},
+		{ID: "med_video", OwnerID: "owner", MIME: "video/mp4", Size: 10, Status: "pending"},
+	} {
+		if err := a.CreateMedia(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.CompleteMediaWithCover("med_video", "owner", 10, "sum", "med_cover"); err != nil {
+		t.Fatal(err)
+	}
+	x := New(config.Config{JWTSecret: "stable-permanent-media-secret"}, a)
+	x.media = contentMediaService{}
+	server := httptest.NewServer(x.Handler())
+	defer server.Close()
+
+	contentPath := x.permanentMediaURL("med_video", false)
+	if contentPath != x.permanentMediaURL("med_video", false) || strings.Contains(contentPath, "expires") || strings.Contains(contentPath, "X-Amz") {
+		t.Fatalf("URL is not stable: %s", contentPath)
+	}
+	request := func(path, byteRange string, want int, body string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, server.URL+path, nil)
+		if byteRange != "" {
+			req.Header.Set("Range", byteRange)
+		}
+		response, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		if response.StatusCode != want || (body != "" && string(data) != body) {
+			t.Fatalf("path=%s status=%d body=%q", path, response.StatusCode, data)
+		}
+		if response.Header.Get("Location") != "" {
+			t.Fatalf("permanent media must not redirect to object storage: %s", response.Header.Get("Location"))
+		}
+		return response
+	}
+
+	full := request(contentPath, "", http.StatusOK, "0123456789")
+	if full.Header.Get("Cache-Control") != "public, max-age=31536000, immutable" || full.Header.Get("Content-Disposition") != "inline" {
+		t.Fatal(full.Header)
+	}
+	rangeResponse := request(contentPath, "bytes=3-6", http.StatusPartialContent, "3456")
+	if rangeResponse.Header.Get("Content-Range") != "bytes 3-6/10" {
+		t.Fatal(rangeResponse.Header)
+	}
+	request(x.permanentMediaURL("med_video", true), "", http.StatusOK, "0123456789")
+
+	parts := strings.Split(contentPath, "/")
+	parts[len(parts)-2] = "invalid-signature"
+	request(strings.Join(parts, "/"), "", http.StatusNotFound, "")
+	request(strings.Replace(contentPath, "/content", "/cover", 1), "", http.StatusNotFound, "")
+
+	message, err := x.adminMessageWithDownloadURL(t.Context(), &model.Message{Type: "video", Body: map[string]any{"mediaId": "med_video", "url": "https://expired.invalid/video", "cover": "https://expired.invalid/cover", "coverMediaId": "untrusted-cover"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Body["downloadUrl"] != contentPath || message.Body["url"] != contentPath || message.Body["cover"] != x.permanentMediaURL("med_video", true) || message.Body["coverMediaId"] != "med_cover" {
+		t.Fatalf("admin media URLs were not normalized: %#v", message.Body)
+	}
+	user := &model.User{AvatarMediaID: "med_cover", AvatarURL: "https://expired.invalid/avatar"}
+	x.setAdminAvatarURL(user)
+	if user.AvatarURL != x.permanentMediaURL("med_cover", false) {
+		t.Fatalf("admin avatar URL is not permanent: %s", user.AvatarURL)
+	}
 }

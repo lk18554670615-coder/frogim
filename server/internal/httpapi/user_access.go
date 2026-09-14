@@ -198,7 +198,7 @@ func (x *API) adminUserAccessLogs(w http.ResponseWriter, r *http.Request) {
 	items := make([]entry, 0, len(page.Items))
 	for _, e := range page.Items {
 		if e.User != nil {
-			x.signAvatarURL(e.User)
+			x.setAdminAvatarURL(e.User)
 		}
 		items = append(items, entry{e, x.ipRegion.Lookup(e.IP)})
 	}

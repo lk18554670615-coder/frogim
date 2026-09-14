@@ -2,6 +2,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getApi, loginAdmin } from './api';
 
 describe('live API adapter', () => {
+  it('媒体列表保留服务端永久直连地址和视频封面地址', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, status: 200, headers: new Headers(),
+      json: async () => ({ items: [{ id: 'media-1', ownerId: 'user-1', objectKey: 'objects/media-1', mime: 'video/mp4', status: 'ready', size: 10, checksum: 'sum', downloadUrl: '/v2/media-public/media-1/permanent/content', coverUrl: '/v2/media-public/media-1/permanent-cover/cover' }], total: 1 }),
+    })));
+    const page = await getApi('token').getMedia('', '', 1, 20);
+    expect(page.items[0]).toMatchObject({
+      downloadUrl: '/v2/media-public/media-1/permanent/content',
+      coverUrl: '/v2/media-public/media-1/permanent-cover/cover',
+    });
+  });
+
   it('邀请来源改绑发送确认、理由和版本，补绑不伪装为验证码注册', async () => {
     const fetchMock=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>({ok:true,status:200,headers:new Headers(),json:async()=>init?.method?{}:String(input).includes('/invite-relations')?{items:[{invitee:{id:'u2'},inviter:{id:'u1'},inviteCodeId:'ic1',inviteCode:'ABCDEF88',registrationMethod:'admin',bindingSource:'admin',version:3,createdAt:'2026-09-06T08:00:00Z',updatedAt:'2026-09-07T08:00:00Z'}],total:1}:{user:{id:'u2'},invitation:{code:'MYCODE88',status:'active',invitedBy:{id:'u1',name:'邀请人'},boundCode:'ABCDEF88',boundCodeId:'ic1',registrationMethod:'admin',bindingSource:'admin',bindingVersion:3,bindingUpdatedAt:'2026-09-07T08:00:00Z'}}}));
     vi.stubGlobal('fetch',fetchMock);const api=getApi('token');

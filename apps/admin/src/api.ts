@@ -646,7 +646,7 @@ function adaptMessage(value: unknown): MessageRecord {
 
 function adaptMedia(value: unknown): MediaRecord {
   const raw = object(value);
-  return { id: string(raw.id), ownerId: string(raw.ownerId), objectKey: string(raw.objectKey), mime: string(raw.mime, 'application/octet-stream'), status: string(raw.status, 'unknown'), size: number(raw.size), checksum: string(raw.checksum) };
+  return { id: string(raw.id), ownerId: string(raw.ownerId), objectKey: string(raw.objectKey), mime: string(raw.mime, 'application/octet-stream'), status: string(raw.status, 'unknown'), size: number(raw.size), checksum: string(raw.checksum), downloadUrl: string(raw.downloadUrl), coverUrl: string(raw.coverUrl) || undefined };
 }
 
 function adaptOnline(value: unknown): OnlineRecord {

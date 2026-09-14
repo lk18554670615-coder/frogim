@@ -29,7 +29,7 @@ func (x *API) createAdminUser(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
-	x.signAvatarURL(user)
+	x.setAdminAvatarURL(user)
 	x.recordRegistration(r, user.ID, "admin")
 	write(w, http.StatusCreated, map[string]any{"item": user})
 }
@@ -57,7 +57,7 @@ func (x *API) createAdminUsersBatch(w http.ResponseWriter, r *http.Request) {
 	for index := range items {
 		if items[index].Status == "created" {
 			succeeded++
-			x.signAvatarURL(items[index].User)
+			x.setAdminAvatarURL(items[index].User)
 			x.recordRegistration(r, items[index].User.ID, "admin")
 		}
 	}
@@ -120,7 +120,7 @@ func (x *API) adminUserFriendMessages(w http.ResponseWriter, r *http.Request) {
 			handleErr(w, lookupErr)
 			return
 		}
-		x.signAvatarURL(participant)
+		x.setAdminAvatarURL(participant)
 		participants[participantID] = participant
 	}
 	result := make([]map[string]any, 0, len(items))

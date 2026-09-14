@@ -122,7 +122,7 @@ func (x *API) adminGroupMessages(w http.ResponseWriter, r *http.Request) {
 		if _, exists := senders[item.SenderID]; !exists {
 			sender, lookupErr := x.app.UserContext(r.Context(), item.SenderID)
 			if lookupErr == nil {
-				x.signAvatarURL(sender)
+				x.setAdminAvatarURL(sender)
 				senders[item.SenderID] = sender
 			} else {
 				senders[item.SenderID] = &model.User{ID: item.SenderID, Name: item.SenderID}
@@ -144,7 +144,7 @@ func (x *API) adminGroupMessages(w http.ResponseWriter, r *http.Request) {
 	x.app.RecordAdminAudit(uid(r), "group.message.history.viewed", "group", groupID, "success", x.clientIP(r), map[string]any{"beforeSeq": before, "returned": len(result)})
 	write(w, 200, map[string]any{"items": result, "nextBeforeSeq": next})
 }
-func (x *API) adminMessageWithDownloadURL(ctx context.Context, message *model.Message) (*model.Message, error) {
+func (x *API) adminMessageWithDownloadURL(_ context.Context, message *model.Message) (*model.Message, error) {
 	if message == nil {
 		return nil, nil
 	}
@@ -160,12 +160,20 @@ func (x *API) adminMessageWithDownloadURL(ctx context.Context, message *model.Me
 	if mediaID == "" || x.media == nil {
 		return &copy, nil
 	}
-	x.enrichVideoCover(ctx, mediaID, copy.Body)
-	url, err := x.media.DownloadURL(ctx, mediaID)
-	if err != nil {
-		return nil, err
+	delete(copy.Body, "cover")
+	delete(copy.Body, "coverMediaId")
+	delete(copy.Body, "coverLocalPath")
+	if item, err := x.app.GetMedia(mediaID); err == nil && item.CoverMediaID != "" {
+		copy.Body["coverMediaId"] = item.CoverMediaID
+		copy.Body["cover"] = x.permanentMediaURL(mediaID, true)
 	}
-	copy.Body["downloadUrl"] = url
+	permanentURL := x.permanentMediaURL(mediaID, false)
+	copy.Body["downloadUrl"] = permanentURL
+	for _, key := range []string{"url", "fileUrl", "imageUrl", "videoUrl"} {
+		if _, exists := copy.Body[key]; exists {
+			copy.Body[key] = permanentURL
+		}
+	}
 	return &copy, nil
 }
 
@@ -196,7 +204,7 @@ func (x *API) adminGroupBlacklist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, item := range items {
-		x.signAvatarURL(item.User)
+		x.setAdminAvatarURL(item.User)
 	}
 	write(w, 200, map[string]any{"items": items})
 }

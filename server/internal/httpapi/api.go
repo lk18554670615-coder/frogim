@@ -514,6 +514,8 @@ func (x *API) routes() {
 	x.mux.Handle("POST /v2/admin/sticker-packs/{id}/items", x.requireAdmin(http.HandlerFunc(x.adminSaveStickerItem)))
 	x.mux.Handle("PUT /v2/admin/sticker-packs/{id}/items/{itemId}", x.requireAdmin(http.HandlerFunc(x.adminSaveStickerItem)))
 	x.mux.Handle("POST /v2/admin/sticker-packs/{id}/review", x.requireAdmin(http.HandlerFunc(x.reviewAdminStickerPack)))
+	x.mux.HandleFunc("GET /v2/media-public/{id}/{signature}/{kind}", x.permanentMediaContent)
+	x.mux.HandleFunc("HEAD /v2/media-public/{id}/{signature}/{kind}", x.permanentMediaContent)
 	x.registerWukongAdminRoutes("/v2/admin")
 	x.registerBusinessAdminRoutes("/v2/admin")
 	x.mux.HandleFunc("/api/v2/admin/", func(w http.ResponseWriter, r *http.Request) {
@@ -3109,7 +3111,7 @@ func (x *API) adminUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, item := range items {
-		x.signAvatarURL(item)
+		x.setAdminAvatarURL(item)
 	}
 	decorated, err := x.adminAccessUsers(r.Context(), items, ip)
 	if err != nil {
@@ -3131,7 +3133,7 @@ func (x *API) adminUserOverview(w http.ResponseWriter, r *http.Request) {
 			handleErr(w, err)
 			return
 		}
-		x.signAvatarURL(user)
+		x.setAdminAvatarURL(user)
 		decorated, err := x.adminAccessUsers(r.Context(), []*model.User{user}, "")
 		if err != nil {
 			handleErr(w, err)
@@ -3141,7 +3143,7 @@ func (x *API) adminUserOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	if invitation, ok := item["invitation"].(map[string]any); ok {
 		if inviter, ok := invitation["invitedBy"].(*model.User); ok {
-			x.signAvatarURL(inviter)
+			x.setAdminAvatarURL(inviter)
 		}
 	}
 	x.app.RecordAdminAudit(uid(r), "user.ip.viewed", "user", r.PathValue("id"), "success", x.clientIP(r), map[string]any{"returned": 1})
@@ -3159,7 +3161,7 @@ func (x *API) adminUserFriends(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, item := range items {
-		x.signAvatarURL(item.User)
+		x.setAdminAvatarURL(item.User)
 	}
 	write(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -3175,7 +3177,7 @@ func (x *API) adminUserBlocks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, item := range items {
-		x.signAvatarURL(item.User)
+		x.setAdminAvatarURL(item.User)
 	}
 	write(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -3434,7 +3436,20 @@ func (x *API) adminMedia(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
-	write(w, http.StatusOK, map[string]any{"items": items, "total": total, "nextCursor": next})
+	type itemWithURL struct {
+		*model.Media
+		DownloadURL string `json:"downloadUrl"`
+		CoverURL    string `json:"coverUrl,omitempty"`
+	}
+	result := make([]itemWithURL, 0, len(items))
+	for _, item := range items {
+		coverURL := ""
+		if item.CoverMediaID != "" {
+			coverURL = x.permanentMediaURL(item.ID, true)
+		}
+		result = append(result, itemWithURL{Media: item, DownloadURL: x.permanentMediaURL(item.ID, false), CoverURL: coverURL})
+	}
+	write(w, http.StatusOK, map[string]any{"items": result, "total": total, "nextCursor": next})
 }
 func (x *API) adminOnline(w http.ResponseWriter, r *http.Request) {
 	if x.wukongSetupErr != nil || x.wukongClient == nil {
@@ -3585,11 +3600,11 @@ func (x *API) adminGroups(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, item := range items {
 		if owner, ok := item["owner"].(*model.User); ok {
-			x.signAvatarURL(owner)
+			x.setAdminAvatarURL(owner)
 		}
 		if avatar, ok := item["avatarUrl"].(string); ok {
 			if mediaID := avatarMediaIDFromPath(avatar); mediaID != "" {
-				item["avatarUrl"] = x.signedAvatarValue(mediaID)
+				item["avatarUrl"] = x.permanentMediaURL(mediaID, false)
 			}
 		}
 	}
@@ -3602,11 +3617,11 @@ func (x *API) adminGroupOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if owner, ok := item["owner"].(*model.User); ok {
-		x.signAvatarURL(owner)
+		x.setAdminAvatarURL(owner)
 	}
 	if avatar, ok := item["avatarUrl"].(string); ok {
 		if mediaID := avatarMediaIDFromPath(avatar); mediaID != "" {
-			item["avatarUrl"] = x.signedAvatarValue(mediaID)
+			item["avatarUrl"] = x.permanentMediaURL(mediaID, false)
 		}
 	}
 	write(w, http.StatusOK, item)
@@ -3621,7 +3636,7 @@ func (x *API) adminGroupMembers(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, item := range items {
 		if mediaID := avatarMediaIDFromPath(item.AvatarURL); mediaID != "" {
-			item.AvatarURL = x.signedAvatarValue(mediaID)
+			item.AvatarURL = x.permanentMediaURL(mediaID, false)
 		}
 	}
 	write(w, http.StatusOK, map[string]any{"items": items, "total": total, "nextCursor": next})

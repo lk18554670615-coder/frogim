@@ -130,7 +130,7 @@ func (x *API) adminInviteCodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for index := range page.Items {
-		x.signAvatarURL(page.Items[index].User)
+		x.setAdminAvatarURL(page.Items[index].User)
 	}
 	write(w, http.StatusOK, inviteCodePayload(page))
 }
@@ -142,8 +142,8 @@ func (x *API) adminInviteRelations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for index := range page.Items {
-		x.signAvatarURL(page.Items[index].Inviter)
-		x.signAvatarURL(page.Items[index].Invitee)
+		x.setAdminAvatarURL(page.Items[index].Inviter)
+		x.setAdminAvatarURL(page.Items[index].Invitee)
 	}
 	write(w, http.StatusOK, page)
 }

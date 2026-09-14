@@ -8,6 +8,48 @@ import (
 	"github.com/linli/im/server/internal/store"
 )
 
+func (x *API) adminStickerItemJSON(item *store.StickerItem) map[string]any {
+	value := stickerItemJSON(item)
+	value["url"] = x.permanentMediaURL(item.MediaID, false)
+	return value
+}
+
+func (x *API) adminStickerPackJSON(item *store.StickerPack) map[string]any {
+	value := stickerPackJSON(item)
+	value["coverUrl"] = x.permanentMediaURL(item.CoverMediaID, false)
+	items := make([]map[string]any, 0, len(item.Items))
+	for _, sticker := range item.Items {
+		items = append(items, x.adminStickerItemJSON(sticker))
+	}
+	value["items"] = items
+	return value
+}
+
+func (x *API) adminMomentJSON(item *store.Moment) map[string]any {
+	value := momentJSON(item)
+	value["authorAvatarUrl"] = x.permanentLocalMediaValue(item.AuthorAvatarURL)
+	media := make([]map[string]any, 0, len(item.Media))
+	for _, attachment := range item.Media {
+		entry := map[string]any{
+			"id": attachment.ID, "mime": attachment.MIME,
+			"url": x.permanentMediaURL(attachment.ID, false),
+		}
+		if stored, err := x.app.GetMedia(attachment.ID); err == nil && stored.CoverMediaID != "" {
+			entry["coverUrl"] = x.permanentMediaURL(attachment.ID, true)
+		}
+		media = append(media, entry)
+	}
+	value["media"] = media
+	comments := make([]map[string]any, 0, len(item.Comments))
+	for _, comment := range item.Comments {
+		entry := momentCommentJSON(comment)
+		entry["authorAvatarUrl"] = x.permanentLocalMediaValue(comment.AuthorAvatarURL)
+		comments = append(comments, entry)
+	}
+	value["comments"] = comments
+	return value
+}
+
 func stickerCategoryJSON(item *store.StickerCategory) map[string]any {
 	return map[string]any{
 		"id": item.ID, "name": item.Name, "sortOrder": item.SortOrder,
@@ -86,7 +128,7 @@ func (x *API) adminSaveStickerPack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	x.app.RecordAdminAudit(uid(r), "sticker.pack.save", "sticker_pack", item.ID, "success", x.clientIP(r), map[string]any{"reason": strings.TrimSpace(request.Reason)})
-	write(w, http.StatusOK, map[string]any{"item": stickerPackJSON(item)})
+	write(w, http.StatusOK, map[string]any{"item": x.adminStickerPackJSON(item)})
 }
 
 func (x *API) adminSaveStickerItem(w http.ResponseWriter, r *http.Request) {
@@ -117,7 +159,7 @@ func (x *API) adminSaveStickerItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	x.app.RecordAdminAudit(uid(r), "sticker.item.save", "sticker_item", item.ID, "success", x.clientIP(r), map[string]any{"reason": strings.TrimSpace(request.Reason), "packId": item.PackID})
-	write(w, http.StatusOK, map[string]any{"item": stickerItemJSON(item)})
+	write(w, http.StatusOK, map[string]any{"item": x.adminStickerItemJSON(item)})
 }
 
 func (x *API) adminMoments(w http.ResponseWriter, r *http.Request) {
@@ -130,7 +172,7 @@ func (x *API) adminMoments(w http.ResponseWriter, r *http.Request) {
 	}
 	result := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		result = append(result, momentJSON(item))
+		result = append(result, x.adminMomentJSON(item))
 	}
 	write(w, http.StatusOK, map[string]any{"items": result, "total": total, "nextCursor": next})
 }
@@ -162,7 +204,7 @@ func (x *API) adminStickerPacks(w http.ResponseWriter, r *http.Request) {
 	}
 	result := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		value := stickerPackJSON(item)
+		value := x.adminStickerPackJSON(item)
 		value["createdBy"] = item.CreatedBy
 		value["reviewedBy"] = item.ReviewedBy
 		value["reviewReason"] = item.ReviewReason
@@ -187,7 +229,7 @@ func (x *API) reviewAdminStickerPack(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
-	value := stickerPackJSON(item)
+	value := x.adminStickerPackJSON(item)
 	value["createdBy"] = item.CreatedBy
 	value["reviewedBy"] = item.ReviewedBy
 	value["reviewReason"] = item.ReviewReason
