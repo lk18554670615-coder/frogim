@@ -1490,8 +1490,18 @@ func TestUserProfilePhoneDevicesFavoritesAndFeedback(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = res.Body.Close()
-	if profile.Handle != "alice_2026" || profile.Gender != "female" || profile.AvatarMediaID != "avatar-alice" || !strings.HasPrefix(profile.AvatarURL, "/v2/avatars/avatar-alice?") {
+	if profile.Handle != "alice_2026" || profile.Gender != "female" || profile.AvatarMediaID != "avatar-alice" || !strings.HasPrefix(profile.AvatarURL, "/v2/media-public/avatar-alice/") || !strings.HasSuffix(profile.AvatarURL, "/content") || strings.Contains(profile.AvatarURL, "?") {
 		t.Fatalf("profile=%+v", profile)
+	}
+	firstAvatarURL := profile.AvatarURL
+	res = authenticatedRequest(t, http.MethodGet, ts.URL+"/v2/users/me", token, "")
+	var refreshedProfile model.User
+	if decodeErr := json.NewDecoder(res.Body).Decode(&refreshedProfile); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK || refreshedProfile.AvatarURL != firstAvatarURL {
+		t.Fatalf("avatar URL changed across profile refresh: first=%q refreshed=%q", firstAvatarURL, refreshedProfile.AvatarURL)
 	}
 	bobToken := loginToken(t, ts.URL, "13800000002")
 	handleConflict := authenticatedRequest(t, http.MethodPatch, ts.URL+"/v2/users/me", bobToken, `{"handle":"alice_2026"}`)
@@ -1520,7 +1530,7 @@ func TestUserProfilePhoneDevicesFavoritesAndFeedback(t *testing.T) {
 		t.Fatal(err)
 	}
 	if avatarResponse.StatusCode == http.StatusForbidden {
-		t.Fatalf("signed avatar URL was rejected: %s", profile.AvatarURL)
+		t.Fatalf("stable avatar URL was rejected: %s", profile.AvatarURL)
 	}
 	_ = avatarResponse.Body.Close()
 	invalidAvatar, _ := http.Get(ts.URL + "/v2/avatars/avatar-alice?expires=1&signature=invalid")
@@ -1546,7 +1556,7 @@ func TestUserProfilePhoneDevicesFavoritesAndFeedback(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = res.Body.Close()
-	if res.StatusCode != http.StatusOK || len(search.Items) != 1 || !strings.HasPrefix(search.Items[0].AvatarURL, "/v2/avatars/avatar-bob?") {
+	if res.StatusCode != http.StatusOK || len(search.Items) != 1 || !strings.HasPrefix(search.Items[0].AvatarURL, "/v2/media-public/avatar-bob/") || !strings.HasSuffix(search.Items[0].AvatarURL, "/content") || strings.Contains(search.Items[0].AvatarURL, "?") {
 		t.Fatalf("search avatar status=%d items=%+v", res.StatusCode, search.Items)
 	}
 
@@ -3023,7 +3033,7 @@ func TestGroupManagementHTTPContractPostgres(t *testing.T) {
 	var profile model.GroupProfile
 	_ = json.NewDecoder(res.Body).Decode(&profile)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || profile.QRToken == "" || profile.AllowMemberAddFriend || strings.Contains(profile.QRToken, phones[0]) || !strings.HasPrefix(profile.AvatarURL, "/v2/avatars/"+avatarID+"?") {
+	if res.StatusCode != http.StatusOK || profile.QRToken == "" || profile.AllowMemberAddFriend || strings.Contains(profile.QRToken, phones[0]) || !strings.HasPrefix(profile.AvatarURL, "/v2/media-public/"+avatarID+"/") || !strings.HasSuffix(profile.AvatarURL, "/content") || strings.Contains(profile.AvatarURL, "?") {
 		t.Fatalf("profile status=%d value=%+v", res.StatusCode, profile)
 	}
 	res = authenticatedRequest(t, http.MethodPut, ts.URL+"/v2/channels/groups/"+group.ID+"/announcement", ownerToken, `{"content":"Welcome"}`)

@@ -23,6 +23,8 @@ class LinliNetworkImage extends StatelessWidget {
     this.semanticLabel,
     this.placeholderBuilder,
     this.errorBuilder,
+    this.fadeInDuration = const Duration(milliseconds: 90),
+    this.useOldImageOnUrlChange = false,
   });
 
   final String url;
@@ -34,6 +36,8 @@ class LinliNetworkImage extends StatelessWidget {
   final String? semanticLabel;
   final WidgetBuilder? placeholderBuilder;
   final WidgetBuilder? errorBuilder;
+  final Duration fadeInDuration;
+  final bool useOldImageOnUrlChange;
 
   @override
   Widget build(BuildContext context) {
@@ -49,8 +53,9 @@ class LinliNetworkImage extends StatelessWidget {
       height: height,
       fit: fit,
       filterQuality: filterQuality,
-      fadeInDuration: const Duration(milliseconds: 90),
+      fadeInDuration: fadeInDuration,
       fadeOutDuration: Duration.zero,
+      useOldImageOnUrlChange: useOldImageOnUrlChange,
       imageBuilder: semanticLabel == null
           ? null
           : (context, provider) => Image(
@@ -170,6 +175,19 @@ class PersonAvatar extends StatelessWidget {
             AppConfig.apiBaseUrl.isNotEmpty
         ? '${AppConfig.apiBaseUrl}$avatarUrl'
         : avatarUrl;
+    final fallback = Center(
+      child: Text(
+        name.characters.take(1).toString(),
+        textScaler: MediaQuery.textScalerOf(
+          context,
+        ).clamp(maxScaleFactor: 1.25),
+        style: TextStyle(
+          color: foreground,
+          fontSize: size * .38,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
     return SizedBox.square(
       dimension: size,
       child: Stack(
@@ -181,17 +199,7 @@ class PersonAvatar extends StatelessWidget {
             decoration: BoxDecoration(color: color, shape: BoxShape.circle),
             alignment: Alignment.center,
             child: resolvedAvatarUrl == null
-                ? Text(
-                    name.characters.take(1).toString(),
-                    textScaler: MediaQuery.textScalerOf(
-                      context,
-                    ).clamp(maxScaleFactor: 1.25),
-                    style: TextStyle(
-                      color: foreground,
-                      fontSize: size * .38,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  )
+                ? fallback
                 : resolvedAvatarUrl.startsWith('assets/')
                 ? Image.asset(
                     resolvedAvatarUrl,
@@ -202,25 +210,16 @@ class PersonAvatar extends StatelessWidget {
                   )
                 : LinliNetworkImage(
                     url: resolvedAvatarUrl,
-                    cacheKey: resolvedAvatarUrl,
+                    cacheKey: avatarImageCacheKey(resolvedAvatarUrl),
                     width: size,
                     height: size,
                     fit: BoxFit.cover,
                     semanticLabel: '$name 的头像',
-                    placeholderBuilder: (_) => ColoredBox(
-                      color: color,
-                      child: const SizedBox.expand(),
-                    ),
-                    errorBuilder: (_) => Center(
-                      child: Text(
-                        name.characters.take(1).toString(),
-                        style: TextStyle(
-                          color: foreground,
-                          fontSize: size * .38,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
+                    fadeInDuration: Duration.zero,
+                    useOldImageOnUrlChange: true,
+                    placeholderBuilder: (_) =>
+                        ColoredBox(color: color, child: fallback),
+                    errorBuilder: (_) => fallback,
                   ),
           ),
           if (online)
@@ -244,6 +243,34 @@ class PersonAvatar extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Keep one cache entry for one immutable avatar even while an older server
+/// rotates URL signatures. New uploads receive a new media id and therefore a
+/// new key. External URLs retain their complete value to avoid false sharing.
+String avatarImageCacheKey(String value) {
+  final uri = Uri.tryParse(value);
+  if (uri == null) return value;
+  final segments = uri.pathSegments;
+  if (segments.length >= 3 &&
+      segments[0] == 'v2' &&
+      segments[1] == 'avatars' &&
+      segments[2].isNotEmpty) {
+    return 'avatar:${segments[2]}';
+  }
+  if (segments.length >= 4 &&
+      segments[0] == 'v2' &&
+      segments[1] == 'media-public' &&
+      segments[2].isNotEmpty) {
+    return 'avatar:${segments[2]}';
+  }
+  if (segments.length >= 3 &&
+      segments[0] == 'v2' &&
+      segments[1] == 'media' &&
+      segments[2].isNotEmpty) {
+    return 'avatar:${segments[2]}';
+  }
+  return value;
 }
 
 class LinliSearchBar extends StatelessWidget {

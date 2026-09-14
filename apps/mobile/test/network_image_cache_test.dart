@@ -74,6 +74,51 @@ void main() {
     expect(image.fadeOutDuration, Duration.zero);
   });
 
+  testWidgets('头像签名变化时复用媒体缓存并保留旧图', (tester) async {
+    Widget avatar(String signature) => MaterialApp(
+      home: Scaffold(
+        body: PersonAvatar(
+          name: '青蛙',
+          avatarUrl:
+              'https://api.example.com/v2/avatars/avatar-7?expires=123&signature=$signature',
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(avatar('first'));
+    var image = tester.widget<CachedNetworkImage>(
+      find.byType(CachedNetworkImage),
+    );
+    expect(image.cacheKey, 'avatar:avatar-7');
+    expect(image.fadeInDuration, Duration.zero);
+    expect(image.useOldImageOnUrlChange, isTrue);
+
+    await tester.pumpWidget(avatar('second'));
+    image = tester.widget<CachedNetworkImage>(find.byType(CachedNetworkImage));
+    expect(image.imageUrl, contains('signature=second'));
+    expect(image.cacheKey, 'avatar:avatar-7');
+    expect(image.useOldImageOnUrlChange, isTrue);
+  });
+
+  test('固定头像地址与鉴权媒体地址均按媒体 ID 缓存', () {
+    expect(
+      avatarImageCacheKey(
+        'https://api.example.com/v2/media-public/avatar-8/permanent/content',
+      ),
+      'avatar:avatar-8',
+    );
+    expect(
+      avatarImageCacheKey(
+        'https://api.example.com/v2/media/avatar-9/content?viewer=me',
+      ),
+      'avatar:avatar-9',
+    );
+    expect(
+      avatarImageCacheKey('https://cdn.example.com/avatar.png?v=2'),
+      'https://cdn.example.com/avatar.png?v=2',
+    );
+  });
+
   testWidgets('聊天表情缩略图复用消息媒体缓存键', (tester) async {
     final message = ChatMessage(
       id: 'sticker-cache-message',

@@ -1882,12 +1882,12 @@ func (x *API) signAvatarURL(user *model.User) {
 }
 
 func (x *API) signedAvatarValue(mediaID string) string {
-	expires := time.Now().Add(15 * time.Minute).Unix()
-	payload := mediaID + ":" + strconv.FormatInt(expires, 10)
-	mac := hmac.New(sha256.New, []byte(x.cfg.JWTSecret))
-	_, _ = mac.Write([]byte(payload))
-	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	return "/v2/avatars/" + mediaID + "?expires=" + strconv.FormatInt(expires, 10) + "&signature=" + signature
+	// Avatar URLs are part of frequently refreshed conversation, contact and
+	// membership payloads. A timestamped URL made the same immutable avatar
+	// acquire a new client cache key on every refresh, causing redundant loads
+	// and visible placeholder flashes. Keep the legacy /v2/avatars route for old
+	// clients, but issue the stable capability URL for all new responses.
+	return x.permanentMediaURL(mediaID, false)
 }
 
 func avatarMediaIDFromPath(value string) string {
