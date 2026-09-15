@@ -23,6 +23,7 @@ import '../../calls/call_models.dart';
 import '../../core/app_controller.dart';
 import '../../core/app_config.dart';
 import '../../core/app_theme.dart';
+import '../../core/chat_image_batch.dart';
 import '../../core/emoji_catalog.dart';
 import '../../core/group_send_policy.dart';
 import '../../core/image_clipboard.dart';
@@ -1289,17 +1290,37 @@ class _ChatScreenState extends State<ChatScreen> {
       _showError(restriction);
       return;
     }
+    final imageFiles = files.where(_isWebImage).toList();
+    if (imageFiles.length > maxChatImageSelection) {
+      _showError('一次最多发送 9 张图片，请重新选择');
+      return;
+    }
     if (files.length > 10) {
       _showError('一次最多发送 10 个文件');
       return;
     }
     _selectingAttachment = true;
     try {
-      for (final file in files) {
+      if (imageFiles.length == files.length) {
+        await _sendChatImages([
+          for (final file in imageFiles)
+            ChatImageSource(name: file.name, readBytes: () async => file.bytes),
+        ]);
+        return;
+      }
+      if (imageFiles.isNotEmpty) {
+        await _sendChatImages([
+          for (final file in imageFiles)
+            ChatImageSource(name: file.name, readBytes: () async => file.bytes),
+        ]);
+        if (!mounted) return;
+      }
+      final otherFiles = files.where((file) => !_isWebImage(file)).toList();
+      for (final file in otherFiles) {
         _validateMediaSize(file.bytes.length);
       }
       final reply = replyingTo;
-      for (final file in files) {
+      for (final file in otherFiles) {
         if (!mounted) return;
         if (_effectiveSendRestriction case final restriction?) {
           _showError(restriction);
@@ -1308,9 +1329,7 @@ class _ChatScreenState extends State<ChatScreen> {
         final mime = file.mimeType == 'application/octet-stream'
             ? _mimeFor(file.name)
             : file.mimeType;
-        final kind = mime.startsWith('image/')
-            ? MessageContentKind.image
-            : mime.startsWith('video/')
+        final kind = mime.startsWith('video/')
             ? MessageContentKind.video
             : MessageContentKind.file;
         final upload = kind == MessageContentKind.video
@@ -1353,6 +1372,84 @@ class _ChatScreenState extends State<ChatScreen> {
     } finally {
       _selectingAttachment = false;
     }
+  }
+
+  bool _isWebImage(WebPickedFile file) {
+    final mime = file.mimeType == 'application/octet-stream'
+        ? _mimeFor(file.name)
+        : file.mimeType;
+    return mime.startsWith('image/') ||
+        hasSupportedChatImageSignature(file.bytes);
+  }
+
+  Future<void> _sendChatImages(List<ChatImageSource> sources) async {
+    if (sources.isEmpty) return;
+    if (sources.length > maxChatImageSelection) {
+      _showError('一次最多发送 9 张图片，请重新选择');
+      return;
+    }
+    if (_effectiveSendRestriction case final restriction?) {
+      _showError(restriction);
+      return;
+    }
+    final conversationId = widget.conversation.id;
+    final accountId = widget.controller.currentUser?.id;
+    final reply = replyingTo;
+    var replyCleared = false;
+    if (mounted) {
+      setState(() {
+        showAttachments = false;
+        showEmoji = false;
+      });
+    }
+    final result = await sendChatImageBatch(
+      sources: sources,
+      maxBytes: AppConfig.mediaMaxBytes,
+      maxConcurrent: maxConcurrentChatImageUploads,
+      shouldContinue: () =>
+          mounted &&
+          widget.conversation.id == conversationId &&
+          widget.controller.currentUser?.id == accountId,
+      send: (upload, onQueued) {
+        if (_effectiveSendRestriction case final restriction?) {
+          throw FormatException(restriction);
+        }
+        return widget.controller.sendMedia(
+          conversationId,
+          upload,
+          replyTo: reply,
+          onQueued: onQueued,
+        );
+      },
+      onQueued: (_) {
+        if (!mounted || widget.conversation.id != conversationId) return;
+        if (!replyCleared) {
+          replyCleared = true;
+          setState(() => replyingTo = null);
+        }
+        _scrollToEnd();
+      },
+    );
+    if (!mounted || widget.conversation.id != conversationId) return;
+    if (result.failed == 0 && result.notStarted == 0) {
+      if (sources.length > 1) {
+        _showError('已发送 ${result.succeeded} 张图片');
+      }
+      return;
+    }
+    final retryable = result.failures
+        .where((failure) => failure.retryAvailable)
+        .length;
+    final details = result.failures
+        .take(2)
+        .map((failure) => '${failure.fileName}：${failure.message}')
+        .join('；');
+    final stopped = result.notStarted == 0 ? '' : '，${result.notStarted} 张未开始';
+    final retryHint = retryable == 0 ? '' : '；发送失败的消息可点击重试';
+    _showError(
+      '已发送 ${result.succeeded} 张，${result.failed} 张失败$stopped'
+      '${details.isEmpty ? '' : '；$details'}$retryHint',
+    );
   }
 
   Future<void> _startCall(CallMediaType mediaType) async {
@@ -2111,34 +2208,75 @@ class _ChatScreenState extends State<ChatScreen> {
         return;
       }
       MediaUpload? upload;
-      if (label == '相册' || label == '拍摄') {
-        final source = label == '拍摄' ? ImageSource.camera : ImageSource.gallery;
+      if (label == '相册') {
+        final picked = await ImagePicker().pickMultiImage(
+          limit: maxChatImageSelection,
+        );
+        if (picked.isEmpty) return;
+        if (picked.length > maxChatImageSelection) {
+          _showError('一次最多发送 9 张图片，请重新选择');
+          return;
+        }
+        if (picked.length > 1) {
+          await _sendChatImages([
+            for (final file in picked)
+              ChatImageSource(name: file.name, readBytes: file.readAsBytes),
+          ]);
+          return;
+        }
+        final file = picked.single;
+        final original = await file.readAsBytes();
+        if (!mounted) return;
+        if (isGifImageBytes(original)) {
+          _validateMediaSize(original.length);
+          final localPath = await persistImageBytes(
+            original,
+            mime: 'image/gif',
+            extension: '.gif',
+          );
+          upload = MediaUpload(
+            bytes: original,
+            fileName: file.name,
+            mimeType: 'image/gif',
+            kind: MessageContentKind.image,
+            localPath: localPath,
+          );
+        } else {
+          final bytes = await editImageBeforeSending(context, original);
+          if (!mounted || bytes == null) return;
+          _validateMediaSize(bytes.length);
+          final localPath = await persistEditedImage(bytes);
+          upload = MediaUpload(
+            bytes: bytes,
+            fileName: _editedImageName(file.name),
+            mimeType: 'image/jpeg',
+            kind: MessageContentKind.image,
+            localPath: localPath,
+          );
+        }
+      } else if (label == '拍摄') {
         final picked = await ImagePicker().pickImage(
-          source: source,
-          // Android's picker may transcode a gallery GIF to JPEG while
-          // retaining the .gif name when resize/quality options are present.
-          // Gallery bytes must stay original until we inspect their MIME.
-          imageQuality: source == ImageSource.camera ? 88 : null,
-          maxWidth: source == ImageSource.camera ? 2400 : null,
+          source: ImageSource.camera,
+          imageQuality: 88,
+          maxWidth: 2400,
         );
         if (picked == null) return;
         final original = await picked.readAsBytes();
         if (!mounted) return;
-        final pickedMime = _mimeFor(picked.name);
-        if (pickedMime == 'image/gif') {
+        if (isGifImageBytes(original)) {
           // Editing/encoding an animated GIF as JPEG silently destroys its
           // animation. Preserve the validated original and let MessageMapper
           // select WuKongIM's pinned built-in content type 3.
           _validateMediaSize(original.length);
           final localPath = await persistImageBytes(
             original,
-            mime: pickedMime,
+            mime: 'image/gif',
             extension: '.gif',
           );
           upload = MediaUpload(
             bytes: original,
             fileName: picked.name,
-            mimeType: pickedMime,
+            mimeType: 'image/gif',
             kind: MessageContentKind.image,
             localPath: localPath,
           );
