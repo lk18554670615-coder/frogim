@@ -2101,7 +2101,18 @@ class ConversationTile extends StatelessWidget {
               );
             },
             child: Container(
+              key: ValueKey('conversation-frame-${conversation.id}'),
               constraints: const BoxConstraints(minHeight: 74),
+              decoration: highlighted
+                  ? BoxDecoration(
+                      border: Border(
+                        left: BorderSide(
+                          color: context.linli.pinnedConversationBorder,
+                          width: 3,
+                        ),
+                      ),
+                    )
+                  : null,
               child: Row(
                 children: [
                   Padding(
@@ -2135,62 +2146,26 @@ class ConversationTile extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          LayoutBuilder(
-                            builder: (context, constraints) {
-                              final compactPinnedLabel =
-                                  isOrdinaryGroupConversation(conversation) &&
-                                  constraints.maxWidth < 270 &&
-                                  MediaQuery.textScalerOf(context).scale(12) >
-                                      16;
-                              return Row(
-                                children: [
-                                  if (highlighted) ...[
-                                    Icon(
-                                      CupertinoIcons.pin_fill,
-                                      key: ValueKey(
-                                        'conversation-pinned-indicator-${conversation.id}',
-                                      ),
-                                      size: 12,
-                                      color: dark
-                                          ? LinliColors.darkPreview
-                                          : LinliColors.preview,
-                                    ),
-                                    if (!compactPinnedLabel) ...[
-                                      const SizedBox(width: 4),
-                                      Text(
-                                        '置顶',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .labelSmall
-                                            ?.copyWith(
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                      ),
-                                    ],
-                                    const SizedBox(width: 7),
-                                  ],
-                                  Expanded(
-                                    child: ConversationTitle(
-                                      conversation: conversation,
-                                      announceType: false,
-                                      textKey: ValueKey(
-                                        'conversation-title-${conversation.id}',
-                                      ),
-                                      name: controller.displayConversationName(
-                                        conversation,
-                                      ),
-                                    ),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: ConversationTitle(
+                                  conversation: conversation,
+                                  announceType: false,
+                                  textKey: ValueKey(
+                                    'conversation-title-${conversation.id}',
                                   ),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    _relativeTime(conversation.updatedAt),
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.labelSmall,
+                                  name: controller.displayConversationName(
+                                    conversation,
                                   ),
-                                ],
-                              );
-                            },
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                _relativeTime(conversation.updatedAt),
+                                style: Theme.of(context).textTheme.labelSmall,
+                              ),
+                            ],
                           ),
                           const SizedBox(height: 5),
                           Row(

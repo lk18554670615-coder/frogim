@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/app_controller.dart';
 import '../../core/app_theme.dart';
@@ -157,12 +158,42 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
           const SectionHeader('资料'),
           SectionCard(
             children: [
+              SettingTile(
+                key: const Key('friend-profile-nickname'),
+                icon: CupertinoIcons.person,
+                title: '网名',
+                subtitle: user.name,
+                trailing: IconButton(
+                  key: const Key('copy-friend-nickname'),
+                  tooltip: '复制网名',
+                  onPressed: () => _copyProfileField(user.name, '网名'),
+                  icon: const Icon(CupertinoIcons.doc_on_doc, size: 19),
+                ),
+                onTap: () => _copyProfileField(user.name, '网名'),
+              ),
               if (showHandle)
                 SettingTile(
                   key: const Key('friend-profile-handle'),
                   icon: CupertinoIcons.at,
                   title: '呱呱号',
                   subtitle: publicUserHandleLabel(user.handle),
+                  trailing: publicUserHandle(user.handle) == null
+                      ? const SizedBox.shrink()
+                      : IconButton(
+                          key: const Key('copy-friend-handle'),
+                          tooltip: '复制呱呱号',
+                          onPressed: () => _copyProfileField(
+                            publicUserHandle(user.handle)!,
+                            '呱呱号',
+                          ),
+                          icon: const Icon(CupertinoIcons.doc_on_doc, size: 19),
+                        ),
+                  onTap: publicUserHandle(user.handle) == null
+                      ? null
+                      : () => _copyProfileField(
+                          publicUserHandle(user.handle)!,
+                          '呱呱号',
+                        ),
                 ),
               SettingTile(
                 icon: CupertinoIcons.quote_bubble,
@@ -335,6 +366,17 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
       blockedThisSession = success;
     });
     _feedback(success ? '已加入黑名单' : widget.controller.error ?? '操作失败');
+  }
+
+  Future<void> _copyProfileField(String value, String label) async {
+    final normalized = value.trim();
+    if (normalized.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: normalized));
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text('$label已复制')));
   }
 
   Future<bool> _confirm({

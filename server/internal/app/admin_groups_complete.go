@@ -69,6 +69,76 @@ func (a *App) AdminSetGroupBan(ctx context.Context, actor, groupID string, banne
 	}
 	return ErrUnavailable
 }
+
+func (a *App) AdminUpdateGroupSettings(ctx context.Context, update store.AdminGroupSettingsUpdate) (*store.AdminGroupSettingsResult, error) {
+	update.ActorID, update.GroupID, update.Reason = strings.TrimSpace(update.ActorID), strings.TrimSpace(update.GroupID), strings.TrimSpace(update.Reason)
+	if update.ActorID == "" || update.GroupID == "" || update.ExpectedUpdatedAt.IsZero() || update.Reason == "" || len([]rune(update.Reason)) > 500 {
+		return nil, ErrInvalid
+	}
+	fieldCount := 0
+	if update.Name != nil {
+		value := strings.TrimSpace(*update.Name)
+		if value == "" || len([]rune(value)) > 80 {
+			return nil, ErrInvalid
+		}
+		update.Name, fieldCount = &value, fieldCount+1
+	}
+	if update.AvatarMediaID != nil {
+		value := strings.TrimSpace(*update.AvatarMediaID)
+		if len(value) > 128 {
+			return nil, ErrInvalid
+		}
+		update.AvatarMediaID, fieldCount = &value, fieldCount+1
+	}
+	if update.Announcement != nil {
+		value := strings.TrimSpace(*update.Announcement)
+		if len([]rune(value)) > 5000 {
+			return nil, ErrInvalid
+		}
+		update.Announcement, fieldCount = &value, fieldCount+1
+	}
+	if update.JoinPolicy != nil {
+		value := strings.TrimSpace(*update.JoinPolicy)
+		valid := map[string]bool{"invite": true, "manager_invite": true, "member_approval": true, "qr": true, "closed": true}
+		if !valid[value] {
+			return nil, ErrInvalid
+		}
+		update.JoinPolicy, fieldCount = &value, fieldCount+1
+	}
+	if update.AllowMemberAddFriend != nil {
+		fieldCount++
+	}
+	if update.HistoryVisibleToNewMembers != nil {
+		fieldCount++
+	}
+	if update.AllMuted != nil {
+		fieldCount++
+	}
+	if update.MemberMessageRateLimitPerMinute != nil {
+		value := *update.MemberMessageRateLimitPerMinute
+		if value != 0 && value != 5 && value != 10 && value != 20 {
+			return nil, ErrInvalid
+		}
+		fieldCount++
+	}
+	if fieldCount == 0 {
+		return nil, ErrInvalid
+	}
+	update.At = time.Now().UTC()
+	s, ok := a.persistence.(store.AdminGroupManagementStore)
+	if !ok {
+		return nil, ErrUnavailable
+	}
+	result, err := s.AdminUpdateGroupSettings(ctx, update)
+	if err != nil {
+		return nil, mapStoreError(err)
+	}
+	if len(result.ChangedFields) > 0 {
+		ids, _ := a.InternalConversationMemberIDs(ctx, update.GroupID)
+		a.publish(ids, "group.profile.updated", map[string]any{"conversationId": update.GroupID, "changedFields": result.ChangedFields})
+	}
+	return result, nil
+}
 func (a *App) AdminRecallGroupMessage(ctx context.Context, actor, groupID, messageID, reason string) (bool, int64, error) {
 	if s, ok := a.persistence.(store.AdminGroupManagementStore); ok {
 		already, seq, _, err := s.AdminRecallGroupWukongMessage(ctx, strings.TrimSpace(groupID), strings.TrimSpace(messageID), strings.TrimSpace(actor), strings.TrimSpace(reason), time.Now().UTC())

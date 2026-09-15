@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -186,6 +188,205 @@ func (p *Postgres) AdminSetGroupMuteAll(ctx context.Context, actor, groupID stri
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func adminAnnouncementAuditValue(value string, version int64) map[string]any {
+	digest := sha256.Sum256([]byte(value))
+	return map[string]any{"version": version, "length": len([]rune(value)), "digest": hex.EncodeToString(digest[:8])}
+}
+
+func adminGroupAvatarMediaAllowed(mediaOwner, groupOwner, status, mime, objectKey, groupID string) bool {
+	return mediaOwner == groupOwner && status == "ready" && strings.HasPrefix(strings.ToLower(mime), "image/") && strings.HasPrefix(objectKey, "groups/"+groupID+"/")
+}
+
+// AdminUpdateGroupSettings applies every dirty setting while holding the group
+// and conversation rows. Validation, policy-version changes, events, audit and
+// WuKong reconciliation therefore either all commit or all roll back.
+func (p *Postgres) AdminUpdateGroupSettings(ctx context.Context, update AdminGroupSettingsUpdate) (*AdminGroupSettingsResult, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var name, avatarURL, ownerID, announcement, joinPolicy string
+	var announcementVersion, joinPolicyVersion, historyVersion, rateVersion int64
+	var allowMemberAddFriend, historyVisible bool
+	var rateLimit int
+	var allMutedUntil, dissolvedAt *time.Time
+	var updatedAt time.Time
+	err = tx.QueryRow(ctx, `SELECT c.title,c.avatar_url,g.owner_id,g.announcement,g.announcement_version,g.join_policy,g.join_policy_version,
+		g.allow_member_add_friend,g.history_visible_to_new_members,g.history_policy_version,g.member_message_rate_limit_per_minute,
+		g.message_rate_limit_version,g.all_muted_until,g.dissolved_at,g.updated_at
+		FROM im_groups g JOIN im_conversations c ON c.id=g.conversation_id WHERE g.conversation_id=$1 FOR UPDATE OF g,c`, update.GroupID).
+		Scan(&name, &avatarURL, &ownerID, &announcement, &announcementVersion, &joinPolicy, &joinPolicyVersion,
+			&allowMemberAddFriend, &historyVisible, &historyVersion, &rateLimit, &rateVersion, &allMutedUntil, &dissolvedAt, &updatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if dissolvedAt != nil {
+		return nil, ErrConflict
+	}
+	if update.ExpectedUpdatedAt.IsZero() || !updatedAt.Equal(update.ExpectedUpdatedAt) {
+		return nil, ErrGroupSettingsChanged
+	}
+
+	changed := make([]string, 0, 8)
+	before, after := map[string]any{}, map[string]any{}
+	profileChanged := false
+	avatarMediaID := strings.TrimPrefix(avatarURL, "/v2/media/")
+	if avatarMediaID == avatarURL {
+		avatarMediaID = ""
+	}
+
+	if update.Name != nil && *update.Name != name {
+		before["name"], after["name"] = name, *update.Name
+		name = *update.Name
+		changed = append(changed, "name")
+		profileChanged = true
+	}
+	if update.AvatarMediaID != nil && *update.AvatarMediaID != avatarMediaID {
+		if *update.AvatarMediaID != "" {
+			var mediaOwner, status, mime, objectKey string
+			if err = tx.QueryRow(ctx, `SELECT owner_id,status,mime,object_key FROM im_media WHERE id=$1`, *update.AvatarMediaID).Scan(&mediaOwner, &status, &mime, &objectKey); errors.Is(err, pgx.ErrNoRows) {
+				return nil, ErrNotFound
+			} else if err != nil {
+				return nil, err
+			}
+			if !adminGroupAvatarMediaAllowed(mediaOwner, ownerID, status, mime, objectKey, update.GroupID) {
+				return nil, ErrForbidden
+			}
+			avatarURL = "/v2/media/" + *update.AvatarMediaID
+		} else {
+			avatarURL = ""
+		}
+		before["avatarMediaId"], after["avatarMediaId"] = avatarMediaID, *update.AvatarMediaID
+		avatarMediaID = *update.AvatarMediaID
+		changed = append(changed, "avatarMediaId")
+		profileChanged = true
+	}
+	if update.Announcement != nil && *update.Announcement != announcement {
+		before["announcement"] = adminAnnouncementAuditValue(announcement, announcementVersion)
+		announcement = *update.Announcement
+		announcementVersion++
+		after["announcement"] = adminAnnouncementAuditValue(announcement, announcementVersion)
+		changed = append(changed, "announcement")
+	}
+	if update.JoinPolicy != nil && *update.JoinPolicy != joinPolicy {
+		before["joinPolicy"], after["joinPolicy"] = joinPolicy, *update.JoinPolicy
+		joinPolicy = *update.JoinPolicy
+		changed = append(changed, "joinPolicy")
+		profileChanged = true
+	}
+	if update.AllowMemberAddFriend != nil && *update.AllowMemberAddFriend != allowMemberAddFriend {
+		before["allowMemberAddFriend"], after["allowMemberAddFriend"] = allowMemberAddFriend, *update.AllowMemberAddFriend
+		allowMemberAddFriend = *update.AllowMemberAddFriend
+		changed = append(changed, "allowMemberAddFriend")
+		profileChanged = true
+	}
+	if update.HistoryVisibleToNewMembers != nil && *update.HistoryVisibleToNewMembers != historyVisible {
+		before["historyVisibleToNewMembers"], after["historyVisibleToNewMembers"] = historyVisible, *update.HistoryVisibleToNewMembers
+		historyVisible = *update.HistoryVisibleToNewMembers
+		historyVersion++
+		changed = append(changed, "historyVisibleToNewMembers")
+	}
+	if update.MemberMessageRateLimitPerMinute != nil && *update.MemberMessageRateLimitPerMinute != rateLimit {
+		before["memberMessageRateLimitPerMinute"], after["memberMessageRateLimitPerMinute"] = rateLimit, *update.MemberMessageRateLimitPerMinute
+		rateLimit = *update.MemberMessageRateLimitPerMinute
+		rateVersion++
+		changed = append(changed, "memberMessageRateLimitPerMinute")
+	}
+	currentAllMuted := allMutedUntil != nil && allMutedUntil.After(update.At)
+	if update.AllMuted != nil && *update.AllMuted != currentAllMuted {
+		before["allMuted"], after["allMuted"] = currentAllMuted, *update.AllMuted
+		currentAllMuted = *update.AllMuted
+		changed = append(changed, "allMuted")
+	}
+
+	if len(changed) == 0 {
+		if err = tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		group, overviewErr := p.AdminGroupOverview(ctx, update.GroupID)
+		return &AdminGroupSettingsResult{Group: group, ChangedFields: changed}, overviewErr
+	}
+
+	if _, err = tx.Exec(ctx, `UPDATE im_conversations SET title=$2,avatar_url=$3,updated_at=$4 WHERE id=$1`, update.GroupID, name, avatarURL, update.At); err != nil {
+		return nil, err
+	}
+	if update.JoinPolicy != nil && before["joinPolicy"] != nil {
+		if err = p.setGroupJoinPolicy(ctx, tx, update.ActorID, update.GroupID, joinPolicy, update.At); err != nil {
+			return nil, err
+		}
+		joinPolicyVersion++
+	}
+	nextAllMutedUntil := allMutedUntil
+	if update.AllMuted != nil {
+		nextAllMutedUntil = nil
+		if currentAllMuted {
+			value := permanentGroupMuteUntil
+			nextAllMutedUntil = &value
+		}
+	}
+	if _, err = tx.Exec(ctx, `UPDATE im_groups SET announcement=$2,announcement_version=$3,allow_member_add_friend=$4,
+		history_visible_to_new_members=$5,history_policy_version=$6,member_message_rate_limit_per_minute=$7,
+		message_rate_limit_version=$8,all_muted_until=$9,updated_at=$10 WHERE conversation_id=$1`,
+		update.GroupID, announcement, announcementVersion, allowMemberAddFriend, historyVisible, historyVersion,
+		rateLimit, rateVersion, nextAllMutedUntil, update.At); err != nil {
+		return nil, err
+	}
+	if before["historyVisibleToNewMembers"] != nil {
+		if _, err = tx.Exec(ctx, `UPDATE im_members SET last_read_seq=GREATEST(last_read_seq,COALESCE(history_after_seq,0)),manual_unread=false WHERE conversation_id=$1`, update.GroupID); err != nil {
+			return nil, err
+		}
+		if err = emitGroupSystem(ctx, tx, update.GroupID, update.ActorID, "group.history.updated", map[string]any{"historyVisibleToNewMembers": historyVisible, "historyPolicyVersion": historyVersion}, update.At); err != nil {
+			return nil, err
+		}
+	}
+	if before["announcement"] != nil {
+		if err = emitGroupSystem(ctx, tx, update.GroupID, update.ActorID, "group.announcement.updated", map[string]any{"announcementVersion": announcementVersion}, update.At); err != nil {
+			return nil, err
+		}
+	}
+	if before["memberMessageRateLimitPerMinute"] != nil {
+		ratePayload, _ := json.Marshal(map[string]any{"conversationId": update.GroupID, "memberMessageRateLimitPerMinute": rateLimit, "messageRateLimitVersion": rateVersion})
+		if _, err = appendMemberBusinessEvent(ctx, tx, update.GroupID, "group.message_rate.updated", ratePayload, update.At); err != nil {
+			return nil, err
+		}
+	}
+	if before["allMuted"] != nil {
+		if err = emitGroupSystem(ctx, tx, update.GroupID, update.ActorID, "group.mute_all.updated", map[string]any{"muted": currentAllMuted}, update.At); err != nil {
+			return nil, err
+		}
+		if err = enqueueWukongChannelReconcile(ctx, tx, update.GroupID, "admin-group-settings", update.At); err != nil {
+			return nil, err
+		}
+	}
+	if profileChanged {
+		if err = emitGroupSystem(ctx, tx, update.GroupID, update.ActorID, "group.profile.updated", map[string]any{"changedFields": changed, "joinPolicyVersion": joinPolicyVersion}, update.At); err != nil {
+			return nil, err
+		}
+	}
+	refreshPayload, _ := json.Marshal(map[string]any{"conversationId": update.GroupID, "changedFields": changed, "updatedAt": update.At})
+	if _, err = appendMemberBusinessEvent(ctx, tx, update.GroupID, "group.profile.updated", refreshPayload, update.At); err != nil {
+		return nil, err
+	}
+	auditID, tokenErr := secureOpaqueToken("aud_group_settings_")
+	if tokenErr != nil {
+		return nil, tokenErr
+	}
+	metadata, _ := json.Marshal(map[string]any{"reason": update.Reason, "changedFields": changed, "before": before, "after": after})
+	if _, err = tx.Exec(ctx, `INSERT INTO im_audits(id,actor_id,action,target_type,target_id,metadata,result,ip,created_at) VALUES($1,$2,'group.settings.updated','group',$3,$4,'success',$5,$6)`, auditID, update.ActorID, update.GroupID, metadata, update.RequestIP, update.At); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	group, err := p.AdminGroupOverview(ctx, update.GroupID)
+	return &AdminGroupSettingsResult{Group: group, ChangedFields: changed}, err
 }
 
 func (p *Postgres) AdminSetGroupBan(ctx context.Context, actor, groupID string, banned bool, reason string, at time.Time) error {

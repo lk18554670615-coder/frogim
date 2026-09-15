@@ -164,11 +164,19 @@ void main() {
           );
           expect(
             find.byKey(const ValueKey('conversation-pinned-indicator-c-team')),
-            findsOneWidget,
+            findsNothing,
           );
+          final frame = tester.widget<Container>(
+            find.byKey(const ValueKey('conversation-frame-c-team')),
+          );
+          final decoration = frame.decoration! as BoxDecoration;
+          final border = decoration.border! as Border;
+          expect(border.left.width, 3);
           expect(
-            find.text('置顶'),
-            width < 360 && scale > 1.4 ? findsNothing : findsOneWidget,
+            border.left.color,
+            brightness == Brightness.dark
+                ? LinliColors.darkPinnedConversationBorder
+                : LinliColors.pinnedConversationBorder,
           );
           expect(
             tester
@@ -177,7 +185,7 @@ void main() {
                 )
                 .width,
             greaterThanOrEqualTo(24),
-            reason: '群名不能被标签、时间和置顶挤没',
+            reason: '群名不能被类型标签和时间挤没',
           );
           expect(find.byIcon(CupertinoIcons.bell_slash_fill), findsOneWidget);
           expect(find.text('99'), findsNothing, reason: '免打扰保留原来的未读圆点');

@@ -14,6 +14,7 @@ abstract final class LinliColors {
   static const chatBackground = Color(0xFFE7EFF5);
   static const outgoingBubble = Color(0xFFDCEEFF);
   static const pinnedSurface = selectedSurface;
+  static const pinnedConversationBorder = Color(0xFF6EADD8);
   static const label = Color(0xFF182533);
   static const preview = Color(0xFF5B6B7A);
   static const tertiaryLabel = preview;
@@ -34,6 +35,7 @@ abstract final class LinliColors {
   static const darkOutgoingBubble = Color(0xFF244D6B);
   static const darkSelectedSurface = Color(0xFF203F57);
   static const darkPinnedSurface = darkSelectedSurface;
+  static const darkPinnedConversationBorder = Color(0xFF4A9FD9);
   static const darkLabel = Color(0xFFE8F0F7);
   static const darkPreview = Color(0xFFADBDCC);
   static const darkSeparator = Color(0xFF304454);
@@ -68,6 +70,9 @@ class LinliPalette {
       dark ? LinliColors.darkControlOutline : LinliColors.controlOutline;
   Color get selected =>
       dark ? LinliColors.darkSelectedSurface : LinliColors.selectedSurface;
+  Color get pinnedConversationBorder => dark
+      ? LinliColors.darkPinnedConversationBorder
+      : LinliColors.pinnedConversationBorder;
   Color get onSelected => link;
   Color get link => dark ? LinliColors.darkLink : LinliColors.link;
   Color get chatBackground =>

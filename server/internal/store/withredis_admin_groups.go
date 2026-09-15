@@ -41,6 +41,12 @@ func (p *WithRedis) AdminSetGroupBan(ctx context.Context, actor, groupID string,
 	}
 	return ErrUnsupported
 }
+func (p *WithRedis) AdminUpdateGroupSettings(ctx context.Context, update AdminGroupSettingsUpdate) (*AdminGroupSettingsResult, error) {
+	if s, ok := p.base.(AdminGroupManagementStore); ok {
+		return s.AdminUpdateGroupSettings(ctx, update)
+	}
+	return nil, ErrUnsupported
+}
 func (p *WithRedis) AdminRecallGroupWukongMessage(ctx context.Context, groupID, messageID, actor, reason string, at time.Time) (bool, int64, []string, error) {
 	if s, ok := p.base.(AdminGroupManagementStore); ok {
 		return s.AdminRecallGroupWukongMessage(ctx, groupID, messageID, actor, reason, at)

@@ -26,14 +26,15 @@ import (
 )
 
 var (
-	ErrNotFound           = errors.New("not found")
-	ErrForbidden          = errors.New("forbidden")
-	ErrConflict           = errors.New("conflict")
-	ErrInvalid            = errors.New("invalid input")
-	ErrUnavailable        = errors.New("service unavailable")
-	ErrFriendRequired     = errors.New("active friendship required")
-	ErrJoinPolicy         = errors.New("group join policy does not allow this operation")
-	ErrJoinRequestExpired = errors.New("group join request expired")
+	ErrNotFound             = errors.New("not found")
+	ErrForbidden            = errors.New("forbidden")
+	ErrConflict             = errors.New("conflict")
+	ErrInvalid              = errors.New("invalid input")
+	ErrUnavailable          = errors.New("service unavailable")
+	ErrFriendRequired       = errors.New("active friendship required")
+	ErrJoinPolicy           = errors.New("group join policy does not allow this operation")
+	ErrJoinRequestExpired   = errors.New("group join request expired")
+	ErrGroupSettingsChanged = errors.New("group settings changed")
 )
 
 var handlePattern = regexp.MustCompile(`^[a-z0-9_]{4,24}$`)
@@ -3923,6 +3924,8 @@ func mapStoreError(err error) error {
 		return ErrJoinPolicy
 	case store.ErrJoinRequestExpired:
 		return ErrJoinRequestExpired
+	case store.ErrGroupSettingsChanged:
+		return ErrGroupSettingsChanged
 	default:
 		return err
 	}

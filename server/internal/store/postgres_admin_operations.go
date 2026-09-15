@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -344,15 +345,17 @@ func (p *Postgres) AdminUserOverview(ctx context.Context, id string) (map[string
 
 func (p *Postgres) AdminGroupOverview(ctx context.Context, id string) (map[string]any, error) {
 	var title, avatar, ownerID, ownerPhone, ownerName, ownerHandle, ownerAvatar, announcement, joinPolicy, bannedBy, banReason string
-	var memberCount, announcementVersion, messageCount int64
+	var memberCount, announcementVersion, messageCount, joinPolicyVersion, messageRateLimitVersion int64
+	var memberMessageRateLimitPerMinute int
 	var allowMemberAddFriend, banned bool
 	var allMutedUntil, bannedAt, dissolvedAt *time.Time
+	var updatedAt time.Time
 	var historyVisible bool
 	var historyVersion int64
-	err := p.pool.QueryRow(ctx, `SELECT c.title,c.avatar_url,g.owner_id,owner.phone,owner.name,COALESCE(owner.handle,''),owner.avatar_url,g.announcement,g.announcement_version,g.join_policy,g.allow_member_add_friend,
+	err := p.pool.QueryRow(ctx, `SELECT c.title,c.avatar_url,g.owner_id,owner.phone,owner.name,COALESCE(owner.handle,''),owner.avatar_url,g.announcement,g.announcement_version,g.join_policy,g.join_policy_version,g.allow_member_add_friend,g.member_message_rate_limit_per_minute,g.message_rate_limit_version,
 		GREATEST(c.last_message_seq,COALESCE((SELECT max(message_seq) FROM im_wukong_message_index WHERE conversation_id=c.id),0)),(SELECT count(*) FROM im_members m WHERE m.conversation_id=c.id),
-		CASE WHEN g.all_muted_until>now() THEN g.all_muted_until END,g.banned,g.banned_at,g.banned_by,g.ban_reason,g.dissolved_at,g.history_visible_to_new_members,g.history_policy_version
-		FROM im_conversations c JOIN im_groups g ON g.conversation_id=c.id JOIN im_users owner ON owner.id=g.owner_id WHERE c.id=$1`, id).Scan(&title, &avatar, &ownerID, &ownerPhone, &ownerName, &ownerHandle, &ownerAvatar, &announcement, &announcementVersion, &joinPolicy, &allowMemberAddFriend, &messageCount, &memberCount, &allMutedUntil, &banned, &bannedAt, &bannedBy, &banReason, &dissolvedAt, &historyVisible, &historyVersion)
+		CASE WHEN g.all_muted_until>now() THEN g.all_muted_until END,g.banned,g.banned_at,g.banned_by,g.ban_reason,g.dissolved_at,g.history_visible_to_new_members,g.history_policy_version,g.updated_at
+		FROM im_conversations c JOIN im_groups g ON g.conversation_id=c.id JOIN im_users owner ON owner.id=g.owner_id WHERE c.id=$1`, id).Scan(&title, &avatar, &ownerID, &ownerPhone, &ownerName, &ownerHandle, &ownerAvatar, &announcement, &announcementVersion, &joinPolicy, &joinPolicyVersion, &allowMemberAddFriend, &memberMessageRateLimitPerMinute, &messageRateLimitVersion, &messageCount, &memberCount, &allMutedUntil, &banned, &bannedAt, &bannedBy, &banReason, &dissolvedAt, &historyVisible, &historyVersion, &updatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -360,7 +363,11 @@ func (p *Postgres) AdminGroupOverview(ctx context.Context, id string) (map[strin
 		return nil, err
 	}
 	owner := &model.User{ID: ownerID, Phone: ownerPhone, Name: ownerName, Handle: ownerHandle, AvatarURL: ownerAvatar}
-	return map[string]any{"id": id, "title": title, "avatarUrl": avatar, "ownerId": ownerID, "owner": owner, "announcement": announcement, "announcementVersion": announcementVersion, "joinPolicy": joinPolicy, "allowMemberAddFriend": allowMemberAddFriend, "messageCount": messageCount, "memberCount": memberCount, "allMutedUntil": allMutedUntil, "banned": banned, "bannedAt": bannedAt, "bannedBy": bannedBy, "banReason": banReason, "dissolvedAt": dissolvedAt, "historyVisibleToNewMembers": historyVisible, "historyPolicyVersion": historyVersion}, nil
+	avatarMediaID := strings.TrimPrefix(avatar, "/v2/media/")
+	if avatarMediaID == avatar {
+		avatarMediaID = ""
+	}
+	return map[string]any{"id": id, "title": title, "avatarUrl": avatar, "avatarMediaId": avatarMediaID, "ownerId": ownerID, "owner": owner, "announcement": announcement, "announcementVersion": announcementVersion, "joinPolicy": joinPolicy, "joinPolicyVersion": joinPolicyVersion, "allowMemberAddFriend": allowMemberAddFriend, "memberMessageRateLimitPerMinute": memberMessageRateLimitPerMinute, "messageRateLimitVersion": messageRateLimitVersion, "messageCount": messageCount, "memberCount": memberCount, "allMutedUntil": allMutedUntil, "banned": banned, "bannedAt": bannedAt, "bannedBy": bannedBy, "banReason": banReason, "dissolvedAt": dissolvedAt, "historyVisibleToNewMembers": historyVisible, "historyPolicyVersion": historyVersion, "updatedAt": updatedAt}, nil
 }
 
 func (p *Postgres) ListAdminGroupMembers(ctx context.Context, id, q, cursor string, limit int) ([]*model.ConversationMember, int64, string, error) {

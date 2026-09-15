@@ -4182,6 +4182,7 @@ class AppController extends ChangeNotifier {
     DateTime? until, {
     bool permanently = false,
   }) async {
+    final actorId = currentUser?.id;
     try {
       await repository.setGroupMemberMuted(
         conversationId,
@@ -4189,8 +4190,14 @@ class AppController extends ChangeNotifier {
         until,
         permanently: permanently,
       );
+      if (_disposed || currentUser?.id != actorId) return false;
+      error = null;
+      _invalidateGroupMembers(conversationId);
+      groupSendPolicyRevision++;
+      notifyListeners();
       return true;
     } catch (exception) {
+      if (_disposed || currentUser?.id != actorId) return false;
       error = _messageFor(exception, fallback: '群成员禁言设置失败');
       notifyListeners();
       return false;

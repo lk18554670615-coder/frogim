@@ -18,6 +18,7 @@ var (
 	ErrJoinPolicy              = errors.New("group join policy does not allow this operation")
 	ErrJoinRequestExpired      = errors.New("group join request expired")
 	ErrGroupMessageRateLimited = errors.New("group message rate limited")
+	ErrGroupSettingsChanged    = errors.New("group settings changed")
 )
 
 type GroupMessageRateLimitError struct {

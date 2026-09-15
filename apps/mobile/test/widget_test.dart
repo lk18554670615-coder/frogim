@@ -218,11 +218,17 @@ void main() {
       const Size.square(28),
     );
     expect(find.byKey(const Key('messages-signal-accent')), findsNothing);
-    expect(find.text('置顶'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('conversation-pinned-indicator-c-team')),
-      findsOneWidget,
+      findsNothing,
     );
+    final pinnedFrame = tester.widget<Container>(
+      find.byKey(const ValueKey('conversation-frame-c-team')),
+    );
+    final pinnedDecoration = pinnedFrame.decoration! as BoxDecoration;
+    final pinnedBorder = pinnedDecoration.border! as Border;
+    expect(pinnedBorder.left.color, LinliColors.pinnedConversationBorder);
+    expect(pinnedBorder.left.width, 3);
     expect(
       tester.getSize(find.byKey(const ValueKey('conversation-avatar-c-team'))),
       const Size.square(48),
@@ -877,6 +883,14 @@ void main() {
       find.byKey(const ValueKey('conversation-pinned-indicator-c-team')),
       findsNothing,
     );
+    expect(
+      tester
+          .widget<Container>(
+            find.byKey(const ValueKey('conversation-frame-c-team')),
+          )
+          .decoration,
+      isNull,
+    );
 
     await tester.drag(
       find.byKey(const ValueKey('conversation-slidable-c-linyu')),
@@ -1424,6 +1438,8 @@ void main() {
       input.controller!.selection.baseOffset,
       input.controller!.text.length,
     );
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(milliseconds: 1));
   });
 
   testWidgets('聊天内容搜索结果会返回会话并定位目标消息', (tester) async {

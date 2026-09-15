@@ -64,6 +64,9 @@ type mediaService interface {
 	Complete(context.Context, string, string, string) (store.Media, error)
 	DownloadURL(context.Context, string) (string, error)
 }
+type groupAvatarMediaService interface {
+	PrepareGroupAvatar(context.Context, string, string, string, string, int64) (media.Prepared, error)
+}
 type mediaCleanupService interface {
 	CleanupOnce(context.Context) (int, error)
 }
@@ -476,6 +479,9 @@ func (x *API) routes() {
 	x.mux.Handle("GET /v2/admin/health", x.requireAdmin(http.HandlerFunc(x.adminHealth)))
 	x.mux.Handle("GET /v2/admin/groups", x.requireAdmin(http.HandlerFunc(x.adminGroups)))
 	x.mux.Handle("GET /v2/admin/groups/{id}", x.requireAdmin(http.HandlerFunc(x.adminGroupOverview)))
+	x.mux.Handle("PATCH /v2/admin/groups/{id}/settings", x.requireAdmin(http.HandlerFunc(x.adminGroupSettings)))
+	x.mux.Handle("POST /v2/admin/groups/{id}/avatar/presign", x.requireAdmin(http.HandlerFunc(x.adminGroupAvatarPresign)))
+	x.mux.Handle("POST /v2/admin/groups/{id}/avatar/{mediaId}/complete", x.requireAdmin(http.HandlerFunc(x.adminGroupAvatarComplete)))
 	x.mux.Handle("GET /v2/admin/groups/{id}/members", x.requireAdmin(http.HandlerFunc(x.adminGroupMembers)))
 	x.mux.Handle("PATCH /v2/admin/groups/{id}/members/{userId}", x.requireAdmin(http.HandlerFunc(x.adminGroupMemberAction)))
 	x.mux.Handle("DELETE /v2/admin/groups/{id}/members/{userId}", x.requireAdmin(http.HandlerFunc(x.adminGroupMemberAction)))
@@ -1030,6 +1036,8 @@ func handleErr(w http.ResponseWriter, err error) {
 		writeError(w, 403, "GROUP_JOIN_POLICY_RESTRICTED", "当前入群方式不允许此操作")
 	case errors.Is(err, app.ErrJoinRequestExpired), errors.Is(err, store.ErrJoinRequestExpired):
 		writeError(w, 409, "GROUP_JOIN_REQUEST_EXPIRED", "入群审核申请已过期")
+	case errors.Is(err, app.ErrGroupSettingsChanged), errors.Is(err, store.ErrGroupSettingsChanged):
+		writeError(w, 409, "GROUP_SETTINGS_CHANGED", "群设置已被其他人修改，请重新加载")
 	case errors.Is(err, store.ErrGroupMessageRateLimited):
 		var limited *store.GroupMessageRateLimitError
 		if errors.As(err, &limited) && limited.RetryAfterSeconds > 0 {
@@ -3616,14 +3624,7 @@ func (x *API) adminGroupOverview(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
-	if owner, ok := item["owner"].(*model.User); ok {
-		x.setAdminAvatarURL(owner)
-	}
-	if avatar, ok := item["avatarUrl"].(string); ok {
-		if mediaID := avatarMediaIDFromPath(avatar); mediaID != "" {
-			item["avatarUrl"] = x.permanentMediaURL(mediaID, false)
-		}
-	}
+	x.decorateAdminGroupOverview(item)
 	write(w, http.StatusOK, item)
 }
 func (x *API) adminGroupMembers(w http.ResponseWriter, r *http.Request) {

@@ -298,12 +298,16 @@ export interface GroupOverview {
   id: string;
   title: string;
   avatarUrl: string;
+  avatarMediaId: string;
   ownerId: string;
   owner: UserRecord;
   announcement: string;
   announcementVersion: number;
   joinPolicy: string;
+  joinPolicyVersion: number;
   allowMemberAddFriend: boolean;
+  memberMessageRateLimitPerMinute: 0 | 5 | 10 | 20;
+  messageRateLimitVersion: number;
   messageCount: number;
   memberCount: number;
   allMutedUntil?: string;
@@ -312,6 +316,31 @@ export interface GroupOverview {
   bannedBy: string;
   banReason: string;
   dissolvedAt?: string;
+  updatedAt: string;
+}
+
+export interface GroupSettingsChanges {
+  name?: string;
+  avatarMediaId?: string;
+  announcement?: string;
+  joinPolicy?: string;
+  allowMemberAddFriend?: boolean;
+  historyVisibleToNewMembers?: boolean;
+  memberMessageRateLimitPerMinute?: 0 | 5 | 10 | 20;
+  allMuted?: boolean;
+}
+
+export interface GroupSettingsResult {
+  group: GroupOverview;
+  changedFields: string[];
+}
+
+export interface GroupAvatarUpload {
+  mediaId: string;
+  uploadUrl: string;
+  method: string;
+  headers: Record<string, string>;
+  expiresAt: string;
 }
 
 export interface GroupMemberRecord {
@@ -939,6 +968,9 @@ export interface AdminApi {
   unbanUser(id: string, reason: string): Promise<void>;
   getGroups(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string, scope?: 'normal' | 'banned' | 'all'): Promise<PageResult<GroupRecord>>;
   getGroupOverview(id: string): Promise<GroupOverview>;
+  updateGroupSettings(id: string, expectedUpdatedAt: string, changes: GroupSettingsChanges, reason: string): Promise<GroupSettingsResult>;
+  prepareGroupAvatar(id: string, input: { mime: string; fileName: string; size: number }): Promise<GroupAvatarUpload>;
+  completeGroupAvatar(id: string, mediaId: string, checksum: string): Promise<{ mediaId: string; avatarUrl: string }>;
   getGroupMembers(id: string, query?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<GroupMemberRecord>>;
   updateGroupMember(id: string, userId: string, update: { action: 'role' | 'mute'; role?: 'member' | 'admin'; mutedUntil?: string }, reason: string): Promise<void>;
   removeGroupMember(id: string, userId: string, reason: string): Promise<void>;

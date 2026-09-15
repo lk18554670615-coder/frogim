@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:linli_im/core/app_controller.dart';
 import 'package:linli_im/core/app_theme.dart';
@@ -109,7 +110,7 @@ void main() {
     await changeRemark(controller, '');
     await tester.pumpAndSettle();
     expect(find.text('Zulu备注'), findsNothing);
-    expect(find.text(publicPeer.name), findsOneWidget);
+    expect(find.text(publicPeer.name), findsWidgets);
     expect(find.byKey(const Key('contact-group-L')), findsOneWidget);
   });
 
@@ -180,8 +181,44 @@ void main() {
     await changeRemark(controller, '');
     await tester.pumpAndSettle();
     expect(find.text(privateRemark), findsNothing);
-    expect(find.text(publicPeer.name), findsOneWidget);
+    expect(find.text(publicPeer.name), findsWidgets);
     expect(find.text('昵称：${publicPeer.name}'), findsNothing);
+  });
+
+  testWidgets('好友资料可快速复制公开网名和呱呱号', (tester) async {
+    String? copiedText;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copiedText =
+              (call.arguments as Map<Object?, Object?>)['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    final controller = await fixture(tester);
+    await changeRemark(controller, privateRemark);
+    await page(
+      tester,
+      FriendProfileScreen(controller: controller, user: publicPeer),
+    );
+
+    await tester.tap(find.byKey(const Key('copy-friend-nickname')));
+    await tester.pumpAndSettle();
+    expect(copiedText, publicPeer.name);
+    expect(find.text('网名已复制'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('copy-friend-handle')));
+    await tester.pumpAndSettle();
+    expect(copiedText, publicPeer.handle);
+    expect(find.text('呱呱号已复制'), findsOneWidget);
   });
 
   testWidgets('本地搜索支持备注和公开昵称，结果主名称为备注', (tester) async {

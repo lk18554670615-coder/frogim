@@ -355,6 +355,22 @@ describe('live API adapter', () => {
     expect(bodies).toContainEqual({ reason: '违规内容', confirmed: true });
   });
 
+  it('群设置只提交脏字段并携带并发版本、确认和统一理由', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => ({
+      ok: true, status: 200, headers: new Headers(), json: async () => ({
+        group: { id: 'g_1', title: '新群名', ownerId: 'u_1', joinPolicy: 'manager_invite', joinPolicyVersion: 3, memberMessageRateLimitPerMinute: 10, messageRateLimitVersion: 2, updatedAt: '2026-09-15T06:01:00Z' },
+        changedFields: ['name', 'joinPolicy', 'memberMessageRateLimitPerMinute'],
+      }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await getApi('token').updateGroupSettings('g_1', '2026-09-15T06:00:00Z', { name: '新群名', joinPolicy: 'manager_invite', memberMessageRateLimitPerMinute: 10 }, '运营工单 GROUP-SET-1');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/groups/g_1/settings');
+    expect(init?.method).toBe('PATCH');
+    expect(JSON.parse(String(init?.body))).toEqual({ expectedUpdatedAt: '2026-09-15T06:00:00Z', name: '新群名', joinPolicy: 'manager_invite', memberMessageRateLimitPerMinute: 10, reason: '运营工单 GROUP-SET-1', confirmed: true });
+    expect(result).toMatchObject({ changedFields: ['name', 'joinPolicy', 'memberMessageRateLimitPerMinute'], group: { title: '新群名', joinPolicyVersion: 3, messageRateLimitVersion: 2 } });
+  });
+
   it('批量新增用户保留逐行结果并只提交一次确认理由', async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => ({
       ok: true, status: 200, headers: new Headers(), json: async () => ({

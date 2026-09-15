@@ -1,5 +1,13 @@
 import 'models.dart';
 
+bool canManageGroupMember(GroupMember? actor, GroupMember? target) {
+  if (actor == null || target == null || actor.user.id == target.user.id) {
+    return false;
+  }
+  if (actor.isOwner) return true;
+  return actor.isAdmin && !target.isOwner && !target.isAdmin;
+}
+
 /// Presentation only. The server and WuKongIM remain authoritative for sends.
 class GroupSendPolicy {
   const GroupSendPolicy({required this.profile, required this.member});

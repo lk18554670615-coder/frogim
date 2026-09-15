@@ -63,7 +63,7 @@ export function validateUserImportRows(rawRows: RawUserImportRow[], passwordMinL
   const phoneCounts = new Map<string, number>();
   rawRows.forEach((raw) => {
     const phone = normalizePhone(raw.phone);
-    if (/^1[3-9]\d{9}$/.test(phone)) phoneCounts.set(phone, (phoneCounts.get(phone) ?? 0) + 1);
+    if (/^\d{11}$/.test(phone)) phoneCounts.set(phone, (phoneCounts.get(phone) ?? 0) + 1);
   });
   return rawRows.map((raw) => {
     const phone = normalizePhone(raw.phone);
@@ -74,8 +74,8 @@ export function validateUserImportRows(rawRows: RawUserImportRow[], passwordMinL
     };
     if (raw.formulaField) {
       rowError(row, 'FORMULA_NOT_ALLOWED', `${raw.formulaField}不能使用公式`);
-    } else if (!/^1[3-9]\d{9}$/.test(phone)) {
-      rowError(row, 'INVALID_PHONE', '请输入有效的 11 位中国大陆手机号');
+    } else if (!/^\d{11}$/.test(phone)) {
+      rowError(row, 'INVALID_PHONE', '请输入 11 位数字');
     } else if (!row.name || [...row.name].length > 40) {
       rowError(row, 'INVALID_NAME', '昵称不能为空且不能超过 40 个字符');
     } else if ([...raw.password].length < passwordMinLength || new TextEncoder().encode(raw.password).length > passwordMaxBytes) {

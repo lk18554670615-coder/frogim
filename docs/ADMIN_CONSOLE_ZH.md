@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 运行概览 | `GET /v2/admin/dashboard` | 用户、群组、消息、举报和审计摘要 |
 | 用户管理 | `GET /v2/admin/users`、`POST /users/{id}/ban`、`POST /users/{id}/unban` | 呱呱号修改次数、设备数、定时或永久封禁；封禁到期由服务端自动解除 |
-| 群组管理 | `GET /v2/admin/groups`、`GET /groups/{id}`、`GET /groups/{id}/members`、`PATCH/DELETE /groups/{id}/members/{userId}`、`POST /groups/{id}/disband` | 群主、成员、消息、举报、公告、入群策略和成员分页；可对非群主成员设为/取消管理员、禁言/解禁或移出群聊，所有写操作要求二次确认、理由和审计 |
+| 群组管理 | `GET /v2/admin/groups`、`GET /groups/{id}`、`PATCH /groups/{id}/settings`、群头像上传接口、`GET /groups/{id}/members`、`PATCH/DELETE /groups/{id}/members/{userId}`、`POST /groups/{id}/disband` | 在“群设置”中原子修改名称、头像、公告、入群方式、成员互加、历史范围、发言频率及永久全员禁言；同时保留成员治理、聊天审核、黑名单、封禁和解散能力。所有写操作要求二次确认、理由和审计。 |
 | 举报审核 | `GET /v2/admin/reports`、`POST /reports/{id}/resolve` | 按状态分页；处置动作与审核依据进入审计链 |
 | 消息治理索引 | `GET /v2/admin/messages` | 仅检索消息 ID、客户端 ID、会话、发送人、序号和生命周期；正文不返回也不可搜索 |
 | 文件与存储 | `GET /v2/admin/media` | 对象键、归属、MIME、大小、校验值和上传状态 |

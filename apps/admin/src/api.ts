@@ -29,6 +29,9 @@ import type {
   DashboardData,
   GroupMemberRecord,
   GroupOverview,
+  GroupSettingsChanges,
+  GroupSettingsResult,
+  GroupAvatarUpload,
   GroupRecord,
   FriendshipRecord,
   FeedbackRecord,
@@ -105,6 +108,7 @@ const apiErrorMessages: Record<string, string> = {
   FORBIDDEN: '当前账号没有执行此操作的权限',
   NOT_FOUND: '目标记录不存在或已被删除',
   CONFLICT: '数据状态已发生变化，请刷新后重试',
+  GROUP_SETTINGS_CHANGED: '群设置已被其他人修改，请重新加载后核对当前草稿',
   INVALID_ARGUMENT: '提交内容不符合要求，请检查后重试',
   CONFIRMATION_REQUIRED: '请确认操作并填写原因',
   RATE_LIMITED: '操作过于频繁，请稍后重试',
@@ -896,19 +900,24 @@ function adaptGroupOverview(value: unknown): GroupOverview {
     id: string(raw.id, 'unknown'),
     title: string(raw.title, '未命名群组'),
     avatarUrl: string(raw.avatarUrl),
+    avatarMediaId: string(raw.avatarMediaId),
     ownerId: string(raw.ownerId, '暂无'),
     owner,
     announcement: string(raw.announcement),
     announcementVersion: number(raw.announcementVersion),
     historyVisibleToNewMembers: boolean(raw.historyVisibleToNewMembers),
     historyPolicyVersion: number(raw.historyPolicyVersion, 1),
-    joinPolicy: string(raw.joinPolicy, 'approval'),
+    joinPolicy: string(raw.joinPolicy, 'invite'),
+    joinPolicyVersion: number(raw.joinPolicyVersion, 1),
     allowMemberAddFriend: boolean(raw.allowMemberAddFriend),
+    memberMessageRateLimitPerMinute: ([0, 5, 10, 20].includes(number(raw.memberMessageRateLimitPerMinute)) ? number(raw.memberMessageRateLimitPerMinute) : 0) as 0 | 5 | 10 | 20,
+    messageRateLimitVersion: number(raw.messageRateLimitVersion, 1),
     messageCount: number(raw.messageCount),
     memberCount: number(raw.memberCount),
     allMutedUntil: string(raw.allMutedUntil) || undefined,
     banned: boolean(raw.banned), bannedAt: string(raw.bannedAt) || undefined,
     bannedBy: string(raw.bannedBy), banReason: string(raw.banReason), dissolvedAt: string(raw.dissolvedAt) || undefined,
+    updatedAt: string(raw.updatedAt),
   };
 }
 
@@ -1050,6 +1059,18 @@ function liveApi(token: string): AdminApi {
     async unbanUser(id, reason) { await request(`/users/${encodeURIComponent(id)}/unban`, token, { method: 'POST', body: JSON.stringify({ reason, confirmed: true }) }); },
     async getGroups(q = '', status = '', page = 1, pageSize = 20, cursor = '', scope = 'normal') { const payload = await request(`/groups?q=${encodeURIComponent(q)}&scope=${encodeURIComponent(scope)}&status=${encodeURIComponent(status)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptGroup, page, pageSize); },
     async getGroupOverview(id) { return adaptGroupOverview(await request(`/groups/${encodeURIComponent(id)}`, token)); },
+    async updateGroupSettings(id, expectedUpdatedAt, changes: GroupSettingsChanges, reason) {
+      const raw = object(await request(`/groups/${encodeURIComponent(id)}/settings`, token, { method: 'PATCH', body: JSON.stringify({ expectedUpdatedAt, ...changes, reason, confirmed: true }) }));
+      return { group: adaptGroupOverview(raw.group), changedFields: list(raw.changedFields).map((item) => string(item)).filter(Boolean) } satisfies GroupSettingsResult;
+    },
+    async prepareGroupAvatar(id, input) {
+      const raw = object(await request(`/groups/${encodeURIComponent(id)}/avatar/presign`, token, { method: 'POST', body: JSON.stringify({ ...input, reason: '准备群头像上传', confirmed: true }) }));
+      return { mediaId: string(raw.mediaId), uploadUrl: string(raw.uploadUrl), method: string(raw.method, 'PUT'), headers: object(raw.headers) as Record<string, string>, expiresAt: string(raw.expiresAt) } satisfies GroupAvatarUpload;
+    },
+    async completeGroupAvatar(id, mediaId, checksum) {
+      const raw = object(await request(`/groups/${encodeURIComponent(id)}/avatar/${encodeURIComponent(mediaId)}/complete`, token, { method: 'POST', body: JSON.stringify({ checksum, reason: '完成群头像上传', confirmed: true }) }));
+      return { mediaId: string(raw.mediaId), avatarUrl: string(raw.avatarUrl) };
+    },
     async getGroupMembers(id, q = '', page = 1, pageSize = 20, cursor = '') { const payload = await request(`/groups/${encodeURIComponent(id)}/members?q=${encodeURIComponent(q)}&cursor=${encodeURIComponent(cursor)}&limit=${pageSize}`, token); return serverPage(payload, adaptGroupMember, page, pageSize); },
     async updateGroupMember(id, userId, update, reason) { await request(`/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, token, { method: 'PATCH', body: JSON.stringify({ ...update, reason, confirmed: true }) }); },
     async removeGroupMember(id, userId, reason) { await request(`/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, token, { method: 'DELETE', body: JSON.stringify({ reason, confirmed: true }) }); },

@@ -55,7 +55,7 @@ async function liveFixture(input: RequestInfo | URL, init?: RequestInit) {
   if (url.includes('/groups/g_1/messages/') && url.endsWith('/recall') && method === 'POST') return response({ recalled: true });
   if (url.includes('/groups/g_1/messages') && method === 'GET') return response({ items: [{ id: '901', conversationSeq: 9, senderId: 'u_10288', sender: { id: 'u_10288', name: '江宁', phone: '13800001002', handle: 'jiangning' }, type: 'text', body: { content: '群内真实消息正文' }, createdAt: '2026-08-17T08:00:00Z', recalled: false, expired: false }], nextBeforeSeq: 0 });
   if (url.includes('/groups/g_1/blacklist') && method === 'GET') return response({ items: [{ user: { id: 'u_blocked', name: '广告账号', phone: '13900009999' }, operatorId: 'admin_1', operatorName: '测试管理员', remark: '多次发布广告', createdAt: '2026-08-17T08:00:00Z' }] });
-  if (url.includes('/groups/g_1')) return response({ id: 'g_1', title: '产品交流群', ownerId: 'u_10291', owner: { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia' }, announcement: '文明交流，保护隐私', announcementVersion: 2, joinPolicy: 'approval', allowMemberAddFriend: true, messageCount: 1280, memberCount: 1 });
+  if (url.includes('/groups/g_1')) return response({ id: 'g_1', title: '产品交流群', avatarMediaId: '', ownerId: 'u_10291', owner: { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia' }, announcement: '文明交流，保护隐私', announcementVersion: 2, joinPolicy: 'invite', joinPolicyVersion: 1, allowMemberAddFriend: true, historyVisibleToNewMembers: false, historyPolicyVersion: 1, memberMessageRateLimitPerMinute: 0, messageRateLimitVersion: 1, messageCount: 1280, memberCount: 1, updatedAt: '2026-09-15T06:00:00Z' });
   if (url.includes('/groups')) return response({ items: [{ id: 'g_1', title: '产品交流群', ownerId: 'u_10291', owner: { id: 'u_10291', name: '林夏', phone: '13800001001', handle: 'linxia' }, memberCount: 1, messageCount: 1280, status: 'active', createdAt: '2026-08-01T08:00:00Z', reportCount: 0 }], total: 1 });
   if (url.includes('/sensitive-words')) return response({ items: [{ id: 'sw_1', word: '代开发票', category: '黑产', matchType: 'exact', action: 'block', createdAt: '2026-08-01T08:00:00Z' }], total: 1 });
   if (url.includes('/reports')) return response({ items: [], total: 0 });
@@ -395,11 +395,11 @@ describe('青蛙呱呱管理后台', () => {
     expect(within(dialog).getByText('device_android_1')).toBeInTheDocument();
   });
 
-  it('新增用户固定中国区号并提交完整资料与审计理由', async () => {
+  it('新增用户固定中国区号、接受任意 11 位数字并提交完整资料与审计理由', async () => {
     window.history.replaceState({}, '', '/users/new'); render(<App />);
     expect(await screen.findByRole('heading', { name: '新增用户' })).toBeInTheDocument();
     expect(screen.getByText('+86')).toBeInTheDocument();
-    await userEvent.type(screen.getByLabelText('中国大陆手机号'), '13900139000');
+    await userEvent.type(screen.getByLabelText('11位数字号码'), '02800139000');
     await userEvent.type(screen.getByLabelText('昵称'), '新建账号');
     await userEvent.selectOptions(screen.getByLabelText('性别'), 'female');
     await userEvent.type(screen.getByLabelText('初始密码'), 'StrongPass123!');
@@ -407,7 +407,7 @@ describe('青蛙呱呱管理后台', () => {
     await userEvent.click(screen.getByRole('button', { name: '创建用户' }));
     await waitFor(() => expect(window.location.pathname).toBe('/users'));
     const write = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith('/users') && init?.method === 'POST');
-    expect(JSON.parse(String(write?.[1]?.body))).toEqual({ phone: '13900139000', name: '新建账号', password: 'StrongPass123!', gender: 'female', reason: '运营工单 USER-9', confirmed: true });
+    expect(JSON.parse(String(write?.[1]?.body))).toEqual({ phone: '02800139000', name: '新建账号', password: 'StrongPass123!', gender: 'female', reason: '运营工单 USER-9', confirmed: true });
   });
 
   it('好友聊天记录展示真实正文并要求理由后管理员撤回', async () => {
@@ -454,19 +454,20 @@ describe('青蛙呱呱管理后台', () => {
     expect(within(dialog).getByText('u_10291')).toBeInTheDocument();
   });
 
-  it('群历史开关默认关闭，确认和理由后提交真实接口并刷新状态', async () => {
+  it('群设置集中确认并原子提交历史可见性', async () => {
     let visible = false;
     let body: unknown;
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith('/groups/g_1/history-visibility')) {
-        expect(init?.method).toBe('PUT');
+      if (url.endsWith('/groups/g_1/settings')) {
+        expect(init?.method).toBe('PATCH');
         body = JSON.parse(String(init?.body)); visible = true;
-        return response({ ok: true });
+        const original = await liveFixture('/groups/g_1');
+        return response({ group: { ...await original.json() as Record<string, unknown>, historyVisibleToNewMembers: true, historyPolicyVersion: 2, updatedAt: '2026-09-15T06:01:00Z' }, changedFields: ['historyVisibleToNewMembers'] });
       }
       if (url.endsWith('/groups/g_1')) {
         const original = await liveFixture(input, init);
-        return response({ ...await original.json() as Record<string, unknown>, historyVisibleToNewMembers: visible, historyPolicyVersion: visible ? 2 : 1 });
+        return response({ ...await original.json() as Record<string, unknown>, historyVisibleToNewMembers: visible, historyPolicyVersion: visible ? 2 : 1, updatedAt: visible ? '2026-09-15T06:01:00Z' : '2026-09-15T06:00:00Z' });
       }
       return liveFixture(input, init);
     }));
@@ -474,16 +475,18 @@ describe('青蛙呱呱管理后台', () => {
     render(<App />);
     await screen.findByText('产品交流群');
     await userEvent.click(screen.getByRole('button', { name: '查看详情' }));
+    await userEvent.click(await screen.findByRole('tab', { name: '群设置' }));
     const toggle = await screen.findByRole('switch', { name: '新成员可查看入群前历史' });
-    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    expect(toggle).not.toBeChecked();
     await userEvent.click(toggle);
-    const confirmation = screen.getByRole('dialog', { name: '开放入群前历史' });
-    expect(within(confirmation).getByRole('button', { name: '确认修改' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: '保存设置' }));
+    const confirmation = screen.getByRole('dialog', { name: '保存群设置' });
+    expect(within(confirmation).getByRole('button', { name: '确认保存' })).toBeDisabled();
     expect(body).toBeUndefined();
     await userEvent.type(within(confirmation).getByLabelText('操作理由'), '群成员协作需要');
-    await userEvent.click(within(confirmation).getByRole('button', { name: '确认修改' }));
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
-    expect(body).toEqual({ historyVisibleToNewMembers: true, confirmed: true, reason: '群成员协作需要' });
+    await userEvent.click(within(confirmation).getByRole('button', { name: '确认保存' }));
+    await waitFor(() => expect(screen.getByRole('switch', { name: '新成员可查看入群前历史' })).toBeChecked());
+    expect(body).toEqual({ expectedUpdatedAt: '2026-09-15T06:00:00Z', historyVisibleToNewMembers: true, confirmed: true, reason: '群成员协作需要' });
   });
 
   it('没有 groups.write 权限的后台管理员只能查看历史开关', async () => {
@@ -495,6 +498,7 @@ describe('青蛙呱呱管理后台', () => {
     render(<App />);
     await screen.findByText('产品交流群');
     await userEvent.click(screen.getByRole('button', { name: '查看详情' }));
+    await userEvent.click(await screen.findByRole('tab', { name: '群设置' }));
     expect(await screen.findByRole('switch', { name: '新成员可查看入群前历史' })).toBeDisabled();
   });
 
@@ -746,7 +750,7 @@ describe('青蛙呱呱管理后台', () => {
   it('批量导入 CSV 只提交预检有效行并展示逐行结果', async () => {
     window.history.replaceState({}, '', '/users/new'); render(<App />);
     await userEvent.click(await screen.findByRole('tab', { name: '批量导入' }));
-    const csv = '\uFEFF手机号,昵称,性别,初始密码\n13800138001,批量用户一,女,StrongPass123!\n12800138002,错误号码,男,StrongPass123!\n13800001001,已有用户,女,StrongPass123!\n13900138003,批量用户二,未设置,AnotherPass123!';
+    const csv = '\uFEFF手机号,昵称,性别,初始密码\n13800138001,批量用户一,女,StrongPass123!\n2800138002,错误号码,男,StrongPass123!\n13800001001,已有用户,女,StrongPass123!\n13900138003,批量用户二,未设置,AnotherPass123!';
     await userEvent.upload(screen.getByLabelText('选择批量用户文件'), new File([csv], 'users.csv', { type: 'text/csv' }));
     expect(await screen.findByText('可导入 2 行')).toBeInTheDocument();
     expect(screen.getByText('预检失败 2 行')).toBeInTheDocument();

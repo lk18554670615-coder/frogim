@@ -47,7 +47,103 @@ void main() {
     expect(controller.cachedGroupMembers('c-team')!.length, 12);
   });
 
+  testWidgets('群成员角色加载失败时不猜测群主或管理员身份', (tester) async {
+    final repo = _Repository()..fail = true;
+    await _open(tester, repo);
+    expect(find.byKey(const Key('message-sender-role-msg1')), findsNothing);
+    expect(find.byKey(const Key('message-sender-role-msg9')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(milliseconds: 1));
+  });
+
   for (final width in [390.0, 1280.0]) {
+    testWidgets('$width：群消息按当前成员角色显示群主和管理员标记', (tester) async {
+      final repo = _Repository();
+      final controller = await _open(tester, repo, width: width);
+
+      expect(find.byKey(const Key('message-sender-role-msg1')), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('message-sender-role-msg1')),
+          matching: find.text('群主'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('message-sender-role-msg9')),
+          matching: find.text('管理员'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('message-sender-role-msg8')), findsNothing);
+
+      repo.members[repo.members.indexWhere(
+        (m) => m.user.id == 'g1',
+      )] = _memberWithRole(
+        repo.members.firstWhere((m) => m.user.id == 'g1'),
+        'member',
+      );
+      repo.members[repo.members.indexWhere(
+        (m) => m.user.id == 'g8',
+      )] = _memberWithRole(
+        repo.members.firstWhere((m) => m.user.id == 'g8'),
+        'owner',
+      );
+      repo.members[repo.members.indexWhere(
+        (m) => m.user.id == 'g9',
+      )] = _memberWithRole(
+        repo.members.firstWhere((m) => m.user.id == 'g9'),
+        'member',
+      );
+      await tester.runAsync(() async {
+        repo.updates.add(
+          const ImEvent(
+            type: ImEventType.conversationChanged,
+            payload: {
+              'conversationId': 'c-team',
+              'groupSendPolicyChanged': true,
+            },
+          ),
+        );
+        await _waitUntil(
+          () => controller.groupMemberFor('c-team', 'g8')?.role == 'owner',
+        );
+      });
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('message-sender-role-msg8')),
+          matching: find.text('群主'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('message-sender-role-msg1')), findsNothing);
+      expect(find.byKey(const Key('message-sender-role-msg9')), findsNothing);
+
+      repo.members.removeWhere((member) => member.user.id == 'g8');
+      await tester.runAsync(() async {
+        repo.updates.add(
+          const ImEvent(
+            type: ImEventType.conversationChanged,
+            payload: {
+              'conversationId': 'c-team',
+              'groupSendPolicyChanged': true,
+            },
+          ),
+        );
+        await _waitUntil(
+          () =>
+              controller.cachedGroupMembers('c-team') != null &&
+              controller.groupMemberFor('c-team', 'g8') == null,
+        );
+      });
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('message-sender-role-msg8')), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(milliseconds: 1));
+    });
+
     testWidgets('$width：11人群的预览外非好友显示昵称头像，可打开资料及 @', (tester) async {
       final repo = _Repository();
       final controller = await _open(tester, repo, width: width);
@@ -86,6 +182,7 @@ void main() {
       expect(find.textContaining('@群友10'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(milliseconds: 1));
     });
 
     testWidgets('$width：查看全部11位成员直接打开完整列表，搜索末尾成员并查看资料', (tester) async {
@@ -197,9 +294,7 @@ void main() {
           payload: {'conversationId': 'c-team', 'groupSendPolicyChanged': true},
         ),
       );
-      await _waitUntil(
-        () => controller.groupMemberFor('c-team', 'g9') == null,
-      );
+      await _waitUntil(() => controller.groupMemberFor('c-team', 'g9') == null);
     });
     await tester.pumpAndSettle();
     expect(controller.groupMemberFor('c-team', 'g9'), isNull);
@@ -233,8 +328,21 @@ GroupMember _member(int i) => GroupMember(
           presence: '',
           avatarUrl: 'assets/avatars/an-ran.png',
         ),
-  role: i == 1 ? 'owner' : 'member',
+  role: i == 1
+      ? 'owner'
+      : i == 9
+      ? 'admin'
+      : 'member',
   joinedAt: DateTime(2026),
+);
+
+GroupMember _memberWithRole(GroupMember member, String role) => GroupMember(
+  user: member.user,
+  role: role,
+  joinedAt: member.joinedAt,
+  mutedUntil: member.mutedUntil,
+  mutedPermanently: member.mutedPermanently,
+  groupNickname: member.groupNickname,
 );
 ChatMessage _message(int i) => ChatMessage(
   id: 'msg$i',
@@ -300,6 +408,7 @@ class _Repository extends DemoImRepository {
   final updates = StreamController<ImEvent>.broadcast();
   final members = List.generate(11, _member);
   final chat = [
+    _message(1),
     for (final i in [8, 9, 10]) _message(i),
   ];
   bool fail = false;

@@ -2272,10 +2272,16 @@ func TestAdminUserManagementReturnsRealRelationsDevicesAndRejectsUnavailableSyst
 		t.Fatalf("duplicate admin user status=%d", res.StatusCode)
 	}
 	_ = res.Body.Close()
-	res = adminKeyRequest(t, http.MethodPost, ts.URL+"/v2/admin/users", adminKey, `{"phone":"12800009999","name":"错误手机号","password":"StrongPass123!","gender":"female","reason":"校验","confirmed":true}`)
+	res = adminKeyRequest(t, http.MethodPost, ts.URL+"/v2/admin/users", adminKey, `{"phone":"12800009999","name":"非传统号段","password":"StrongPass123!","gender":"female","reason":"校验","confirmed":true}`)
+	if res.StatusCode != http.StatusCreated {
+		_ = res.Body.Close()
+		t.Fatalf("11-digit phone status=%d", res.StatusCode)
+	}
+	_ = res.Body.Close()
+	res = adminKeyRequest(t, http.MethodPost, ts.URL+"/v2/admin/users", adminKey, `{"phone":"1280009999","name":"位数错误","password":"StrongPass123!","gender":"female","reason":"校验","confirmed":true}`)
 	if res.StatusCode != http.StatusBadRequest {
 		_ = res.Body.Close()
-		t.Fatalf("invalid mainland phone status=%d", res.StatusCode)
+		t.Fatalf("invalid phone length status=%d", res.StatusCode)
 	}
 	_ = res.Body.Close()
 

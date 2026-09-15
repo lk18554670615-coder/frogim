@@ -1597,137 +1597,14 @@ class _GroupMembersManagementScreenState
     }
   }
 
-  Future<_MemberMuteSelection?> _pickMuteSelection(GroupMember member) async {
-    final option = await showModalBottomSheet<_MemberMuteOption>(
-      context: context,
-      isScrollControlled: true,
-      builder: (sheetContext) => SafeArea(
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.82,
-          ),
-          child: ListView(
-            shrinkWrap: true,
-            children: [
-              ListTile(
-                title: Text(
-                  '禁言 ${widget.controller.displayNameFor(member.user, groupNickname: member.groupNickname)}',
-                  style: Theme.of(sheetContext).textTheme.titleMedium,
-                ),
-                subtitle: const Text('请选择禁言时长'),
-              ),
-              _muteOptionTile(
-                sheetContext,
-                key: 'group-member-mute-10-minutes',
-                option: _MemberMuteOption.tenMinutes,
-                title: '10 分钟',
-              ),
-              _muteOptionTile(
-                sheetContext,
-                key: 'group-member-mute-1-hour',
-                option: _MemberMuteOption.oneHour,
-                title: '1 小时',
-              ),
-              _muteOptionTile(
-                sheetContext,
-                key: 'group-member-mute-24-hours',
-                option: _MemberMuteOption.twentyFourHours,
-                title: '24 小时',
-              ),
-              _muteOptionTile(
-                sheetContext,
-                key: 'group-member-mute-7-days',
-                option: _MemberMuteOption.sevenDays,
-                title: '7 天',
-              ),
-              _muteOptionTile(
-                sheetContext,
-                key: 'group-member-mute-custom',
-                option: _MemberMuteOption.custom,
-                title: '自定义结束时间',
-                icon: CupertinoIcons.calendar,
-              ),
-              _muteOptionTile(
-                sheetContext,
-                key: 'group-member-mute-permanent',
-                option: _MemberMuteOption.permanent,
-                title: '永久禁言',
-                icon: CupertinoIcons.infinite,
-                destructive: true,
-              ),
-            ],
-          ),
+  Future<GroupMemberMuteSelection?> _pickMuteSelection(GroupMember member) =>
+      showGroupMemberMutePicker(
+        context,
+        displayName: widget.controller.displayNameFor(
+          member.user,
+          groupNickname: member.groupNickname,
         ),
-      ),
-    );
-    if (option == null || !mounted) return null;
-    final now = DateTime.now();
-    return switch (option) {
-      _MemberMuteOption.tenMinutes => _MemberMuteSelection(
-        until: now.add(const Duration(minutes: 10)),
-      ),
-      _MemberMuteOption.oneHour => _MemberMuteSelection(
-        until: now.add(const Duration(hours: 1)),
-      ),
-      _MemberMuteOption.twentyFourHours => _MemberMuteSelection(
-        until: now.add(const Duration(hours: 24)),
-      ),
-      _MemberMuteOption.sevenDays => _MemberMuteSelection(
-        until: now.add(const Duration(days: 7)),
-      ),
-      _MemberMuteOption.permanent => const _MemberMuteSelection(
-        permanently: true,
-      ),
-      _MemberMuteOption.custom => await _pickCustomMuteUntil(now),
-    };
-  }
-
-  Widget _muteOptionTile(
-    BuildContext sheetContext, {
-    required String key,
-    required _MemberMuteOption option,
-    required String title,
-    IconData icon = CupertinoIcons.clock,
-    bool destructive = false,
-  }) => ListTile(
-    key: Key(key),
-    leading: Icon(icon, color: destructive ? LinliColors.systemRed : null),
-    title: Text(
-      title,
-      style: destructive ? const TextStyle(color: LinliColors.systemRed) : null,
-    ),
-    onTap: () => Navigator.pop(sheetContext, option),
-  );
-
-  Future<_MemberMuteSelection?> _pickCustomMuteUntil(DateTime now) async {
-    final initial = now.add(const Duration(days: 1));
-    final date = await showDatePicker(
-      context: context,
-      initialDate: DateUtils.dateOnly(initial),
-      firstDate: DateUtils.dateOnly(now),
-      lastDate: DateTime(now.year + 10, 12, 31),
-      helpText: '选择禁言结束日期',
-    );
-    if (date == null || !mounted) return null;
-    final time = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.fromDateTime(initial),
-      helpText: '选择禁言结束时间',
-    );
-    if (time == null || !mounted) return null;
-    final until = DateTime(
-      date.year,
-      date.month,
-      date.day,
-      time.hour,
-      time.minute,
-    );
-    if (!until.isAfter(DateTime.now())) {
-      _showFeedback('禁言结束时间必须晚于当前时间');
-      return null;
-    }
-    return _MemberMuteSelection(until: until);
-  }
+      );
 
   void _showFeedback(String message) {
     ScaffoldMessenger.of(context)
@@ -1878,7 +1755,7 @@ String groupMessageRateLimitOptionLabel(int limit) =>
 String groupMessageRateLimitLabel(int limit) =>
     limit <= 0 ? '不限制普通成员的发言频率' : '普通成员每分钟最多 $limit 条';
 
-enum _MemberMuteOption {
+enum _GroupMemberMuteOption {
   tenMinutes,
   oneHour,
   twentyFourHours,
@@ -1887,11 +1764,154 @@ enum _MemberMuteOption {
   permanent,
 }
 
-class _MemberMuteSelection {
-  const _MemberMuteSelection({this.until, this.permanently = false});
+class GroupMemberMuteSelection {
+  const GroupMemberMuteSelection({this.until, this.permanently = false});
 
   final DateTime? until;
   final bool permanently;
+}
+
+Future<GroupMemberMuteSelection?> showGroupMemberMutePicker(
+  BuildContext context, {
+  required String displayName,
+}) async {
+  final option = await showModalBottomSheet<_GroupMemberMuteOption>(
+    context: context,
+    isScrollControlled: true,
+    builder: (sheetContext) => SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.82,
+        ),
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            ListTile(
+              title: Text(
+                '禁言 $displayName',
+                style: Theme.of(sheetContext).textTheme.titleMedium,
+              ),
+              subtitle: const Text('请选择禁言时长'),
+            ),
+            _groupMemberMuteOptionTile(
+              sheetContext,
+              key: 'group-member-mute-10-minutes',
+              option: _GroupMemberMuteOption.tenMinutes,
+              title: '10 分钟',
+            ),
+            _groupMemberMuteOptionTile(
+              sheetContext,
+              key: 'group-member-mute-1-hour',
+              option: _GroupMemberMuteOption.oneHour,
+              title: '1 小时',
+            ),
+            _groupMemberMuteOptionTile(
+              sheetContext,
+              key: 'group-member-mute-24-hours',
+              option: _GroupMemberMuteOption.twentyFourHours,
+              title: '24 小时',
+            ),
+            _groupMemberMuteOptionTile(
+              sheetContext,
+              key: 'group-member-mute-7-days',
+              option: _GroupMemberMuteOption.sevenDays,
+              title: '7 天',
+            ),
+            _groupMemberMuteOptionTile(
+              sheetContext,
+              key: 'group-member-mute-custom',
+              option: _GroupMemberMuteOption.custom,
+              title: '自定义结束时间',
+              icon: CupertinoIcons.calendar,
+            ),
+            _groupMemberMuteOptionTile(
+              sheetContext,
+              key: 'group-member-mute-permanent',
+              option: _GroupMemberMuteOption.permanent,
+              title: '永久禁言',
+              icon: CupertinoIcons.infinite,
+              destructive: true,
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+  if (option == null || !context.mounted) return null;
+  final now = DateTime.now();
+  return switch (option) {
+    _GroupMemberMuteOption.tenMinutes => GroupMemberMuteSelection(
+      until: now.add(const Duration(minutes: 10)),
+    ),
+    _GroupMemberMuteOption.oneHour => GroupMemberMuteSelection(
+      until: now.add(const Duration(hours: 1)),
+    ),
+    _GroupMemberMuteOption.twentyFourHours => GroupMemberMuteSelection(
+      until: now.add(const Duration(hours: 24)),
+    ),
+    _GroupMemberMuteOption.sevenDays => GroupMemberMuteSelection(
+      until: now.add(const Duration(days: 7)),
+    ),
+    _GroupMemberMuteOption.permanent => const GroupMemberMuteSelection(
+      permanently: true,
+    ),
+    _GroupMemberMuteOption.custom => await _pickCustomGroupMemberMuteUntil(
+      context,
+      now,
+    ),
+  };
+}
+
+Widget _groupMemberMuteOptionTile(
+  BuildContext sheetContext, {
+  required String key,
+  required _GroupMemberMuteOption option,
+  required String title,
+  IconData icon = CupertinoIcons.clock,
+  bool destructive = false,
+}) => ListTile(
+  key: Key(key),
+  leading: Icon(icon, color: destructive ? LinliColors.systemRed : null),
+  title: Text(
+    title,
+    style: destructive ? const TextStyle(color: LinliColors.systemRed) : null,
+  ),
+  onTap: () => Navigator.pop(sheetContext, option),
+);
+
+Future<GroupMemberMuteSelection?> _pickCustomGroupMemberMuteUntil(
+  BuildContext context,
+  DateTime now,
+) async {
+  final initial = now.add(const Duration(days: 1));
+  final date = await showDatePicker(
+    context: context,
+    initialDate: DateUtils.dateOnly(initial),
+    firstDate: DateUtils.dateOnly(now),
+    lastDate: DateTime(now.year + 10, 12, 31),
+    helpText: '选择禁言结束日期',
+  );
+  if (date == null || !context.mounted) return null;
+  final time = await showTimePicker(
+    context: context,
+    initialTime: TimeOfDay.fromDateTime(initial),
+    helpText: '选择禁言结束时间',
+  );
+  if (time == null || !context.mounted) return null;
+  final until = DateTime(
+    date.year,
+    date.month,
+    date.day,
+    time.hour,
+    time.minute,
+  );
+  if (!until.isAfter(DateTime.now())) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('禁言结束时间必须晚于当前时间')));
+    return null;
+  }
+  return GroupMemberMuteSelection(until: until);
 }
 
 String groupJoinPolicyDescription(String policy) => switch (policy) {

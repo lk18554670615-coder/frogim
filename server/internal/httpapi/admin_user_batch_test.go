@@ -52,11 +52,11 @@ func TestAdminUserBatchCreatesValidRowsAndReturnsFailuresInOrder(t *testing.T) {
 	if err = json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.BatchID == "" || payload.Total != 4 || payload.Succeeded != 2 || payload.Failed != 2 || len(payload.Items) != 4 {
+	if payload.BatchID == "" || payload.Total != 4 || payload.Succeeded != 3 || payload.Failed != 1 || len(payload.Items) != 4 {
 		t.Fatalf("payload=%+v", payload)
 	}
-	wantStatus := []string{"created", "failed", "failed", "created"}
-	wantCode := []string{"", "PHONE_ALREADY_EXISTS", "INVALID_PHONE", ""}
+	wantStatus := []string{"created", "failed", "created", "created"}
+	wantCode := []string{"", "PHONE_ALREADY_EXISTS", "", ""}
 	for index, item := range payload.Items {
 		if item.ClientRow != index+2 || item.Status != wantStatus[index] || item.Code != wantCode[index] {
 			t.Fatalf("item[%d]=%+v", index, item)

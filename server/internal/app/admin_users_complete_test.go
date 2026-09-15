@@ -8,7 +8,7 @@ import (
 	"github.com/linli/im/server/internal/teststore"
 )
 
-func TestCreateAdminUserRequiresMainlandPhoneAndKeepsDynamicPasswordPolicy(t *testing.T) {
+func TestCreateAdminUserAcceptsAnyElevenDigitsAndKeepsDynamicPasswordPolicy(t *testing.T) {
 	a, err := New(context.Background(), teststore.Memory{})
 	if err != nil {
 		t.Fatal(err)
@@ -23,7 +23,12 @@ func TestCreateAdminUserRequiresMainlandPhoneAndKeepsDynamicPasswordPolicy(t *te
 	if _, err = a.CreateAdminUser(context.Background(), "admin-1", "13800138000", "重复号码", "StrongPass123!", "female", "重复测试"); err != ErrConflict {
 		t.Fatalf("duplicate phone error=%v", err)
 	}
-	for _, phone := range []string{"+85291234567", "12800138000", "1380013800"} {
+	for _, phone := range []string{"12800138001", "00000000000"} {
+		if _, err = a.CreateAdminUser(context.Background(), "admin-1", phone, "宽松号码", "StrongPass123!", "unspecified", "号段不校验"); err != nil {
+			t.Fatalf("11-digit phone %q error=%v", phone, err)
+		}
+	}
+	for _, phone := range []string{"+85291234567", "1380013800", "138001380000", "1380013800a"} {
 		if _, err = a.CreateAdminUser(context.Background(), "admin-1", phone, "无效号码", "StrongPass123!", "unspecified", "校验测试"); err != ErrInvalid {
 			t.Fatalf("phone %q error=%v", phone, err)
 		}
@@ -51,15 +56,15 @@ func TestCreateAdminUsersBatchKeepsOrderAndContinuesAfterRowFailures(t *testing.
 	if batchID == "" || len(results) != len(inputs) {
 		t.Fatalf("batch=%q results=%v", batchID, results)
 	}
-	wantStatus := []string{"failed", "failed", "failed", "created"}
-	wantCode := []string{"DUPLICATE_IN_FILE", "INVALID_PHONE", "DUPLICATE_IN_FILE", ""}
+	wantStatus := []string{"failed", "created", "failed", "created"}
+	wantCode := []string{"DUPLICATE_IN_FILE", "", "DUPLICATE_IN_FILE", ""}
 	for index := range results {
 		if results[index].ClientRow != inputs[index].ClientRow || results[index].Status != wantStatus[index] || results[index].Code != wantCode[index] {
 			t.Fatalf("result[%d]=%+v", index, results[index])
 		}
 	}
-	if results[0].User != nil || results[2].User != nil || results[3].User == nil || results[3].User.Phone != "13911110003" {
-		t.Fatalf("created users=%+v %+v %+v", results[0].User, results[2].User, results[3].User)
+	if results[0].User != nil || results[1].User == nil || results[1].User.Phone != "12811110002" || results[2].User != nil || results[3].User == nil || results[3].User.Phone != "13911110003" {
+		t.Fatalf("created users=%+v %+v %+v %+v", results[0].User, results[1].User, results[2].User, results[3].User)
 	}
 
 	_, repeated, err := a.CreateAdminUsersBatch(context.Background(), "admin-1", []AdminUserBatchInput{

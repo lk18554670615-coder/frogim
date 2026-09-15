@@ -5,11 +5,142 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/linli/im/server/internal/app"
+	"github.com/linli/im/server/internal/media"
 	"github.com/linli/im/server/internal/model"
 	"github.com/linli/im/server/internal/store"
 	"github.com/linli/im/server/internal/wukong"
 )
+
+func (x *API) adminGroupSettings(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ExpectedUpdatedAt               time.Time `json:"expectedUpdatedAt"`
+		Name                            *string   `json:"name"`
+		AvatarMediaID                   *string   `json:"avatarMediaId"`
+		Announcement                    *string   `json:"announcement"`
+		JoinPolicy                      *string   `json:"joinPolicy"`
+		AllowMemberAddFriend            *bool     `json:"allowMemberAddFriend"`
+		HistoryVisibleToNewMembers      *bool     `json:"historyVisibleToNewMembers"`
+		MemberMessageRateLimitPerMinute *int      `json:"memberMessageRateLimitPerMinute"`
+		AllMuted                        *bool     `json:"allMuted"`
+		Reason                          string    `json:"reason"`
+		Confirmed                       bool      `json:"confirmed"`
+	}
+	if decode(r, &body) != nil || !confirmedReason(body.Confirmed, body.Reason) {
+		writeError(w, http.StatusBadRequest, "CONFIRMATION_REQUIRED", "confirmed and reason are required")
+		return
+	}
+	result, err := x.app.AdminUpdateGroupSettings(r.Context(), store.AdminGroupSettingsUpdate{
+		ActorID: uid(r), GroupID: r.PathValue("id"), Reason: body.Reason, RequestIP: x.clientIP(r), ExpectedUpdatedAt: body.ExpectedUpdatedAt,
+		Name: body.Name, AvatarMediaID: body.AvatarMediaID, Announcement: body.Announcement, JoinPolicy: body.JoinPolicy,
+		AllowMemberAddFriend: body.AllowMemberAddFriend, HistoryVisibleToNewMembers: body.HistoryVisibleToNewMembers,
+		MemberMessageRateLimitPerMinute: body.MemberMessageRateLimitPerMinute, AllMuted: body.AllMuted,
+	})
+	if err != nil {
+		if err == app.ErrGroupSettingsChanged {
+			writeError(w, http.StatusConflict, "GROUP_SETTINGS_CHANGED", "群设置已被其他人修改，请重新加载")
+			return
+		}
+		handleErr(w, err)
+		return
+	}
+	x.decorateAdminGroupOverview(result.Group)
+	write(w, http.StatusOK, result)
+}
+
+func (x *API) adminGroupOwnerID(groupID string) (string, error) {
+	item, err := x.app.AdminGroupOverview(groupID)
+	if err != nil {
+		return "", err
+	}
+	ownerID, _ := item["ownerId"].(string)
+	if strings.TrimSpace(ownerID) == "" {
+		return "", app.ErrNotFound
+	}
+	return ownerID, nil
+}
+
+func (x *API) adminGroupAvatarPresign(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		MIME      string `json:"mime"`
+		FileName  string `json:"fileName"`
+		Size      int64  `json:"size"`
+		Reason    string `json:"reason"`
+		Confirmed bool   `json:"confirmed"`
+	}
+	if decode(r, &body) != nil || !confirmedReason(body.Confirmed, body.Reason) {
+		writeError(w, http.StatusBadRequest, "CONFIRMATION_REQUIRED", "confirmed and reason are required")
+		return
+	}
+	service, ok := x.media.(groupAvatarMediaService)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "MEDIA_UNAVAILABLE", "group avatar upload is unavailable")
+		return
+	}
+	ownerID, err := x.adminGroupOwnerID(r.PathValue("id"))
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	prepared, err := service.PrepareGroupAvatar(r.Context(), ownerID, r.PathValue("id"), body.MIME, body.FileName, body.Size)
+	if err != nil {
+		if err == media.ErrInvalid {
+			writeError(w, http.StatusBadRequest, "INVALID_MEDIA", "请选择有效且大小符合限制的图片")
+		} else if err == media.ErrUnavailable {
+			writeError(w, http.StatusServiceUnavailable, "MEDIA_UNAVAILABLE", err.Error())
+		} else {
+			handleErr(w, err)
+		}
+		return
+	}
+	write(w, http.StatusCreated, prepared)
+}
+
+func (x *API) adminGroupAvatarComplete(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Checksum  string `json:"checksum"`
+		Reason    string `json:"reason"`
+		Confirmed bool   `json:"confirmed"`
+	}
+	if decode(r, &body) != nil || !confirmedReason(body.Confirmed, body.Reason) {
+		writeError(w, http.StatusBadRequest, "CONFIRMATION_REQUIRED", "confirmed and reason are required")
+		return
+	}
+	ownerID, err := x.adminGroupOwnerID(r.PathValue("id"))
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	item, err := x.media.Complete(r.Context(), ownerID, r.PathValue("mediaId"), body.Checksum)
+	if err != nil {
+		if err == media.ErrInvalid {
+			writeError(w, http.StatusBadRequest, "INVALID_MEDIA", err.Error())
+		} else if err == media.ErrForbidden {
+			writeError(w, http.StatusForbidden, "FORBIDDEN", err.Error())
+		} else {
+			handleErr(w, err)
+		}
+		return
+	}
+	if !strings.HasPrefix(strings.ToLower(item.MIME), "image/") || !strings.HasPrefix(item.ObjectKey, "groups/"+r.PathValue("id")+"/") {
+		writeError(w, http.StatusForbidden, "FORBIDDEN", "avatar upload does not belong to this group")
+		return
+	}
+	write(w, http.StatusOK, map[string]any{"mediaId": item.ID, "avatarUrl": x.permanentMediaURL(item.ID, false)})
+}
+
+func (x *API) decorateAdminGroupOverview(item map[string]any) {
+	if owner, ok := item["owner"].(*model.User); ok {
+		x.setAdminAvatarURL(owner)
+	}
+	if avatar, ok := item["avatarUrl"].(string); ok {
+		if mediaID := avatarMediaIDFromPath(avatar); mediaID != "" {
+			item["avatarUrl"] = x.permanentMediaURL(mediaID, false)
+		}
+	}
+}
 
 type adminGroupWrite struct {
 	Reason    string `json:"reason"`

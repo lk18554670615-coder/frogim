@@ -13,7 +13,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-var mainlandAdminPhonePattern = regexp.MustCompile(`^1[3-9][0-9]{9}$`)
+var adminPhonePattern = regexp.MustCompile(`^[0-9]{11}$`)
 
 const maxAdminUserBatchSize = 100
 
@@ -42,8 +42,8 @@ func (a *App) prepareAdminUser(phone, name, password, gender, reason string) (pr
 		phone: strings.TrimPrefix(strings.TrimSpace(phone), "+86"), name: strings.TrimSpace(name),
 		password: password, gender: strings.TrimSpace(gender), reason: strings.TrimSpace(reason),
 	}
-	if !mainlandAdminPhonePattern.MatchString(prepared.phone) {
-		return prepared, "INVALID_PHONE", "请输入有效的中国大陆手机号"
+	if !adminPhonePattern.MatchString(prepared.phone) {
+		return prepared, "INVALID_PHONE", "请输入 11 位数字"
 	}
 	if prepared.name == "" || len([]rune(prepared.name)) > 40 {
 		return prepared, "INVALID_NAME", "昵称不能为空且不能超过 40 个字符"

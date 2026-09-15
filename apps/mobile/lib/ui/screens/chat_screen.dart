@@ -221,6 +221,7 @@ class _ChatScrollbarState extends RawScrollbarState<_ChatScrollbar> {
 class _ChatScreenState extends State<ChatScreen> {
   final textController = TextEditingController();
   final scrollController = ScrollController();
+  final _composerKey = GlobalKey<_ChatComposerState>();
   final initialMessageKey = GlobalKey();
   final _messageCenterKey = GlobalKey();
   String? _messageListAnchorId;
@@ -267,6 +268,7 @@ class _ChatScreenState extends State<ChatScreen> {
   List<AppUser>? _observedContacts;
   bool _closingUnavailableGroup = false;
   bool _openingAnnouncement = false;
+  final Set<String> _mutingGroupMemberIds = {};
 
   AppUser? get peer =>
       widget.conversation.directPeerFor(widget.controller.currentUser?.id);
@@ -1191,6 +1193,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                   onSelected: _sendRobotCommand,
                                 ),
                               ChatComposer(
+                                key: _composerKey,
                                 controller: textController,
                                 replyingTo: replyingTo,
                                 replyingToName: replyingTo == null
@@ -1543,6 +1546,12 @@ class _ChatScreenState extends State<ChatScreen> {
             : '对方',
       );
       final stableMessageId = message.stableIdentity;
+      final quickManageMember = _quickManageMemberFor(message);
+      final senderRole = _isOrdinaryGroup && !message.isMine
+          ? widget.controller
+                .groupMemberFor(widget.conversation.id, message.senderId)
+                ?.role
+          : null;
       final messageKey = message.id == widget.initialMessageId
           ? initialMessageKey
           : _messageKeys.putIfAbsent(stableMessageId, GlobalKey.new);
@@ -1570,6 +1579,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     : null,
                 controller: widget.controller,
                 senderName: displaySenderName,
+                senderRole: senderRole,
                 avatarUrl:
                     displaySender?.avatarUrl ??
                     (widget.conversation.kind == ConversationKind.direct
@@ -1578,6 +1588,10 @@ class _ChatScreenState extends State<ChatScreen> {
                 onAvatarTap: message.senderId.isEmpty
                     ? null
                     : () => unawaited(_openMessageSenderProfile(message)),
+                onAvatarSecondaryTap: quickManageMember == null || selecting
+                    ? null
+                    : (position) =>
+                          _showGroupMemberAvatarActions(message, position),
                 showSender: widget.conversation.kind == ConversationKind.group,
                 showGroupReceipt:
                     widget.conversation.kind == ConversationKind.group &&
@@ -1980,6 +1994,10 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
     if (!mounted || mention == null) return;
+    _insertMention(mention);
+  }
+
+  void _insertMention(MessageMention mention) {
     final token = mention.isEveryone ? '@所有人 ' : '@${mention.name} ';
     final selection = textController.selection;
     final start = selection.isValid
@@ -1998,6 +2016,10 @@ class _ChatScreenState extends State<ChatScreen> {
       _pendingMentions[mention.userId] = mention;
       showAttachments = false;
       showEmoji = false;
+      _showRobotMenus = false;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _composerKey.currentState?.activateTextInput();
     });
   }
 
@@ -2711,6 +2733,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _showMessageActions(ChatMessage message, Offset anchor) async {
     final canRecall = widget.controller.canRecallMessage(message);
+    final quickMention = _quickMentionFor(message);
     unawaited(HapticFeedback.mediumImpact());
     final action = await showGeneralDialog<_MessageMenuAction>(
       context: context,
@@ -2730,6 +2753,7 @@ class _ChatScreenState extends State<ChatScreen> {
             !widget.conversation.isBusinessChannel &&
             !message.id.startsWith('local-') &&
             message.status != MessageStatus.recalled,
+        canMentionSender: quickMention != null,
         canViewReceipts: _canViewMessageReceiptDetails(message),
         onSelected: (value) => Navigator.pop(dialogContext, value),
       ),
@@ -2754,6 +2778,13 @@ class _ChatScreenState extends State<ChatScreen> {
     if (action == null || !mounted) return;
     unawaited(HapticFeedback.selectionClick());
     switch (action) {
+      case _MessageMenuAction.mention:
+        final mention = _quickMentionFor(message);
+        if (mention == null || mention.userId != quickMention?.userId) {
+          _showError('该成员已不在当前群聊中');
+          return;
+        }
+        _insertMention(mention);
       case _MessageMenuAction.reply:
         setState(() => replyingTo = message);
       case _MessageMenuAction.react:
@@ -2824,6 +2855,149 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         );
     }
+  }
+
+  MessageMention? _quickMentionFor(ChatMessage message) {
+    if (!_isOrdinaryGroup ||
+        message.isMine ||
+        message.senderId.isEmpty ||
+        message.kind == MessageContentKind.system ||
+        message.kind == MessageContentKind.screenshotNotice ||
+        _loadingSendCapability ||
+        _effectiveSendRestriction != null ||
+        widget.controller.messagingUnavailable) {
+      return null;
+    }
+    final currentUserId = widget.controller.currentUser?.id;
+    if (currentUserId == null ||
+        widget.controller.groupMemberFor(
+              widget.conversation.id,
+              currentUserId,
+            ) ==
+            null) {
+      return null;
+    }
+    final member = widget.controller.groupMemberFor(
+      widget.conversation.id,
+      message.senderId,
+    );
+    final name = member?.user.name.trim() ?? '';
+    if (member == null || name.isEmpty) return null;
+    return MessageMention(userId: member.user.id, name: name);
+  }
+
+  GroupMember? _quickManageMemberFor(ChatMessage message) {
+    if (!kIsWeb ||
+        !useLinliDesktopLayout(MediaQuery.sizeOf(context).width) ||
+        !_isOrdinaryGroup ||
+        message.senderId.isEmpty ||
+        message.senderId == widget.controller.currentUser?.id) {
+      return null;
+    }
+    final target = widget.controller.groupMemberFor(
+      widget.conversation.id,
+      message.senderId,
+    );
+    final current = widget.controller
+        .groupSendPolicyFor(widget.conversation.id)
+        ?.member;
+    return canManageGroupMember(current, target) ? target : null;
+  }
+
+  Future<void> _showGroupMemberAvatarActions(
+    ChatMessage message,
+    Offset anchor,
+  ) async {
+    var member = _quickManageMemberFor(message);
+    if (member == null) return;
+    final memberId = member.user.id;
+    final busy = _mutingGroupMemberIds.contains(memberId);
+    final size = MediaQuery.sizeOf(context);
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        anchor.dx.clamp(0, size.width),
+        anchor.dy.clamp(0, size.height),
+        (size.width - anchor.dx).clamp(0, size.width),
+        (size.height - anchor.dy).clamp(0, size.height),
+      ),
+      items: [
+        PopupMenuItem(
+          key: ValueKey('message-avatar-mute-$memberId'),
+          value: 'mute',
+          enabled: !busy,
+          child: Row(
+            children: [
+              const Icon(CupertinoIcons.speaker_slash, size: 19),
+              const SizedBox(width: 10),
+              Text(member.isMuted ? '调整禁言时长' : '禁言'),
+            ],
+          ),
+        ),
+        if (member.isMuted)
+          PopupMenuItem(
+            key: ValueKey('message-avatar-unmute-$memberId'),
+            value: 'unmute',
+            enabled: !busy,
+            child: const Row(
+              children: [
+                Icon(CupertinoIcons.speaker_2, size: 19),
+                SizedBox(width: 10),
+                Text('解除禁言'),
+              ],
+            ),
+          ),
+      ],
+    );
+    if (!mounted || action == null) return;
+    member = _quickManageMemberFor(message);
+    if (member == null || member.user.id != memberId) {
+      _showError('当前已无权管理该成员');
+      return;
+    }
+    GroupMemberMuteSelection? selection;
+    if (action == 'mute') {
+      selection = await showGroupMemberMutePicker(
+        context,
+        displayName: widget.controller.displayNameFor(
+          member.user,
+          groupNickname: member.groupNickname,
+        ),
+      );
+      if (!mounted || selection == null) return;
+    }
+    final conversationId = widget.conversation.id;
+    final accountId = widget.controller.currentUser?.id;
+    setState(() => _mutingGroupMemberIds.add(memberId));
+    bool success;
+    try {
+      success = await widget.controller.setGroupMemberMuted(
+        conversationId,
+        member.user,
+        action == 'mute' ? selection!.until : null,
+        permanently: action == 'mute' && selection!.permanently,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _mutingGroupMemberIds.remove(memberId));
+      }
+    }
+    if (!mounted ||
+        widget.conversation.id != conversationId ||
+        widget.controller.currentUser?.id != accountId) {
+      return;
+    }
+    if (!success) {
+      _showError(widget.controller.error ?? '群成员禁言设置失败');
+      return;
+    }
+    await widget.controller.loadGroupMembers(conversationId, force: true);
+    if (!mounted || widget.conversation.id != conversationId) return;
+    final name = widget.controller.displayNameFor(
+      member.user,
+      groupNickname: member.groupNickname,
+    );
+    _showError(action == 'unmute' ? '已解除 $name 的禁言' : '已禁言 $name');
   }
 
   Future<String> _resolveMessageImageSource(ChatMessage message) async {
@@ -3178,6 +3352,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
 enum _MessageMenuAction {
   deleteEveryone,
+  mention,
   reply,
   react,
   edit,
@@ -3204,6 +3379,7 @@ class _MessageContextMenu extends StatelessWidget {
     required this.canRecall,
     required this.canEdit,
     required this.canPin,
+    required this.canMentionSender,
     required this.canViewReceipts,
     required this.onSelected,
   });
@@ -3214,6 +3390,7 @@ class _MessageContextMenu extends StatelessWidget {
   final bool canRecall;
   final bool canEdit;
   final bool canPin;
+  final bool canMentionSender;
   final bool canViewReceipts;
   final ValueChanged<_MessageMenuAction> onSelected;
 
@@ -3242,6 +3419,12 @@ class _MessageContextMenu extends StatelessWidget {
     final canViewEditHistory =
         message.editedAt != null && !message.id.startsWith('local-');
     final primary = <_ContextActionSpec>[
+      if (canMentionSender)
+        const _ContextActionSpec(
+          action: _MessageMenuAction.mention,
+          icon: CupertinoIcons.at,
+          label: '@TA',
+        ),
       const _ContextActionSpec(
         action: _MessageMenuAction.reply,
         icon: CupertinoIcons.reply,
@@ -4622,8 +4805,10 @@ class MessageBubble extends StatelessWidget {
     required this.message,
     this.controller,
     this.senderName,
+    this.senderRole,
     this.avatarUrl,
     this.onAvatarTap,
+    this.onAvatarSecondaryTap,
     this.showSender = false,
     this.showGroupReceipt = false,
     this.onReceiptTap,
@@ -4640,8 +4825,10 @@ class MessageBubble extends StatelessWidget {
   final ChatMessage message;
   final AppController? controller;
   final String? senderName;
+  final String? senderRole;
   final String? avatarUrl;
   final VoidCallback? onAvatarTap;
+  final ValueChanged<Offset>? onAvatarSecondaryTap;
   final bool showSender;
   final bool showGroupReceipt;
   final VoidCallback? onReceiptTap;
@@ -4667,6 +4854,13 @@ class MessageBubble extends StatelessWidget {
                 fallback: publicSenderName,
               ) ??
               publicSenderName;
+    final senderRoleLabel = showSender && !message.isMine
+        ? switch (senderRole) {
+            'owner' => '群主',
+            'admin' => '管理员',
+            _ => null,
+          }
+        : null;
     // Keep raw ACK/read state in the model. Only the visible label and its
     // transition key are normalized for members without receipt access.
     final canShowReceipts =
@@ -4747,7 +4941,12 @@ class MessageBubble extends StatelessWidget {
     }
 
     return Semantics(
-      label: '${mine ? '我' : resolvedSenderName}：${message.text}',
+      label:
+          '${mine
+              ? '我'
+              : senderRoleLabel == null
+              ? resolvedSenderName
+              : '$resolvedSenderName，$senderRoleLabel'}：${message.text}',
       explicitChildNodes: true,
       onLongPress: onLongPress == null ? null : openFromCenter,
       customSemanticsActions: onLongPress == null
@@ -4791,14 +4990,21 @@ class MessageBubble extends StatelessWidget {
                   label: onAvatarTap == null
                       ? '$resolvedSenderName头像'
                       : '查看$resolvedSenderName资料',
-                  child: InkResponse(
-                    key: Key('message-avatar-${message.clientMessageId}'),
-                    radius: 22,
-                    onTap: selectionMode ? onSelect : onAvatarTap,
-                    child: PersonAvatar(
-                      name: resolvedSenderName,
-                      size: 34,
-                      avatarUrl: avatarUrl,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onSecondaryTapDown: onAvatarSecondaryTap == null
+                        ? null
+                        : (details) =>
+                              onAvatarSecondaryTap!(details.globalPosition),
+                    child: InkResponse(
+                      key: Key('message-avatar-${message.clientMessageId}'),
+                      radius: 22,
+                      onTap: selectionMode ? onSelect : onAvatarTap,
+                      child: PersonAvatar(
+                        name: resolvedSenderName,
+                        size: 34,
+                        avatarUrl: avatarUrl,
+                      ),
                     ),
                   ),
                 ),
@@ -4820,9 +5026,54 @@ class MessageBubble extends StatelessWidget {
                       if (showSender && !mine)
                         Padding(
                           padding: const EdgeInsets.only(left: 4, bottom: 3),
-                          child: Text(
-                            resolvedSenderName,
-                            style: Theme.of(context).textTheme.labelSmall,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  resolvedSenderName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.labelSmall,
+                                ),
+                              ),
+                              if (senderRoleLabel != null) ...[
+                                const SizedBox(width: 5),
+                                ExcludeSemantics(
+                                  child: Container(
+                                    key: Key(
+                                      'message-sender-role-${message.clientMessageId}',
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 5,
+                                      vertical: 1,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: context.linli.selected,
+                                      borderRadius: BorderRadius.circular(999),
+                                      border: Border.all(
+                                        color: context.linli.primary.withValues(
+                                          alpha: .28,
+                                        ),
+                                      ),
+                                    ),
+                                    child: Text(
+                                      senderRoleLabel,
+                                      maxLines: 1,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .labelSmall
+                                          ?.copyWith(
+                                            color: context.linli.primary,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w600,
+                                            height: 1.2,
+                                          ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
                         ),
                       _MessageContent(message: message, controller: controller),
@@ -7858,6 +8109,14 @@ class _ChatComposerState extends State<ChatComposer> {
     if (widget.showAttachments) widget.onToggleAttachments();
     _inputFocusNode.unfocus();
     setState(() => _voiceMode = !_voiceMode);
+  }
+
+  void activateTextInput() {
+    if (_voice.recording || _voice.busy) return;
+    if (_voiceMode) setState(() => _voiceMode = false);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _inputFocusNode.requestFocus();
+    });
   }
 
   void _updateRecording(LongPressMoveUpdateDetails details) {

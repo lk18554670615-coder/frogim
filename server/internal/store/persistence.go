@@ -148,8 +148,23 @@ type AdminGroupManagementStore interface {
 	AdminRemoveGroupBlacklist(context.Context, string, string, string, string, time.Time) error
 	AdminSetGroupMuteAll(context.Context, string, string, bool, string, time.Time) error
 	AdminSetGroupBan(context.Context, string, string, bool, string, time.Time) error
+	AdminUpdateGroupSettings(context.Context, AdminGroupSettingsUpdate) (*AdminGroupSettingsResult, error)
 	AdminRecallGroupWukongMessage(context.Context, string, string, string, string, time.Time) (bool, int64, []string, error)
 	LoadAdminGroupMessageExtensions(context.Context, string, []string) (map[string]map[string]any, error)
+}
+
+type AdminGroupSettingsUpdate struct {
+	ActorID, GroupID, Reason, RequestIP                        string
+	ExpectedUpdatedAt                                          time.Time
+	Name, AvatarMediaID, Announcement, JoinPolicy              *string
+	AllowMemberAddFriend, HistoryVisibleToNewMembers, AllMuted *bool
+	MemberMessageRateLimitPerMinute                            *int
+	At                                                         time.Time
+}
+
+type AdminGroupSettingsResult struct {
+	Group         map[string]any `json:"group"`
+	ChangedFields []string       `json:"changedFields"`
 }
 type AuthStore interface {
 	LoginOrCreateUser(context.Context, string, string, string, time.Time) (*model.User, error)

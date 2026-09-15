@@ -29,6 +29,15 @@ describe('批量用户文件解析', () => {
     expect(checked[1]).toEqual(expect.objectContaining({ valid: true }));
   });
 
+  it('号码只要求 11 位数字，不校验手机号号段', () => {
+    const rows = validateUserImportRows([
+      { clientRow: 2, phone: '02800138000', name: '零开头号码', password: 'StrongPass123!', gender: 'female' },
+      { clientRow: 3, phone: '12800138000', name: '非传统号段', password: 'StrongPass123!', gender: 'male' },
+      { clientRow: 4, phone: '99999999999', name: '九开头号码', password: 'StrongPass123!', gender: '' },
+    ]);
+    expect(rows.every((row) => row.valid)).toBe(true);
+  });
+
   it('读取 XLSX 第一个工作表并拒绝公式单元格', async () => {
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('用户导入');
@@ -43,7 +52,7 @@ describe('批量用户文件解析', () => {
 
   it('校验字段、动态密码边界和 100 行上限', () => {
     const invalid = validateUserImportRows([
-      { clientRow: 2, phone: '12800138000', name: '错误号码', password: 'StrongPass123!', gender: 'male' },
+      { clientRow: 2, phone: '2800138000', name: '错误号码', password: 'StrongPass123!', gender: 'male' },
       { clientRow: 3, phone: '13800138001', name: '', password: 'StrongPass123!', gender: 'female' },
       { clientRow: 4, phone: '13800138002', name: '短密码', password: '1234567', gender: 'female' },
       { clientRow: 5, phone: '13800138003', name: '错误性别', password: 'StrongPass123!', gender: 'unknown' },

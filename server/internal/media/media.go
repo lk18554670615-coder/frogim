@@ -172,6 +172,21 @@ func (s *Service) ensure(ctx context.Context) error {
 	return nil
 }
 func (s *Service) Prepare(ctx context.Context, uid, mime, name string, size int64) (Prepared, error) {
+	return s.prepare(ctx, uid, "users/"+uid, mime, name, size)
+}
+
+// PrepareGroupAvatar scopes an administrator-uploaded image to one group. The
+// object key is later checked by the atomic settings update, so a completed
+// upload cannot be attached to another group.
+func (s *Service) PrepareGroupAvatar(ctx context.Context, uid, groupID, mime, name string, size int64) (Prepared, error) {
+	mime = strings.ToLower(strings.TrimSpace(strings.SplitN(mime, ";", 2)[0]))
+	if !strings.HasPrefix(mime, "image/") || strings.TrimSpace(groupID) == "" {
+		return Prepared{}, ErrInvalid
+	}
+	return s.prepare(ctx, uid, "groups/"+strings.TrimSpace(groupID), mime, name, size)
+}
+
+func (s *Service) prepare(ctx context.Context, uid, prefix, mime, name string, size int64) (Prepared, error) {
 	if !allowed(mime) || size <= 0 || size > s.maxBytes {
 		return Prepared{}, ErrInvalid
 	}
@@ -183,7 +198,7 @@ func (s *Service) Prepare(ctx context.Context, uid, mime, name string, size int6
 	if len(ext) > 10 {
 		ext = ""
 	}
-	key := fmt.Sprintf("users/%s/%s/%s%s", uid, time.Now().Format("2006/01"), mid, ext)
+	key := fmt.Sprintf("%s/%s/%s%s", strings.TrimSuffix(prefix, "/"), time.Now().Format("2006/01"), mid, ext)
 	meta := store.Media{ID: mid, OwnerID: uid, ObjectKey: key, MIME: mime, Size: size, Status: "pending"}
 	if err := s.metadata.CreateMedia(meta); err != nil {
 		return Prepared{}, err
