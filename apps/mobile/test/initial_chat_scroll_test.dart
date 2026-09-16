@@ -373,6 +373,58 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('短缓存页尚不可滚动时的滑动意图会阻止延迟刷新强制贴底', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final repository = _CacheThenNetworkRepository(cacheCount: 3);
+    final controller = AppController(repository);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: ChatScreen(controller: controller, conversation: _conversation),
+      ),
+    );
+    await tester.pump();
+    await _pumpFrames(tester, 8);
+
+    final list = find.byKey(const Key('message-list'));
+    final position = _messagePosition(tester);
+    expect(controller.messagesFor(_conversation.id), hasLength(3));
+    expect(position.maxScrollExtent - position.minScrollExtent, closeTo(0, 1));
+
+    // With no scroll range there is no ScrollStartNotification, but this is
+    // still an explicit attempt to read the list and must cancel bottom pinning.
+    final gesture = await tester.startGesture(
+      tester.getCenter(list),
+      kind: PointerDeviceKind.touch,
+    );
+    await gesture.moveBy(const Offset(0, 80));
+    await tester.pump();
+    await gesture.up();
+
+    repository.completeNetwork(messageCount: 16);
+    await tester.pump();
+    await _pumpFrames(tester, 24);
+
+    expect(
+      position.maxScrollExtent - position.minScrollExtent,
+      greaterThan(100),
+    );
+    expect(position.pixels, closeTo(position.minScrollExtent, 1));
+    expect(position.extentAfter, greaterThan(100));
+
+    final before = position.pixels;
+    await tester.drag(list, const Offset(0, -180));
+    await tester.pumpAndSettle();
+    expect(position.pixels, greaterThan(before + 20));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('实时新消息在底部自动跟随且阅读历史时不抢滚动位置', (tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
@@ -688,14 +740,16 @@ final _conversationB = Conversation(
 
 class _CacheThenNetworkRepository extends DemoImRepository
     implements CachedMessageRepository {
-  _CacheThenNetworkRepository() : super(latency: Duration.zero);
+  _CacheThenNetworkRepository({this.cacheCount = 40})
+    : super(latency: Duration.zero);
 
   final Completer<List<ChatMessage>> _network = Completer<List<ChatMessage>>();
+  final int cacheCount;
   int networkRequests = 0;
 
   @override
   Future<List<ChatMessage>> cachedMessages(String conversationId) async =>
-      _page(conversationId, count: 40, label: '缓存消息');
+      _page(conversationId, count: cacheCount, label: '缓存消息');
 
   @override
   Future<List<ChatMessage>> messages(String conversationId) {

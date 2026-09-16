@@ -272,6 +272,59 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('邀请成员刷新不会中断 Web 输入法组合态或夺走搜索焦点', (tester) async {
+    final repo = _Repository('owner');
+    final controller = await _open(tester, repo, width: 1280);
+    await tester.tap(find.byKey(const Key('chat-info-invite-members')));
+    await tester.pumpAndSettle();
+
+    final search = find.byKey(const Key('group-invite-search'));
+    await tester.tap(search);
+    await tester.showKeyboard(search);
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'an',
+        selection: TextSelection.collapsed(offset: 2),
+        composing: TextRange(start: 0, end: 2),
+      ),
+    );
+    await tester.pump();
+
+    EditableText editable() => tester.widget<EditableText>(
+      find.descendant(of: search, matching: find.byType(EditableText)),
+    );
+    expect(editable().controller.text, 'an');
+    expect(
+      editable().controller.value.composing,
+      const TextRange(start: 0, end: 2),
+    );
+    expect(editable().focusNode.hasFocus, isTrue);
+
+    controller.notifyListeners();
+    await tester.pump();
+    expect(editable().controller.text, 'an');
+    expect(
+      editable().controller.value.composing,
+      const TextRange(start: 0, end: 2),
+    );
+    expect(editable().focusNode.hasFocus, isTrue);
+
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'anran',
+        selection: TextSelection.collapsed(offset: 5),
+      ),
+    );
+    await tester.pump();
+    expect(editable().controller.text, 'anran');
+    expect(editable().focusNode.hasFocus, isTrue);
+    expect(find.byKey(const Key('group-invite-user-u2')), findsOneWidget);
+    expect(find.byKey(const Key('group-invite-user-u3')), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('原成员列表添加入口复用新选择页；取消不发送', (tester) async {
     final repo = _Repository('member');
     await _open(tester, repo, screen: 'members');

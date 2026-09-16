@@ -415,6 +415,79 @@ func TestGroupMentionMetadataIsPassedToWukongTransport(t *testing.T) {
 	}
 }
 
+func TestSeparateForwardPreservesMentionsAndTargetSafeReply(t *testing.T) {
+	a, err := New(context.Background(), teststore.Memory{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.SeedDemo(); err != nil {
+		t.Fatal(err)
+	}
+	sourceGroup, err := a.CreateGroup("usr_alice", "source", []string{"usr_bob"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetGroup, err := a.CreateGroup("usr_alice", "target", []string{"usr_bob"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &model.Message{
+		ID: "source-message", ClientMsgID: "source-client",
+		ConversationID: sourceGroup.ID, SenderID: "usr_alice", Type: "text",
+		Body: map[string]any{
+			"text":     "@Bob reply",
+			"mentions": []string{"usr_bob"}, "mentionAll": true,
+			"reply": map[string]any{
+				"message_id": "quoted-message", "message_seq": float64(7),
+				"from_uid": "usr_bob", "from_name": "Bob", "content": "quoted text",
+			},
+		},
+		ReplyToID: "quoted-message", CreatedAt: time.Now().UTC(),
+	}
+	a.SetMessageSourceLoader(func(_ context.Context, _ string, ids []string) ([]*model.Message, error) {
+		if len(ids) != 1 || ids[0] != source.ID {
+			return nil, store.ErrForbidden
+		}
+		return []*model.Message{source}, nil
+	})
+	requests := make([]MessageTransportRequest, 0, 2)
+	a.SetMessageTransport(func(_ context.Context, request MessageTransportRequest) (MessageTransportResult, error) {
+		requests = append(requests, request)
+		return MessageTransportResult{
+			MessageID:   fmt.Sprintf("forwarded-%d", len(requests)),
+			ClientMsgID: request.ClientMsgID, MessageSeq: int64(len(requests)), CreatedAt: time.Now().UTC(),
+		}, nil
+	})
+
+	if _, _, err = a.ForwardMessages("usr_alice", sourceGroup.ID, []string{source.ID}, "separate", "same-group"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = a.ForwardMessages("usr_alice", targetGroup.ID, []string{source.ID}, "separate", "other-group"); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("requests=%d", len(requests))
+	}
+	same, cross := requests[0], requests[1]
+	if same.ReplyToID != "quoted-message" || len(same.Mentions) != 1 || same.Mentions[0] != "usr_bob" || !same.MentionAll {
+		t.Fatalf("same-group request=%+v", same)
+	}
+	sameReply, _ := same.Body["reply"].(map[string]any)
+	if sameReply["message_id"] != "quoted-message" || sameReply["content"] != "quoted text" {
+		t.Fatalf("same-group reply=%#v", sameReply)
+	}
+	if cross.ReplyToID != "" || len(cross.Mentions) != 1 || cross.Mentions[0] != "usr_bob" || !cross.MentionAll {
+		t.Fatalf("cross-group request=%+v", cross)
+	}
+	crossReply, _ := cross.Body["reply"].(map[string]any)
+	if _, linked := crossReply["message_id"]; linked || crossReply["from_name"] != "Bob" || crossReply["content"] != "quoted text" {
+		t.Fatalf("cross-group reply=%#v", crossReply)
+	}
+	if _, leaked := crossReply["from_uid"]; leaked {
+		t.Fatalf("cross-group reply leaked source member id: %#v", crossReply)
+	}
+}
+
 func TestGroupCreatorIsSavedByDefault(t *testing.T) {
 	a, err := New(context.Background(), teststore.Memory{})
 	if err != nil {

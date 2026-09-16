@@ -165,7 +165,8 @@ func (p *Postgres) AdminSetGroupMuteAll(ctx context.Context, actor, groupID stri
 	}
 	defer tx.Rollback(ctx)
 	var dissolved *time.Time
-	if err = tx.QueryRow(ctx, `SELECT dissolved_at FROM im_groups WHERE conversation_id=$1 FOR UPDATE`, groupID).Scan(&dissolved); errors.Is(err, pgx.ErrNoRows) {
+	var previousUntil *time.Time
+	if err = tx.QueryRow(ctx, `SELECT dissolved_at,all_muted_until FROM im_groups WHERE conversation_id=$1 FOR UPDATE`, groupID).Scan(&dissolved, &previousUntil); errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {
 		return err
@@ -178,10 +179,13 @@ func (p *Postgres) AdminSetGroupMuteAll(ctx context.Context, actor, groupID stri
 		value := permanentGroupMuteUntil
 		until = &value
 	}
+	if sameOptionalTime(previousUntil, until) {
+		return tx.Commit(ctx)
+	}
 	if _, err = tx.Exec(ctx, `UPDATE im_groups SET all_muted_until=$2,updated_at=$3 WHERE conversation_id=$1`, groupID, until, at); err != nil {
 		return err
 	}
-	if err = emitGroupSystem(ctx, tx, groupID, actor, "group.mute_all.updated", map[string]any{"muted": muted, "reason": reason}, at); err != nil {
+	if err = emitGroupSystem(ctx, tx, groupID, actor, "group.mute_all.updated", groupMuteAllEventData(previousUntil, until, at, reason), at); err != nil {
 		return err
 	}
 	if err = enqueueWukongChannelReconcile(ctx, tx, groupID, "mute-all-updated", at); err != nil {
@@ -358,7 +362,7 @@ func (p *Postgres) AdminUpdateGroupSettings(ctx context.Context, update AdminGro
 		}
 	}
 	if before["allMuted"] != nil {
-		if err = emitGroupSystem(ctx, tx, update.GroupID, update.ActorID, "group.mute_all.updated", map[string]any{"muted": currentAllMuted}, update.At); err != nil {
+		if err = emitGroupSystem(ctx, tx, update.GroupID, update.ActorID, "group.mute_all.updated", groupMuteAllEventData(allMutedUntil, nextAllMutedUntil, update.At, update.Reason), update.At); err != nil {
 			return nil, err
 		}
 		if err = enqueueWukongChannelReconcile(ctx, tx, update.GroupID, "admin-group-settings", update.At); err != nil {

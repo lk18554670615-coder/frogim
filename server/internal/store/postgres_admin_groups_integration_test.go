@@ -47,12 +47,20 @@ func TestAdminGroupGovernancePersistsExactWukongSnapshot(t *testing.T) {
 	if err = p.AdminSetGroupMuteAll(ctx, "admin_test", groupID, true, "永久禁言", now.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
+	var beforeMuted, afterMuted bool
+	var muteReason string
+	if err = p.pool.QueryRow(ctx, `SELECT (metadata->'before'->>'muted')::boolean,(metadata->'after'->>'muted')::boolean,metadata->>'reason' FROM im_audits WHERE target_id=$1 AND action='group.mute_all.updated' ORDER BY created_at DESC LIMIT 1`, groupID).Scan(&beforeMuted, &afterMuted, &muteReason); err != nil {
+		t.Fatal(err)
+	}
+	if beforeMuted || !afterMuted || muteReason != "永久禁言" {
+		t.Fatalf("mute audit before=%v after=%v reason=%q", beforeMuted, afterMuted, muteReason)
+	}
 	snapshot, err := p.LoadWukongChannelSnapshot(ctx, groupID, wukong.ChannelGroup)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(snapshot.Allowlist, []string{admin, owner}) {
-		t.Fatalf("allowlist=%v", snapshot.Allowlist)
+	if len(snapshot.Allowlist) != 0 {
+		t.Fatalf("dynamic group mute must not use the cached WuKong allowlist: %v", snapshot.Allowlist)
 	}
 	if _, err = p.AuthorizeWukongMessage(ctx, WukongMessageRouteInput{UserID: member, ConversationID: groupID, Type: "text", Text: "blocked"}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("muted member authorization=%v", err)
@@ -109,6 +117,12 @@ func TestAdminGroupGovernancePersistsExactWukongSnapshot(t *testing.T) {
 	}
 	if err = p.AdminSetGroupMuteAll(ctx, "admin_test", groupID, false, "解除禁言", now.Add(9*time.Second)); err != nil {
 		t.Fatal(err)
+	}
+	if err = p.pool.QueryRow(ctx, `SELECT (metadata->'before'->>'muted')::boolean,(metadata->'after'->>'muted')::boolean,metadata->>'reason' FROM im_audits WHERE target_id=$1 AND action='group.mute_all.updated' ORDER BY created_at DESC LIMIT 1`, groupID).Scan(&beforeMuted, &afterMuted, &muteReason); err != nil {
+		t.Fatal(err)
+	}
+	if !beforeMuted || afterMuted || muteReason != "解除禁言" {
+		t.Fatalf("unmute audit before=%v after=%v reason=%q", beforeMuted, afterMuted, muteReason)
 	}
 	if err = p.DisbandGroupRecord(ctx, "admin_test", groupID, "不可恢复解散", now.Add(10*time.Second)); err != nil {
 		t.Fatal(err)

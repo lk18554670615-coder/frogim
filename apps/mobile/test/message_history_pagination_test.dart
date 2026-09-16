@@ -164,6 +164,74 @@ void main() {
     expect(repository.historyRequestCount, 3);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('点击回复预览自动加载较早历史并定位到原消息', (tester) async {
+    final repository = _HistoryRepository(replyTargetSequence: 10);
+    final controller = AppController(repository);
+    addTearDown(controller.dispose);
+    await _mountChat(tester, controller);
+
+    final replyPreview = find.byKey(
+      const Key('message-reply-preview-client-100'),
+    );
+    expect(replyPreview, findsOneWidget);
+    expect(repository.historyRequestCount, 0);
+
+    await tester.tap(replyPreview);
+    await tester.pumpAndSettle();
+
+    expect(repository.historyRequestCount, 1);
+    expect(controller.messagesFor('conversation-1').first.conversationSeq, 1);
+    expect(find.text('消息 10'), findsOneWidget);
+    final targetCenter = tester.getCenter(find.text('消息 10'));
+    expect(
+      targetCenter.dy,
+      inInclusiveRange(0, tester.view.physicalSize.height),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('原消息已加载时点击回复预览直接定位且不请求历史', (tester) async {
+    final repository = _HistoryRepository(
+      firstSequence: 1,
+      replyTargetSequence: 10,
+    );
+    final controller = AppController(repository);
+    addTearDown(controller.dispose);
+    await _mountChat(tester, controller);
+
+    await tester.tap(find.byKey(const Key('message-reply-preview-client-50')));
+    await tester.pumpAndSettle();
+
+    expect(repository.historyRequestCount, 0);
+    expect(find.text('消息 10'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('只有引用快照而没有原消息 ID 时不提供无效跳转', (tester) async {
+    final message = ChatMessage(
+      id: 'snapshot-reply',
+      conversationId: 'other-group',
+      senderId: 'user-1',
+      senderName: '测试用户',
+      text: '转发后的回复正文',
+      sentAt: DateTime(2026, 9, 16),
+      isMine: false,
+      kind: MessageContentKind.reply,
+      replyToText: '来自另一个群的引用快照',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: Scaffold(body: MessageBubble(message: message)),
+      ),
+    );
+
+    final preview = tester.widget<InkWell>(
+      find.byKey(const Key('message-reply-preview-snapshot-reply')),
+    );
+    expect(preview.onTap, isNull);
+  });
 }
 
 Future<void> _mountChat(WidgetTester tester, AppController controller) async {
@@ -222,11 +290,13 @@ class _HistoryRepository extends DemoImRepository
     this.failHistory = false,
     this.firstSequence = 51,
     this.variableHeight = false,
+    this.replyTargetSequence,
   }) : super(latency: Duration.zero);
 
   bool failHistory;
   final int firstSequence;
   final bool variableHeight;
+  final int? replyTargetSequence;
   Completer<void>? historyGate;
   int? requestedBeforeSequence;
   int historyRequestCount = 0;
@@ -273,12 +343,26 @@ class _HistoryRepository extends DemoImRepository
     conversationId: conversationId,
     senderId: 'user-1',
     senderName: '测试用户',
-    text: variableHeight
+    text: replyTargetSequence != null && sequence == firstSequence + 49
+        ? '回复历史消息'
+        : variableHeight
         ? '消息 $sequence${'\n多行正文' * (sequence % 4)}'
         : '消息 $sequence',
     sentAt: DateTime(2026, 8, 16, 10).add(Duration(seconds: sequence)),
     isMine: false,
     conversationSeq: sequence,
     status: MessageStatus.sent,
+    kind: replyTargetSequence != null && sequence == firstSequence + 49
+        ? MessageContentKind.reply
+        : MessageContentKind.text,
+    replyToId: replyTargetSequence != null && sequence == firstSequence + 49
+        ? 'message-$replyTargetSequence'
+        : null,
+    replyToText: replyTargetSequence != null && sequence == firstSequence + 49
+        ? '消息 $replyTargetSequence'
+        : null,
+    replyToSeq: replyTargetSequence != null && sequence == firstSequence + 49
+        ? replyTargetSequence!
+        : 0,
   );
 }

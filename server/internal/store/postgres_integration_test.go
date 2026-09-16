@@ -3018,6 +3018,13 @@ func TestPostgresGroupManagementPermissionsInvitesQRAndAudit(t *testing.T) {
 	if _, err = p.UpdateGroupProfile(ctx, users[1], cid, GroupProfileUpdate{AllMutedUntil: &allMuted}, now.Add(11*time.Second)); err != nil {
 		t.Fatalf("group admin mute all=%v", err)
 	}
+	var muteAuditCount, genericMuteAuditCount int
+	if err = p.pool.QueryRow(ctx, `SELECT count(*) FILTER(WHERE action='group.mute_all.updated'),count(*) FILTER(WHERE action='group.profile.updated') FROM im_audits WHERE target_id=$1 AND created_at=$2`, cid, now.Add(11*time.Second)).Scan(&muteAuditCount, &genericMuteAuditCount); err != nil {
+		t.Fatal(err)
+	}
+	if muteAuditCount != 1 || genericMuteAuditCount != 0 {
+		t.Fatalf("mute audit actions mute=%d generic=%d", muteAuditCount, genericMuteAuditCount)
+	}
 	if _, err = p.UpdateGroupProfile(ctx, users[1], cid, GroupProfileUpdate{JoinPolicy: &policy}, now.Add(12*time.Second)); err != ErrForbidden {
 		t.Fatalf("group admin changed owner-only join policy=%v", err)
 	}

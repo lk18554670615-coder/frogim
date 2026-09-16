@@ -1304,7 +1304,9 @@ class DemoImRepository
           isMine: true,
           conversationSeq: DateTime.now().millisecondsSinceEpoch + index,
           status: MessageStatus.sent,
-          kind: sources[index].kind,
+          kind: sources[index].replyToText == null
+              ? sources[index].kind
+              : MessageContentKind.reply,
           mediaUrl: sources[index].mediaUrl,
           mediaId: sources[index].mediaId,
           fileName: sources[index].fileName,
@@ -1318,6 +1320,18 @@ class DemoImRepository
           longitude: sources[index].longitude,
           locationName: sources[index].locationName,
           locationAddress: sources[index].locationAddress,
+          replyToId: sources[index].conversationId == targetConversationId
+              ? sources[index].replyToId
+              : null,
+          replyToText: sources[index].replyToText,
+          replyToSeq: sources[index].conversationId == targetConversationId
+              ? sources[index].replyToSeq
+              : 0,
+          replyToSenderId: sources[index].conversationId == targetConversationId
+              ? sources[index].replyToSenderId
+              : null,
+          replyToSenderName: sources[index].replyToSenderName,
+          mentions: sources[index].mentions,
         ),
     ];
   }

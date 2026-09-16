@@ -3838,7 +3838,7 @@ class LiveImRepository
       'screenshot' ||
       'screenshot_notice' => MessageContentKind.screenshotNotice,
       null || 'text' =>
-        replyToId == null || replyToId.isEmpty
+        (replyToId == null || replyToId.isEmpty) && reply.isEmpty
             ? MessageContentKind.text
             : MessageContentKind.reply,
       _ => MessageContentKind.unsupported,

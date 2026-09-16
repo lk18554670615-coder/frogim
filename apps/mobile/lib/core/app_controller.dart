@@ -128,6 +128,19 @@ class AppController extends ChangeNotifier {
   GroupMember? groupMemberFor(String id, String userId) =>
       _groupDirectory.member(id, userId);
 
+  String? publicGroupMemberName(String conversationId, String userId) {
+    final cached = groupMemberFor(conversationId, userId)?.user.name.trim();
+    if (cached?.isNotEmpty == true) return cached;
+    final conversation = conversations
+        .where((item) => item.id == conversationId)
+        .firstOrNull;
+    final member = conversation?.members
+        .where((item) => item.id == userId)
+        .firstOrNull;
+    final name = member?.name.trim();
+    return name?.isNotEmpty == true ? name : null;
+  }
+
   List<AppUser> conversationUsers(Conversation conversation) =>
       (isManagedGroup(conversation)
               ? cachedGroupMembers(conversation.id)
@@ -5129,6 +5142,9 @@ class AppController extends ChangeNotifier {
       return ChatMessage.fromJson(raw);
     }
     final body = raw['body'] as Map<String, Object?>? ?? const {};
+    final reply = body['reply'] is Map
+        ? Map<String, Object?>.from(body['reply']! as Map)
+        : const <String, Object?>{};
     final previewRaw = raw['linkPreview'] is Map<String, Object?>
         ? raw['linkPreview']! as Map<String, Object?>
         : body['linkPreview'] is Map<String, Object?>
@@ -5136,7 +5152,10 @@ class AppController extends ChangeNotifier {
         : null;
     final senderId = raw['senderId']! as String;
     final replyToId =
-        raw['replyToId'] as String? ?? body['replyToId'] as String?;
+        raw['replyToId'] as String? ??
+        body['replyToId'] as String? ??
+        reply['message_id'] as String? ??
+        reply['messageId'] as String?;
     final type = raw['type'] as String? ?? body['type'] as String?;
     final existing = _messages[raw['conversationId'] as String];
     final replyText = existing
@@ -5162,7 +5181,7 @@ class AppController extends ChangeNotifier {
       'screenshot' ||
       'screenshot_notice' => MessageContentKind.screenshotNotice,
       null || 'text' =>
-        replyToId == null || replyToId.isEmpty
+        (replyToId == null || replyToId.isEmpty) && reply.isEmpty
             ? MessageContentKind.text
             : MessageContentKind.reply,
       _ => MessageContentKind.unsupported,
@@ -5223,7 +5242,24 @@ class AppController extends ChangeNotifier {
       mimeType: body['mime'] as String? ?? body['mimeType'] as String?,
       durationSeconds: (body['duration'] as num?)?.toInt(),
       replyToId: replyToId?.isEmpty == true ? null : replyToId,
-      replyToText: replyText ?? (replyToId == null ? null : '原消息暂不可见'),
+      replyToText:
+          replyText ??
+          body['replyToText'] as String? ??
+          reply['content'] as String? ??
+          (replyToId == null ? null : '原消息暂不可见'),
+      replyToSeq:
+          (body['replyToSeq'] as num?)?.toInt() ??
+          (reply['message_seq'] as num?)?.toInt() ??
+          (reply['messageSeq'] as num?)?.toInt() ??
+          0,
+      replyToSenderId:
+          body['replyToSenderId'] as String? ??
+          reply['from_uid'] as String? ??
+          reply['fromUid'] as String?,
+      replyToSenderName:
+          body['replyToSenderName'] as String? ??
+          reply['from_name'] as String? ??
+          reply['fromName'] as String?,
       contactUserId: body['userId'] as String?,
       contactName: body['name'] as String?,
       contactHandle: body['handle'] as String?,

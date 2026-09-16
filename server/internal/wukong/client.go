@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -73,6 +74,11 @@ type Client struct {
 	managerToken string
 	http         *http.Client
 	maxRetries   int
+	// Channel snapshots are written by both the persistent outbox and the
+	// periodic reconciler. Sharing these striped locks through the Client keeps
+	// the two writers ordered for a channel without serializing unrelated
+	// channels.
+	channelSnapshotLocks [64]sync.Mutex
 }
 
 type HTTPError struct {

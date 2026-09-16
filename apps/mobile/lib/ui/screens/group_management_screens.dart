@@ -1188,6 +1188,8 @@ class _GroupMembersManagementScreenState
     extends State<GroupMembersManagementScreen> {
   late GroupProfile profile = widget.profile;
   late List<GroupMember> members = widget.initialMembers;
+  late final TextEditingController _searchController;
+  late final FocusNode _searchFocusNode;
   bool loading = false;
   bool changingRole = false;
   bool submittingRole = false;
@@ -1236,6 +1238,8 @@ class _GroupMembersManagementScreenState
   @override
   void initState() {
     super.initState();
+    _searchController = TextEditingController()..addListener(_onSearchChanged);
+    _searchFocusNode = FocusNode(debugLabel: 'group-member-search');
     _conversationFingerprint = _fingerprint(liveConversation);
     widget.controller.addListener(_handleControllerChange);
   }
@@ -1244,7 +1248,21 @@ class _GroupMembersManagementScreenState
   void dispose() {
     _externalRefreshTimer?.cancel();
     widget.controller.removeListener(_handleControllerChange);
+    _searchController
+      ..removeListener(_onSearchChanged)
+      ..dispose();
+    _searchFocusNode.dispose();
     super.dispose();
+  }
+
+  void _onSearchChanged() {
+    if (!mounted) return;
+    final value = _searchController.value;
+    // Web 输入法在拼音等组合输入期间若触发整页重建，会中断组合态并
+    // 让输入框表现为只能输入一个字符。组合提交后再刷新筛选结果。
+    if (value.composing.isValid && !value.composing.isCollapsed) return;
+    if (query == value.text) return;
+    setState(() => query = value.text);
   }
 
   String _fingerprint(Conversation? conversation) => conversation == null
@@ -1329,6 +1347,8 @@ class _GroupMembersManagementScreenState
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
           child: CupertinoSearchTextField(
+            controller: _searchController,
+            focusNode: _searchFocusNode,
             style: TextStyle(color: context.linli.text),
             placeholderStyle: TextStyle(color: context.linli.secondaryText),
             itemColor: context.linli.secondaryText,
@@ -1340,7 +1360,9 @@ class _GroupMembersManagementScreenState
                 )
                 ? '搜索昵称、备注或呱呱号'
                 : '搜索昵称或备注',
-            onChanged: (value) => setState(() => query = value),
+            onSubmitted: (value) {
+              if (query != value) setState(() => query = value);
+            },
           ),
         ),
         if (!widget.administratorMode && canInviteMembers)

@@ -1,8 +1,10 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:linli_im/core/app_controller.dart';
 import 'package:linli_im/core/app_theme.dart';
 import 'package:linli_im/core/models.dart';
+import 'package:linli_im/data/demo_repository.dart';
 import 'package:linli_im/ui/screens/chat_screen.dart';
 
 void main() {
@@ -132,5 +134,54 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.textContaining('@所有人'), findsOneWidget);
     expect(find.text('🎉 12'), findsOneWidget);
+  });
+
+  testWidgets('转发消息只有成员 ID 时仍按目标群公开昵称显示真实 mention', (tester) async {
+    final controller = AppController(DemoImRepository(latency: Duration.zero))
+      ..conversations = [
+        Conversation(
+          id: 'group-forward-target',
+          title: '目标群',
+          subtitle: '',
+          updatedAt: DateTime(2026, 9, 16),
+          kind: ConversationKind.group,
+          members: const [
+            AppUser(id: 'usr_b', name: 'Bob', handle: 'bob', presence: '在线'),
+          ],
+        ),
+      ];
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLinliTheme(Brightness.light),
+        home: Scaffold(
+          body: MessageBubble(
+            controller: controller,
+            message: ChatMessage(
+              id: 'forwarded-mention',
+              conversationId: 'group-forward-target',
+              senderId: 'usr_a',
+              senderName: 'Alice',
+              text: '@Bob 请查看',
+              sentAt: DateTime(2026, 9, 16),
+              isMine: false,
+              mentions: const [MessageMention(userId: 'usr_b', name: 'usr_b')],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final mentionedText = tester
+        .widgetList<Text>(find.byType(Text))
+        .firstWhere(
+          (widget) => widget.textSpan?.toPlainText().contains('@Bob') == true,
+        );
+    final root = mentionedText.textSpan! as TextSpan;
+    final mention = root.children!.whereType<TextSpan>().firstWhere(
+      (span) => span.text == '@Bob',
+    );
+    expect(mention.style?.fontWeight, FontWeight.w600);
   });
 }

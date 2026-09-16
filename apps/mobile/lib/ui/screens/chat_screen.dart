@@ -244,6 +244,8 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _initialMessageLoadComplete = false;
   bool _followingLatest = true;
   bool _userScrolling = false;
+  int? _messageTouchPointer;
+  Offset? _messageTouchOrigin;
   double _lastUserScrollDelta = 0;
   int _scrollEpoch = 0;
   int _conversationEpoch = 0;
@@ -251,6 +253,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _registeredActiveConversation = false;
   String? _previousActiveConversationId;
   bool _loadingOlderFromScroll = false;
+  bool _loadingMentionMembers = false;
   String? _sendRestriction;
   Timer? _sendPolicyExpiryTimer;
   int _sendCapabilityRequest = 0;
@@ -426,6 +429,7 @@ class _ChatScreenState extends State<ChatScreen> {
     await widget.controller.loadMessages(widget.conversation.id, force: true);
     if (!mounted || conversationEpoch != _conversationEpoch) return;
     _initialMessageLoadComplete = true;
+    unawaited(_loadMentionMembersIfNeeded());
     if (widget.initialMessageId != null) {
       _initialScrollTimer?.cancel();
       if (scrollEpoch == _scrollEpoch) _scrollToInitialMessage();
@@ -484,6 +488,42 @@ class _ChatScreenState extends State<ChatScreen> {
     _initialScrollTimer?.cancel();
     _scrollEpoch += 1;
     _messageScrollReady = true;
+  }
+
+  bool _isTouchLikePointer(PointerEvent event) =>
+      event.kind == PointerDeviceKind.touch ||
+      event.kind == PointerDeviceKind.stylus ||
+      event.kind == PointerDeviceKind.invertedStylus;
+
+  void _handleMessagePointerDown(PointerDownEvent event) {
+    if (!_isTouchLikePointer(event) || _messageTouchPointer != null) return;
+    _messageTouchPointer = event.pointer;
+    _messageTouchOrigin = event.position;
+  }
+
+  void _handleMessagePointerMove(PointerMoveEvent event) {
+    if (event.pointer != _messageTouchPointer) return;
+    final origin = _messageTouchOrigin;
+    if (origin == null) return;
+    final distance = event.position - origin;
+    if (distance.dy.abs() < kTouchSlop ||
+        distance.dy.abs() <= distance.dx.abs()) {
+      return;
+    }
+    // A short cache page can fit the viewport, so Flutter's Scrollable has no
+    // range and emits no ScrollStartNotification. Stop the initial bottom pin
+    // from this raw drag intent before a delayed server reconciliation inserts
+    // more rows; otherwise the newly scrollable list is repeatedly pulled to
+    // the end and appears to flicker or ignore the user's gesture.
+    _messageTouchPointer = null;
+    _messageTouchOrigin = null;
+    _pauseLatestFollowing();
+  }
+
+  void _handleMessagePointerEnd(PointerEvent event) {
+    if (event.pointer != _messageTouchPointer) return;
+    _messageTouchPointer = null;
+    _messageTouchOrigin = null;
   }
 
   bool _handleMessageScrollNotification(ScrollNotification notification) {
@@ -709,9 +749,12 @@ class _ChatScreenState extends State<ChatScreen> {
       unawaited(_loadSendCapability());
       _followingLatest = widget.initialMessageId == null;
       _userScrolling = false;
+      _messageTouchPointer = null;
+      _messageTouchOrigin = null;
       _messageScrollReady = false;
       _initialMessageLoadComplete = false;
       _loadingOlderFromScroll = false;
+      _loadingMentionMembers = false;
       _messageKeys.clear();
       _messageListAnchorId = null;
       final epoch = _conversationEpoch;
@@ -773,6 +816,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _scheduleSendPolicyExpiry();
     }
     if (revisionChanged && _isOrdinaryGroup) unawaited(_loadSendCapability());
+    unawaited(_loadMentionMembersIfNeeded());
     if (identical(latest, _observedConversation) &&
         listEquals(widget.controller.contacts, _observedContacts) &&
         !policyChanged &&
@@ -783,6 +827,38 @@ class _ChatScreenState extends State<ChatScreen> {
     _observedConversation = latest;
     _observedContacts = List.of(widget.controller.contacts);
     setState(() {});
+  }
+
+  Future<void> _loadMentionMembersIfNeeded() async {
+    if (!_isOrdinaryGroup || _loadingMentionMembers) return;
+    final conversationId = widget.conversation.id;
+    final unresolved = widget.controller
+        .messagesFor(conversationId)
+        .expand((message) => message.mentions)
+        .where((mention) => !mention.isEveryone)
+        .any(
+          (mention) =>
+              widget.controller.publicGroupMemberName(
+                conversationId,
+                mention.userId,
+              ) ==
+              null,
+        );
+    if (!unresolved ||
+        widget.controller.cachedGroupMembers(conversationId) != null) {
+      return;
+    }
+    final epoch = _conversationEpoch;
+    _loadingMentionMembers = true;
+    try {
+      await widget.controller.loadGroupMembers(conversationId, force: false);
+    } finally {
+      if (mounted &&
+          epoch == _conversationEpoch &&
+          widget.conversation.id == conversationId) {
+        _loadingMentionMembers = false;
+      }
+    }
   }
 
   void _handleScreenshot(DateTime occurredAt) {
@@ -1608,6 +1684,17 @@ class _ChatScreenState extends State<ChatScreen> {
                         widget.controller.canRetryMessage(message)
                     ? () => widget.controller.retryMessage(message)
                     : null,
+                onReplyTap:
+                    !selecting && message.replyToId?.trim().isNotEmpty == true
+                    ? () => unawaited(
+                        _scrollToMessage(
+                          message.replyToId!,
+                          loadOlderUntilFound: true,
+                          targetSequence: message.replyToSeq,
+                          unavailableMessage: '原消息暂不可见，可能已被删除或超出可见范围',
+                        ),
+                      )
+                    : null,
                 selectionMode: selecting,
                 selected: selectedMessageIds.contains(message.clientMessageId),
                 onSelect: () => _toggleSelection(message),
@@ -1669,27 +1756,36 @@ class _ChatScreenState extends State<ChatScreen> {
       onNotification: _handleMessageMetrics,
       child: NotificationListener<ScrollNotification>(
         onNotification: _handleMessageScrollNotification,
-        child: ScrollConfiguration(
-          // Keep the inherited drag devices (no left-mouse list dragging).
-          // The explicit thumb shares this list's controller on every desktop.
-          behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-          child: desktop
-              ? _ChatScrollbar(
-                  key: const Key('message-scrollbar'),
-                  controller: scrollController,
-                  thumbColor: Theme.of(
-                    context,
-                  ).colorScheme.onSurface.withValues(alpha: .3),
-                  onTrackScroll: () {
-                    // RawScrollbar pages via moveTo for a track click, which
-                    // intentionally has no UserScrollNotification of its own.
-                    _pauseLatestFollowing();
-                    _userScrolling = true;
-                    _lastUserScrollDelta = 0;
-                  },
-                  child: list,
-                )
-              : list,
+        child: Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: _handleMessagePointerDown,
+          onPointerMove: _handleMessagePointerMove,
+          onPointerUp: _handleMessagePointerEnd,
+          onPointerCancel: _handleMessagePointerEnd,
+          child: ScrollConfiguration(
+            // Keep the inherited drag devices (no left-mouse list dragging).
+            // The explicit thumb shares this list's controller on every desktop.
+            behavior: ScrollConfiguration.of(
+              context,
+            ).copyWith(scrollbars: false),
+            child: desktop
+                ? _ChatScrollbar(
+                    key: const Key('message-scrollbar'),
+                    controller: scrollController,
+                    thumbColor: Theme.of(
+                      context,
+                    ).colorScheme.onSurface.withValues(alpha: .3),
+                    onTrackScroll: () {
+                      // RawScrollbar pages via moveTo for a track click, which
+                      // intentionally has no UserScrollNotification of its own.
+                      _pauseLatestFollowing();
+                      _userScrolling = true;
+                      _lastUserScrollDelta = 0;
+                    },
+                    child: list,
+                  )
+                : list,
+          ),
         ),
       ),
     );
@@ -2120,6 +2216,9 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _scrollToMessage(
     String messageId, {
     ChatMessage? searchResult,
+    bool loadOlderUntilFound = false,
+    int targetSequence = 0,
+    String unavailableMessage = '该消息不在当前已加载范围内',
   }) async {
     // Programmatic navigation is an explicit request to leave the newest
     // message. Stop the startup end-pinning first; otherwise its metrics
@@ -2137,9 +2236,40 @@ class _ChatScreenState extends State<ChatScreen> {
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted || epoch != _scrollEpoch) return;
     }
+    if (searchResult == null && loadOlderUntilFound) {
+      var messages = widget.controller.messagesFor(widget.conversation.id);
+      var targetLoaded = messages.any(
+        (message) => message.id == targetMessageId,
+      );
+      while (!targetLoaded &&
+          widget.controller.messageHistoryHasMore(widget.conversation.id)) {
+        final serverSequences = messages
+            .map((message) => message.conversationSeq)
+            .where((sequence) => sequence > 0);
+        final oldestSequence = serverSequences.isEmpty
+            ? 0
+            : serverSequences.reduce(math.min);
+        // Once this page has crossed the quoted sequence, the source was
+        // deleted or is outside the member's visible history boundary.
+        if (targetSequence > 0 &&
+            oldestSequence > 0 &&
+            oldestSequence <= targetSequence) {
+          break;
+        }
+        final progressed = await widget.controller.loadOlderMessages(
+          widget.conversation.id,
+        );
+        if (!mounted || epoch != _scrollEpoch) return;
+        await WidgetsBinding.instance.endOfFrame;
+        if (!mounted || epoch != _scrollEpoch) return;
+        messages = widget.controller.messagesFor(widget.conversation.id);
+        targetLoaded = messages.any((message) => message.id == targetMessageId);
+        if (!progressed) break;
+      }
+    }
     final duration = nexaMotionDuration(context);
     var target = _messageKeys[targetMessageId]?.currentContext;
-    if (target == null) {
+    if (target == null && !loadOlderUntilFound) {
       await widget.controller.loadMessages(widget.conversation.id, force: true);
       if (!mounted || epoch != _scrollEpoch) return;
       await WidgetsBinding.instance.endOfFrame;
@@ -2164,7 +2294,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     }
     if (target == null) {
-      _showError('该消息不在当前已加载范围内');
+      _showError(unavailableMessage);
       return;
     }
     if (!target.mounted) return;
@@ -4813,6 +4943,7 @@ class MessageBubble extends StatelessWidget {
     this.showGroupReceipt = false,
     this.onReceiptTap,
     this.onRetry,
+    this.onReplyTap,
     this.onLongPress,
     this.onSelect,
     this.selectionMode = false,
@@ -4833,6 +4964,7 @@ class MessageBubble extends StatelessWidget {
   final bool showGroupReceipt;
   final VoidCallback? onReceiptTap;
   final VoidCallback? onRetry;
+  final VoidCallback? onReplyTap;
   final ValueChanged<Offset>? onLongPress;
   final VoidCallback? onSelect;
   final bool selectionMode;
@@ -5076,7 +5208,11 @@ class MessageBubble extends StatelessWidget {
                             ],
                           ),
                         ),
-                      _MessageContent(message: message, controller: controller),
+                      _MessageContent(
+                        message: message,
+                        controller: controller,
+                        onReplyTap: onReplyTap,
+                      ),
                       if (message.kind == MessageContentKind.voice)
                         VoiceUploadProgress(
                           progress: message.status == MessageStatus.sending
@@ -5408,9 +5544,14 @@ class _MessageReactionBar extends StatelessWidget {
 }
 
 class _MessageContent extends StatelessWidget {
-  const _MessageContent({required this.message, this.controller});
+  const _MessageContent({
+    required this.message,
+    this.controller,
+    this.onReplyTap,
+  });
   final ChatMessage message;
   final AppController? controller;
+  final VoidCallback? onReplyTap;
 
   @override
   Widget build(BuildContext context) {
@@ -5496,26 +5637,39 @@ class _MessageContent extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (message.replyToText != null)
-              Container(
-                margin: const EdgeInsets.only(bottom: 7),
-                padding: const EdgeInsets.fromLTRB(9, 6, 8, 6),
-                decoration: BoxDecoration(
-                  color: textColor.withValues(alpha: .10),
-                  border: Border(
-                    left: BorderSide(color: context.linli.link, width: 2),
-                  ),
-                ),
-                child: Text(
-                  message.replyToText!,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: context.linli.secondaryText,
-                    fontSize: 12,
+              Semantics(
+                button: onReplyTap != null,
+                label: onReplyTap == null ? null : '定位到原消息',
+                child: InkWell(
+                  key: Key('message-reply-preview-${message.clientMessageId}'),
+                  onTap: onReplyTap,
+                  child: Container(
+                    margin: const EdgeInsets.only(bottom: 7),
+                    padding: const EdgeInsets.fromLTRB(9, 6, 8, 6),
+                    decoration: BoxDecoration(
+                      color: textColor.withValues(alpha: .10),
+                      border: Border(
+                        left: BorderSide(color: context.linli.link, width: 2),
+                      ),
+                    ),
+                    child: Text(
+                      message.replyToText!,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: context.linli.secondaryText,
+                        fontSize: 12,
+                      ),
+                    ),
                   ),
                 ),
               ),
-            _TextWithPreview(message: message, color: textColor, mine: mine),
+            _TextWithPreview(
+              message: message,
+              color: textColor,
+              mine: mine,
+              controller: controller,
+            ),
           ],
         ),
         MessageContentKind.file => _OpenableMediaContent(
@@ -5544,7 +5698,12 @@ class _MessageContent extends StatelessWidget {
           controller: controller,
           color: textColor,
         ),
-        _ => _TextWithPreview(message: message, color: textColor, mine: mine),
+        _ => _TextWithPreview(
+          message: message,
+          color: textColor,
+          mine: mine,
+          controller: controller,
+        ),
       },
     );
   }
@@ -6683,17 +6842,24 @@ class _TextWithPreview extends StatelessWidget {
     required this.message,
     required this.color,
     required this.mine,
+    this.controller,
   });
 
   final ChatMessage message;
   final Color color;
   final bool mine;
+  final AppController? controller;
 
   @override
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      _MentionedMessageText(message: message, color: color, mine: mine),
+      _MentionedMessageText(
+        message: message,
+        color: color,
+        mine: mine,
+        controller: controller,
+      ),
       if (message.linkPreview case final preview?) ...[
         const SizedBox(height: 10),
         _ServerLinkPreview(preview: preview, color: color),
@@ -6805,11 +6971,13 @@ class _MentionedMessageText extends StatefulWidget {
     required this.message,
     required this.color,
     required this.mine,
+    this.controller,
   });
 
   final ChatMessage message;
   final Color color;
   final bool mine;
+  final AppController? controller;
 
   @override
   State<_MentionedMessageText> createState() => _MentionedMessageTextState();
@@ -6840,7 +7008,22 @@ class _MentionedMessageTextState extends State<_MentionedMessageText> {
       context,
     ).textTheme.bodyLarge?.copyWith(color: widget.color);
     final mentionTokens = widget.message.mentions
-        .map((mention) => mention.isEveryone ? '@所有人' : '@${mention.name}')
+        .expand<String>((mention) {
+          if (mention.isEveryone) return const ['@所有人'];
+          final names = <String>{};
+          final storedName = mention.name.trim();
+          if (storedName.isNotEmpty && storedName != mention.userId) {
+            names.add(storedName);
+          }
+          final memberName = widget.controller?.publicGroupMemberName(
+            widget.message.conversationId,
+            mention.userId,
+          );
+          if (memberName != null && memberName.isNotEmpty) {
+            names.add(memberName);
+          }
+          return names.map((name) => '@$name');
+        })
         .toSet()
         .toList();
     final patternParts = <String>[

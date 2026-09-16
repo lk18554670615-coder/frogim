@@ -16,6 +16,7 @@ type UserAccessSnapshot struct {
 }
 
 type ReconcileStore interface {
+	ChannelSnapshotStore
 	ListWukongUserAccess(context.Context, string, int) ([]UserAccessSnapshot, error)
 	ListWukongChannels(context.Context, string, int) ([]ChannelSnapshot, error)
 }
@@ -97,7 +98,10 @@ func (r *Reconciler) runPage(ctx context.Context) (bool, error) {
 			return false, err
 		}
 		for _, item := range items {
-			if err = applyChannelSnapshot(ctx, r.client, item); err != nil {
+			// ListWukongChannels supplies the stable cursor and channel identity.
+			// Reload under the shared channel lock so this periodic repair cannot
+			// finish with a snapshot that predates an outbox-driven policy update.
+			if err = syncLatestChannelSnapshot(ctx, r.store, r.client, item.ChannelID, item.ChannelType); err != nil {
 				if permanentReconcileError(err) {
 					r.cycleFailure = errors.Join(r.cycleFailure, fmt.Errorf("channel reconcile deferred type=%d id=%q: %w", item.ChannelType, item.ChannelID, err))
 					r.channelCursor = item.Cursor

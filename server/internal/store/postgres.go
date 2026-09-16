@@ -3080,6 +3080,36 @@ func emitGroupSystem(ctx context.Context, tx pgx.Tx, cid, actor, event string, d
 	return err
 }
 
+func sameOptionalTime(left, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Equal(*right)
+}
+
+func groupMuteAllEventData(before, after *time.Time, at time.Time, reason string) map[string]any {
+	state := func(until *time.Time) map[string]any {
+		muted := until != nil && until.After(at)
+		var formattedUntil any
+		if until != nil {
+			formattedUntil = until.UTC().Format(time.RFC3339Nano)
+		}
+		return map[string]any{"muted": muted, "until": formattedUntil}
+	}
+	afterState := state(after)
+	data := map[string]any{
+		// Keep the top-level field for existing clients while preserving the
+		// complete transition for operations and incident audits.
+		"muted":  afterState["muted"],
+		"before": state(before),
+		"after":  afterState,
+	}
+	if strings.TrimSpace(reason) != "" {
+		data["reason"] = strings.TrimSpace(reason)
+	}
+	return data
+}
+
 func (p *Postgres) GetOrCreateDirectConversation(ctx context.Context, uid, other, conversationID string, at time.Time) (*model.Conversation, bool, error) {
 	uid, other = strings.TrimSpace(uid), strings.TrimSpace(other)
 	if uid == "" || other == "" || uid == other || strings.TrimSpace(conversationID) == "" {
@@ -3227,6 +3257,12 @@ func (p *Postgres) UpdateGroupProfile(ctx context.Context, actor, cid string, u 
 			return nil, err
 		}
 	}
+	var previousAllMutedUntil *time.Time
+	if u.AllMutedUntil != nil {
+		if err = tx.QueryRow(ctx, `SELECT all_muted_until FROM im_groups WHERE conversation_id=$1 FOR UPDATE`, cid).Scan(&previousAllMutedUntil); err != nil {
+			return nil, err
+		}
+	}
 	previousRateLimit := 0
 	if u.MemberMessageRateLimitPerMinute != nil {
 		if err = tx.QueryRow(ctx, `SELECT member_message_rate_limit_per_minute FROM im_groups WHERE conversation_id=$1 FOR UPDATE`, cid).Scan(&previousRateLimit); err != nil {
@@ -3269,12 +3305,13 @@ func (p *Postgres) UpdateGroupProfile(ctx context.Context, actor, cid string, u 
 	if setAllMuted && u.AllMutedUntil.After(at) {
 		allMutedUntil = u.AllMutedUntil
 	}
+	muteChanged := setAllMuted && !sameOptionalTime(previousAllMutedUntil, allMutedUntil)
 	var currentRateLimit int
 	var currentRateVersion int64
 	if err = tx.QueryRow(ctx, `UPDATE im_groups SET allow_member_add_friend=COALESCE($2,allow_member_add_friend),all_muted_until=CASE WHEN $3::boolean THEN $4 ELSE all_muted_until END,qr_token=COALESCE($5,qr_token),qr_expires_at=CASE WHEN $5::text IS NULL THEN qr_expires_at ELSE $6 END,member_message_rate_limit_per_minute=COALESCE($7,member_message_rate_limit_per_minute),message_rate_limit_version=CASE WHEN $7::integer IS NOT NULL AND member_message_rate_limit_per_minute IS DISTINCT FROM $7 THEN message_rate_limit_version+1 ELSE message_rate_limit_version END,updated_at=$8 WHERE conversation_id=$1 RETURNING member_message_rate_limit_per_minute,message_rate_limit_version`, cid, u.AllowMemberAddFriend, setAllMuted, allMutedUntil, token, at.Add(24*time.Hour), u.MemberMessageRateLimitPerMinute, at).Scan(&currentRateLimit, &currentRateVersion); err != nil {
 		return nil, err
 	}
-	if u.AllMutedUntil != nil {
+	if muteChanged {
 		if err = enqueueWukongChannelReconcile(ctx, tx, cid, "group-mute-updated", at); err != nil {
 			return nil, err
 		}
@@ -3292,8 +3329,13 @@ func (p *Postgres) UpdateGroupProfile(ctx context.Context, actor, cid string, u 
 			return nil, err
 		}
 	}
-	rateOnly := u.MemberMessageRateLimitPerMinute != nil && u.HistoryVisibleToNewMembers == nil && u.Name == nil && u.AvatarMediaID == nil && u.JoinPolicy == nil && u.AllowMemberAddFriend == nil && u.AllMutedUntil == nil && !u.RotateQR
-	if !rateOnly {
+	if muteChanged {
+		if err = emitGroupSystem(ctx, tx, cid, actor, "group.mute_all.updated", groupMuteAllEventData(previousAllMutedUntil, allMutedUntil, at, ""), at); err != nil {
+			return nil, err
+		}
+	}
+	specializedOnly := (u.MemberMessageRateLimitPerMinute != nil || u.AllMutedUntil != nil) && u.HistoryVisibleToNewMembers == nil && u.Name == nil && u.AvatarMediaID == nil && u.JoinPolicy == nil && u.AllowMemberAddFriend == nil && !u.RotateQR
+	if !specializedOnly {
 		if err = emitGroupSystem(ctx, tx, cid, actor, "group.profile.updated", map[string]any{}, at); err != nil {
 			return nil, err
 		}

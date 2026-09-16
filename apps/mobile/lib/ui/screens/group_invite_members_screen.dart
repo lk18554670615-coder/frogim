@@ -25,6 +25,8 @@ class GroupInviteMembersScreen extends StatefulWidget {
 
 class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
   late final String? _accountId;
+  late final TextEditingController _searchController;
+  late final FocusNode _searchFocusNode;
   List<GroupMember> _members = [];
   GroupProfile? _profile;
   final _selected = <String>{};
@@ -52,7 +54,27 @@ class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
   void initState() {
     super.initState();
     _accountId = widget.controller.currentUser?.id;
+    _searchController = TextEditingController()..addListener(_onSearchChanged);
+    _searchFocusNode = FocusNode(debugLabel: 'group-invite-search');
     _load();
+  }
+
+  @override
+  void dispose() {
+    _searchController
+      ..removeListener(_onSearchChanged)
+      ..dispose();
+    _searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _onSearchChanged() {
+    if (!mounted) return;
+    final value = _searchController.value;
+    // 保持 Web 中文输入法组合态，避免首字符触发重建后无法继续输入。
+    if (value.composing.isValid && !value.composing.isCollapsed) return;
+    if (_query == value.text) return;
+    setState(() => _query = value.text);
   }
 
   Future<bool> _load() async {
@@ -230,6 +252,8 @@ class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
                       child: CupertinoSearchTextField(
+                        controller: _searchController,
+                        focusNode: _searchFocusNode,
                         style: TextStyle(color: context.linli.text),
                         placeholderStyle: TextStyle(
                           color: context.linli.secondaryText,
@@ -239,7 +263,9 @@ class _GroupInviteMembersScreenState extends State<GroupInviteMembersScreen> {
                         key: const Key('group-invite-search'),
                         enabled: !_busy,
                         placeholder: '搜索昵称、备注或呱呱号',
-                        onChanged: (value) => setState(() => _query = value),
+                        onSubmitted: (value) {
+                          if (_query != value) setState(() => _query = value);
+                        },
                       ),
                     ),
                     Padding(

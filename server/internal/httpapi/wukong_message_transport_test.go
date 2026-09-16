@@ -156,7 +156,11 @@ func TestWukongForwardSourceMapsPinnedMessageWithoutPersistingPayload(t *testing
 		"from_uid": "usr_a", "message_seq": float64(7), "timestamp": float64(1700000000),
 		"payload": map[string]any{
 			"type": float64(wukong.ContentTypeText), "content": "hello",
-			"reply": map[string]any{"message_id": "123"},
+			"reply": map[string]any{
+				"message_id": "123", "message_seq": float64(6),
+				"from_uid": "usr_b", "from_name": "Bob", "content": "quoted",
+			},
+			"mention": map[string]any{"uids": []any{"usr_b"}, "all": float64(1)},
 		},
 		"event_meta": map[string]any{"events": []any{map[string]any{
 			"event_key": "main", "status": "closed",
@@ -171,6 +175,33 @@ func TestWukongForwardSourceMapsPinnedMessageWithoutPersistingPayload(t *testing
 	}
 	if message.ID != "2087037357243928576" || message.Type != "text" || message.Body["text"] != "streamed hello" || message.ReplyToID != "123" || message.Seq != 7 || !message.CreatedAt.Equal(time.Unix(1700000000, 0).UTC()) {
 		t.Fatalf("message=%+v", message)
+	}
+	if !reflect.DeepEqual(message.Body["mentions"], []string{"usr_b"}) || message.Body["mentionAll"] != true {
+		t.Fatalf("mentions=%#v all=%#v", message.Body["mentions"], message.Body["mentionAll"])
+	}
+	reply, _ := message.Body["reply"].(map[string]any)
+	if reply["message_id"] != "123" || reply["from_name"] != "Bob" || reply["content"] != "quoted" {
+		t.Fatalf("reply snapshot=%#v", reply)
+	}
+}
+
+func TestWukongMessagePayloadPreservesForwardedReplySnapshot(t *testing.T) {
+	payload, err := wukongMessagePayload(app.MessageTransportRequest{
+		Type: "text", ReplyToID: "123",
+		Body: map[string]any{
+			"text": "reply body",
+			"reply": map[string]any{
+				"message_id": "old", "message_seq": float64(8),
+				"from_uid": "usr_b", "from_name": "Bob", "content": "quoted",
+			},
+		},
+	}, time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, _ := payload["reply"].(map[string]any)
+	if reply["message_id"] != "123" || reply["message_seq"] != float64(8) || reply["from_uid"] != "usr_b" || reply["from_name"] != "Bob" || reply["content"] != "quoted" {
+		t.Fatalf("reply=%#v", reply)
 	}
 }
 

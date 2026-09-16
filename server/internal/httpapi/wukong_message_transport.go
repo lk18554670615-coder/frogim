@@ -239,7 +239,7 @@ func wukongForwardSource(raw wukong.SyncedMessage, ref store.WukongMessageRef) (
 	}
 	body := make(map[string]any, len(payload))
 	for key, value := range payload {
-		if key != "type" && key != "reply" && key != "mention" {
+		if key != "type" && key != "reply" && key != "mention" && key != "mentions" && key != "mentionAll" {
 			body[key] = value
 		}
 	}
@@ -250,6 +250,45 @@ func wukongForwardSource(raw wukong.SyncedMessage, ref store.WukongMessageRef) (
 	replyToID := ""
 	if reply, replyOK := payload["reply"].(map[string]any); replyOK {
 		replyToID = wukongString(reply["message_id"])
+		snapshot := map[string]any{}
+		for _, key := range []string{"message_id", "message_seq", "from_uid", "from_name", "content"} {
+			if value, exists := reply[key]; exists {
+				snapshot[key] = value
+			}
+		}
+		if len(snapshot) > 0 {
+			body["reply"] = snapshot
+		}
+	}
+	if mention, mentionOK := payload["mention"].(map[string]any); mentionOK {
+		mentions := make([]string, 0)
+		switch values := mention["uids"].(type) {
+		case []any:
+			for _, value := range values {
+				if userID := strings.TrimSpace(wukongString(value)); userID != "" {
+					mentions = append(mentions, userID)
+				}
+			}
+		case []string:
+			for _, value := range values {
+				if userID := strings.TrimSpace(value); userID != "" {
+					mentions = append(mentions, userID)
+				}
+			}
+		}
+		if len(mentions) > 0 {
+			body["mentions"] = mentions
+		}
+		mentionAll := false
+		switch value := mention["all"].(type) {
+		case bool:
+			mentionAll = value
+		default:
+			mentionAll = wukongInt64(value) == 1
+		}
+		if mentionAll {
+			body["mentionAll"] = true
+		}
 	}
 	createdAt := time.Now().UTC()
 	if timestamp := wukongInt64(raw["timestamp"]); timestamp > 0 {
@@ -536,12 +575,23 @@ func wukongMessagePayload(request app.MessageTransportRequest, createdAt time.Ti
 		}
 	}
 	if request.ReplyToID != "" {
-		payload["reply"] = map[string]any{
-			"message_id":  request.ReplyToID,
-			"message_seq": 0,
-			"from_uid":    "",
-			"from_name":   "",
+		reply := map[string]any{}
+		if existing, ok := payload["reply"].(map[string]any); ok {
+			for key, value := range existing {
+				reply[key] = value
+			}
 		}
+		reply["message_id"] = request.ReplyToID
+		if _, exists := reply["message_seq"]; !exists {
+			reply["message_seq"] = 0
+		}
+		if _, exists := reply["from_uid"]; !exists {
+			reply["from_uid"] = ""
+		}
+		if _, exists := reply["from_name"]; !exists {
+			reply["from_name"] = ""
+		}
+		payload["reply"] = reply
 	}
 	if len(request.Mentions) > 0 || request.MentionAll {
 		mention := map[string]any{"uids": append([]string(nil), request.Mentions...)}

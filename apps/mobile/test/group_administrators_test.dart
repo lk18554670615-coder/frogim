@@ -163,6 +163,65 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('群成员刷新不会中断 Web 输入法组合态或夺走搜索焦点', (tester) async {
+    final repository = _RoleRepository();
+    final controller = await _open(
+      tester,
+      repository,
+      administratorMode: false,
+      width: 1280,
+    );
+    final search = find.byKey(const Key('group-member-search'));
+    await tester.tap(search);
+    await tester.showKeyboard(search);
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'lin',
+        selection: TextSelection.collapsed(offset: 3),
+        composing: TextRange(start: 0, end: 3),
+      ),
+    );
+    await tester.pump();
+
+    EditableText editable() => tester.widget<EditableText>(
+      find.descendant(of: search, matching: find.byType(EditableText)),
+    );
+    expect(editable().controller.text, 'lin');
+    expect(
+      editable().controller.value.composing,
+      const TextRange(start: 0, end: 3),
+    );
+    expect(editable().focusNode.hasFocus, isTrue);
+    // 组合输入尚未提交时不刷新筛选列表。
+    expect(find.byKey(const Key('group-member-u1')), findsOneWidget);
+    expect(find.byKey(const Key('group-member-u2')), findsOneWidget);
+
+    controller.groupSendPolicyRevision++;
+    controller.notifyListeners();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(editable().controller.text, 'lin');
+    expect(
+      editable().controller.value.composing,
+      const TextRange(start: 0, end: 3),
+    );
+    expect(editable().focusNode.hasFocus, isTrue);
+
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'linyu',
+        selection: TextSelection.collapsed(offset: 5),
+      ),
+    );
+    await tester.pump();
+    expect(editable().controller.text, 'linyu');
+    expect(editable().focusNode.hasFocus, isTrue);
+    expect(find.byKey(const Key('group-member-u1')), findsOneWidget);
+    expect(find.byKey(const Key('group-member-u2')), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('原群成员菜单的设为管理员复用相同确认和反馈', (tester) async {
     final repository = _RoleRepository();
     await _open(tester, repository, administratorMode: false);

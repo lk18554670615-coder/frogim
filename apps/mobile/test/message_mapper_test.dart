@@ -100,6 +100,38 @@ void main() {
     expect(ChatMessage.fromJson(restored.toJson()).replyToText, '原消息');
   });
 
+  test('maps cross-conversation forwarded quote and mention metadata', () {
+    final restored = mapper.toChatMessage(
+      WukongMessage(
+        messageId: 'forwarded-reply',
+        messageSeq: 9,
+        clientMsgNo: 'forwarded-client',
+        clientSeq: 1,
+        fromUid: 'usr_a',
+        channel: const WukongChannel(id: 'group_2', type: 2),
+        timestamp: DateTime.utc(2026, 9, 16),
+        payload: {
+          'type': WukongContentType.text,
+          'content': '@Bob forwarded reply',
+          'forwarded': true,
+          'reply': {'from_name': 'Bob', 'content': 'quoted from source group'},
+          'mention': {
+            'uids': ['usr_b'],
+          },
+        },
+        state: WukongMessageState.sent,
+      ),
+      currentUserId: 'usr_a',
+      conversationId: 'conversation-2',
+    );
+
+    expect(restored.kind, MessageContentKind.reply);
+    expect(restored.replyToId, isNull);
+    expect(restored.replyToText, 'quoted from source group');
+    expect(restored.replyToSenderName, 'Bob');
+    expect(restored.mentions.single.userId, 'usr_b');
+  });
+
   test(
     'robot command keeps TangSeng-compatible target and entity metadata',
     () {

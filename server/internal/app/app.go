@@ -2905,6 +2905,19 @@ func (a *App) sendMessage(parent context.Context, uid, cid, clientID, typ string
 			if normalizeErr != nil {
 				return nil, false, normalizeErr
 			}
+		} else if body["mentions"] != nil || body["mentionAll"] != nil {
+			generatedBody := map[string]any{"text": text}
+			if value, exists := body["mentions"]; exists {
+				generatedBody["mentions"] = value
+			}
+			if value, exists := body["mentionAll"]; exists {
+				generatedBody["mentionAll"] = value
+			}
+			_, generatedMentions, generatedMentionAll, normalizeErr := normalizeTextBody(generatedBody)
+			if normalizeErr != nil {
+				return nil, false, normalizeErr
+			}
+			mentions, mentionAll = generatedMentions, generatedMentionAll
 		}
 		if a.settingBool("sensitiveWordEnabled", true) {
 			lower := strings.ToLower(text)
@@ -3189,7 +3202,31 @@ func (a *App) ForwardMessages(uid, targetID string, sourceIDs []string, mode, cl
 		_ = json.Unmarshal(raw, &body)
 		body["forwarded"] = true
 		body["sourceMessageId"] = source.ID
-		message, duplicate, err := a.sendMessage(context.Background(), uid, targetID, fmt.Sprintf("forward:%s:%d", clientBatchID, index), source.Type, body, "", 0, true)
+		replyToID := ""
+		if targetID == source.ConversationID {
+			replyToID = source.ReplyToID
+		}
+		if rawReply, ok := body["reply"].(map[string]any); ok {
+			if replyToID != "" {
+				rawReply["message_id"] = source.ReplyToID
+			} else {
+				// A message ID is scoped to its source conversation. Cross-chat
+				// forwards retain a safe quote snapshot without creating a link
+				// that target members cannot open.
+				quote := map[string]any{}
+				for _, key := range []string{"from_name", "content"} {
+					if value, exists := rawReply[key]; exists {
+						quote[key] = value
+					}
+				}
+				if len(quote) == 0 {
+					delete(body, "reply")
+				} else {
+					body["reply"] = quote
+				}
+			}
+		}
+		message, duplicate, err := a.sendMessage(context.Background(), uid, targetID, fmt.Sprintf("forward:%s:%d", clientBatchID, index), source.Type, body, replyToID, 0, true)
 		if err != nil {
 			return nil, false, err
 		}

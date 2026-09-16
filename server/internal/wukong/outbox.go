@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"hash/fnv"
 	"log/slog"
 	"strings"
 	"time"
@@ -174,11 +175,7 @@ func (w *OutboxWorker) process(ctx context.Context, item OutboxItem) (error, boo
 		if !ok {
 			return errors.New("WuKongIM channel snapshot store is unavailable"), false
 		}
-		snapshot, err := snapshots.LoadWukongChannelSnapshot(ctx, strings.TrimSpace(payload.ChannelID), payload.ChannelType)
-		if err != nil {
-			return err, true
-		}
-		return callClientError(applyChannelSnapshot(ctx, w.client, snapshot))
+		return callClientError(syncLatestChannelSnapshot(ctx, snapshots, w.client, payload.ChannelID, payload.ChannelType))
 	}
 	var payload friendOperationPayload
 	if err := json.Unmarshal(item.Payload, &payload); err != nil {
@@ -213,6 +210,27 @@ func (w *OutboxWorker) process(ctx context.Context, item OutboxItem) (error, boo
 	default:
 		return errors.New("unsupported WuKongIM outbox operation"), false
 	}
+}
+
+// syncLatestChannelSnapshot serializes writers for the same channel and loads
+// the authoritative snapshot only after acquiring that lock. This matters
+// because the realtime outbox and the periodic reconciler run concurrently: a
+// snapshot read before waiting could otherwise overwrite a newer mute or
+// access-list state after the newer update has already reached WuKongIM.
+func syncLatestChannelSnapshot(ctx context.Context, store ChannelSnapshotStore, client *Client, channelID string, channelType uint8) error {
+	channelID = strings.TrimSpace(channelID)
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte{channelType})
+	_, _ = hash.Write([]byte(channelID))
+	lock := &client.channelSnapshotLocks[hash.Sum32()%uint32(len(client.channelSnapshotLocks))]
+	lock.Lock()
+	defer lock.Unlock()
+
+	snapshot, err := store.LoadWukongChannelSnapshot(ctx, channelID, channelType)
+	if err != nil {
+		return err
+	}
+	return applyChannelSnapshot(ctx, client, snapshot)
 }
 
 func applyChannelSnapshot(ctx context.Context, client *Client, snapshot ChannelSnapshot) error {

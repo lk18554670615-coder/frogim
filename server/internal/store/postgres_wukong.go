@@ -2620,13 +2620,12 @@ func (p *Postgres) LoadWukongChannelSnapshot(ctx context.Context, channelID stri
 	var snapshot wukong.ChannelSnapshot
 	var dissolvedAt *time.Time
 	var banned bool
-	var allMutedUntil *time.Time
 	var memberCount int
 	err := p.pool.QueryRow(ctx, `
-		SELECT c.id,c.member_count,g.dissolved_at,g.banned,g.all_muted_until
+		SELECT c.id,c.member_count,g.dissolved_at,g.banned
 		FROM im_conversations c JOIN im_groups g ON g.conversation_id=c.id
 		WHERE c.id=$1
-	`, channelID).Scan(&snapshot.ChannelID, &memberCount, &dissolvedAt, &banned, &allMutedUntil)
+	`, channelID).Scan(&snapshot.ChannelID, &memberCount, &dissolvedAt, &banned)
 	if err != nil {
 		return snapshot, err
 	}
@@ -2656,25 +2655,12 @@ func (p *Postgres) LoadWukongChannelSnapshot(ctx context.Context, channelID stri
 	if err = rows.Err(); err != nil {
 		return snapshot, err
 	}
-	if allMutedUntil != nil && allMutedUntil.After(time.Now()) {
-		allowRows, allowErr := p.pool.Query(ctx, `SELECT user_id FROM im_members WHERE conversation_id=$1 AND role IN ('owner','admin') ORDER BY user_id`, channelID)
-		if allowErr != nil {
-			return snapshot, allowErr
-		}
-		for allowRows.Next() {
-			var uid string
-			if allowErr = allowRows.Scan(&uid); allowErr != nil {
-				allowRows.Close()
-				return snapshot, allowErr
-			}
-			snapshot.Allowlist = append(snapshot.Allowlist, uid)
-		}
-		allowErr = allowRows.Err()
-		allowRows.Close()
-		if allowErr != nil {
-			return snapshot, allowErr
-		}
-	}
+	// Group mute is enforced synchronously by the fail-closed send policy,
+	// which reads the current role and all_muted_until from PostgreSQL for every
+	// message. Do not mirror this dynamic rule into WuKongIM's cached allowlist:
+	// a recently cleared list can otherwise reject only some live connections
+	// with ReasonNotInWhitelist after the group has already been unmuted.
+	snapshot.Allowlist = []string{}
 	denyRows, denyErr := p.pool.Query(ctx, `SELECT user_id FROM im_group_blacklist WHERE conversation_id=$1 ORDER BY user_id`, channelID)
 	if denyErr != nil {
 		return snapshot, denyErr
@@ -2737,7 +2723,7 @@ func (p *Postgres) ListWukongChannels(ctx context.Context, after string, limit i
 			SELECT '02:'||c.id AS cursor,c.id AS channel_id,2::smallint AS channel_type,c.member_count,
 				g.banned AS ban,(g.dissolved_at IS NOT NULL) AS disband,false AS send_ban,false AS allow_stranger,
 				ARRAY(SELECT m.user_id FROM im_members m WHERE m.conversation_id=c.id ORDER BY m.joined_at,m.user_id) AS subscribers,
-				CASE WHEN g.all_muted_until>now() THEN ARRAY(SELECT m.user_id FROM im_members m WHERE m.conversation_id=c.id AND m.role IN ('owner','admin') ORDER BY m.user_id) ELSE ARRAY[]::text[] END AS allowlist,
+				ARRAY[]::text[] AS allowlist,
 				ARRAY(SELECT blocked.user_id FROM im_group_blacklist blocked WHERE blocked.conversation_id=c.id ORDER BY blocked.user_id) AS denylist
 			FROM im_conversations c JOIN im_groups g ON g.conversation_id=c.id
 			UNION ALL

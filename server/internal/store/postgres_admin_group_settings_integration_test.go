@@ -92,6 +92,14 @@ func TestAdminUpdateGroupSettingsIsAtomicAndOptimistic(t *testing.T) {
 	if auditCount != 1 || strings.Contains(auditMetadata, announcement) || !strings.Contains(auditMetadata, "verified settings change") {
 		t.Fatalf("audit count=%d metadata=%s", auditCount, auditMetadata)
 	}
+	var muteBefore, muteAfter bool
+	var muteReason string
+	if err = p.pool.QueryRow(ctx, `SELECT (metadata->'before'->>'muted')::boolean,(metadata->'after'->>'muted')::boolean,metadata->>'reason' FROM im_audits WHERE action='group.mute_all.updated' AND target_id=$1 ORDER BY created_at DESC LIMIT 1`, groupID).Scan(&muteBefore, &muteAfter, &muteReason); err != nil {
+		t.Fatal(err)
+	}
+	if muteBefore || !muteAfter || muteReason != "verified settings change" {
+		t.Fatalf("settings mute audit before=%v after=%v reason=%q", muteBefore, muteAfter, muteReason)
+	}
 
 	noChange, err := p.AdminUpdateGroupSettings(ctx, AdminGroupSettingsUpdate{
 		ActorID: "admin_settings_test", GroupID: groupID, Reason: "no-op", ExpectedUpdatedAt: storedUpdatedAt,
