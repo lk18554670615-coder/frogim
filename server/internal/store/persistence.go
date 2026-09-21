@@ -841,6 +841,7 @@ type WukongChannelInfo struct {
 	ShowNick, Top, Save, Mute, Forbidden         int
 	Invite, Status, Follow, Online, Receipt      int
 	LastOffline, Version                         int64
+	PresenceVisible                              bool
 	CreatedAt, UpdatedAt                         time.Time
 	Extra                                        map[string]any
 }

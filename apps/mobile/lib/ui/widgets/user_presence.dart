@@ -31,11 +31,21 @@ class _UserPresenceState extends State<UserPresence> {
   void initState() {
     super.initState();
     widget.controller.presence.addListener(_changed);
+    widget.controller.addListener(_controllerChanged);
   }
 
   void _changed() {
     if (mounted) setState(() {});
   }
+
+  void _controllerChanged() {
+    _subscribe();
+    if (mounted) setState(() {});
+  }
+
+  bool get _allowed => widget.groupId == null
+      ? widget.controller.canViewUserPresence()
+      : widget.controller.canViewGroupMemberPresence(widget.groupId);
 
   @override
   void didChangeDependencies() {
@@ -47,7 +57,7 @@ class _UserPresenceState extends State<UserPresence> {
   }
 
   void _subscribe() {
-    if (!_active || widget.userId.isEmpty) {
+    if (!_active || widget.userId.isEmpty || !_allowed) {
       _release?.call();
       _release = null;
       return;
@@ -67,7 +77,9 @@ class _UserPresenceState extends State<UserPresence> {
       _release?.call();
       _release = null;
       oldWidget.controller.presence.removeListener(_changed);
+      oldWidget.controller.removeListener(_controllerChanged);
       widget.controller.presence.addListener(_changed);
+      widget.controller.addListener(_controllerChanged);
       _subscribe();
     }
   }
@@ -76,13 +88,14 @@ class _UserPresenceState extends State<UserPresence> {
   void dispose() {
     _release?.call();
     widget.controller.presence.removeListener(_changed);
+    widget.controller.removeListener(_controllerChanged);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) => widget.builder(
     context,
-    _active
+    _active && _allowed
         ? widget.controller.presence.status(
             widget.userId,
             groupId: widget.groupId,

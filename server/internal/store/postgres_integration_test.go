@@ -1851,9 +1851,10 @@ func TestWukongMessageRouteAndWebhookMetadataIndex(t *testing.T) {
 		t.Fatalf("route=%+v err=%v", route, err)
 	}
 	channelInfo, err := p.LoadWukongChannelInfo(ctx, recipient, sender, wukong.ChannelPerson)
-	if err != nil || channelInfo.Name != "Sender" || channelInfo.ChannelID != sender || channelInfo.Receipt != 1 {
+	if err != nil || channelInfo.Name != "Sender" || channelInfo.ChannelID != sender || channelInfo.Receipt != 1 || channelInfo.PresenceVisible {
 		t.Fatalf("channel info=%+v err=%v", channelInfo, err)
 	}
+	regularVersion := channelInfo.Version
 	onlineAt := now.Add(2 * time.Second)
 	onlinePayload, _ := json.Marshal(sender + "-0-1-41-1-1")
 	if inserted, putErr := p.PutWukongWebhookEvent(ctx, wukong.WebhookEvent{
@@ -1862,7 +1863,14 @@ func TestWukongMessageRouteAndWebhookMetadataIndex(t *testing.T) {
 		t.Fatalf("online webhook inserted=%v err=%v", inserted, putErr)
 	}
 	channelInfo, err = p.LoadWukongChannelInfo(ctx, recipient, sender, wukong.ChannelPerson)
-	if err != nil || channelInfo.Online != 1 || channelInfo.Version < onlineAt.UnixMicro() {
+	if err != nil || channelInfo.PresenceVisible || channelInfo.Online != 0 || channelInfo.LastOffline != 0 || channelInfo.Version != regularVersion {
+		t.Fatalf("ordinary user channel info leaked presence=%+v err=%v", channelInfo, err)
+	}
+	if _, err = p.pool.Exec(ctx, `UPDATE im_users SET is_internal_user=true WHERE id=$1`, recipient); err != nil {
+		t.Fatal(err)
+	}
+	channelInfo, err = p.LoadWukongChannelInfo(ctx, recipient, sender, wukong.ChannelPerson)
+	if err != nil || !channelInfo.PresenceVisible || channelInfo.Online != 1 || channelInfo.Version < onlineAt.UnixMicro() {
 		t.Fatalf("online channel info=%+v err=%v", channelInfo, err)
 	}
 	offlineAt := now.Add(3 * time.Second)
@@ -1873,7 +1881,7 @@ func TestWukongMessageRouteAndWebhookMetadataIndex(t *testing.T) {
 		t.Fatalf("offline webhook inserted=%v err=%v", inserted, putErr)
 	}
 	channelInfo, err = p.LoadWukongChannelInfo(ctx, recipient, sender, wukong.ChannelPerson)
-	if err != nil || channelInfo.Online != 0 || channelInfo.LastOffline != offlineAt.Unix() || channelInfo.Version < offlineAt.UnixMicro() {
+	if err != nil || !channelInfo.PresenceVisible || channelInfo.Online != 0 || channelInfo.LastOffline != offlineAt.Unix() || channelInfo.Version < offlineAt.UnixMicro() {
 		t.Fatalf("offline channel info=%+v err=%v", channelInfo, err)
 	}
 	channelMembers, err := p.SyncWukongChannelMembers(ctx, recipient, sender, wukong.ChannelPerson, 0, 100)

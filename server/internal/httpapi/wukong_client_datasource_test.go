@@ -202,3 +202,24 @@ func TestWukongMessageDatasourceProjectsPinnedStreamSnapshot(t *testing.T) {
 		t.Fatalf("payload=%v", messagePayload)
 	}
 }
+
+func TestWukongChannelInfoJSONOmitsHiddenPresence(t *testing.T) {
+	hidden := wukongChannelInfoJSON(store.WukongChannelInfo{
+		ChannelID: "peer", Online: 1, LastOffline: 123,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	if _, ok := hidden["online"]; ok {
+		t.Fatalf("hidden channel info leaked online: %v", hidden)
+	}
+	if _, ok := hidden["last_offline"]; ok {
+		t.Fatalf("hidden channel info leaked last_offline: %v", hidden)
+	}
+
+	visible := wukongChannelInfoJSON(store.WukongChannelInfo{
+		ChannelID: "peer", Online: 1, LastOffline: 123, PresenceVisible: true,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	if visible["online"] != 1 || visible["last_offline"] != int64(123) {
+		t.Fatalf("authorized channel info lost presence: %v", visible)
+	}
+}

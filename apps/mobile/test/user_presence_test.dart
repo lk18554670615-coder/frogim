@@ -245,6 +245,10 @@ void main() {
   testWidgets('可见路由和活动面板查询，返回页面立即刷新', (tester) async {
     final repo = _PresenceRepo();
     final controller = AppController(repo);
+    controller.authenticated = true;
+    controller.currentUser = DemoImRepository.demoUser.copyWith(
+      isInternalUser: true,
+    );
     controller.presence.setAccount('a');
     final navigator = GlobalKey<NavigatorState>();
     Widget page(bool enabled) => MaterialApp(
@@ -277,6 +281,33 @@ void main() {
     navigator.currentState!.pop();
     await tester.pumpAndSettle();
     expect(repo.calls, 2);
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
+    await repo.close();
+  });
+
+  testWidgets('普通用户不挂载状态查询', (tester) async {
+    final repo = _PresenceRepo();
+    final controller = AppController(repo);
+    controller.authenticated = true;
+    controller.currentUser = DemoImRepository.demoUser;
+    controller.presence.setAccount('a');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: UserPresence(
+          controller: controller,
+          userId: 'u',
+          builder: (context, status) => PresenceLabel(status),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(repo.calls, 0);
+    expect(find.byType(PresenceLabel), findsOneWidget);
+    expect(
+      tester.widget<PresenceLabel>(find.byType(PresenceLabel)).status,
+      UserPresenceStatus.hidden,
+    );
     await tester.pumpWidget(const SizedBox());
     controller.dispose();
     await repo.close();

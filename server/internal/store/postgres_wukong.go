@@ -1442,14 +1442,20 @@ func (p *Postgres) LoadWukongChannelInfo(ctx context.Context, userID, channelID 
 		var userUpdated, conversationUpdated, friendshipUpdated time.Time
 		var banned bool
 		err = p.pool.QueryRow(ctx, `SELECT target.name,target.avatar_url,target.banned,target.created_at,target.updated_at,
-			friendship.remark,friendship.updated_at,conversation.updated_at,member.notifications_muted,member.pinned
+			friendship.remark,friendship.updated_at,conversation.updated_at,member.notifications_muted,member.pinned,
+			viewer.is_internal_user AND NOT EXISTS(
+				SELECT 1 FROM im_blocks block_row
+				WHERE (block_row.user_id=viewer.id AND block_row.blocked_user_id=target.id)
+					OR (block_row.user_id=target.id AND block_row.blocked_user_id=viewer.id)
+			)
 			FROM im_users target
+			JOIN im_users viewer ON viewer.id=$1 AND NOT viewer.banned AND viewer.deleted_at IS NULL
 			JOIN im_friendships friendship ON friendship.user_id=$1 AND friendship.friend_user_id=target.id
 			JOIN im_conversations conversation ON conversation.id=$3
 			JOIN im_members member ON member.conversation_id=conversation.id AND member.user_id=$1
-			WHERE target.id=$2`, userID, channelID, conversationID).Scan(
+			WHERE target.id=$2 AND target.deleted_at IS NULL`, userID, channelID, conversationID).Scan(
 			&info.Name, &info.AvatarURL, &banned, &info.CreatedAt, &userUpdated,
-			&info.Remark, &friendshipUpdated, &conversationUpdated, &notificationsMuted, &pinned,
+			&info.Remark, &friendshipUpdated, &conversationUpdated, &notificationsMuted, &pinned, &info.PresenceVisible,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return WukongChannelInfo{}, ErrForbidden
@@ -1467,24 +1473,26 @@ func (p *Postgres) LoadWukongChannelInfo(ctx context.Context, userID, channelID 
 			info.Status = 0
 			info.Forbidden = 1
 		}
-		var presenceOnline bool
-		var presenceUpdated time.Time
-		var lastOffline *time.Time
-		presenceErr := p.pool.QueryRow(ctx, `SELECT online,last_offline_at,updated_at FROM im_wukong_presence WHERE user_id=$1`, channelID).Scan(
-			&presenceOnline, &lastOffline, &presenceUpdated,
-		)
-		if presenceErr != nil && !errors.Is(presenceErr, pgx.ErrNoRows) {
-			return WukongChannelInfo{}, presenceErr
-		}
-		if presenceErr == nil {
-			if presenceOnline {
-				info.Online = 1
+		if info.PresenceVisible {
+			var presenceOnline bool
+			var presenceUpdated time.Time
+			var lastOffline *time.Time
+			presenceErr := p.pool.QueryRow(ctx, `SELECT online,last_offline_at,updated_at FROM im_wukong_presence WHERE user_id=$1`, channelID).Scan(
+				&presenceOnline, &lastOffline, &presenceUpdated,
+			)
+			if presenceErr != nil && !errors.Is(presenceErr, pgx.ErrNoRows) {
+				return WukongChannelInfo{}, presenceErr
 			}
-			if lastOffline != nil {
-				info.LastOffline = lastOffline.Unix()
-			}
-			if presenceUpdated.After(info.UpdatedAt) {
-				info.UpdatedAt = presenceUpdated
+			if presenceErr == nil {
+				if presenceOnline {
+					info.Online = 1
+				}
+				if lastOffline != nil {
+					info.LastOffline = lastOffline.Unix()
+				}
+				if presenceUpdated.After(info.UpdatedAt) {
+					info.UpdatedAt = presenceUpdated
+				}
 			}
 		}
 		info.Extra["userId"] = channelID

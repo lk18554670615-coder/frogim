@@ -364,15 +364,20 @@ func (x *API) wukongChannelMembers(w http.ResponseWriter, r *http.Request) {
 }
 
 func wukongChannelInfoJSON(item store.WukongChannelInfo) map[string]any {
-	return map[string]any{
+	result := map[string]any{
 		"channel_id": item.ChannelID, "channel_type": item.ChannelType,
 		"channel_name": item.Name, "channel_remark": item.Remark, "avatar": item.AvatarURL,
 		"show_nick": item.ShowNick, "top": item.Top, "save": item.Save, "mute": item.Mute,
 		"forbidden": item.Forbidden, "invite": item.Invite, "status": item.Status, "follow": item.Follow,
 		"created_at": item.CreatedAt.UTC().Format(time.RFC3339Nano), "updated_at": item.UpdatedAt.UTC().Format(time.RFC3339Nano),
-		"version": item.Version, "online": item.Online, "last_offline": item.LastOffline,
+		"version": item.Version,
 		"receipt": item.Receipt, "category": item.Category, "remote_extra": item.Extra,
 	}
+	if item.PresenceVisible {
+		result["online"] = item.Online
+		result["last_offline"] = item.LastOffline
+	}
+	return result
 }
 
 func wukongChannelMemberJSON(item store.WukongChannelMember) map[string]any {

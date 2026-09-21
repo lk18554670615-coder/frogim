@@ -27,12 +27,9 @@ void main() {
   for (final role in ['owner', 'admin', 'member']) {
     for (final width in [390.0, 1280.0]) {
       testWidgets('$role / $width 群成员头像打开资料时按当前角色显示呱呱号', (tester) async {
-        final repo = _Repository(role);
+        final repo = _Repository(role, internal: true);
         await _open(tester, repo, width: width);
-        expect(
-          find.byType(PresenceLabel),
-          role == 'member' ? findsNothing : findsWidgets,
-        );
+        expect(find.byType(PresenceLabel), findsWidgets);
         await tester.tap(find.byKey(const Key('chat-info-member-u1')));
         await tester.pumpAndSettle();
         expect(find.byType(FriendProfileScreen), findsOneWidget);
@@ -51,12 +48,9 @@ void main() {
     }
 
     testWidgets('$role 群成员列表和 @ 面板不绕过呱呱号限制', (tester) async {
-      final repo = _Repository(role);
+      final repo = _Repository(role, internal: true);
       final controller = await _open(tester, repo, screen: 'members');
-      expect(
-        find.byType(PresenceLabel),
-        role == 'member' ? findsNothing : findsWidgets,
-      );
+      expect(find.byType(PresenceLabel), findsWidgets);
       await tester.enterText(
         find.byKey(const Key('group-member-search')),
         'linyu',
@@ -110,7 +104,7 @@ void main() {
   }
 
   testWidgets('降级或角色同步期间立即隐藏，通讯录查看仍保留呱呱号', (tester) async {
-    final repo = _Repository('admin');
+    final repo = _Repository('admin', internal: true);
     final controller = await _open(tester, repo);
     await tester.tap(find.byKey(const Key('chat-info-member-u1')));
     await tester.pumpAndSettle();
@@ -163,6 +157,23 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('@linyu'), findsNothing);
     expect(controller.canViewGroupMemberHandle(null), isFalse);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  for (final role in ['owner', 'admin']) {
+    testWidgets('普通 $role 看不到群成员状态', (tester) async {
+      final repo = _Repository(role);
+      await _open(tester, repo, screen: 'members');
+      expect(find.byType(PresenceLabel), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
+
+  testWidgets('内部普通成员可以查看同群有效成员状态', (tester) async {
+    final repo = _Repository('member', internal: true);
+    final controller = await _open(tester, repo, screen: 'members');
+    expect(controller.canViewGroupMemberPresence('c-team'), isTrue);
+    expect(find.byType(PresenceLabel), findsWidgets);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -524,10 +535,11 @@ Future<AppController> _open(
 }
 
 class _Repository extends DemoImRepository {
-  _Repository(this.role, {this.joinPolicy = 'invite'})
+  _Repository(this.role, {this.joinPolicy = 'invite', this.internal = false})
     : super(latency: Duration.zero, store: _MemoryStore());
   String role;
   final String joinPolicy;
+  final bool internal;
   final joined = <String>{'u1'};
   final added = <List<String>>[];
   final invited = <String>[];
@@ -536,6 +548,19 @@ class _Repository extends DemoImRepository {
   Completer<void>? pendingAdd;
   Completer<void>? pendingInvite;
   bool failRead = false;
+  @override
+  Future<AppUser> login(
+    String phone,
+    String code, {
+    String inviteCode = '',
+  }) async => (await super.login(
+    phone,
+    code,
+    inviteCode: inviteCode,
+  )).copyWith(isInternalUser: internal);
+  @override
+  Future<AppUser> profile() async =>
+      DemoImRepository.demoUser.copyWith(isInternalUser: internal);
   @override
   Future<GroupProfile> groupProfile(String conversationId) async =>
       GroupProfile(

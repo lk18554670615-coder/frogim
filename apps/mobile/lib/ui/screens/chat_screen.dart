@@ -960,19 +960,29 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _buildConversationAvatar() {
-    final avatar = UserPresence(
-      controller: widget.controller,
-      userId: widget.conversation.kind == ConversationKind.direct
-          ? peer?.id ?? ''
-          : '',
-      builder: (context, status) => ConversationAvatar(
-        conversation: widget.conversation,
-        name: widget.controller.displayConversationName(widget.conversation),
-        size: 34,
-        avatarUrl: conversationAvatarUrl,
-        online: status == UserPresenceStatus.online,
-      ),
+    final plainAvatar = ConversationAvatar(
+      conversation: widget.conversation,
+      name: widget.controller.displayConversationName(widget.conversation),
+      size: 34,
+      avatarUrl: conversationAvatarUrl,
     );
+    final avatar =
+        widget.conversation.kind == ConversationKind.direct &&
+            widget.controller.canViewUserPresence()
+        ? UserPresence(
+            controller: widget.controller,
+            userId: peer?.id ?? '',
+            builder: (context, status) => ConversationAvatar(
+              conversation: widget.conversation,
+              name: widget.controller.displayConversationName(
+                widget.conversation,
+              ),
+              size: 34,
+              avatarUrl: conversationAvatarUrl,
+              online: status == UserPresenceStatus.online,
+            ),
+          )
+        : plainAvatar;
     final target = peer;
     if (widget.conversation.kind != ConversationKind.direct || target == null) {
       return avatar;
@@ -1053,35 +1063,37 @@ class _ChatScreenState extends State<ChatScreen> {
                           );
                           if (widget.conversation.kind ==
                               ConversationKind.direct) {
+                            if (typing != null) {
+                              return Text(
+                                typing,
+                                key: Key(
+                                  'chat-presence-${widget.conversation.id}',
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.labelSmall
+                                    ?.copyWith(
+                                      color: context.linli.successText,
+                                    ),
+                              );
+                            }
+                            if (!widget.controller.canViewUserPresence()) {
+                              return const SizedBox.shrink();
+                            }
                             return UserPresence(
                               controller: widget.controller,
                               userId: peer?.id ?? '',
                               builder: (context, status) {
                                 final snapshot = widget.controller.presence
                                     .snapshot(peer?.id ?? '');
-                                return typing != null
-                                    ? Text(
-                                        typing,
-                                        key: Key(
-                                          'chat-presence-${widget.conversation.id}',
-                                        ),
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .labelSmall
-                                            ?.copyWith(
-                                              color: context.linli.successText,
-                                            ),
-                                      )
-                                    : PresenceLabel(
-                                        status,
-                                        key: Key(
-                                          'chat-presence-${widget.conversation.id}',
-                                        ),
-                                        lastOfflineAt: snapshot.lastOfflineAt,
-                                        checkedAt: snapshot.checkedAt,
-                                      );
+                                return PresenceLabel(
+                                  status,
+                                  key: Key(
+                                    'chat-presence-${widget.conversation.id}',
+                                  ),
+                                  lastOfflineAt: snapshot.lastOfflineAt,
+                                  checkedAt: snapshot.checkedAt,
+                                );
                               },
                             );
                           }
@@ -4380,11 +4392,12 @@ class _DirectContactSummary extends StatelessWidget {
                     '呱呱号：${publicUserHandleLabel(user?.handle, fallback: '尚未设置')}',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
-                  UserPresence(
-                    controller: controller,
-                    userId: user?.id ?? '',
-                    builder: (context, status) => PresenceLabel(status),
-                  ),
+                  if (controller.canViewUserPresence())
+                    UserPresence(
+                      controller: controller,
+                      userId: user?.id ?? '',
+                      builder: (context, status) => PresenceLabel(status),
+                    ),
                   if ((user?.signature ?? user?.presence ?? '')
                       .trim()
                       .isNotEmpty) ...[
@@ -4755,7 +4768,7 @@ class _ChatMemberMatrix extends StatelessWidget {
                           textAlign: TextAlign.center,
                           style: Theme.of(context).textTheme.labelSmall,
                         ),
-                        if (groupId == null ||
+                        if (groupId != null &&
                             controller.canViewGroupMemberPresence(groupId))
                           UserPresence(
                             controller: controller,

@@ -17,22 +17,29 @@ func (a *App) AllowedPresenceTargets(ctx context.Context, actor string, ids []st
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	result := map[string]bool{}
+	viewer := a.state.Users[actor]
+	if viewer == nil || !viewer.IsInternalUser || viewer.Banned || viewer.DeletedAt != nil {
+		return result, nil
+	}
 	member := a.state.Members[groupID][actor]
 	group := a.state.Conversations[groupID]
-	manages := group != nil && group.Type == "group" && member != nil && (member.Role == "owner" || member.Role == "admin")
+	sharesOrdinaryGroup := group != nil && group.Type == "group" && member != nil
 	for _, id := range ids {
 		user := a.state.Users[id]
 		if user == nil || user.DeletedAt != nil {
 			continue
 		}
+		blocked := a.state.Blocks[actor][id] || a.state.Blocks[id][actor]
+		if blocked {
+			continue
+		}
 		if groupID != "" {
-			if manages && a.state.Members[groupID][id] != nil {
+			if sharesOrdinaryGroup && a.state.Members[groupID][id] != nil {
 				result[id] = true
 			}
 			continue
 		}
-		friend := a.state.Friends[actor][id] && !a.state.Blocks[actor][id] && !a.state.Blocks[id][actor]
-		if actor == id || friend {
+		if a.state.Friends[actor][id] {
 			result[id] = true
 		}
 	}

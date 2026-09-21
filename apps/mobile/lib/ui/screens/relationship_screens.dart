@@ -97,8 +97,10 @@ class _FriendProfileScreenState extends State<FriendProfileScreen> {
 
   Widget _profileHeader() {
     final groupId = presenceGroupId;
-    if (groupId != null &&
-        !widget.controller.canViewGroupMemberPresence(groupId)) {
+    final canViewPresence = groupId == null
+        ? widget.controller.canViewUserPresence()
+        : widget.controller.canViewGroupMemberPresence(groupId);
+    if (!canViewPresence) {
       return _ProfileHeader(
         user: user,
         displayName: displayName,
@@ -449,7 +451,7 @@ class _ProfileHeader extends StatelessWidget {
           style: Theme.of(context).textTheme.bodyMedium,
         ),
       ],
-      PresenceLabel(status),
+      if (status != UserPresenceStatus.hidden) PresenceLabel(status),
     ],
   );
 }

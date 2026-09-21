@@ -49,20 +49,31 @@ func (p *Postgres) PresenceLastOfflineAt(ctx context.Context, ids []string) (map
 	return result, rows.Err()
 }
 func (p *Postgres) AllowedPresenceTargets(ctx context.Context, actor string, ids []string, groupID string) (map[string]bool, error) {
-	rows, err := p.pool.Query(ctx, `SELECT u.id FROM im_users u
- WHERE u.id=ANY($2::text[]) AND u.deleted_at IS NULL AND (
-  ($3='' AND (u.id=$1 OR (
-    EXISTS(SELECT 1 FROM im_friendships f WHERE f.user_id=$1 AND f.friend_user_id=u.id)
-    AND NOT EXISTS(SELECT 1 FROM im_blocks b WHERE (b.user_id=$1 AND b.blocked_user_id=u.id) OR (b.user_id=u.id AND b.blocked_user_id=$1))
-  ))) OR ($3<>'' AND EXISTS(
-   SELECT 1 FROM im_groups g
-   JOIN im_members actor ON actor.conversation_id=g.conversation_id AND actor.user_id=$1
-   JOIN im_members target ON target.conversation_id=g.conversation_id AND target.user_id=u.id
-   WHERE g.conversation_id=$3 AND g.dissolved_at IS NULL
-    AND actor.role IN ('owner','admin')
-    AND (actor.expires_at IS NULL OR actor.expires_at>now())
-    AND (target.expires_at IS NULL OR target.expires_at>now())
-  )))`, actor, ids, groupID)
+	rows, err := p.pool.Query(ctx, `SELECT target.id
+		FROM im_users viewer
+		JOIN im_users target ON target.id=ANY($2::text[]) AND target.deleted_at IS NULL
+		WHERE viewer.id=$1 AND viewer.is_internal_user AND NOT viewer.banned AND viewer.deleted_at IS NULL
+		AND NOT EXISTS(
+			SELECT 1 FROM im_blocks block_row
+			WHERE (block_row.user_id=$1 AND block_row.blocked_user_id=target.id)
+				OR (block_row.user_id=target.id AND block_row.blocked_user_id=$1)
+		)
+		AND (
+			($3='' AND EXISTS(
+				SELECT 1 FROM im_friendships friendship
+				WHERE friendship.user_id=$1 AND friendship.friend_user_id=target.id
+			))
+			OR ($3<>'' AND EXISTS(
+				SELECT 1 FROM im_groups group_row
+				JOIN im_members viewer_member
+					ON viewer_member.conversation_id=group_row.conversation_id AND viewer_member.user_id=$1
+				JOIN im_members target_member
+					ON target_member.conversation_id=group_row.conversation_id AND target_member.user_id=target.id
+				WHERE group_row.conversation_id=$3 AND group_row.dissolved_at IS NULL
+					AND (viewer_member.expires_at IS NULL OR viewer_member.expires_at>now())
+					AND (target_member.expires_at IS NULL OR target_member.expires_at>now())
+			))
+		)`, actor, ids, groupID)
 	if err != nil {
 		return nil, err
 	}

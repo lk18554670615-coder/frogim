@@ -134,10 +134,7 @@ void main() {
         FriendProfileScreen(controller: c, user: DemoImRepository.people.first),
       );
       expect(repo.contexts.last, isNull);
-      expect(
-        tester.widget<PresenceLabel>(find.byType(PresenceLabel)).status,
-        UserPresenceStatus.hidden,
-      );
+      expect(find.byType(PresenceLabel), findsNothing);
       await tester.pumpWidget(const SizedBox());
       await repo.close();
     });
@@ -281,6 +278,52 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await repo.close();
   });
+
+  testWidgets('普通用户不显示或查询他人状态，内部权限变更立即清空并恢复', (tester) async {
+    final repo = _PageRepo()..internal = false;
+    final c = AppController(repo);
+    await tester.runAsync(c.loginAsDemo);
+    addTearDown(c.dispose);
+    final direct = c.conversations.firstWhere((v) => v.id == 'c-linyu');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              ConversationTile(conversation: direct, controller: c),
+              Expanded(child: ContactsTab(controller: c)),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(PresenceLabel), findsNothing);
+    expect(repo.contexts, isEmpty);
+
+    repo.internal = true;
+    repo.emit(
+      const ImEvent(
+        type: ImEventType.messagePermissionsChanged,
+        payload: {'isInternalUser': true},
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(PresenceLabel), findsWidgets);
+    expect(repo.contexts, isNotEmpty);
+
+    repo.internal = false;
+    repo.emit(
+      const ImEvent(
+        type: ImEventType.messagePermissionsChanged,
+        payload: {'isInternalUser': false},
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(PresenceLabel), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    await repo.close();
+  });
 }
 
 class _PageRepo extends DemoImRepository {
@@ -289,9 +332,23 @@ class _PageRepo extends DemoImRepository {
   final _events = StreamController<ImEvent>.broadcast();
   bool directHidden = false;
   bool directOffline = false;
+  bool internal = true;
   @override
   Stream<ImEvent> get events => _events.stream;
   void emit(ImEvent event) => _events.add(event);
+  @override
+  Future<AppUser> login(
+    String phone,
+    String code, {
+    String inviteCode = '',
+  }) async => (await super.login(
+    phone,
+    code,
+    inviteCode: inviteCode,
+  )).copyWith(isInternalUser: internal);
+  @override
+  Future<AppUser> profile() async =>
+      DemoImRepository.demoUser.copyWith(isInternalUser: internal);
   @override
   Future<List<AppUser>> contacts() async => [
     for (final user in DemoImRepository.people)

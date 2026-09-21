@@ -1968,14 +1968,14 @@ class ConversationTile extends StatelessWidget {
             !conversation.isBusinessChannel
         ? (directPeer?.id ?? conversation.channelId ?? '')
         : '';
-    if (presenceUserId.isEmpty) {
+    if (presenceUserId.isEmpty || !controller.canViewUserPresence()) {
       return _buildTile(
         context,
         dark: dark,
         draft: draft,
         subtitle: subtitle,
         directPeer: directPeer,
-        presenceUserId: presenceUserId,
+        presenceUserId: '',
         presenceStatus: UserPresenceStatus.hidden,
       );
     }
@@ -2777,46 +2777,55 @@ class _ContactListTile extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => UserPresence(
-    controller: controller,
-    userId: user.id,
-    builder: (context, status) {
-      final snapshot = controller.presence.snapshot(user.id);
-      return ListTile(
-        key: Key('contact-${user.id}'),
-        minTileHeight: 68,
-        contentPadding: const EdgeInsets.only(left: 16, right: 36),
-        leading: PersonAvatar(
-          name: user.displayName,
-          avatarUrl: user.avatarUrl,
-          online: status == UserPresenceStatus.online,
-        ),
-        title: Text(
-          user.displayName,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        subtitle: Row(
-          children: [
+  Widget build(BuildContext context) {
+    if (!controller.canViewUserPresence()) {
+      return _buildTile(context, UserPresenceStatus.hidden);
+    }
+    return UserPresence(
+      controller: controller,
+      userId: user.id,
+      builder: _buildTile,
+    );
+  }
+
+  Widget _buildTile(BuildContext context, UserPresenceStatus status) {
+    final snapshot = controller.presence.snapshot(user.id);
+    return ListTile(
+      key: Key('contact-${user.id}'),
+      minTileHeight: 68,
+      contentPadding: const EdgeInsets.only(left: 16, right: 36),
+      leading: PersonAvatar(
+        name: user.displayName,
+        avatarUrl: user.avatarUrl,
+        online: status == UserPresenceStatus.online,
+      ),
+      title: Text(
+        user.displayName,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Row(
+        children: [
+          if (status != UserPresenceStatus.hidden) ...[
             PresenceLabel(
               status,
               lastOfflineAt: snapshot.lastOfflineAt,
               checkedAt: snapshot.checkedAt,
             ),
-            if (status != UserPresenceStatus.hidden) const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                user.presence,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
+            const SizedBox(width: 8),
           ],
-        ),
-        onTap: onTap,
-      );
-    },
-  );
+          Expanded(
+            child: Text(
+              user.presence,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+      onTap: onTap,
+    );
+  }
 }
 
 class _ContactAlphabetRail extends StatelessWidget {

@@ -598,10 +598,15 @@ class AppController extends ChangeNotifier {
   bool canViewGroupMemberHandle(String? conversationId) =>
       _canViewManagerOnlyGroupMemberData(conversationId);
 
-  /// Presence requested in a group context is restricted to the current
-  /// group's owner and administrators. Direct/friend presence is unchanged.
-  bool canViewGroupMemberPresence(String? conversationId) =>
-      _canViewManagerOnlyGroupMemberData(conversationId);
+  /// Online state and last-seen data are internal-user-only. The server still
+  /// performs the authoritative friendship/group-membership check.
+  bool canViewUserPresence() =>
+      authenticated && currentUser?.isInternalUser == true;
+
+  bool canViewGroupMemberPresence(String? conversationId) {
+    if (!canViewUserPresence() || conversationId == null) return false;
+    return isManagedGroup(_conversationFor(conversationId));
+  }
 
   /// Sensitive group-wide controls are available only while the current role
   /// is a trusted owner or administrator role.
@@ -4311,7 +4316,10 @@ class AppController extends ChangeNotifier {
     try {
       final user = await repository.profile();
       if (!isCurrentSession() || user.id != accountId) return false;
+      final internalChanged =
+          currentUser?.isInternalUser != user.isInternalUser;
       currentUser = user;
+      if (internalChanged) presence.invalidate();
       notifyListeners();
       return true;
     } catch (exception) {
@@ -4707,6 +4715,12 @@ class AppController extends ChangeNotifier {
         );
         return;
       case ImEventType.messagePermissionsChanged:
+        final internal = event.payload['isInternalUser'];
+        if (internal is bool && currentUser != null) {
+          currentUser = currentUser!.copyWith(isInternalUser: internal);
+        }
+        presence.invalidate();
+        if (!_disposed) notifyListeners();
         unawaited(refreshProfile());
         return;
       case ImEventType.sessionExpired:

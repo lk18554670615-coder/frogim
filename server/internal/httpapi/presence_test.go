@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/linli/im/server/internal/app"
 	"github.com/linli/im/server/internal/config"
+	"github.com/linli/im/server/internal/model"
 	"github.com/linli/im/server/internal/teststore"
 	"github.com/linli/im/server/internal/wukong"
 	"net/http"
@@ -16,10 +17,7 @@ import (
 )
 
 func TestUserPresenceAuthorization(t *testing.T) {
-	a, _ := app.New(t.Context(), teststore.Memory{})
-	if err := a.SeedDemo(); err != nil {
-		t.Fatal(err)
-	}
+	a := newPresenceTestApp(t, "usr_alice", "usr_admin")
 	presenceTestFriend(t, a)
 	group, err := a.CreateGroup("usr_alice", "presence", []string{"usr_bob", "usr_admin"})
 	if err != nil {
@@ -42,6 +40,7 @@ func TestUserPresenceAuthorization(t *testing.T) {
 	defer ts.Close()
 	owner := loginToken(t, ts.URL, "13800000001")
 	member := loginToken(t, ts.URL, "13800000002")
+	internalMember := loginToken(t, ts.URL, "13800000000")
 	query := func(token, ctx string) map[string]string {
 		t.Helper()
 		data, _ := json.Marshal(map[string]any{"userIds": []string{"usr_alice", "usr_bob", "usr_admin", "missing"}, "groupId": ctx})
@@ -65,7 +64,7 @@ func TestUserPresenceAuthorization(t *testing.T) {
 		}
 		return out
 	}
-	if got := query(owner, ""); got["usr_alice"] != "online" || got["usr_bob"] != "offline" || got["missing"] != "hidden" {
+	if got := query(owner, ""); got["usr_alice"] != "hidden" || got["usr_bob"] != "offline" || got["missing"] != "hidden" {
 		t.Fatal(got)
 	}
 	// Remove friendship after caching: permission must not be cached with status.
@@ -84,7 +83,10 @@ func TestUserPresenceAuthorization(t *testing.T) {
 	if err := a.SetGroupRole("usr_alice", group.ID, "usr_bob", "admin"); err != nil {
 		t.Fatal(err)
 	}
-	if got := query(member, group.ID)["usr_alice"]; got != "online" {
+	if got := query(member, group.ID)["usr_alice"]; got != "hidden" {
+		t.Fatal(got)
+	}
+	if got := query(internalMember, group.ID)["usr_alice"]; got != "online" {
 		t.Fatal(got)
 	}
 	if got := query(member, "another_group"); got["usr_alice"] != "hidden" || got["usr_bob"] != "hidden" {
@@ -104,7 +106,7 @@ func TestUserPresenceAuthorization(t *testing.T) {
 	}
 	fail = true
 	api.presence = wukong.NewPresenceCache(func(context.Context, []string) (map[string]bool, error) { return nil, errors.New("down") })
-	if got := query(owner, ""); got["usr_alice"] != "unknown" || got["usr_bob"] != "hidden" {
+	if got := query(owner, group.ID); got["usr_admin"] != "unknown" || got["usr_bob"] != "hidden" {
 		t.Fatal(got)
 	}
 	for _, body := range []string{`{"userIds":[]}`, `{"userIds":[""]}`, `{"userIds":["usr_alice"],"role":"owner"}`, `{"userIds":` + strings.Repeat(`"a",`, 200) + `"a"]}`} {
@@ -125,7 +127,7 @@ func TestUserPresenceAuthorization(t *testing.T) {
 }
 
 type presenceLastOfflineMemory struct {
-	teststore.Memory
+	presenceStateMemory
 	values    map[string]time.Time
 	requested []string
 }
@@ -143,7 +145,10 @@ func (s *presenceLastOfflineMemory) PresenceLastOfflineAt(_ context.Context, ids
 
 func TestUserPresenceIncludesAuthorizedOfflineTime(t *testing.T) {
 	offlineAt := time.Date(2026, 9, 7, 2, 30, 0, 0, time.UTC)
-	persistence := &presenceLastOfflineMemory{values: map[string]time.Time{"usr_bob": offlineAt, "missing": offlineAt}}
+	persistence := &presenceLastOfflineMemory{
+		presenceStateMemory: presenceStateMemory{state: presenceTestState("usr_alice")},
+		values:              map[string]time.Time{"usr_bob": offlineAt, "missing": offlineAt},
+	}
 	a, err := app.New(t.Context(), persistence)
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +179,7 @@ func TestUserPresenceIncludesAuthorizedOfflineTime(t *testing.T) {
 	if err = json.NewDecoder(res.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Items) != 3 || body.Items[0].Status != "online" || body.Items[0].LastOfflineAt != nil {
+	if len(body.Items) != 3 || body.Items[0].Status != "hidden" || body.Items[0].LastOfflineAt != nil {
 		t.Fatalf("online=%+v", body.Items)
 	}
 	if body.Items[1].Status != "offline" || body.Items[1].LastOfflineAt == nil || !body.Items[1].LastOfflineAt.Equal(offlineAt) {
@@ -189,8 +194,7 @@ func TestUserPresenceIncludesAuthorizedOfflineTime(t *testing.T) {
 }
 
 func TestUserPresenceRechecksAfterUpstreamWait(t *testing.T) {
-	a, _ := app.New(t.Context(), teststore.Memory{})
-	_ = a.SeedDemo()
+	a := newPresenceTestApp(t, "usr_alice")
 	presenceTestFriend(t, a)
 	api := New(config.Config{JWTSecret: strings.Repeat("a", 32), DevMode: true, DevOTPCode: "654321", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour}, a)
 	started, release := make(chan struct{}), make(chan struct{})
@@ -225,6 +229,50 @@ func TestUserPresenceRechecksAfterUpstreamWait(t *testing.T) {
 	if got := <-done; got != "hidden" {
 		t.Fatal(got)
 	}
+}
+
+type presenceStateMemory struct {
+	teststore.Memory
+	state *model.State
+}
+
+func (s presenceStateMemory) Load(context.Context) (*model.State, error) {
+	return s.state, nil
+}
+
+func presenceTestState(internalIDs ...string) *model.State {
+	state := model.NewState()
+	internal := map[string]bool{}
+	for _, id := range internalIDs {
+		internal[id] = true
+	}
+	now := time.Now().UTC()
+	for _, user := range []struct {
+		id, phone, name string
+	}{
+		{"usr_alice", "13800000001", "Alice"},
+		{"usr_bob", "13800000002", "Bob"},
+		{"usr_admin", "13800000000", "Admin"},
+	} {
+		state.Users[user.id] = &model.User{
+			ID: user.id, Phone: user.phone, Name: user.name,
+			IsInternalUser: internal[user.id], CreatedAt: now,
+		}
+		state.PhoneToUser[user.phone] = user.id
+	}
+	return state
+}
+
+func newPresenceTestApp(t *testing.T, internalIDs ...string) *app.App {
+	t.Helper()
+	a, err := app.New(t.Context(), presenceStateMemory{state: presenceTestState(internalIDs...)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.SeedDemo(); err != nil {
+		t.Fatal(err)
+	}
+	return a
 }
 
 func presenceTestFriend(t *testing.T, a *app.App) {
