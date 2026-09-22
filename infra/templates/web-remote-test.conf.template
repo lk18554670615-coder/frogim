@@ -36,7 +36,14 @@ server {
     add_header Cache-Control "no-cache";
   }
 
-  location ~* \.(?:js|css|wasm|png|jpg|jpeg|gif|svg|ico|woff2?)$ {
+  # Match the production Web cache policy for Flutter's bundled fonts.
+  location ~* \.(?:otf|ttf|woff2?)$ {
+    try_files $uri =404;
+    expires 30d;
+    add_header Cache-Control "public, max-age=2592000, immutable";
+  }
+
+  location ~* \.(?:js|css|wasm|png|jpg|jpeg|gif|svg|ico)$ {
     try_files $uri =404;
     expires 7d;
     add_header Cache-Control "public, max-age=604800, immutable";
