@@ -3779,48 +3779,63 @@ func (a *App) SetTyping(uid, cid string, typing bool) {
 	_ = a.SetTypingContext(context.Background(), uid, cid, typing)
 }
 func (a *App) SetTypingContext(parent context.Context, uid, cid string, typing bool) error {
-	if q, ok := a.persistence.(store.QueryStore); ok {
+	if s, ok := a.persistence.(store.TypingRecipientStore); ok {
 		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 		defer cancel()
-		access, err := q.CanAccessConversation(ctx, uid, cid)
-		if err != nil || !access {
-			if err != nil {
-				return err
-			}
+		ids, err := s.TypingRecipients(ctx, uid, cid)
+		if errors.Is(err, store.ErrForbidden) {
 			return ErrForbidden
 		}
-		ids, err := q.ConversationMemberIDs(ctx, cid)
 		if err != nil {
 			return err
 		}
-		// Typing is an ephemeral hint. Broadcasting it to a very large group is
-		// disproportionate and can create thousands of writes per keystroke.
-		if len(ids) > 500 {
-			return nil
+		if len(ids) != 0 {
+			a.publish(ids, "typing", map[string]any{"conversationId": cid, "userId": uid, "typing": typing, "expiresAt": time.Now().Add(6 * time.Second)})
 		}
-		others := make([]string, 0, len(ids))
-		for _, x := range ids {
-			if x != uid {
-				others = append(others, x)
-			}
-		}
-		a.publish(others, "typing", map[string]any{"conversationId": cid, "userId": uid, "typing": typing, "expiresAt": time.Now().Add(6 * time.Second)})
 		return nil
 	}
+	if _, ok := a.persistence.(store.QueryStore); ok {
+		// A persistent store must implement authoritative recipient filtering.
+		// Never fall back to an incomplete/stale in-memory permission snapshot.
+		return store.ErrUnsupported
+	}
 	a.mu.RLock()
-	if a.state.Members[cid][uid] == nil {
+	conversation := a.state.Conversations[cid]
+	if conversation == nil || a.state.Members[cid][uid] == nil {
 		a.mu.RUnlock()
 		return ErrForbidden
 	}
-	ids := memberIDs(a.state.Members[cid])
-	a.mu.RUnlock()
-	others := make([]string, 0, len(ids))
-	for _, x := range ids {
-		if x != uid {
-			others = append(others, x)
+	group := conversation.Type == "group"
+	if group {
+		sender := a.state.Users[uid]
+		if sender == nil || sender.Banned || sender.DeletedAt != nil {
+			a.mu.RUnlock()
+			return ErrForbidden
 		}
 	}
-	a.publish(others, "typing", map[string]any{"conversationId": cid, "userId": uid, "typing": typing, "expiresAt": time.Now().Add(6 * time.Second)})
+	members := a.state.Members[cid]
+	if len(members) > 500 {
+		a.mu.RUnlock()
+		return nil
+	}
+	others := make([]string, 0, len(members))
+	for id, member := range members {
+		if id == uid || member == nil {
+			continue
+		}
+		if group {
+			viewer := a.state.Users[id]
+			if viewer == nil || viewer.Banned || viewer.DeletedAt != nil ||
+				(!viewer.IsInternalUser && member.Role != "owner" && member.Role != "admin") {
+				continue
+			}
+		}
+		others = append(others, id)
+	}
+	a.mu.RUnlock()
+	if len(others) != 0 {
+		a.publish(others, "typing", map[string]any{"conversationId": cid, "userId": uid, "typing": typing, "expiresAt": time.Now().Add(6 * time.Second)})
+	}
 	return nil
 }
 func (a *App) callConversation(uid, cid string) (string, []string, error) {

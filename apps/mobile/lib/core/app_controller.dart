@@ -398,6 +398,7 @@ class AppController extends ChangeNotifier {
             request.outgoing,
       );
   String? typingLabelFor(String conversationId) {
+    if (!canViewTyping(conversationId)) return null;
     final now = DateTime.now();
     final userIds = (_typingUsers[conversationId] ?? const {}).entries
         .where((entry) => entry.value.isAfter(now))
@@ -608,6 +609,25 @@ class AppController extends ChangeNotifier {
     return isManagedGroup(_conversationFor(conversationId));
   }
 
+  /// Typing viewers are independent of online/last-seen permissions. Ordinary
+  /// members still report their own typing so eligible group viewers can see it.
+  bool canViewTyping(String conversationId) {
+    if (_disposed || !authenticated) return false;
+    final conversation = _conversationFor(conversationId);
+    if (conversation == null) return false;
+    if (!isManagedGroup(conversation)) return true;
+    if (_untrustedGroupRoles.contains(conversationId) ||
+        !const [
+          'owner',
+          'admin',
+          'member',
+        ].contains(conversation.currentUserRole)) {
+      return false;
+    }
+    return currentUser?.isInternalUser == true ||
+        isGroupManager(conversation.currentUserRole);
+  }
+
   /// Sensitive group-wide controls are available only while the current role
   /// is a trusted owner or administrator role.
   bool canManageGroup(String? conversationId) =>
@@ -664,6 +684,7 @@ class AppController extends ChangeNotifier {
       if (isManagedGroup(conversation) &&
           (cid == null || conversation.id == cid)) {
         _untrustedGroupRoles.add(conversation.id);
+        _clearConversationTyping(conversation.id);
         _refreshGroupPreview(conversation.id, force: true);
       }
     }
@@ -782,6 +803,9 @@ class AppController extends ChangeNotifier {
 
   void _enterAuthenticatedShell(AppUser user, {bool refreshProfile = false}) {
     _invalidateForwardTasks();
+    for (final id in _typingUsers.keys.toList()) {
+      _clearConversationTyping(id);
+    }
     _stickyAuthenticationError = false;
     currentUser = user;
     authenticated = true;
@@ -1221,7 +1245,17 @@ class AppController extends ChangeNotifier {
       if (!value) _suspendGroupRoles();
       notifyListeners();
     });
-    _eventSubscription ??= repository.events.listen(_handleEvent);
+    final accountId = currentUser?.id;
+    final sessionEpoch = _forwardSessionEpoch;
+    unawaited(_eventSubscription?.cancel());
+    _eventSubscription = repository.events.listen((event) {
+      if (!_disposed &&
+          authenticated &&
+          currentUser?.id == accountId &&
+          _forwardSessionEpoch == sessionEpoch) {
+        _handleEvent(event);
+      }
+    });
   }
 
   Future<void> _connectSafely() async {
@@ -1260,6 +1294,7 @@ class AppController extends ChangeNotifier {
     } else {
       conversations = loadedConversations;
       _untrustedGroupRoles.clear();
+      _pruneUnauthorizedTyping();
       _presentationRevision++;
       for (final conversation in conversations) {
         _refreshGroupPreview(conversation.id);
@@ -4319,7 +4354,10 @@ class AppController extends ChangeNotifier {
       final internalChanged =
           currentUser?.isInternalUser != user.isInternalUser;
       currentUser = user;
-      if (internalChanged) presence.invalidate();
+      if (internalChanged) {
+        presence.invalidate();
+        _clearGroupTyping();
+      }
       notifyListeners();
       return true;
     } catch (exception) {
@@ -4720,6 +4758,7 @@ class AppController extends ChangeNotifier {
           currentUser = currentUser!.copyWith(isInternalUser: internal);
         }
         presence.invalidate();
+        _clearGroupTyping();
         if (!_disposed) notifyListeners();
         unawaited(refreshProfile());
         return;
@@ -4973,11 +5012,32 @@ class AppController extends ChangeNotifier {
       _clearTypingUser(conversationId, userId);
       return;
     }
+    if (!canViewTyping(conversationId)) return;
     final users = _typingUsers.putIfAbsent(conversationId, () => {});
     // Use a local bounded TTL so a skewed or malicious timestamp cannot leave
     // a permanent typing state. The server's contract currently expires at 6s.
     users[userId] = DateTime.now().add(const Duration(seconds: 6));
     _scheduleTypingExpiry(conversationId);
+  }
+
+  void _clearConversationTyping(String conversationId) {
+    _typingUsers.remove(conversationId);
+    _typingExpiryTimers.remove(conversationId)?.cancel();
+  }
+
+  void _clearGroupTyping() {
+    for (final id in _typingUsers.keys.toList()) {
+      final conversation = _conversationFor(id);
+      if (conversation == null || isManagedGroup(conversation)) {
+        _clearConversationTyping(id);
+      }
+    }
+  }
+
+  void _pruneUnauthorizedTyping() {
+    for (final id in _typingUsers.keys.toList()) {
+      if (!canViewTyping(id)) _clearConversationTyping(id);
+    }
   }
 
   void _clearTypingUser(String conversationId, String userId) {
@@ -5053,6 +5113,7 @@ class AppController extends ChangeNotifier {
           if (isManagedGroup(c)) c.id,
       });
       _untrustedGroupRoles.clear();
+      _pruneUnauthorizedTyping();
       _presentationRevision++;
       for (final conversation in conversations) {
         _refreshGroupPreview(conversation.id);
