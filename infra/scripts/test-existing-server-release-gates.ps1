@@ -49,6 +49,23 @@ foreach ($name in @('flutter','webFirstApproval','webBusinessSmoke','mobileUpgra
     $release.evidence[$name] = @{status='passed';operator='synthetic-test';commit=$commit;checkedAt=[DateTimeOffset]::UtcNow.ToString('o');path=$proof;sha256=$hash}
 }
 Assert-Gate open-business $true
+$release.backupDelivery = 'server-local-approved'
+$release.evidence.Remove('offsiteBackup')
+Assert-Gate open-business $false
+$release.offsiteBackupStatus = 'deferred'
+$release.originalDataPreserved = $true
+foreach ($name in @('serverLocalBackupApproval','serverBackupVerified')) {
+    $release.evidence[$name] = @{status='passed';operator='synthetic-test';commit=$commit;checkedAt=[DateTimeOffset]::UtcNow.ToString('o');path=$proof;sha256=$hash}
+}
+Assert-Gate open-business $true
+$release.originalDataPreserved = $false
+Assert-Gate open-business $false
+$release.originalDataPreserved = $true
+$release.backupDelivery = 'unknown'
+Assert-Gate open-business $false
+$release.backupDelivery = 'offsite'
+Assert-Gate open-business $false
+$release.evidence.offsiteBackup = @{status='passed';operator='synthetic-test';commit=$commit;checkedAt=[DateTimeOffset]::UtcNow.ToString('o');path=$proof;sha256=$hash}
 $release.mobileBusinessAccess = 'enabled'
 Assert-Gate open-business $false
 $release.mobileBusinessAccess = 'disabled'

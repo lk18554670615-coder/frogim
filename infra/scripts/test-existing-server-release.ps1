@@ -10,6 +10,11 @@ $ErrorActionPreference = 'Stop'
 $release = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json -AsHashtable
 $required = @('go', 'admin', 'web', 'migrationRehearsal', 'rollbackRehearsal',
     'backupRestore', 'offsiteBackup', 'certificateRenewal', 'serverPreflight')
+$backupDelivery = if ($release.backupDelivery) { $release.backupDelivery } else { 'offsite' }
+if ($backupDelivery -eq 'server-local-approved') {
+    $required = @($required | Where-Object { $_ -ne 'offsiteBackup' })
+    $required += @('serverLocalBackupApproval', 'serverBackupVerified')
+}
 $clientChecks = @('flutter', 'android', 'iosAppleSdk', 'androidInstall',
     'iosInstall', 'threeClientSmoke', 'getuiRealDevice', 'voipLockedScreen', 'passwordlessAccess')
 $artifacts = @('edge', 'platform', 'enterprise', 'web')
@@ -23,6 +28,11 @@ if ($Stage -eq 'open-business') {
     }
 }
 $failures = [Collections.Generic.List[string]]::new()
+if ($backupDelivery -notin @('offsite', 'server-local-approved')) { $failures.Add('Unknown backup delivery scope') }
+if ($backupDelivery -eq 'server-local-approved' -and
+    ($release.offsiteBackupStatus -ne 'deferred' -or $release.originalDataPreserved -isnot [bool] -or !$release.originalDataPreserved)) {
+    $failures.Add('Server-local cutover must retain original data and explicitly defer offsite delivery')
+}
 if ($openingScope -notin @('three-clients', 'web-first')) { $failures.Add('Unknown opening scope') }
 if ($Stage -eq 'open-business' -and $openingScope -eq 'web-first' -and
     ($release.mobileBusinessAccess -ne 'disabled' -or $release.mobileUpgradeDestination -ne 'https://18.163.165.233/app/' -or
