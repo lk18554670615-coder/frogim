@@ -49,10 +49,25 @@ Web 音视频已由用户在隔离验收环境确认通过；本次发布沿用�
 
 最后证据：`ops/deployment-completed.json`、`ops/production-smoke-proof.json`、`ops/cutover-status.json`。新共享数据服务仍为平台 DB0 / 企业 DB1；本轮未恢复整个 Redis 实例。
 
-待完成项：Android/iOS/VoIP 真机验收；本次离机备份交付；新企业备份定时任务的异地目标配置；开服后 24 小时观察。175 个原无密码账号仍需核实身份后重置，短信未配置。
+待完成项：Android/iOS/VoIP 真机验收；本次离机备份交付；新企业备份定时任务的异地目标配置；开服后 24 小时观察。开服时 175 个原无密码账号需管理员核实后重置；后续已按用户授权启用统一固定验证码，见下方记录。
 
 后续运维查询以 `ops/deployment-completed.json` 和平台任务状态为准。一次性切换脚本不可当作日常备份脚本重复运行。企业手工冷备遵循现有运维手册：平台确认暂停，绑定当前访问版本，停止企业写入组件，使用 `tenant-backup` 备份新目录，验证后受控恢复；共享 PostgreSQL/Redis 和统一入口保持运行。平台可使用修复后的 `bin/platform-backup` 独立在线备份。
 
 ## Android 后续发布
 
 北京时间 2026-09-30 06:06:54，用户授权发布 Android `1.0.14+8020` 并强制更新。Android 策略已从 Web 入口改为签名 APK，最低/最新版本均为 `1.0.14`，revision 2；旧入口和平台入口的升级决策均验证通过。Web、iOS 策略保持原值，服务无需停机。签名、构建、覆盖安装与下载证据见 [Android 发布记录](ANDROID_RELEASE_20260930.md)。Android 真机功能、个推实收及 iOS/VoIP 仍待验收，不把 APK 发布记作三端真机验收完成。
+
+## 统一固定验证码发布
+
+用户明确要求恢复架构切换前的开发验证码行为，覆盖所有已接入平台的验证码验证流程，而非仅注册。
+北京时间 **2026-09-30 06:35:23** 已更新平台 API，**06:37:18** 完成正式公网接口验收。
+
+- 私有配置 `fixedVerificationCode: "123456"` 同时启用注册、验证码登录和密码找回，不发送真实短信。未封禁的原无密码账号可以使用验证码登录或找回密码；异常号码隔离、封禁和企业停用保持生效。它不验证手机归属，这是用户明确选择的开发验证码行为。
+- 只替换平台 API 二进制和对应验证码配置，其他容器 ID、状态保持一致；旧系统继续停止。无需更新 APK，重新打开客户端即可获取认证能力。
+- 源码提交 `c94e948feb319ff379c05cb400c64988d715658d`；API 镜像 `frogim/platform-bundle@sha256:2018182b04e5db66f844c1b3408253c4d897293c06c210b13fc54ced61a88e33`。平台静态网关继续使用原 `779df5d...` 镜像。构建时核对原本地标签的完整摘要后派生新镜像，运行始终使用摘要固定。
+- 当前运维 Compose：`ops/platform-fixed-c94e948/compose-active.json`，SHA-256 `a7aa16beef77464a1df94a4ab3b6e6522d054f99f305f9337e65a1ac798a03ae`；当前平台指针为 `ops/active-platform-release.json`。完整候选渲染件在 `platform-releases/platform-fixed-c94e948`，日常操作采用前述保留网关原配置的运维 Compose。
+- 发布前保存平台配置、Compose 和独立平台库快照。快照 SHA-256 `538ee2b2d2e592f441b429d54e978c63a63cdc165ecd838f41973975a9f0f95a`，仅保存在服务器私有目录，未计为离机备份。
+- Go `test ./...`、`vet ./...` 通过；隔离 PostgreSQL 上固定验证码与找回密码生命周期集成测试通过。线上独立合成账号验证验证码请求、注册及任务完成、企业会话和个人资料、密码登录、已有账号验证码登录、找回密码、旧密码/平台刷新令牌/企业会话撤销、退出。错误验证码、重复注册及封禁后登录/重复注册均拒绝；验收账号已通过平台任务禁用。
+- `/ready`、`/app/`、`/platform/` 及认证配置均返回 200。发布记录和验收证据在 `ops/platform-fixed-c94e948/{prepared,deployed,verification-smoke}.json`；本机日志在 `.data/registration-release-20260930`。这是服务端实测，Android/iOS 原生界面和推送真机验收仍待完成。
+
+本次不涉及数据库结构变更。若此 API 版本需回退，仅使用私有 `compose-before.json` 对 `platform-api` 执行 `--no-deps --no-build --pull never` 更新，并同步恢复对应私有平台配置和当前指针；不得恢复整库、启动原认证系统或重新执行迁移。切回真实短信需移除固定验证码字段并配置短信适配器，禁止同时配置两种验证码提供方式。

@@ -20,7 +20,7 @@ Android 策略 revision 为 **2**：enabled=true，minimumVersion/latestVersion=
 - 旧 `/v2/config/version` 与新 `/platform/v2/config/version` 均验证：`1.0.0`、`1.0.11`、`1.0.12`、`1.0.13` 强制更新；`1.0.14` 无更新提示。
 - Windows 本机再次经公网核对旧版、新版决策、APK HTTP 200、MIME 类型和文件长度。
 - iOS、Web、macOS 策略保持原值。Web 继续运行 `1.0.13+4019`，不会因本次 Android 发布要求 Web 更新。
-- 更新后重新登录平台；原无密码账号仍需管理员核实身份后重置，短信未配置。
+- 更新后重新登录平台。发布初期短信未配置；随后已按用户要求启用统一固定验证码 `123456`，用于注册、验证码登录和密码找回，未封禁的原无密码账号也可使用。详见 [平台后续发布](SERVER_CUTOVER_20260930.md#统一固定验证码发布)。
 
 ## 验证证据与边界
 
