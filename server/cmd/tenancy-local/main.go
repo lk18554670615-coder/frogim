@@ -32,6 +32,7 @@ import (
 )
 
 func main() {
+	shared := flag.Bool("prepare-shared", false, "prepare private default-only shared datastore configuration without starting or migrating services")
 	root := flag.String("root", "../.data/tenancy-local", "isolated local configuration directory")
 	bootstrap := flag.Bool("bootstrap", false, "bootstrap default enterprise from inside the local platform container")
 	verify := flag.Bool("verify", false, "verify the local gateway authentication flow with an explicit local CA")
@@ -41,7 +42,9 @@ func main() {
 	renewPublic := flag.Bool("renew-public-tls", false, "renew only local gateway certificates with a recoverable backup; never install trust")
 	flag.Parse()
 	var err error
-	if *renewPublic {
+	if *shared {
+		err = prepareShared(*root)
+	} else if *renewPublic {
 		err = renewPublicTLS(*root)
 	} else if *verify || *verifyAdminCreate || *verifyPassword || *verifyAgent {
 		err = verifyLocal(*root, *verifyAdminCreate || *verifyPassword, *verifyPassword, *verifyAgent)

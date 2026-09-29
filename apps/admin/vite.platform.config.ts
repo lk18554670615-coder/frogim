@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react';
 // Separate output and entry: enterprise administrators never inherit this realm.
 export default defineConfig({
   plugins: [react()],
+  base: process.env.PLATFORM_ADMIN_BASE || '/',
   build: { outDir: 'dist-platform', rollupOptions: { input: 'platform.html' } },
   server: {
     host: '127.0.0.1', port: 4177,

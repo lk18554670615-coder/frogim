@@ -47,7 +47,7 @@ func WriteEnterpriseRelease(root string, c EnterpriseConfig, release Release) (R
 		err = decoder.Decode(&prior)
 		trailing := decoder.Decode(new(any))
 		data.Close()
-		if err != nil || trailing != io.EOF || !prior.Valid() || prior.ID != id || prior.Sequence >= r.Sequence || prior.Runtime != r.Runtime || prior.SchemaVersion != r.SchemaVersion || !prior.MatchesTarget(r.TenantID, r.ServerID) || prior.isolationMode() != r.isolationMode() {
+		if err != nil || trailing != io.EOF || !prior.Valid() || prior.ID != id || prior.Sequence >= r.Sequence || prior.Runtime != r.Runtime || prior.SchemaVersion != r.SchemaVersion || !prior.MatchesTarget(r.TenantID, r.ServerID) || prior.isolationMode() != r.isolationMode() || prior.DatastoreMode != r.DatastoreMode || prior.IngressMode != r.IngressMode {
 			return Release{}, ErrBundle
 		}
 		if _, _, err = readBundle(root, id, prior.ComposeSHA256); err != nil {

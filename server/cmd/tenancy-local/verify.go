@@ -312,15 +312,28 @@ func verifyLocal(root string, adminCreate, passwordReset, verifyAgent bool) erro
 		if decision.Data.Platform != target || decision.Data.CurrentVersion != "1.0.12" {
 			return errors.New("platform client version contract mismatch")
 		}
+		var bridged struct{ Data clientversion.Decision }
+		if err = call("GET", e, "/v2/config/version?platform="+target+"&version=1.0.12&installId=local-readonly-check", "", nil, &bridged, 200); err != nil {
+			return err
+		}
+		platformJSON, _ := json.Marshal(decision.Data)
+		enterpriseJSON, _ := json.Marshal(bridged.Data)
+		if !bytes.Equal(platformJSON, enterpriseJSON) {
+			return errors.New("legacy upgrade bridge differs from platform policy")
+		}
 	}
-	// The managed enterprise cannot read or publish the global rollout policy.
+	if err = call("GET", e, "/v2/config/version", "", nil, nil, 400); err != nil {
+		return err
+	}
+	// The legacy public upgrade query delegates to the platform. Enterprise
+	// administrators still cannot manage the platform's global rollout policy.
 	// Empty input is intentional: the ownership gate must run before any write.
-	for _, check := range []struct{ method, path string }{{"GET", "/v2/config/version"}, {"GET", "/v2/admin/client-versions"}, {"PUT", "/v2/admin/client-versions/android"}} {
+	for _, check := range []struct{ method, path string }{{"GET", "/v2/admin/client-versions"}, {"PUT", "/v2/admin/client-versions/android"}} {
 		if err = call(check.method, e, check.path, enterpriseAdmin.AccessToken, struct{}{}, nil, 409); err != nil {
 			return err
 		}
 	}
-	fmt.Println("PASS: four platform client version contracts; management auth required; enterprise rollout ownership denied. No update policy published.")
+	fmt.Println("PASS: four platform client version contracts and legacy upgrade bridge match; management auth required; enterprise rollout ownership denied. No update policy published.")
 	var tenants struct {
 		Items []struct {
 			ID, Status, HTTPBaseURL string

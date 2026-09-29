@@ -6,9 +6,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"net/url"
 	"strings"
 
 	"github.com/linli/im/server/internal/backup"
+	"github.com/linli/im/server/internal/tenancy"
 )
 
 var coldVolumes = []string{"im", "im-logs", "media", "plugins", "redis"}
@@ -38,7 +40,7 @@ func (r *ComposeRunner) captureColdBackup(ctx context.Context, release Release, 
 	if e != nil {
 		return e
 	}
-	if r.coldDatabase(ctx, db, expected) != nil {
+	if r.bundleDatabase(ctx, b, db, expected, false) != nil {
 		return ErrUnconfirmed
 	}
 	w, e := backup.Create(path, expected, key)
@@ -58,12 +60,12 @@ func (r *ComposeRunner) captureColdBackup(ctx context.Context, release Release, 
 		return e
 	}
 	if e = w.Add("database", func(out io.Writer) error {
-		return r.stream(ctx, nil, out, "exec", db, "pg_dump", "-U", "enterprise", "-d", "enterprise", "--format=custom", "--no-owner", "--no-acl")
+		return r.stream(ctx, nil, out, "exec", db, "pg_dump", "-U", "enterprise", "-d", sharedDatabase(b), "--format=custom", "--no-owner", "--no-acl")
 	}); e != nil {
 		return e
 	}
 	sources, _ := coldVolumeSources(b)
-	for _, v := range coldVolumes {
+	for _, v := range backupVolumes(b) {
 		if e = r.unusedVolume(ctx, r.Project+"_"+sources[v]); e != nil {
 			return e
 		}
@@ -73,12 +75,17 @@ func (r *ComposeRunner) captureColdBackup(ctx context.Context, release Release, 
 			return e
 		}
 	}
+	if sharedBundle(b) {
+		if e = w.Add("redis", func(out io.Writer) error { return r.redisDatabaseHelper(ctx, b, "export", nil, out) }); e != nil {
+			return e
+		}
+	}
 	// A supervisor restart during backup invalidates the attempt; no final
 	// manifest is published. Trusted host operators must also honor maintenance.
 	if _, e = r.coldContainers(ctx, release, o, b); e != nil {
 		return e
 	}
-	if r.coldDatabase(ctx, db, expected) != nil {
+	if r.bundleDatabase(ctx, b, db, expected, false) != nil {
 		return ErrUnconfirmed
 	}
 	return w.Finalize()
@@ -93,6 +100,14 @@ func independentBackupKey(b Bundle, key []byte) bool {
 			decoded, e := base64.RawURLEncoding.DecodeString(value)
 			if e == nil && bytes.Equal(decoded, key) {
 				return false
+			}
+			// Shared profiles carry datastore passwords only inside their DSNs.
+			if u, err := url.Parse(value); err == nil && u.User != nil {
+				password, _ := u.User.Password()
+				decoded, err := base64.RawURLEncoding.DecodeString(password)
+				if err == nil && bytes.Equal(decoded, key) {
+					return false
+				}
 			}
 		}
 	}
@@ -128,10 +143,15 @@ func (x *Executor) coldSource(ctx context.Context, expected backup.Binding) (*Co
 }
 
 func validateColdBundle(b Bundle, expected backup.Binding) error {
-	// Only the known nine-service enterprise layout is supported. Do not silently
+	// Only the known isolated/shared enterprise layouts are supported. Do not silently
 	// omit an extra business service, volume or future schema.
 	wanted := []string{"enterprise-api", "enterprise-db", "enterprise-gateway", "enterprise-im", "enterprise-livekit", "enterprise-media-init", "enterprise-minio", "enterprise-plugins", "enterprise-redis"}
-	if len(b.Services) != len(wanted) || len(b.Volumes) != 6 || expected.Scope != "" || expected.SchemaVersion != 79 {
+	volumeCount := 6
+	if sharedBundle(b) {
+		wanted = []string{"enterprise-api", "enterprise-gateway", "enterprise-im", "enterprise-livekit", "enterprise-media-init", "enterprise-minio", "enterprise-plugins"}
+		volumeCount = 4
+	}
+	if len(b.Services) != len(wanted) || len(b.Volumes) != volumeCount || expected.Scope != "" || expected.SchemaVersion != 79 {
 		return ErrBundle
 	}
 	for _, n := range wanted {
@@ -231,6 +251,16 @@ func (r *ComposeRunner) ownedBackupContainers(ctx context.Context, release Relea
 	if r.resources(ctx, b) != nil {
 		return nil, ErrUnconfirmed
 	}
+	if sharedBundle(b) {
+		for service, key := range map[string]string{"shared-postgres": "enterprise-db", "shared-redis": "enterprise-redis"} {
+			id, e := r.sharedStore(ctx, service)
+			if e != nil {
+				return nil, e
+			}
+			ids[key] = id
+		}
+		return ids, nil
+	}
 	// A second container mounting PostgreSQL data is not a valid cold source,
 	// even if it lacks this project's labels.
 	sources, e := coldVolumeSources(b)
@@ -248,8 +278,14 @@ func (r *ComposeRunner) coldDatabase(ctx context.Context, db string, b backup.Bi
 	return r.suspendedDatabase(ctx, db, b, false)
 }
 func (r *ComposeRunner) suspendedDatabase(ctx context.Context, db string, b backup.Binding, allowClients bool) error {
+	return r.suspendedDatabaseAt(ctx, db, b, allowClients, "enterprise", "enterprise")
+}
+func (r *ComposeRunner) suspendedDatabaseAt(ctx context.Context, db string, b backup.Binding, allowClients bool, name, user string) error {
+	if !tenancy.ValidSharedDatabase(name) || (user != "enterprise" && user != "shared_admin") {
+		return ErrBundle
+	}
 	query := `SELECT json_build_object('tenant',tenant_id,'version',access_version,'disabled',NOT access_enabled,'confirmed',EXISTS(SELECT 1 FROM im_tenant_realm_operations o WHERE o.access_version=t.access_version AND NOT o.enabled AND o.state='completed'),'schema',(SELECT MAX(version) FROM im_schema_migrations),'clients',(SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND backend_type='client backend' AND pid<>pg_backend_pid())) FROM im_tenant_identity t`
-	out, e := r.command(ctx, nil, "exec", db, "psql", "-X", "-U", "enterprise", "-d", "enterprise", "-At", "-v", "ON_ERROR_STOP=1", "-c", query)
+	out, e := r.command(ctx, nil, "exec", db, "psql", "-X", "-U", user, "-d", name, "-At", "-v", "ON_ERROR_STOP=1", "-c", query)
 	var state struct {
 		Tenant              string
 		Version             int64
@@ -264,9 +300,13 @@ func (r *ComposeRunner) suspendedDatabase(ctx context.Context, db string, b back
 }
 
 // Logical dataset names stay stable after a staged restore changes physical
-// volume names. All six datasets remain distinct and in this project.
+// volume names. Shared PG/Redis are logical datasets outside this volume set.
 func coldVolumeSources(b Bundle) (map[string]string, error) {
 	targets := map[string][2]string{"postgres": {"enterprise-db", "/var/lib/postgresql/data"}, "redis": {"enterprise-redis", "/data"}, "media": {"enterprise-minio", "/data"}, "im": {"enterprise-im", "/data"}, "im-logs": {"enterprise-im", "/logs"}, "plugins": {"enterprise-plugins", "/plugins"}}
+	if sharedBundle(b) {
+		delete(targets, "postgres")
+		delete(targets, "redis")
+	}
 	result := map[string]string{}
 	seen := map[string]bool{}
 	for logical, target := range targets {
@@ -288,7 +328,7 @@ func coldVolumeSources(b Bundle) (map[string]string, error) {
 			return nil, ErrBundle
 		}
 	}
-	if len(b.Volumes) != 6 {
+	if len(b.Volumes) != len(targets) {
 		return nil, ErrBundle
 	}
 	return result, nil

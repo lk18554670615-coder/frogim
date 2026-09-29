@@ -3,6 +3,8 @@ param([switch]$SkipBuild)
 $ErrorActionPreference = 'Stop'
 $localRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $compose = Join-Path $localRoot 'infra/tenancy/compose.local.yml'
+$sharedOverlay = Join-Path $localRoot 'infra/tenancy/compose.shared.local.yml'
+$composeArgs = @('-f',$compose,'-f',$sharedOverlay)
 $configDir = Join-Path $localRoot '.data/tenancy-local'
 $binDir = Join-Path $localRoot 'build/tenancy-local/bin'
 function Assert-Exit([string]$stage) { if ($LASTEXITCODE -ne 0) { throw "$stage failed; no production operation was attempted." } }
@@ -12,6 +14,8 @@ Push-Location (Join-Path $localRoot 'server')
 try {
     & go run ./cmd/tenancy-local -root $configDir
     Assert-Exit 'Local configuration generation'
+    & go run ./cmd/tenancy-local -root $configDir -prepare-shared
+    Assert-Exit 'Shared default datastore configuration'
     & go run ./cmd/prepare-ipregion -out .data/ip2region
     Assert-Exit 'Offline IP region assets'
     # Keep credentials private on Windows. Never print environment contents.
@@ -30,7 +34,7 @@ try {
         try {
             $env:GOOS = 'linux'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
             # Migration tools are built but never automatically run/import accounts.
-            foreach ($entry in @{ platform = './cmd/platform'; enterprise = './cmd/server'; 'tenancy-local' = './cmd/tenancy-local'; 'tenant-agent' = './cmd/tenant-agent'; 'tenant-import' = './cmd/tenant-import'; 'tenant-preflight' = './cmd/tenant-preflight' }.GetEnumerator()) {
+            foreach ($entry in @{ platform = './cmd/platform'; enterprise = './cmd/server'; 'tenancy-local' = './cmd/tenancy-local'; 'tenant-agent' = './cmd/tenant-agent'; 'tenant-import' = './cmd/tenant-import'; 'tenant-preflight' = './cmd/tenant-preflight'; 'redis-database' = './cmd/redis-database' }.GetEnumerator()) {
                 & go build -trimpath -o (Join-Path $binDir $entry.Key) $entry.Value
                 Assert-Exit $entry.Key
             }
@@ -58,14 +62,16 @@ if (!$SkipBuild) {
     & docker compose -f $compose build platform-api enterprise-im
     Assert-Exit 'Local runtime image'
 }
+# Shared infrastructure is brought up/migrated before the application project.
+& (Join-Path $PSScriptRoot 'migrate-tenancy-shared-local.ps1') -Root $localRoot
 # Only this dedicated project is affected; named volumes survive restarts.
-& docker compose -f $compose up -d --wait --wait-timeout 90
+& docker compose @composeArgs up -d --wait --wait-timeout 90
 Assert-Exit 'Local runtime readiness'
 # Bind-mounted Caddyfiles are not part of Compose's configuration hash. Recreate
 # just the two local gateways so an edited route cannot keep serving stale rules.
-& docker compose -f $compose up -d --no-deps --force-recreate --wait --wait-timeout 30 platform-gateway enterprise-gateway
+& docker compose @composeArgs up -d --no-deps --force-recreate --wait --wait-timeout 30 platform-gateway enterprise-gateway
 Assert-Exit 'Local gateway configuration refresh'
-& docker compose -f $compose run --rm --no-deps local-bootstrap
+& docker compose @composeArgs run --rm --no-deps local-bootstrap
 Assert-Exit 'Default enterprise activation'
 Push-Location (Join-Path $localRoot 'server')
 try {

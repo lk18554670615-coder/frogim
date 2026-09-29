@@ -19,7 +19,7 @@ $savedGoOS=$env:GOOS; $savedGoArch=$env:GOARCH; $savedCGO=$env:CGO_ENABLED
 Push-Location $bundleRoot
 try {
     $env:GOOS='linux'; $env:GOARCH='amd64'; $env:CGO_ENABLED='0'
-    foreach ($entry in @{enterprise='./cmd/server'; 'tenant-runtime'='./cmd/tenant-runtime'; 'tenant-volume'='./cmd/tenant-volume'}.GetEnumerator()) {
+    foreach ($entry in @{enterprise='./cmd/server'; 'tenant-runtime'='./cmd/tenant-runtime'; 'tenant-volume'='./cmd/tenant-volume'; 'redis-database'='./cmd/redis-database'}.GetEnumerator()) {
         & go -C server build -trimpath -o "../build/tenancy-local/bin/$($entry.Key)" $entry.Value
         Assert-BundleExit 'Enterprise runtime compilation'
     }

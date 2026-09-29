@@ -20,6 +20,8 @@ import (
 // Release metadata is operator-owned, immutable configuration on BOTH sides.
 // Public requests select an ID + digest; they cannot supply a compose document.
 type Release struct {
+	IngressMode   string   `json:"ingressMode,omitempty"`
+	DatastoreMode string   `json:"datastoreMode,omitempty"`
 	ID            string   `json:"id"`
 	Sequence      int64    `json:"sequence"`
 	Runtime       string   `json:"runtime"`
@@ -32,6 +34,12 @@ type Release struct {
 }
 
 func (r Release) Valid() bool {
+	if r.IngressMode != "" && (r.IngressMode != SharedIngressMode || r.IsolationMode != "dedicated_host" || r.DatastoreMode != tenancy.SharedDatastoreMode || r.TenantID != "default") {
+		return false
+	}
+	if r.DatastoreMode != "" && (r.DatastoreMode != tenancy.SharedDatastoreMode || r.TenantID != "default") {
+		return false
+	}
 	if (r.IsolationMode != "" && r.IsolationMode != "local_preview" && r.IsolationMode != "dedicated_host") || (r.IsolationMode == "dedicated_host" && (r.TenantID == "" || r.ServerID == "")) {
 		return false
 	}
@@ -91,7 +99,7 @@ func ReadCatalog(r io.Reader) (map[string]Release, error) {
 		for _, id := range release.RollbackTo {
 			from, ok := result[id]
 			// No implicit database downgrade, even if the old image still exists.
-			if !ok || from.Runtime != release.Runtime || from.SchemaVersion != release.SchemaVersion || from.Sequence >= release.Sequence || from.TenantID != release.TenantID || from.ServerID != release.ServerID || from.isolationMode() != release.isolationMode() {
+			if !ok || from.Runtime != release.Runtime || from.SchemaVersion != release.SchemaVersion || from.Sequence >= release.Sequence || from.TenantID != release.TenantID || from.ServerID != release.ServerID || from.isolationMode() != release.isolationMode() || from.DatastoreMode != release.DatastoreMode || from.IngressMode != release.IngressMode {
 				return nil, tenancy.ErrInvalid
 			}
 		}
@@ -103,8 +111,8 @@ var imageReference = regexp.MustCompile(`^[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{
 var serviceName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 
 // A bundle is a self-contained Compose JSON document. Network/volume names are
-// project-scoped; external resources, includes, builds and host namespaces are
-// deliberately unavailable. Commands *inside* its operator-authored containers
+// project-scoped; only the default enterprise shared-data network may be
+// external. Includes, builds and host namespaces are deliberately unavailable. Commands *inside* its operator-authored containers
 // are part of the pinned artifact, never request input.
 type Bundle struct {
 	Services map[string]Service      `json:"services"`
@@ -112,7 +120,9 @@ type Bundle struct {
 	Volumes  map[string]LocalVolume  `json:"volumes,omitempty"`
 }
 type LocalNetwork struct {
-	Internal bool `json:"internal,omitempty"`
+	External bool   `json:"external,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Internal bool   `json:"internal,omitempty"`
 }
 type LocalVolume struct{}
 type Service struct {
@@ -205,7 +215,18 @@ func validateBundle(b Bundle, r Release) error {
 	if r.isolationMode() == "dedicated_host" && validateProductionBundle(b, r) != nil {
 		return ErrBundle
 	}
-	for name := range b.Networks {
+	if sharedBundle(b) && validateSharedBundle(b, r) != nil {
+		return ErrBundle
+	}
+	if sharedBundle(b) != (r.DatastoreMode == tenancy.SharedDatastoreMode) {
+		return ErrBundle
+	}
+	for name, network := range b.Networks {
+		if network.External || network.Name != "" {
+			if !sharedBundle(b) || r.TenantID != "default" || name != "shared-data" || !network.External || network.Internal || network.Name != tenancy.SharedDataNetwork {
+				return ErrBundle
+			}
+		}
 		if !serviceName.MatchString(name) {
 			return ErrBundle
 		}

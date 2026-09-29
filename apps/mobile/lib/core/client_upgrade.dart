@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'platform_endpoint.dart';
+
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
@@ -85,15 +87,13 @@ class ClientUpgradeService {
         version ?? (await PackageInfo.fromPlatform()).version.trim();
     final stableInstallId =
         installId ?? await ClientInstallationIdentity.getOrCreate();
-    final uri = Uri.parse(base)
-        .resolve('/v2/config/version')
-        .replace(
-          queryParameters: {
-            'platform': clientPlatform,
-            'version': clientVersion,
-            'installId': stableInstallId,
-          },
-        );
+    final uri = serviceEndpoint(Uri.parse(base), '/v2/config/version').replace(
+      queryParameters: {
+        'platform': clientPlatform,
+        'version': clientVersion,
+        'installId': stableInstallId,
+      },
+    );
     final response = await _client
         .get(uri, headers: const {'Accept': 'application/json'})
         .timeout(const Duration(seconds: 8));

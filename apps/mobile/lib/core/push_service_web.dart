@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web/web.dart' as web;
 
 import 'runtime_endpoints.dart';
+import 'platform_endpoint.dart';
 import 'tenant_push.dart';
 import 'app_controller.dart';
 import 'browser_notification_permission.dart';
@@ -494,7 +495,7 @@ class _WebPushService implements PlatformPushService {
     if (base.isEmpty) return null;
     final response = await http
         .get(
-          Uri.parse(base).resolve('/v2/config/web-push'),
+          serviceEndpoint(Uri.parse(base), '/v2/config/web-push'),
           headers: const {'Accept': 'application/json'},
         )
         .timeout(const Duration(seconds: 8));

@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import 'platform_endpoint.dart';
+
 abstract final class AppConfig {
   static const environment = String.fromEnvironment(
     'APP_ENV',
@@ -73,11 +75,12 @@ abstract final class AppConfig {
     final hasApi = apiBaseUrl.trim().isNotEmpty;
     final hasPlatform = platformAuthUrl.isNotEmpty;
     if (hasPlatform) {
-      final uri = Uri.tryParse(platformAuthUrl);
-      if (!_validUrl(platformAuthUrl, const {'https'}) ||
-          uri!.hasQuery ||
-          (uri.path.isNotEmpty && uri.path != '/')) {
-        throw StateError('PLATFORM_AUTH_URL must be an HTTPS root URL');
+      try {
+        trustedPlatformUrl(platformAuthUrl);
+      } on FormatException {
+        throw StateError(
+          'PLATFORM_AUTH_URL must be an HTTPS root or /platform URL',
+        );
       }
       if (hasApi) {
         throw StateError(

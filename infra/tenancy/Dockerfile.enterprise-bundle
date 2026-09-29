@@ -11,6 +11,7 @@ RUN addgroup -S -g 10001 im && adduser -S -D -H -u 10001 -G im im && mkdir -p /c
 COPY build/tenancy-local/bin/enterprise /opt/frogim/enterprise
 COPY build/tenancy-local/bin/tenant-runtime /opt/frogim/tenant-runtime
 COPY build/tenancy-local/bin/tenant-volume /opt/frogim/tenant-volume
+COPY build/tenancy-local/bin/redis-database /opt/frogim/redis-database
 COPY --from=im /home/app /opt/frogim/wukongim
 COPY --from=im /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=gateway /usr/bin/caddy /usr/bin/caddy

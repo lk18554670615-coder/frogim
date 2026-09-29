@@ -13,7 +13,7 @@ func (c Config) validateTenantProduction() error {
 	if c.DevMode || c.SeedDemo || c.DevAllowContainerBind || c.DevIPTestOnly || c.DevOTPCode != "" || c.OTPWebhookURL != "" || c.OTPWebhookToken != "" || c.PushProvider != "platform" || c.TrustProxy {
 		return invalid
 	}
-	if tenancy.PublicOrigin(c.TenantPublicURL) != nil || len(c.AllowedOrigins) == 0 || tenancy.ProductionDatastores(c.DatabaseURL, c.RedisURL, "enterprise-db", "enterprise-redis") != nil {
+	if tenancy.PublicOrigin(c.TenantPublicURL) != nil || len(c.AllowedOrigins) == 0 || tenancy.DeploymentDatastores(c.DatabaseURL, c.RedisURL, "enterprise", c.TenantID, c.DatastoreMode) != nil {
 		return invalid
 	}
 	for _, origin := range c.AllowedOrigins {

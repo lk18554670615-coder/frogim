@@ -6,6 +6,8 @@ param(
     [string]$Format = "all",
     [string]$TermsUrl,
     [string]$PrivacyUrl,
+    [string]$PlatformAuthUrl,
+    [switch]$BuildOnly,
     [switch]$PreflightOnly
 )
 
@@ -24,6 +26,15 @@ if (-not [Uri]::TryCreate($origin, [UriKind]::Absolute, [ref]$originUri) -or
     -not [string]::IsNullOrEmpty($originUri.Fragment)) {
     throw "ServerOrigin must be an HTTPS origin without credentials, path, query or fragment."
 }
+if ([string]::IsNullOrWhiteSpace($PlatformAuthUrl)) { $PlatformAuthUrl = "$origin/platform" }
+$authUri = $null
+if (-not [Uri]::TryCreate($PlatformAuthUrl, [UriKind]::Absolute, [ref]$authUri) -or
+    $authUri.Scheme -ne 'https' -or $authUri.UserInfo -or $authUri.Query -or $authUri.Fragment -or
+    $authUri.AbsolutePath -notin @('/', '/platform')) {
+    throw 'PlatformAuthUrl must be an HTTPS root or /platform address.'
+}
+$PlatformAuthUrl = $PlatformAuthUrl.TrimEnd('/')
+if ($BuildOnly -and $PreflightOnly) { throw 'BuildOnly and PreflightOnly are mutually exclusive.' }
 if ([string]::IsNullOrWhiteSpace($TermsUrl)) {
     $TermsUrl = "$origin/legal/terms"
 }
@@ -41,6 +52,7 @@ foreach ($entry in @{
     }
 }
 
+if (-not $BuildOnly) {
 try {
     $healthResponse = Invoke-WebRequest -UseBasicParsing -Method Get -Uri "$origin/health" -MaximumRedirection 3 -TimeoutSec 15
 }
@@ -68,16 +80,16 @@ if ([int]$readyResponse.StatusCode -ne 200 -or $readyPayload.status -ne "ready")
 }
 
 try {
-    $authPolicyResponse = Invoke-WebRequest -UseBasicParsing -Method Get -Uri "$origin/v2/config/auth" -MaximumRedirection 3 -TimeoutSec 15
+    $authPolicyResponse = Invoke-WebRequest -UseBasicParsing -Method Get -Uri "$PlatformAuthUrl/v2/config/auth" -MaximumRedirection 3 -TimeoutSec 15
 }
 catch {
-    throw "Required authentication contract is unavailable: $origin/v2/config/auth ($($_.Exception.Message))"
+    throw "Required authentication contract is unavailable: $PlatformAuthUrl/v2/config/auth ($($_.Exception.Message))"
 }
 try {
     $authPolicy = $authPolicyResponse.Content | ConvertFrom-Json
 }
 catch {
-    throw "Required authentication contract returned invalid JSON: $origin/v2/config/auth"
+    throw "Required authentication contract returned invalid JSON: $PlatformAuthUrl/v2/config/auth"
 }
 $registrationEnabled = $authPolicy.registrationEnabled
 $passwordMinLength = $authPolicy.passwordMinLength
@@ -93,7 +105,7 @@ if ([int]$authPolicyResponse.StatusCode -ne 200 -or
     $parsedPasswordMinLength -gt 16 -or
     -not $validPasswordMaxBytes -or
     $parsedPasswordMaxBytes -ne 72) {
-    throw "Authentication contract is incompatible with this client: $origin/v2/config/auth"
+    throw "Authentication contract is incompatible with this client: $PlatformAuthUrl/v2/config/auth"
 }
 
 function Get-WebResponseText($response) {
@@ -139,6 +151,9 @@ function Assert-ProductionLegalDocument([string]$url, [string]$label) {
 Assert-ProductionLegalDocument -url $TermsUrl -label 'Terms document'
 Assert-ProductionLegalDocument -url $PrivacyUrl -label 'Privacy document'
 
+}
+if ($BuildOnly) { Write-Host "Build only: online acceptance has NOT passed; this artifact cannot authorize cutover." }
+
 if ($PreflightOnly) {
     Write-Host "Android release preflight completed."
     return
@@ -150,13 +165,20 @@ if (-not (Test-Path -LiteralPath $flutter -PathType Leaf)) {
 
 $defines = @(
     "--dart-define=APP_ENV=production"
-    "--dart-define=API_BASE_URL=$origin"
-    "--dart-define=WS_URL=$($origin -replace '^https://', 'wss://')/im"
+    "--dart-define=PLATFORM_AUTH_URL=$PlatformAuthUrl"
     "--dart-define=ENABLE_DEMO=false"
     "--dart-define=TERMS_URL=$TermsUrl"
     "--dart-define=PRIVACY_URL=$PrivacyUrl"
     "--dart-define=MEDIA_MAX_BYTES=104857600"
 )
+
+# Client SDK credentials only; never use the server-side master secret here.
+$getuiNames = @('GETUI_APP_ID', 'GETUI_APP_KEY', 'GETUI_APP_SECRET')
+$getuiReady = @($getuiNames | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }).Count -eq 0
+$defines += "--dart-define=GETUI_ENABLED=$($getuiReady.ToString().ToLowerInvariant())"
+if ($getuiReady) {
+    foreach ($name in $getuiNames) { $defines += "--dart-define=$name=$([Environment]::GetEnvironmentVariable($name))" }
+} elseif (-not $BuildOnly) { throw 'Getui client SDK credentials are required for a production release. BuildOnly artifacts still require device acceptance.' }
 
 function Invoke-FlutterReleaseBuild([string]$target) {
     Push-Location $mobileRoot
@@ -298,6 +320,9 @@ finally {
 
 $manifest = [ordered]@{
     schemaVersion = 1
+    getuiEnabled = $getuiReady
+    platformAuthUrl = $PlatformAuthUrl
+    onlinePreflightPassed = (-not $BuildOnly)
     appVersion = $versionLine.Matches[0].Groups[1].Value
     serverOrigin = $origin
     termsUrl = $TermsUrl

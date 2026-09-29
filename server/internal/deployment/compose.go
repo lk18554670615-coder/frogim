@@ -101,7 +101,9 @@ func (r *ComposeRunner) bundle(release Release, o Operation) ([]byte, Bundle, er
 	for _, section := range []string{"networks", "volumes"} {
 		if resources, ok := data[section].(map[string]any); ok {
 			for _, resource := range resources {
-				resource.(map[string]any)["labels"] = owner
+				if external, _ := resource.(map[string]any)["external"].(bool); !external {
+					resource.(map[string]any)["labels"] = owner
+				}
 			}
 		}
 	}
@@ -171,13 +173,19 @@ func (r *ComposeRunner) owns(labels map[string]string) bool {
 	return labels["com.docker.compose.project"] == r.Project && labels["io.frogim.server"] == r.Server && labels["io.frogim.tenant"] == r.Tenant
 }
 func (r *ComposeRunner) resources(ctx context.Context, b Bundle) error {
+	if sharedBundle(b) && r.sharedNetwork(ctx) != nil {
+		return ErrUnconfirmed
+	}
 	for kind, names := range map[string]map[string]bool{"volume": {}, "network": {}} {
 		if kind == "volume" {
 			for n := range b.Volumes {
 				names[r.Project+"_"+n] = true
 			}
 		} else {
-			for n := range b.Networks {
+			for n, network := range b.Networks {
+				if network.External {
+					continue
+				}
 				names[r.Project+"_"+n] = true
 			}
 		}

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../core/tenant_context.dart';
+import '../core/platform_endpoint.dart';
 import '../core/tenant_password.dart';
 import '../core/tenant_push.dart';
 
@@ -53,7 +54,7 @@ class TenantAuthClient {
     required String platformBaseUrl,
     required this.clientPlatform,
     http.Client? client,
-  }) : platformBaseUrl = TenantContext.trustedBaseUrl(platformBaseUrl),
+  }) : platformBaseUrl = trustedPlatformUrl(platformBaseUrl),
        _client = client ?? http.Client() {
     if (!const {'android', 'ios', 'web', 'macos'}.contains(clientPlatform)) {
       throw ArgumentError.value(clientPlatform, 'clientPlatform');
@@ -391,7 +392,7 @@ class TenantAuthClient {
     if (bearer != null && base != platformBaseUrl) {
       throw const FormatException('开户凭据不能发送给企业服务');
     }
-    final request = http.Request(method, base.resolve(route))
+    final request = http.Request(method, serviceEndpoint(base, route))
       ..followRedirects = false
       ..headers.addAll({
         'Content-Type': 'application/json',

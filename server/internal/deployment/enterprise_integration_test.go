@@ -28,6 +28,10 @@ func TestEnterpriseBundleLocalDocker(t *testing.T) {
 	if os.Getenv("TENANCY_ENTERPRISE_BUNDLE_TEST") != "local" {
 		t.Skip("full local enterprise bundle test not explicitly enabled")
 	}
+	enterpriseBundleDocker(t, false)
+}
+
+func enterpriseBundleDocker(t *testing.T, shared bool) {
 	image := os.Getenv("TENANCY_ENTERPRISE_BUNDLE_IMAGE")
 	if !imageReference.MatchString(image) {
 		t.Fatal("requires preloaded immutable enterprise bundle image")
@@ -43,6 +47,10 @@ func TestEnterpriseBundleLocalDocker(t *testing.T) {
 	}
 	c.TenantID = "stack-" + hex.EncodeToString(suffix[:])
 	c.ServerID = "server-" + c.TenantID
+	if shared {
+		c.TenantID = "default"
+		c.SharedDatastores = &SharedDatastores{Database: "enterprise", RedisDB: 1}
+	}
 	c.ToolsImage = image
 	issue := bundleTestPKI(t)
 	c.ControlTLS = issue(tenancy.EnterpriseIdentity(c.TenantID))
@@ -84,6 +92,9 @@ func TestEnterpriseBundleLocalDocker(t *testing.T) {
 		endpoint = "npipe:////./pipe/dockerDesktopLinuxEngine"
 	}
 	r := &ComposeRunner{Binary: binary, Endpoint: endpoint, BundleRoot: root, Project: "frogim-deploy-" + c.TenantID, Server: c.ServerID, Tenant: c.TenantID, Catalog: catalog}
+	if shared {
+		startSharedFixture(t, r, c)
+	}
 	for _, s := range b.Services {
 		if _, e = r.inspectImage(t.Context(), s.Image); e != nil {
 			t.Fatal("missing pinned dependency; never pulls", s.Image)
@@ -235,6 +246,25 @@ func TestEnterpriseBundleLocalDocker(t *testing.T) {
 	}
 	inspectIdentity := func() {
 		t.Helper()
+		if shared {
+			pg, err := r.sharedStore(t.Context(), "shared-postgres")
+			items, se := r.containers(t.Context())
+			var current Release
+			for _, item := range items {
+				if item.Labels["com.docker.compose.service"] == "enterprise-api" {
+					current = r.Catalog[item.Labels["io.frogim.release"]]
+				}
+			}
+			_, currentBundle, be := readBundle(r.BundleRoot, current.ID, current.ComposeSHA256)
+			if err != nil || se != nil || be != nil {
+				t.Fatal("shared identity target unavailable")
+			}
+			out, err := r.command(t.Context(), nil, "exec", pg, "psql", "-U", "enterprise", "-d", sharedDatabase(currentBundle), "-At", "-c", `SELECT count(*) FROM im_users WHERE id='local-fixture'`)
+			if err != nil || strings.TrimSpace(string(out)) != "1" {
+				t.Fatal("shared identity missing")
+			}
+			return
+		}
 		items, e := r.containers(t.Context())
 		if e != nil {
 			t.Fatal(e)

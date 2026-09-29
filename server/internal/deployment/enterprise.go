@@ -26,6 +26,8 @@ import (
 // auth or IM secrets. Public addressing requires a separate explicit profile;
 // an absent profile always retains loopback-only preview semantics.
 type EnterpriseConfig struct {
+	MediaBucket        string                `json:"mediaBucket,omitempty"`
+	SharedDatastores   *SharedDatastores     `json:"sharedDatastores,omitempty"`
 	TenantID           string                `json:"tenantId"`
 	ServerID           string                `json:"serverId"`
 	ToolsImage         string                `json:"toolsImage"`
@@ -115,6 +117,12 @@ func (c EnterpriseConfig) PublicURL() string {
 }
 
 func (c EnterpriseConfig) Validate() error {
+	if !validMediaBucket(c.mediaBucket()) {
+		return ErrBundle
+	}
+	if c.SharedDatastores != nil && !c.SharedDatastores.valid(c.TenantID) {
+		return ErrBundle
+	}
 	if !serviceName.MatchString(c.TenantID) || !serviceName.MatchString(c.ServerID) || !serviceName.MatchString("frogim-deploy-"+c.TenantID) || !imageReference.MatchString(c.ToolsImage) {
 		return ErrBundle
 	}
@@ -256,6 +264,11 @@ func BuildEnterpriseBundle(c EnterpriseConfig, release Release) ([]byte, Release
 	if c.productionMode() {
 		release.IsolationMode = "dedicated_host"
 	}
+	if c.sharedIngress() {
+		release.IngressMode = SharedIngressMode
+	} else if release.IngressMode != "" {
+		return nil, Release{}, ErrBundle
+	}
 	b := Bundle{Services: map[string]Service{}, Networks: map[string]LocalNetwork{"business": {Internal: true}, "edge": {}}, Volumes: map[string]LocalVolume{}}
 	volume := func(name, target string, readOnly bool) Volume {
 		b.Volumes[name] = LocalVolume{}
@@ -278,7 +291,7 @@ func BuildEnterpriseBundle(c EnterpriseConfig, release Release) ([]byte, Release
 		host := "127.0.0.1"
 		if c.Production != nil {
 			host = c.Production.PublicBindIP
-			if published == c.Ports.Control {
+			if published == c.Ports.Control || (c.sharedIngress() && (published == c.Ports.HTTP || published == c.Ports.Media)) {
 				host = c.Production.ControlBindIP
 			}
 		}
@@ -315,8 +328,8 @@ func BuildEnterpriseBundle(c EnterpriseConfig, release Release) ([]byte, Release
 	b.Services["enterprise-minio"] = s
 	s = base("minio/mc@sha256:fb8f773eac8ef9d6da0486d5dec2f42f219358bcb8de579d1623d518c9ebd4cc")
 	s.User, s.ReadOnly, s.CapDrop, s.Tmpfs = "10001:10001", true, []string{"ALL"}, []string{"/tmp:mode=1777"}
-	s.Environment = map[string]string{"MINIO_ROOT_USER": "tenantmedia", "MINIO_ROOT_PASSWORD": c.Secrets.Media, "HOME": "/tmp", "MC_CONFIG_DIR": "/tmp/mc"}
-	s.Entrypoint = []string{"sh", "-c", `mc alias set local http://enterprise-minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null && mc mb --ignore-existing local/enterprise-media >/dev/null && mc anonymous set none local/enterprise-media >/dev/null && touch /tmp/media-ready || exit 1; trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done`}
+	s.Environment = map[string]string{"MINIO_ROOT_USER": "tenantmedia", "MINIO_ROOT_PASSWORD": c.Secrets.Media, "HOME": "/tmp", "MC_CONFIG_DIR": "/tmp/mc", "MEDIA_BUCKET": c.mediaBucket()}
+	s.Entrypoint = []string{"sh", "-c", `mc alias set local http://enterprise-minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null && mc mb --ignore-existing "local/$MEDIA_BUCKET" >/dev/null && mc anonymous set none "local/$MEDIA_BUCKET" >/dev/null && touch /tmp/media-ready || exit 1; trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done`}
 	s.DependsOn, s.Healthcheck = depends("enterprise-minio"), health("test", "-f", "/tmp/media-ready")
 	b.Services["enterprise-media-init"] = s
 	s = role("plugins", nil)
@@ -353,9 +366,17 @@ func BuildEnterpriseBundle(c EnterpriseConfig, release Release) ([]byte, Release
 	if c.productionMode() {
 		s.Environment["FROGIM_GATEWAY_SECRET"] = c.Secrets.Gateway
 	}
+	if c.sharedIngress() {
+		s.Environment["FROGIM_EDGE_SECRET"] = c.Production.SharedIngress.Secret
+		s.Environment["FROGIM_INGRESS_MODE"] = SharedIngressMode
+	}
 	s.Ports, s.Networks = []Port{port(8444, c.Ports.HTTP, "tcp"), port(8445, c.Ports.Media, "tcp")}, []string{"business", "edge"}
 	s.DependsOn = depends("enterprise-api", "enterprise-im", "enterprise-livekit")
 	b.Services["enterprise-gateway"] = s
+	if c.SharedDatastores != nil {
+		release.DatastoreMode = tenancy.SharedDatastoreMode
+		attachSharedEnterprise(&b, c)
+	}
 	if validateBundle(b, release) != nil {
 		return nil, Release{}, ErrBundle
 	}
@@ -382,7 +403,7 @@ func (c EnterpriseConfig) apiEnvironment() map[string]string {
 		"IM_LEGACY_MEDIA_SIGNING_SECRET": s.LegacyMediaSigning,
 		"IM_ADMIN_USERNAME":              "enterprise-admin", "IM_ADMIN_PASSWORD_HASH": s.AdminPasswordHash, "IM_ADMIN_ID": "enterprise-admin",
 		"IM_PUSH_PROVIDER": "noop", "IM_ALLOWED_ORIGINS": c.PlatformWebOrigin + "," + c.PublicURL(),
-		"IM_S3_ENDPOINT": "enterprise-minio:9000", "IM_S3_PUBLIC_ENDPOINT": fmt.Sprintf("127.0.0.1:%d", c.Ports.Media), "IM_S3_PUBLIC_SECURE": "true", "IM_S3_ACCESS_KEY": "tenantmedia", "IM_S3_SECRET_KEY": s.Media, "IM_S3_BUCKET": "enterprise-media",
+		"IM_S3_ENDPOINT": "enterprise-minio:9000", "IM_S3_PUBLIC_ENDPOINT": fmt.Sprintf("127.0.0.1:%d", c.Ports.Media), "IM_S3_PUBLIC_SECURE": "true", "IM_S3_ACCESS_KEY": "tenantmedia", "IM_S3_SECRET_KEY": s.Media, "IM_S3_BUCKET": c.mediaBucket(),
 		"IM_WUKONG_ENABLED": "true", "IM_WUKONG_API_URL": "http://enterprise-im:5001", "IM_WUKONG_MANAGER_URL": "http://enterprise-im:5300", "IM_WUKONG_MANAGER_TOKEN": s.IMManager, "IM_WUKONG_TOKEN_SECRET": s.IMToken, "IM_WUKONG_POLICY_SECRET": s.IMPolicy,
 		"IM_WUKONG_TCP_URL": fmt.Sprintf("tcp://127.0.0.1:%d", c.Ports.IM), "IM_WUKONG_WS_URL": strings.Replace(c.PublicURL(), "https:", "wss:", 1) + "/im",
 		"IM_WUKONG_PLUGIN_DIR": "/plugins", "IM_WUKONG_PLUGIN_TRUSTED_KEYS": "bundle-build:" + s.PluginPublicKey, "IM_WUKONG_PLUGIN_ALLOWLIST": "im-policy",
@@ -395,6 +416,11 @@ func (c EnterpriseConfig) apiEnvironment() map[string]string {
 		result["IM_ENV"], result["IM_TENANCY_PREVIEW"], result["IM_PUSH_PROVIDER"] = "production", "false", "platform"
 		result["IM_TENANT_DEPLOYMENT_MODE"] = "dedicated_host"
 		result["IM_GATEWAY_SECRET"] = c.Secrets.Gateway
+	}
+	if c.SharedDatastores != nil {
+		result["IM_DATASTORE_MODE"] = tenancy.SharedDatastoreMode
+		result["IM_DATABASE_URL"] = "postgres://enterprise:" + s.Database + "@shared-postgres:5432/" + c.SharedDatastores.Database + "?sslmode=disable"
+		result["IM_REDIS_URL"] = "redis://:" + s.Redis + "@shared-redis:6379/" + strconv.Itoa(c.SharedDatastores.RedisDB)
 	}
 	return result
 }

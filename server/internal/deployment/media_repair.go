@@ -42,10 +42,10 @@ type mediaRepairInput struct {
 	RuntimeProof string             `json:"runtimeProof"`
 }
 
-// All nine original containers and six volumes must match the durable agent
+// The original owned containers/volumes and shared datastore IDs must match the
 // journal, and all writers/signaling/LiveKit must already be stopped. Reopening
 // that journal requires the agent to be stopped too. No fresh-journal adoption.
-// PostgreSQL is the only remaining service. A paused (not necessarily drained)
+// Shared data services may remain running. A paused (not necessarily drained)
 // realm is mandatory; deleting an attempt based only on age is never allowed.
 func (x *Executor) RepairColdMedia(ctx context.Context, binding backup.Binding, request MediaRepairRequest) (MediaRepairResult, error) {
 	var empty MediaRepairResult
@@ -78,7 +78,7 @@ func (x *Executor) RepairColdMedia(ctx context.Context, binding backup.Binding, 
 	proof := hex.EncodeToString(hash[:])
 	input := mediaRepairInput{request, binding, proof}
 	query := mediaRepairSQL(input)
-	out, e := r.command(ctx, []byte(query), "exec", "-i", containers["enterprise-db"], "psql", "-X", "-q", "-U", "enterprise", "-d", "enterprise", "-At", "-v", "ON_ERROR_STOP=1", "-f", "-")
+	out, e := r.command(ctx, []byte(query), "exec", "-i", containers["enterprise-db"], "psql", "-X", "-q", "-U", "enterprise", "-d", sharedDatabase(b), "-At", "-v", "ON_ERROR_STOP=1", "-f", "-")
 	if e != nil {
 		return empty, ErrUnconfirmed
 	}

@@ -1,0 +1,28 @@
+# Overlay for the persistent default preview. Shared stores have a separate
+# Compose project and lifecycle; legacy source containers/volumes are retained.
+services:
+  platform-db:
+    profiles: [legacy-datastores]
+  platform-redis:
+    profiles: [legacy-datastores]
+  enterprise-db:
+    profiles: [legacy-datastores]
+  enterprise-redis:
+    profiles: [legacy-datastores]
+  platform-api:
+    env_file: [{path: ../../.data/tenancy-local/shared/platform.env, format: raw}]
+    depends_on: !override {}
+    networks: [shared-data]
+  enterprise-api:
+    env_file: [{path: ../../.data/tenancy-local/shared/enterprise.env, format: raw}]
+    depends_on: !override
+      enterprise-media-init: {condition: service_completed_successfully}
+      enterprise-plugins-init: {condition: service_completed_successfully}
+    networks: [shared-data]
+  local-bootstrap:
+    env_file: [{path: ../../.data/tenancy-local/shared/platform.env, format: raw}]
+    networks: [shared-data]
+networks:
+  shared-data:
+    external: true
+    name: frogim-shared-default_data

@@ -19,6 +19,7 @@ const DefaultHTTPRateLimitPerMinute = 30000
 type Config struct {
 	TenantPublicURL                                                         string
 	TenantDeploymentMode                                                    string
+	DatastoreMode                                                           string
 	TenantID, PlatformControlURL, TenantControlAddr                         string
 	TenantCAFile, TenantCertFile, TenantKeyFile                             string
 	BindExistingTenant                                                      bool
@@ -71,6 +72,7 @@ type Config struct {
 func Load() Config {
 	return Config{
 		TenantPublicURL: os.Getenv("IM_TENANT_PUBLIC_URL"),
+		DatastoreMode:   os.Getenv("IM_DATASTORE_MODE"),
 		TenantID:        os.Getenv("IM_TENANT_ID"), PlatformControlURL: os.Getenv("IM_PLATFORM_CONTROL_URL"), TenantControlAddr: value("IM_TENANT_CONTROL_ADDR", ":8444"),
 		TenantCAFile: os.Getenv("IM_TENANT_CA_FILE"), TenantCertFile: os.Getenv("IM_TENANT_CERT_FILE"), TenantKeyFile: os.Getenv("IM_TENANT_KEY_FILE"), BindExistingTenant: boolValue("IM_TENANT_BIND_EXISTING", false), TenancyPreview: boolValue("IM_TENANCY_PREVIEW", false),
 		TenantDeploymentMode: os.Getenv("IM_TENANT_DEPLOYMENT_MODE"),

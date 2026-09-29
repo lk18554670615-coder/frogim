@@ -27,8 +27,11 @@
 - 新生产认证仍禁止固定验证码。未配置真实 OTP 时，验证码登录与公开注册关闭。
 - 本机推送明确关闭；中央推送已有代码和隔离测试，真实供应商实收尚未验收。
 
-结构：平台网关、平台 API、平台 PG、平台 Redis 使用平台网络；企业网关、企业 API、
-企业 PG、企业 Redis、WuKongIM、MinIO、LiveKit 使用企业网络。
+结构：平台与同机默认企业共享一个 PostgreSQL（`platform` / `enterprise`）和一个 Redis
+（DB0 / DB1）。数据实例属于独立 `frogim-shared-default` 项目；两端 API 接入其内部网络，
+Redis 按编号分组，不增设 ACL 用户或键前缀。企业 IM/MinIO/LiveKit 和业务卷保持原布局。
+本机启动会备份并迁移旧测试数据，保留旧容器/卷；具体恢复与停止步骤见
+[同机共享数据部署说明](../../docs/MULTITENANT_SHARED_HOST.md)。
 两端 API 额外接入企业控制网络；控制通信验证独立 CA、证书链、主机名及 URI 身份。
 平台 API 与只读默认企业检查代理另接入独立 agent-control 内部网络，使用另一套独立 CA。
 代理没有主机公开端口、Docker socket、特权模式或 Shell API，只能进行认证后的身份检查。
@@ -54,7 +57,7 @@
 Push-Location server
 go run ./cmd/tenancy-local -root ../.data/tenancy-local -renew-public-tls
 Pop-Location
-docker compose -f infra/tenancy/compose.local.yml restart platform-gateway enterprise-gateway
+docker compose -f infra/tenancy/compose.local.yml -f infra/tenancy/compose.shared.local.yml restart platform-gateway enterprise-gateway
 ```
 
 该工具重新生成本机公开 CA，既有浏览器信任不会自动延续；重新信任必须单独明确批准。

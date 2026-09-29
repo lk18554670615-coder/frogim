@@ -14,13 +14,14 @@ import (
 // both origins; the mTLS certificate covers ControlURL. Its listener is bound
 // only to the selected private host address, not the public interface.
 type EnterpriseProduction struct {
-	APIOrigin     string `json:"apiOrigin"`
-	MediaOrigin   string `json:"mediaOrigin"`
-	ControlURL    string `json:"controlUrl"`
-	PublicBindIP  string `json:"publicBindIp"`
-	ControlBindIP string `json:"controlBindIp"`
-	IMHost        string `json:"imHost"`
-	RTCNodeIP     string `json:"rtcNodeIp"`
+	SharedIngress *SharedIngress `json:"sharedIngress,omitempty"`
+	APIOrigin     string         `json:"apiOrigin"`
+	MediaOrigin   string         `json:"mediaOrigin"`
+	ControlURL    string         `json:"controlUrl"`
+	PublicBindIP  string         `json:"publicBindIp"`
+	ControlBindIP string         `json:"controlBindIp"`
+	IMHost        string         `json:"imHost"`
+	RTCNodeIP     string         `json:"rtcNodeIp"`
 }
 
 func (c EnterpriseConfig) productionMode() bool { return c.Production != nil }
@@ -49,13 +50,16 @@ func (c EnterpriseConfig) validateProduction() error {
 	if tenancy.PublicOrigin(p.APIOrigin) != nil || tenancy.PublicOrigin(p.MediaOrigin) != nil || tenancy.PublicOrigin(c.PlatformWebOrigin) != nil || productionControlURL(p.ControlURL) != nil || productionControlURL(c.PlatformControlURL) != nil {
 		return ErrBundle
 	}
-	if originPort(p.APIOrigin) != c.Ports.HTTP || originPort(p.MediaOrigin) != c.Ports.Media || originPort(p.ControlURL) != c.Ports.Control {
+	if (!c.sharedIngress() && (originPort(p.APIOrigin) != c.Ports.HTTP || originPort(p.MediaOrigin) != c.Ports.Media)) || originPort(p.ControlURL) != c.Ports.Control {
 		return ErrBundle
 	}
 	if c.Ports.RTCTCP == 7880 || (c.Ports.RTCUDPFrom <= 7880 && c.Ports.RTCUDPFrom+3 >= 7880) {
 		return ErrBundle
 	}
-	if p.APIOrigin == p.MediaOrigin || p.APIOrigin == c.PlatformWebOrigin || p.APIOrigin == c.PlatformControlURL || p.ControlURL == p.APIOrigin || p.ControlURL == p.MediaOrigin {
+	if (!c.sharedIngress() && (p.APIOrigin == p.MediaOrigin || p.APIOrigin == c.PlatformWebOrigin)) || p.APIOrigin == c.PlatformControlURL || p.ControlURL == p.APIOrigin || p.ControlURL == p.MediaOrigin {
+		return ErrBundle
+	}
+	if c.sharedIngress() && (c.TenantID != "default" || c.SharedDatastores == nil || p.SharedIngress.valid() != nil || p.SharedIngress.Secret == c.Secrets.Gateway || p.APIOrigin != p.MediaOrigin || p.APIOrigin != c.PlatformWebOrigin || c.Ports.HTTP < 1024 || c.Ports.Media < 1024) {
 		return ErrBundle
 	}
 	bind, err := netip.ParseAddr(p.PublicBindIP)
@@ -128,7 +132,11 @@ func (c EnterpriseConfig) gatewayConfiguration() string {
     Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob:; connect-src 'self' https: blob:; font-src 'self' data:; media-src 'self' https: blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
   }
 `
-	return strings.Replace(text, "https://:8444 {\n", "https://:8444 {\n"+security, 1)
+	text = strings.Replace(text, "https://:8444 {\n", "https://:8444 {\n"+security, 1)
+	if c.sharedIngress() {
+		text = protectSharedGateway(text, []string{"8444", "8445"})
+	}
+	return text
 }
 
 func (r Release) isolationMode() string {
@@ -159,11 +167,21 @@ func productionPort(service string, p Port) bool {
 }
 
 func validateProductionBundle(b Bundle, r Release) error {
+	if validateIngressBundle(b, r) != nil {
+		return ErrBundle
+	}
 	_, edge := b.Networks["edge"]
-	if !r.MatchesTarget(r.TenantID, r.ServerID) || len(b.Services) != 9 || len(b.Networks) != 2 || !edge || !b.Networks["business"].Internal || b.Networks["edge"].Internal {
+	serviceCount, networkCount := 9, 2
+	if sharedBundle(b) {
+		serviceCount, networkCount = 7, 3
+	}
+	if !r.MatchesTarget(r.TenantID, r.ServerID) || len(b.Services) != serviceCount || len(b.Networks) != networkCount || !edge || !b.Networks["business"].Internal || b.Networks["edge"].Internal {
 		return ErrBundle
 	}
 	for _, name := range []string{"enterprise-db", "enterprise-redis", "enterprise-minio", "enterprise-media-init", "enterprise-plugins", "enterprise-api", "enterprise-im", "enterprise-livekit", "enterprise-gateway"} {
+		if sharedBundle(b) && (name == "enterprise-db" || name == "enterprise-redis") {
+			continue
+		}
 		s, ok := b.Services[name]
 		if !ok {
 			return ErrBundle
@@ -183,7 +201,7 @@ func validateProductionBundle(b Bundle, r Release) error {
 			return ErrBundle
 		}
 	}
-	if api["IM_DEV_OTP_CODE"] != "" || api["IM_OTP_WEBHOOK_URL"] != "" || tenancy.ProductionDatastores(api["IM_DATABASE_URL"], api["IM_REDIS_URL"], "enterprise-db", "enterprise-redis") != nil {
+	if api["IM_DEV_OTP_CODE"] != "" || api["IM_OTP_WEBHOOK_URL"] != "" || tenancy.DeploymentDatastores(api["IM_DATABASE_URL"], api["IM_REDIS_URL"], "enterprise", r.TenantID, api["IM_DATASTORE_MODE"]) != nil {
 		return ErrBundle
 	}
 	return nil

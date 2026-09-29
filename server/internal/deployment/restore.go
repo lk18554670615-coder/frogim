@@ -15,6 +15,7 @@ import (
 
 	"github.com/linli/im/server/internal/backup"
 	"github.com/linli/im/server/internal/privatefile"
+	"github.com/linli/im/server/internal/redisbackup"
 )
 
 // StageColdRestore never changes the active release, original volumes or realm.
@@ -38,7 +39,7 @@ func (x *Executor) StageColdRestore(ctx context.Context, expected backup.Binding
 		return fail()
 	}
 	db, e := r.coldContainers(ctx, prior, o, b)
-	if e != nil || r.coldDatabase(ctx, db, expected) != nil {
+	if e != nil || r.bundleDatabase(ctx, b, db, expected, false) != nil {
 		return fail()
 	}
 	if !serviceName.MatchString(id) || len(id) > 24 || id == prior.ID {
@@ -77,10 +78,13 @@ func (x *Executor) StageColdRestore(ctx context.Context, expected backup.Binding
 		return fail()
 	}
 	// Parse all volume archives before creating any destination resource.
-	for _, v := range coldVolumes {
+	for _, v := range backupVolumes(b) {
 		if consumeArchive(archive, v, func(in io.Reader) error { return backup.ReadVolume(in, "") }) != nil {
 			return fail()
 		}
+	}
+	if sharedBundle(b) && consumeArchive(archive, "redis", func(in io.Reader) error { return redisbackup.Read(in, nil) }) != nil {
+		return fail()
 	}
 	volumes := map[string]string{}
 	newVolumes := map[string]LocalVolume{}
@@ -124,17 +128,19 @@ func (x *Executor) StageColdRestore(ctx context.Context, expected backup.Binding
 			return fail()
 		}
 	}
-	for _, v := range coldVolumes {
+	for _, v := range backupVolumes(b) {
 		if consumeArchive(archive, v, func(in io.Reader) error {
 			return r.volumeHelper(ctx, b.Services["enterprise-api"].Image, r.Project+"_"+volumes[sources[v]], "import", in, io.Discard)
 		}) != nil {
 			return fail()
 		}
 	}
-	if r.restoreDatabase(ctx, b, archive, expected, r.Project+"_"+volumes[sources["postgres"]]) != nil {
-		return fail()
+	if !sharedBundle(b) {
+		if r.restoreDatabase(ctx, b, archive, expected, r.Project+"_"+volumes[sources["postgres"]]) != nil {
+			return fail()
+		}
 	}
-	if _, e = r.coldContainers(ctx, prior, o, b); e != nil || r.coldDatabase(ctx, db, expected) != nil {
+	if _, e = r.coldContainers(ctx, prior, o, b); e != nil || r.bundleDatabase(ctx, b, db, expected, false) != nil {
 		return fail()
 	}
 	for _, v := range volumes {
@@ -147,6 +153,11 @@ func (x *Executor) StageColdRestore(ctx context.Context, expected backup.Binding
 			s.Volumes[n].Source = volumes[s.Volumes[n].Source]
 		}
 		b.Services[name] = s
+	}
+	if sharedBundle(b) {
+		if r.restoreSharedDatabases(ctx, &b, archive, expected, id, dir) != nil {
+			return fail()
+		}
 	}
 	b.Volumes = newVolumes
 	release := restoredRelease(prior, id, sequence, r.Tenant, r.Server)
@@ -169,7 +180,7 @@ func (x *Executor) StageColdRestore(ctx context.Context, expected backup.Binding
 func restoredRelease(prior Release, id string, sequence int64, tenant, server string) Release {
 	// Restoring changes volumes, not the isolation profile. Do not copy old
 	// rollback targets: they refer to the prior data generation.
-	return Release{ID: id, Sequence: sequence, Runtime: prior.Runtime, SchemaVersion: prior.SchemaVersion, TenantID: tenant, ServerID: server, IsolationMode: prior.IsolationMode}
+	return Release{ID: id, Sequence: sequence, Runtime: prior.Runtime, SchemaVersion: prior.SchemaVersion, TenantID: tenant, ServerID: server, IsolationMode: prior.IsolationMode, DatastoreMode: prior.DatastoreMode, IngressMode: prior.IngressMode}
 }
 
 func writePrivate(path string, data []byte) error {

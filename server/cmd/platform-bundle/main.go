@@ -18,7 +18,7 @@ func main() {
 	check := flag.String("check-public-url", "", "validate a client build origin only; no files or network")
 	flag.Parse()
 	if *check != "" {
-		if *config != "" || *root != "" || *id != "" || flag.NArg() != 0 || tenancy.PublicOrigin(*check) != nil {
+		if *config != "" || *root != "" || *id != "" || flag.NArg() != 0 || tenancy.PublicPlatformURL(*check) != nil {
 			fail()
 		}
 		fmt.Println("Production platform origin syntax valid; DNS/TLS reachability not checked")

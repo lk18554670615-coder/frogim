@@ -29,8 +29,10 @@ try {
             Assert-PlatformBuild 'Platform runtime compilation'
         }
     } finally { $env:GOOS=$savedGoOS; $env:GOARCH=$savedGoArch; $env:CGO_ENABLED=$savedCGO }
+    $savedAdminBase = $env:PLATFORM_ADMIN_BASE
+    $env:PLATFORM_ADMIN_BASE = if ($PlatformUrl.EndsWith("/platform")) { "/platform/" } else { "/" }
     Push-Location apps/admin
-    try { & npm run build:platform; Assert-PlatformBuild 'Platform admin build' } finally { Pop-Location }
+    try { & npm run build:platform; Assert-PlatformBuild 'Platform admin build' } finally { Pop-Location; $env:PLATFORM_ADMIN_BASE = $savedAdminBase }
     Push-Location apps/mobile
     try {
         $webOutput = Join-Path $bundleRoot 'build/platform-production/web'

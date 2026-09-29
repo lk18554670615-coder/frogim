@@ -28,7 +28,7 @@ func validatePlatformRuntime(get func(string) string) error {
 	if env != "production" || mode != "dedicated_host" || tenancy.PublicOrigin(get("PLATFORM_PUBLIC_URL")) != nil {
 		return invalid
 	}
-	if tenancy.ProductionDatastores(get("PLATFORM_DATABASE_URL"), get("PLATFORM_REDIS_URL"), "platform-db", "platform-redis") != nil {
+	if tenancy.DeploymentDatastores(get("PLATFORM_DATABASE_URL"), get("PLATFORM_REDIS_URL"), "platform", "", get("PLATFORM_DATASTORE_MODE")) != nil {
 		return invalid
 	}
 	database, _ := url.Parse(get("PLATFORM_DATABASE_URL"))

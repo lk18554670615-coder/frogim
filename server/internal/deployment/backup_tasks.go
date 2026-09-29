@@ -54,7 +54,7 @@ func (s backupSource) clone() backupSource {
 	return backupSource{maps.Clone(s.Containers), maps.Clone(s.Volumes)}
 }
 func (s backupSource) valid() bool {
-	if len(s.Containers) != 9 || len(s.Volumes) != 6 {
+	if len(s.Containers) != 9 || (len(s.Volumes) != 6 && len(s.Volumes) != 4) {
 		return false
 	}
 	for k, v := range s.Containers {

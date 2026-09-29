@@ -38,9 +38,19 @@ func coldMediaRepairDrill(t *testing.T, r *ComposeRunner, x *Executor, binding b
 		}
 		ids[c.Labels["com.docker.compose.service"]] = c.ID
 	}
+	_, b, err := readBundle(r.BundleRoot, binding.ReleaseID, r.Catalog[binding.ReleaseID].ComposeSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sharedBundle(b) {
+		ids["enterprise-db"], err = r.sharedStore(ctx, "shared-postgres")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	query := func(sql string) string {
 		t.Helper()
-		out, e := r.command(ctx, nil, "exec", ids["enterprise-db"], "psql", "-X", "-q", "-U", "enterprise", "-d", "enterprise", "-At", "-v", "ON_ERROR_STOP=1", "-c", sql)
+		out, e := r.command(ctx, nil, "exec", ids["enterprise-db"], "psql", "-X", "-q", "-U", "enterprise", "-d", sharedDatabase(b), "-At", "-v", "ON_ERROR_STOP=1", "-c", sql)
 		if e != nil {
 			t.Fatal("private fixture SQL failed")
 		}
@@ -59,6 +69,9 @@ func coldMediaRepairDrill(t *testing.T, r *ComposeRunner, x *Executor, binding b
 		t.Fatal("pause gate not committed")
 	}
 	for _, name := range []string{"enterprise-gateway", "enterprise-api", "enterprise-im", "enterprise-livekit", "enterprise-media-init", "enterprise-minio", "enterprise-redis", "enterprise-plugins"} {
+		if sharedBundle(b) && name == "enterprise-redis" {
+			continue
+		}
 		if _, e = r.command(ctx, nil, "stop", "--time", "30", ids[name]); e != nil {
 			t.Fatal("disposable service stop failed")
 		}
@@ -142,6 +155,9 @@ func coldMediaRepairDrill(t *testing.T, r *ComposeRunner, x *Executor, binding b
 	// no new volumes, no restore of business access, no automatic client retry.
 	io := &composeBackupIO{r: r}
 	for _, name := range []string{"enterprise-db", "enterprise-plugins", "enterprise-redis", "enterprise-minio", "enterprise-media-init", "enterprise-im", "enterprise-livekit", "enterprise-api", "enterprise-gateway"} {
+		if sharedBundle(b) && (name == "enterprise-redis" || name == "enterprise-db") {
+			continue
+		}
 		if _, e = r.command(ctx, nil, "start", ids[name]); e != nil {
 			t.Fatal("original fixture service start")
 		}

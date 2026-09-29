@@ -94,7 +94,7 @@ jobs:
           flutter build ios --release --no-codesign \
             --build-number="${GITHUB_RUN_NUMBER}" \
             --dart-define=APP_ENV=production \
-            --dart-define=API_BASE_URL=https://18.163.165.233 \
+            --dart-define=PLATFORM_AUTH_URL=https://18.163.165.233/platform \
             --dart-define=ENABLE_DEMO=false \
             --dart-define=GETUI_ENABLED=false \
             --dart-define=TERMS_URL=https://18.163.165.233/legal/terms \
@@ -158,6 +158,9 @@ jobs:
             IOS_PROVISIONING_PROFILE_BASE64
             IOS_EXPORT_OPTIONS_PLIST_BASE64
             IOS_KEYCHAIN_PASSWORD
+            GETUI_APP_ID
+            GETUI_APP_KEY
+            GETUI_APP_SECRET
           )
           for name in "${required[@]}"; do
             if [[ -z "${!name:-}" ]]; then
@@ -223,7 +226,7 @@ jobs:
             --build-number="${GITHUB_RUN_NUMBER}" \
             --export-options-plist="${{ steps.signing.outputs.export_options_path }}" \
             --dart-define=APP_ENV=production \
-            --dart-define=API_BASE_URL=https://18.163.165.233 \
+            --dart-define=PLATFORM_AUTH_URL=https://18.163.165.233/platform \
             --dart-define=ENABLE_DEMO=false \
             --dart-define=GETUI_ENABLED="${GETUI_ENABLED}" \
             --dart-define=GETUI_APP_ID="${GETUI_APP_ID}" \

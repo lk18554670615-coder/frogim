@@ -222,7 +222,15 @@ func coldBackupDrill(t *testing.T, r *ComposeRunner, x *Executor, c EnterpriseCo
 		t.Fatal("staged restore", e)
 	}
 	// Original data volumes still exist. Staging did not change the journal.
-	for _, name := range append(append([]string{}, coldVolumes...), "postgres") {
+	_, originalBundle, err := readBundle(r.BundleRoot, prior.ID, prior.ComposeSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalVolumes, err := coldVolumeSources(originalBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range originalVolumes {
 		if _, e = r.command(ctx, nil, "volume", "inspect", "--format", "{{.Name}}", r.Project+"_"+name); e != nil {
 			t.Fatal("original volume lost")
 		}

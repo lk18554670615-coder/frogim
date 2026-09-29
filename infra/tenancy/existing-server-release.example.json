@@ -1,0 +1,13 @@
+{
+  "target": "18.163.165.233",
+  "origin": "https://18.163.165.233",
+  "platformAuthUrl": "https://18.163.165.233/platform",
+  "commit": "",
+  "tag": "",
+  "rehearsalMinutes": 0,
+  "rollbackMinutes": 0,
+  "freeBytes": 0,
+  "requiredBytes": 0,
+  "evidence": {},
+  "artifacts": {}
+}

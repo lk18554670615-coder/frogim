@@ -22,6 +22,8 @@ import (
 // PlatformConfig is an operator-owned private file, never an admin API request.
 // There is one platform project. It contains no business database, IM or media.
 type PlatformConfig struct {
+	SharedIngress     *SharedIngress    `json:"sharedIngress,omitempty"`
+	SharedDatastores  bool              `json:"sharedDatastores,omitempty"`
 	ToolsImage        string            `json:"toolsImage"`
 	PublicURL         string            `json:"publicUrl"`
 	ControlURL        string            `json:"controlUrl"`
@@ -92,6 +94,9 @@ func productionPublicBind(raw string) bool {
 	return err == nil && !ip.IsLoopback() && !ip.IsMulticast() && !ip.IsLinkLocalUnicast() && (ip.IsUnspecified() || ip.IsGlobalUnicast())
 }
 func (c PlatformConfig) Validate() error {
+	if c.SharedIngress != nil && (!c.SharedDatastores || c.SharedIngress.valid() != nil || c.SharedIngress.HTTPSPort < 1024 || c.SharedIngress.HTTPSPort > 65535 || c.SharedIngress.HTTPSPort == originPort(c.ControlURL) || c.SharedIngress.Secret == c.GatewaySecret) {
+		return ErrBundle
+	}
 	if !imageReference.MatchString(c.ToolsImage) || strings.Contains(c.ToolsImage, "..") || tenancy.PublicOrigin(c.PublicURL) != nil || productionControlURL(c.ControlURL) != nil || c.ControlURL == c.PublicURL || !productionPublicBind(c.PublicBindIP) {
 		return ErrBundle
 	}
@@ -148,6 +153,9 @@ func (c PlatformConfig) Validate() error {
 			return ErrBundle
 		}
 	}
+	if c.SharedDatastores && !tenants["default"] {
+		return ErrBundle
+	}
 	return validatePlatformSuppliers(c)
 }
 
@@ -172,6 +180,11 @@ func (c PlatformConfig) RuntimeEnvironment() map[string]string {
 	}
 	if c.APNSPrivateKey != "" {
 		env["PLATFORM_APNS_VOIP_KEY_FILE"] = "/config/apns.pem"
+	}
+	if c.SharedDatastores {
+		env["PLATFORM_DATASTORE_MODE"] = tenancy.SharedDatastoreMode
+		env["PLATFORM_DATABASE_URL"] = "postgres://platform:" + c.DatabaseSecret + "@shared-postgres:5432/platform?sslmode=disable"
+		env["PLATFORM_REDIS_URL"] = "redis://:" + c.RedisSecret + "@shared-redis:6379/0"
 	}
 	return env
 }
@@ -227,12 +240,28 @@ func BuildPlatformBundle(c PlatformConfig, id string) ([]byte, PlatformRelease, 
 	s.Ports = []Port{{Target: 8443, Published: strconv.Itoa(originPort(c.ControlURL)), HostIP: c.ControlBindIP, Protocol: "tcp"}}
 	s.DependsOn = map[string]Dependency{"platform-db": {Condition: "service_healthy"}, "platform-redis": {Condition: "service_healthy"}}
 	b.Services["platform-api"] = s
-	s = role("platform-gateway", map[string]string{"public.pem": c.PublicTLS.Certificate, "public.key": c.PublicTLS.PrivateKey, "Caddyfile": platformCaddyConfig})
-	s.Environment["FROGIM_PLATFORM_PUBLIC_URL"] = c.PublicURL
+	s = role("platform-gateway", map[string]string{"public.pem": c.PublicTLS.Certificate, "public.key": c.PublicTLS.PrivateKey, "Caddyfile": c.gatewayConfiguration()})
+	s.Environment["FROGIM_PLATFORM_PUBLIC_URL"] = c.AuthURL()
 	s.Environment["FROGIM_GATEWAY_SECRET"] = c.GatewaySecret
 	s.Ports = []Port{{Target: 8443, Published: strconv.Itoa(originPort(c.PublicURL)), HostIP: c.PublicBindIP, Protocol: "tcp"}}
+	if c.SharedIngress != nil {
+		s.Ports[0].HostIP = c.ControlBindIP
+		s.Ports[0].Published = strconv.Itoa(c.SharedIngress.HTTPSPort)
+		s.Environment["FROGIM_EDGE_SECRET"] = c.SharedIngress.Secret
+	}
 	s.DependsOn = map[string]Dependency{"platform-api": {Condition: "service_healthy"}}
 	b.Services["platform-gateway"] = s
+	if c.SharedDatastores {
+		delete(b.Services, "platform-db")
+		delete(b.Services, "platform-redis")
+		delete(b.Volumes, "postgres")
+		delete(b.Volumes, "redis")
+		b.Networks["shared-data"] = LocalNetwork{External: true, Name: tenancy.SharedDataNetwork}
+		s = b.Services["platform-api"]
+		s.Networks = append(s.Networks, "shared-data")
+		s.DependsOn = nil
+		b.Services["platform-api"] = s
+	}
 	// This operator artifact is directly consumable by Compose; protect every
 	// dollar from host .env interpolation (bcrypt and container-side commands).
 	raw, err := json.MarshalIndent(b, "", "  ")
@@ -311,7 +340,7 @@ func ValidatePlatformWebMetadata(raw []byte, publicURL string) error {
 	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
-	if d.Decode(&m) != nil || d.Decode(new(any)) != io.EOF || m.PlatformURL != publicURL || tenancy.PublicOrigin(publicURL) != nil || m.Environment != "production" || m.BaseHref != "/app/" {
+	if d.Decode(&m) != nil || d.Decode(new(any)) != io.EOF || m.PlatformURL != publicURL || tenancy.PublicPlatformURL(publicURL) != nil || m.Environment != "production" || m.BaseHref != "/app/" {
 		return ErrBundle
 	}
 	return nil

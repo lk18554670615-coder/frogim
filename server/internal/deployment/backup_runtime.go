@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/linli/im/server/internal/tenancy"
 	"maps"
 	"os"
 	"slices"
@@ -81,7 +82,7 @@ func (c *composeBackupIO) Prepare(ctx context.Context, p backupPlan, key []byte)
 	if e != nil {
 		return s, e
 	}
-	if c.r.suspendedDatabase(ctx, s.Containers["enterprise-db"], p.Request.Binding, true) != nil {
+	if c.r.bundleDatabase(ctx, b, s.Containers["enterprise-db"], p.Request.Binding, true) != nil {
 		return backupSource{}, ErrUnconfirmed
 	}
 	return s, nil
@@ -91,12 +92,15 @@ func (c *composeBackupIO) Quiesce(ctx context.Context, p backupPlan, s backupSou
 	if e != nil {
 		return e
 	}
-	if c.match(ctx, p, b, s, false) != nil || c.r.suspendedDatabase(ctx, s.Containers["enterprise-db"], p.Request.Binding, true) != nil {
+	if c.match(ctx, p, b, s, false) != nil || c.r.bundleDatabase(ctx, b, s.Containers["enterprise-db"], p.Request.Binding, true) != nil {
 		return ErrUnconfirmed
 	}
 	// Stop entry points first, then writers. PostgreSQL remains up only for the
 	// transactionally consistent dump; coldDatabase requires no other clients.
 	for _, name := range []string{"enterprise-gateway", "enterprise-api", "enterprise-im", "enterprise-livekit", "enterprise-media-init", "enterprise-minio", "enterprise-redis", "enterprise-plugins"} {
+		if sharedBundle(b) && name == "enterprise-redis" {
+			continue
+		}
 		id := s.Containers[name]
 		if _, e = c.r.command(ctx, nil, "stop", "--time", "30", id); e != nil {
 			return ErrUnconfirmed
@@ -105,14 +109,14 @@ func (c *composeBackupIO) Quiesce(ctx context.Context, p backupPlan, s backupSou
 	if c.match(ctx, p, b, s, true) != nil {
 		return ErrUnconfirmed
 	}
-	return c.r.coldDatabase(ctx, s.Containers["enterprise-db"], p.Request.Binding)
+	return c.r.bundleDatabase(ctx, b, s.Containers["enterprise-db"], p.Request.Binding, false)
 }
 func (c *composeBackupIO) Capture(ctx context.Context, p backupPlan, s backupSource, path string, key []byte) (ArchiveProof, error) {
 	b, e := c.bundle(p)
 	if e != nil {
 		return ArchiveProof{}, e
 	}
-	if c.recoverHelpers(ctx, p, b) != nil || c.match(ctx, p, b, s, true) != nil || c.r.coldDatabase(ctx, s.Containers["enterprise-db"], p.Request.Binding) != nil {
+	if c.recoverHelpers(ctx, p, b) != nil || c.match(ctx, p, b, s, true) != nil || c.r.bundleDatabase(ctx, b, s.Containers["enterprise-db"], p.Request.Binding, false) != nil {
 		return ArchiveProof{}, ErrUnconfirmed
 	}
 	if info, e := os.Lstat(path); e == nil {
@@ -143,12 +147,15 @@ func (c *composeBackupIO) Restore(ctx context.Context, p backupPlan, s backupSou
 	if c.recoverHelpers(ctx, p, b) != nil || c.match(ctx, p, b, s, false) != nil {
 		return ErrUnconfirmed
 	}
-	if c.r.suspendedDatabase(ctx, s.Containers["enterprise-db"], p.Request.Binding, true) != nil {
+	if c.r.bundleDatabase(ctx, b, s.Containers["enterprise-db"], p.Request.Binding, true) != nil {
 		return ErrUnconfirmed
 	}
 	// Start only existing IDs, in dependency order. No create/up/pull or volume
 	// deletion is allowed in this recovery path, even after an interrupted stop.
 	for _, name := range []string{"enterprise-db", "enterprise-plugins", "enterprise-redis", "enterprise-minio", "enterprise-media-init", "enterprise-im", "enterprise-livekit", "enterprise-api", "enterprise-gateway"} {
+		if sharedBundle(b) && (name == "enterprise-db" || name == "enterprise-redis") {
+			continue
+		}
 		if _, e = c.r.command(ctx, nil, "start", s.Containers[name]); e != nil {
 			return ErrUnconfirmed
 		}
@@ -190,7 +197,7 @@ func (c *composeBackupIO) Verify(ctx context.Context, p backupPlan, s backupSour
 	if c.match(ctx, p, b, s, false) != nil || c.r.Verify(ctx, p.Release, p.Deployment) != nil {
 		return ErrUnconfirmed
 	}
-	return c.r.suspendedDatabase(ctx, s.Containers["enterprise-db"], p.Request.Binding, true)
+	return c.r.bundleDatabase(ctx, b, s.Containers["enterprise-db"], p.Request.Binding, true)
 }
 
 // An agent process may die while its Docker export container continues. Only
@@ -211,7 +218,7 @@ func (c *composeBackupIO) recoverHelpers(ctx context.Context, p backupPlan, b Bu
 		return e
 	}
 	volumes := map[string]bool{}
-	for _, logical := range coldVolumes {
+	for _, logical := range backupVolumes(b) {
 		volumes[c.r.Project+"_"+sources[logical]] = true
 	}
 	image := b.Services["enterprise-api"].Image
@@ -219,16 +226,38 @@ func (c *composeBackupIO) recoverHelpers(ctx context.Context, p backupPlan, b Bu
 		if len(id) < 12 || len(id) > 64 || strings.Trim(id, "abcdef0123456789") != "" {
 			return ErrUnconfirmed
 		}
-		out, e = c.r.command(ctx, nil, "inspect", "--format", `{"id":{{json .Id}},"imageId":{{json .Image}},"image":{{json .Config.Image}},"labels":{{json .Config.Labels}},"entrypoint":{{json .Config.Entrypoint}},"cmd":{{json .Config.Cmd}},"user":{{json .Config.User}},"network":{{json .HostConfig.NetworkMode}},"readOnly":{{.HostConfig.ReadonlyRootfs}},"privileged":{{.HostConfig.Privileged}},"capAdd":{{json .HostConfig.CapAdd}},"capDrop":{{json .HostConfig.CapDrop}},"mounts":{{json .Mounts}}}`, id)
+		out, e = c.r.command(ctx, nil, "inspect", "--format", `{"id":{{json .Id}},"imageId":{{json .Image}},"image":{{json .Config.Image}},"labels":{{json .Config.Labels}},"entrypoint":{{json .Config.Entrypoint}},"cmd":{{json .Config.Cmd}},"user":{{json .Config.User}},"network":{{json .HostConfig.NetworkMode}},"readOnly":{{.HostConfig.ReadonlyRootfs}},"privileged":{{.HostConfig.Privileged}},"capAdd":{{json .HostConfig.CapAdd}},"capDrop":{{json .HostConfig.CapDrop}},"mounts":{{json .Mounts}},"env":{{json .Config.Env}}}`, id)
 		var h struct {
 			ID, ImageID, Image, User, Network string
 			Labels                            map[string]string
 			Entrypoint, Cmd, CapAdd, CapDrop  []string
+			Env                               []string
 			ReadOnly, Privileged              bool
 			Mounts                            []struct {
 				Type, Name, Destination string
 				RW                      bool
 			}
+		}
+		if e != nil || json.Unmarshal(out, &h) != nil {
+			return ErrUnconfirmed
+		}
+		if sharedBundle(b) && h.Labels["io.frogim.backup-helper"] == "redis-export" {
+			if !fingerprint.MatchString(h.ID) || !strings.HasPrefix(h.ID, id) || !c.r.owns(h.Labels) || h.Labels["io.frogim.backup-job"] != p.Request.ID || h.Labels["io.frogim.backup-attempt"] != strconv.Itoa(p.Attempt) || h.Image != image || !slices.Equal(h.Entrypoint, []string{"/opt/frogim/redis-database"}) || !slices.Equal(h.Cmd, []string{"-mode", "export"}) || h.User != "10001:10001" || h.Network != tenancy.SharedDataNetwork || !h.ReadOnly || h.Privileged || len(h.CapAdd) != 0 || !singleCapability(h.CapDrop, "ALL") || !slices.Contains(h.Env, "REDIS_DATABASE_URL="+b.Services["enterprise-api"].Environment["IM_REDIS_URL"]) {
+				return ErrUnconfirmed
+			}
+			for _, m := range h.Mounts {
+				if m.Type != "tmpfs" || m.Destination != "/tmp" {
+					return ErrUnconfirmed
+				}
+			}
+			imageID, e := c.r.inspectImage(ctx, image)
+			if e != nil || imageID != h.ImageID {
+				return ErrUnconfirmed
+			}
+			if _, e = c.r.command(ctx, nil, "rm", "--force", h.ID); e != nil {
+				return ErrUnconfirmed
+			}
+			continue
 		}
 		if e != nil || json.Unmarshal(out, &h) != nil || !fingerprint.MatchString(h.ID) || !strings.HasPrefix(h.ID, id) || !c.r.owns(h.Labels) || h.Labels["io.frogim.backup-helper"] != "volume-export" || h.Labels["io.frogim.backup-job"] != p.Request.ID || h.Labels["io.frogim.backup-attempt"] != strconv.Itoa(p.Attempt) || h.Image != image || !slices.Equal(h.Entrypoint, []string{"/opt/frogim/tenant-volume"}) || !slices.Equal(h.Cmd, []string{"export"}) || h.User != "0:0" || h.Network != "none" || !h.ReadOnly || h.Privileged || !singleCapability(h.CapAdd, "DAC_OVERRIDE") || !singleCapability(h.CapDrop, "ALL") || len(h.Mounts) != 1 {
 			return ErrUnconfirmed
