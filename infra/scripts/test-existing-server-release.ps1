@@ -13,11 +13,23 @@ $required = @('go', 'admin', 'web', 'migrationRehearsal', 'rollbackRehearsal',
 $clientChecks = @('flutter', 'android', 'iosAppleSdk', 'androidInstall',
     'iosInstall', 'threeClientSmoke', 'getuiRealDevice', 'voipLockedScreen', 'passwordlessAccess')
 $artifacts = @('edge', 'platform', 'enterprise', 'web')
+$openingScope = if ($release.openingScope) { $release.openingScope } else { 'three-clients' }
 if ($Stage -eq 'open-business') {
-    $required += $clientChecks
-    $artifacts += @('android', 'ios')
+    if ($openingScope -eq 'web-first') {
+        $required += @('flutter', 'webFirstApproval', 'webBusinessSmoke', 'mobileUpgradeEntry', 'passwordlessAccess')
+    } else {
+        $required += $clientChecks
+        $artifacts += @('android', 'ios')
+    }
 }
 $failures = [Collections.Generic.List[string]]::new()
+if ($openingScope -notin @('three-clients', 'web-first')) { $failures.Add('Unknown opening scope') }
+if ($Stage -eq 'open-business' -and $openingScope -eq 'web-first' -and
+    ($release.mobileBusinessAccess -ne 'disabled' -or $release.mobileUpgradeDestination -ne 'https://18.163.165.233/app/' -or
+    $release.deferredChecks.Count -ne 7 -or
+    @($clientChecks | Where-Object { $_ -notin @('flutter', 'passwordlessAccess') -and $_ -notin $release.deferredChecks }).Count -ne 0)) {
+    $failures.Add('Web-first opening must disable mobile business access and explicitly retain all seven deferred client checks')
+}
 if ($Stage -eq 'server-deploy' -and
     ($release.deploymentMode -ne 'isolated' -or $release.businessWritesEnabled -isnot [bool] -or $release.businessWritesEnabled)) {
     $failures.Add('Server deployment requires explicit isolation and disabled business writes')
@@ -72,5 +84,5 @@ if ($failures.Count) {
 if ($Stage -eq 'server-deploy') {
     Write-Output 'Isolated server deployment evidence verified. Client, VoIP and complete cutover timing acceptance remains required before opening; no business write authorization was granted.'
 } else {
-    Write-Output 'Opening evidence verified. Proceed only through the tenant-migrate receipt workflow; this check performed no deployment or activation.'
+    Write-Output "Opening evidence verified (scope: $openingScope). Proceed only through the tenant-migrate receipt workflow; this check performed no deployment or activation."
 }

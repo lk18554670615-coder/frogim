@@ -40,6 +40,24 @@ Assert-Gate server-deploy $false
 $release.businessWritesEnabled = 'false'
 Assert-Gate server-deploy $false
 $release.businessWritesEnabled = $false
+$release.openingScope = 'web-first'
+Assert-Gate open-business $false
+$release.mobileBusinessAccess = 'disabled'
+$release.mobileUpgradeDestination = 'https://18.163.165.233/app/'
+$release.deferredChecks = @('android','iosAppleSdk','androidInstall','iosInstall','threeClientSmoke','getuiRealDevice','voipLockedScreen')
+foreach ($name in @('flutter','webFirstApproval','webBusinessSmoke','mobileUpgradeEntry','passwordlessAccess')) {
+    $release.evidence[$name] = @{status='passed';operator='synthetic-test';commit=$commit;checkedAt=[DateTimeOffset]::UtcNow.ToString('o');path=$proof;sha256=$hash}
+}
+Assert-Gate open-business $true
+$release.mobileBusinessAccess = 'enabled'
+Assert-Gate open-business $false
+$release.mobileBusinessAccess = 'disabled'
+$release.deferredChecks = @('android')
+Assert-Gate open-business $false
+$release.openingScope = 'unknown'
+Assert-Gate open-business $false
+$release.openingScope = 'three-clients'
+Assert-Gate open-business $false
 foreach ($name in @('flutter','android','iosAppleSdk','androidInstall','iosInstall','threeClientSmoke','getuiRealDevice','voipLockedScreen','passwordlessAccess')) {
     $release.evidence[$name] = @{status='passed';operator='synthetic-test';commit=$commit;checkedAt=[DateTimeOffset]::UtcNow.ToString('o');path=$proof;sha256=$hash}
 }
@@ -56,4 +74,5 @@ $release.rehearsalMinutes = 60
 $release.rollbackMinutes = 20
 Set-Content -LiteralPath $proof -Value 'CHANGED SYNTHETIC PROOF'
 Assert-Gate open-business $false
-Write-Output 'PASS: isolated deploy allows pending client acceptance; opening requires it; write-enabled deployment and changed evidence are rejected.'
+Write-Output 'PASS: isolated deploy, strict three-client opening, explicit Web-first approval and retained mobile deferrals are enforced; changed evidence is rejected.'
+exit 0
