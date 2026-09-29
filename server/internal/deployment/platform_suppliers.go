@@ -52,7 +52,9 @@ PLATFORM_WEB_PUSH_SUBJECT PLATFORM_WEB_PUSH_ALLOWED_HOSTS`)
 		return ErrBundle
 	}
 	if getui {
-		if !regexp.MustCompile(`^[A-Za-z0-9_-]{4,128}$`).MatchString(e["PLATFORM_GETUI_APP_ID"]) || len(e["PLATFORM_GETUI_APP_KEY"]) < 16 || len(e["PLATFORM_GETUI_MASTER_SECRET"]) < 24 {
+		// Getui issues 22-character master secrets; a 24-character minimum
+		// rejects valid existing provider credentials during platform adoption.
+		if !regexp.MustCompile(`^[A-Za-z0-9_-]{4,128}$`).MatchString(e["PLATFORM_GETUI_APP_ID"]) || len(e["PLATFORM_GETUI_APP_KEY"]) < 16 || len(e["PLATFORM_GETUI_MASTER_SECRET"]) < 22 {
 			return ErrBundle
 		}
 	} else {

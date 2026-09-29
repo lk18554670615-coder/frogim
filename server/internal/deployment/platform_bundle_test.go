@@ -175,3 +175,21 @@ func TestPlatformClientImageBinding(t *testing.T) {
 		}
 	}
 }
+
+func TestPlatformGetuiIssuedCredentialLength(t *testing.T) {
+	c := platformBundleFixture(t)
+	c.Suppliers = map[string]string{
+		"PLATFORM_PUSH_PROVIDER":       "getui",
+		"PLATFORM_GETUI_APP_ID":        "fixture-app",
+		"PLATFORM_GETUI_APP_KEY":       strings.Repeat("k", 22),
+		"PLATFORM_GETUI_MASTER_SECRET": strings.Repeat("s", 22),
+		"PLATFORM_PUSH_ENCRYPTION_KEY": strings.Repeat("a", 43),
+	}
+	if c.Validate() != nil {
+		t.Fatal("provider-issued 22-character credential rejected")
+	}
+	c.Suppliers["PLATFORM_GETUI_MASTER_SECRET"] = strings.Repeat("s", 21)
+	if c.Validate() == nil {
+		t.Fatal("truncated credential accepted")
+	}
+}

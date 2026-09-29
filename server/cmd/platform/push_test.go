@@ -85,12 +85,17 @@ func TestPlatformRejectsDirectAPNSAndGatesGetuiVoIP(t *testing.T) {
 	t.Setenv("PLATFORM_PUSH_PROVIDER", "getui")
 	t.Setenv("PLATFORM_GETUI_APP_ID", "fixture-app")
 	t.Setenv("PLATFORM_GETUI_APP_KEY", strings.Repeat("k", 16))
-	t.Setenv("PLATFORM_GETUI_MASTER_SECRET", strings.Repeat("m", 24))
+	t.Setenv("PLATFORM_GETUI_MASTER_SECRET", strings.Repeat("m", 22))
 	t.Setenv("PLATFORM_PUSH_ENCRYPTION_KEY", base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32)))
 	t.Setenv("PLATFORM_GETUI_VOIP_ENABLED", "true")
 	if _, e := configuredPlatformPush(&platform.Store{}); e != nil {
 		t.Fatal(e)
 	}
+	t.Setenv("PLATFORM_GETUI_MASTER_SECRET", strings.Repeat("m", 21))
+	if _, e := configuredPlatformPush(&platform.Store{}); e == nil {
+		t.Fatal("truncated Getui credential accepted")
+	}
+	t.Setenv("PLATFORM_GETUI_MASTER_SECRET", strings.Repeat("m", 22))
 	t.Setenv("PLATFORM_APNS_VOIP_KEY_FILE", "old-key.pem")
 	if _, e := configuredPlatformPush(&platform.Store{}); e == nil {
 		t.Fatal("old direct credential accepted")

@@ -89,7 +89,7 @@ func configuredPlatformPush(db *platform.Store) (*platform.PushService, error) {
 	}
 	if mode == "getui" {
 		id, key, secret := os.Getenv("PLATFORM_GETUI_APP_ID"), os.Getenv("PLATFORM_GETUI_APP_KEY"), os.Getenv("PLATFORM_GETUI_MASTER_SECRET")
-		if !regexp.MustCompile(`^[A-Za-z0-9_-]{4,128}$`).MatchString(id) || len(key) < 16 || len(secret) < 24 {
+		if !regexp.MustCompile(`^[A-Za-z0-9_-]{4,128}$`).MatchString(id) || len(key) < 16 || len(secret) < 22 {
 			return nil, errors.New("platform Getui credentials incomplete")
 		}
 		providers["getui"] = &push.Getui{AppID: id, AppKey: key, MasterSecret: secret, Client: client}
