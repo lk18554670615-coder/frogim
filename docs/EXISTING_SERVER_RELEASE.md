@@ -2,8 +2,12 @@
 
 ## 当前结论
 
-本轮实现单一公网入口和发布前门槛，本地代码检查点为 `checkpoint/shared-edge-preparation-20260929`。**尚未停服、迁移真实账号或部署现网**。
-Android、iOS、Web 安装/访问、真实个推/VoIP、隔离迁移及回退演练全部通过后，才安排两小时维护窗口。
+单一公网入口准备代码检查点为 `checkpoint/shared-edge-preparation-20260929`。
+2026-09-29 已完成真实快照在本机的隔离迁移、备份恢复及开写前回退，见
+[真实数据演练记录](LEGACY_SNAPSHOT_REHEARSAL.md)。**尚未停服、迁移现网账号或部署现网**。
+按 2026-09-29 后续调整，先完成真实备份、隔离迁移及回退演练，再部署隔离服务端；
+Android、iOS、Web 和真实个推/VoIP 在部署后验证。客户端验收期间不开放真实账号业务写入，
+使用单独验收身份/测试企业，不能绕过默认企业的停用状态。全部验收通过后再进入 `opening`。
 工程测试、Caddy 配置解析和模拟请求不能替代 Apple SDK 编译或真机验收。
 
 2026-09-29 只读复查：目标 `im-server` / `18.163.165.233`，旧项目 `qingwaim`
@@ -83,17 +87,24 @@ Android 发布脚本默认同一平台路径，也可显式传 `-PlatformAuthUrl
 执行：
 
 ```powershell
-./infra/scripts/test-existing-server-release.ps1 -Manifest C:\private\release.json
+./infra/scripts/test-existing-server-release.ps1 -Manifest C:\private\release.json -Stage server-deploy
+# 服务端部署后三端及 VoIP 验收齐备，再执行默认严格开服检查：
+./infra/scripts/test-existing-server-release.ps1 -Manifest C:\private\release.json -Stage open-business
 ```
 
-缺三端安装、Apple SDK、实际供应商/锁屏来电、完整迁移与回退、离机备份/恢复或证书续期证据，
-均返回失败。脏工作区、tag 与提交不符、证据或制品被修改、过期主机预检也拒绝。
+`server-deploy` 要求 `deploymentMode=isolated`、`businessWritesEnabled=false`，核验服务端/Web 制品、
+Go/后台/Web 工程检查、真实迁移与回退、离机备份/恢复、证书续期及主机预检。
+三端工程检查、签名安装、真实供应商与锁屏来电可在部署后补齐；无密码账号登录/找回通路
+通过 `passwordlessAccess` 单独留证。`open-business` 额外核验这些项目及
+Android/iOS 制品，缺项返回失败。默认仍是严格开服门槛，隔离部署通过不构成开服授权。
+两阶段均拒绝脏工作区、tag 与提交不符、证据或制品被修改及过期主机预检。
 完整演练须不超过 90 分钟，切换前回退不超过 30 分钟，预估复制/镜像用量之外至少保留 10 GiB。
 该检查只读，不会因“通过”而自动停服。空模板必须失败。
 
 ## 正式切换与回退
 
-1. 门槛通过后，发布维护通知并记录操作者、窗口、旧 release、配置摘要、备份密钥位置。
+1. 隔离部署门槛通过后，先部署候选服务，完成三端/VoIP 验收，再确定正式数据切换窗口。
+   测试使用独立身份及测试数据，候选默认企业仍隔离。记录操作者、窗口、旧 release、配置摘要、备份密钥位置。
    切换前完成镜像预载；不在维护窗口临时编译。旧部署路径、数据库、卷均保留。
 2. 0—20 分钟：维护入口；停止所有旧写入、任务、IM 及 RTC；完成最终数据库、Redis、媒体、
    IM 和配置备份。加密离机副本保存到 Windows，密钥单独保管，校验传输前后摘要。
@@ -126,5 +137,6 @@ sh infra/scripts/reload-shared-edge-certificate.sh /absolute/private/edge-compos
 切换旧 `qingwa-backup.timer` 前，分别完成首次备份和恢复验证。企业恢复只能恢复企业库及指定 Redis DB，
 不能回滚共享 PostgreSQL 数据目录或整个 Redis 卷。恢复后再验证平台库未变化。
 
-本轮工程证据见实施记录第 42 阶段。真实供应商、签名安装、Apple SDK、真实数据演练、
-离机加密备份及切换后 24 小时观察仍必须由对应环境提供，不能用模拟结果填 `passed`。
+工程及演练证据见实施记录第 42、43 阶段。真实快照演练和离机加密备份已完成；最终停写后的
+一致性备份仍需在切换窗口生成。真实供应商、签名安装、Apple SDK 和切换后 24 小时观察
+仍由对应环境提供，不能用模拟结果填 `passed`。

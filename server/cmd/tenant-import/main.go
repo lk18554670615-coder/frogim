@@ -40,13 +40,15 @@ func run(ctx context.Context, args []string, env func(string) string, out, diagn
 	fingerprint := f.String("expected-fingerprint", "", "")
 	confirmed := f.Bool("confirmed", false, "")
 	passwordless := f.Bool("passwordless-ack", false, "")
+	quarantineUsers := f.String("quarantine-users", "", "absolute private JSON file containing reviewed user IDs")
 	if e := f.Parse(args); errors.Is(e, flag.ErrHelp) {
-		fmt.Fprintln(out, "Usage: tenant-import -mode status|start|resume -batch ID [-tenant default]")
+		fmt.Fprintln(out, "Usage: tenant-import -mode status|start|resume|quarantine -batch ID [-tenant default]")
+		fmt.Fprintln(out, "quarantine requires -quarantine-users ABSOLUTE_JSON_PATH and the same actor/reason/confirmation/fingerprint as start; only invalid-phone, unbound identities in a confirmed suspended realm can be retired. It preserves rows and history, denies login and requires verified identity repair plus credential reset before recovery.")
 		fmt.Fprintln(out, "start requires -actor ID -reason TEXT -confirmed -expected-fingerprint HEX; -passwordless-ack explicitly acknowledges accounts without a working password login.")
 		fmt.Fprintln(out, "Requires TENANCY_IMPORT_ENV=development or maintenance and explicit loopback database URLs. Writes additionally require TENANCY_IMPORT_OFFLINE_CUTOVER_CONFIRMED=true. resume performs at most one account and uses TENANCY_IMPORT_CONTROL_FILE for mTLS.")
 		fmt.Fprintln(out, "No adoption, schema migration, tenant activation or public route changes. Exit 0=completed, 3=durable work remains, 2=failure. Never bypass backup and obsolete-service/network cutover checks.")
 		return 0
-	} else if e != nil || f.NArg() != 0 || !tenancy.ValidID(*batch) || !tenancy.ValidID(*tenant) || (*mode != "status" && *mode != "start" && *mode != "resume") {
+	} else if e != nil || f.NArg() != 0 || !tenancy.ValidID(*batch) || !tenancy.ValidID(*tenant) || (*mode != "status" && *mode != "start" && *mode != "resume" && *mode != "quarantine") {
 		fmt.Fprintln(diagnostics, "LEGACY_IMPORT_ARGUMENTS_INVALID")
 		return 2
 	}
@@ -84,6 +86,20 @@ func run(ctx context.Context, args []string, env func(string) string, out, diagn
 		return 2
 	}
 	defer s.Close()
+	if *mode == "quarantine" {
+		ids, e := readQuarantineUsers(*quarantineUsers)
+		if e != nil {
+			fmt.Fprintln(diagnostics, "LEGACY_QUARANTINE_INVENTORY_INVALID")
+			return 2
+		}
+		n, e := legacyimport.QuarantineInvalidPhones(ctx, s, p, legacyimport.QuarantineRequest{ID: *batch, TenantID: *tenant, Actor: *actor, Reason: *reason, Confirmed: *confirmed, ExpectedFingerprint: *fingerprint, UserIDs: ids})
+		if e != nil {
+			fmt.Fprintln(diagnostics, e.Error())
+			return 2
+		}
+		_ = json.NewEncoder(out).Encode(map[string]any{"state": "quarantined", "count": n, "tenantId": *tenant, "operationId": *batch})
+		return 0
+	}
 	if *mode == "start" {
 		b, e := legacyimport.StartImport(ctx, s, p, legacyimport.ImportRequest{ID: *batch, TenantID: *tenant, Actor: *actor, Reason: *reason, Confirmed: *confirmed, ExpectedFingerprint: *fingerprint, AllowPasswordless: *passwordless})
 		if e != nil {
@@ -116,6 +132,26 @@ func run(ctx context.Context, args []string, env func(string) string, out, diagn
 		return 2
 	}
 	return emit(out, b)
+}
+func readQuarantineUsers(path string) ([]string, error) {
+	if !filepath.IsAbs(path) {
+		return nil, tenancy.ErrInvalid
+	}
+	info, e := os.Lstat(path)
+	if e != nil || !info.Mode().IsRegular() || info.Size() > 4<<20 {
+		return nil, tenancy.ErrInvalid
+	}
+	f, e := os.Open(path)
+	if e != nil {
+		return nil, tenancy.ErrInvalid
+	}
+	defer f.Close()
+	var ids []string
+	d := json.NewDecoder(io.LimitReader(f, 4<<20))
+	if d.Decode(&ids) != nil || d.Decode(new(any)) != io.EOF || len(ids) == 0 || len(ids) > legacyimport.MaxRows {
+		return nil, tenancy.ErrInvalid
+	}
+	return ids, nil
 }
 func emit(out io.Writer, b legacyimport.Batch) int {
 	_ = json.NewEncoder(out).Encode(b)

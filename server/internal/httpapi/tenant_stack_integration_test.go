@@ -63,7 +63,7 @@ func tenancyStackSchema(t *testing.T, env string) (string, *pgx.Conn) {
 	return u.String(), conn
 }
 
-func tenancyStackPKI(t *testing.T) (map[string]*tls.Config, *tls.Config) {
+func tenancyStackPKI(t *testing.T, additional ...string) (map[string]*tls.Config, *tls.Config) {
 	t.Helper()
 	pub, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -81,7 +81,7 @@ func tenancyStackPKI(t *testing.T) (map[string]*tls.Config, *tls.Config) {
 	roots := x509.NewCertPool()
 	roots.AddCert(ca)
 	configs := map[string]*tls.Config{}
-	for index, id := range []string{"platform", "a", "b"} {
+	for index, id := range append([]string{"platform", "a", "b"}, additional...) {
 		public, private, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			t.Fatal(err)

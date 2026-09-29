@@ -2,6 +2,8 @@
   "target": "18.163.165.233",
   "origin": "https://18.163.165.233",
   "platformAuthUrl": "https://18.163.165.233/platform",
+  "deploymentMode": "isolated",
+  "businessWritesEnabled": false,
   "commit": "",
   "tag": "",
   "rehearsalMinutes": 0,

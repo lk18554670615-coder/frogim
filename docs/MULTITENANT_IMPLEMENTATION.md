@@ -1805,6 +1805,8 @@ Apple SDK 编译、个推 VoIP 供应商真实配置与实收、三端真机锁�
 版本策略、原数据库或卷，也没有把本地镜像构建当作部署完成。
 操作入口见 [现有服务器发布手册](EXISTING_SERVER_RELEASE.md)。
 
+后续验收顺序已在阶段 43 调整：三端及 VoIP 在隔离服务端部署后验证，正式开放业务前通过。
+
 ### 实现
 
 - 显式 `shared_edge` 模式仅允许共享数据的 default 企业。统一入口独立 Compose 项目，
@@ -1848,3 +1850,39 @@ Windows 本机没有 Apple SDK；iOS 工作流已改参数，但没有伪造云�
 
 本地准备检查点：`checkpoint/shared-edge-preparation-20260929`，包含阶段 41 共享数据和阶段 42
 入口改造。该检查点不是生产发布 tag；正式客户端版本、供应商和迁移证据齐备后须再次冻结最终发布。
+
+## 阶段 43：真实数据隔离迁移、备份恢复及开写前回退（2026-09-29）
+
+按用户后续决定，将三端和 VoIP 验收移至隔离服务端部署之后，正式开放业务之前。
+新增 `server-deploy` 与 `open-business` 两阶段门槛，默认仍执行完整开服检查；
+未显式关闭业务写入、证据被修改或缺少客户端验收时，相关阶段拒绝通过。
+
+### 实际演练
+
+- 使用现网 `20260928T204410Z` 完整快照，全部 633 个文件在服务端及本机核对摘要。
+  密文保存到本机，密钥独立；Redis/部署配置/证书及旧镜像另行加密保存。
+- 首次预检发现 32 个号码不符合平台规则，未绕过预检。用户明确确认后，增加有持久审计、
+  幂等及已完成撤权前提的 `tenant-import -mode quarantine`，保留原 ID/号码/历史关系并禁用认证。
+- 升级企业 schema 72→79，真实控制面停用及撤权后导入 475 个身份；32 个隔离、15 个删除记录保留。
+  完成首账号后结束进程，新进程继续同一批次通过；新企业保持停用，旧会话和设备绑定失效。
+- 145 个有效号码账号没有密码哈希，未生成密码；正式开服前须通过 `passwordlessAccess` 验收。
+- 73 张原表恢复摘要一致；13 张历史业务表旧列摘要一致；630 个 MinIO 对象逐个读回比对，
+  100 条实际 IM 群历史消息与原数据库索引一致。新 Redis DB0/DB1 均为空。
+- 导入/隔离状态留在候选数据库，回退库从原备份另建。现网原 API/IM 镜像经 ID 比对后在本机启动，
+  Caddy 从维护响应切回旧 API 并通过 readiness；持久回执停在 `rolled_back`，从未进入 `opening`。
+- 本次新建的演练容器在结束后停止，原始/候选/回退副本和密文保留，原本机共享部署继续运行。
+
+### 代码与测试证据
+
+- 新增 `backup-file`，复用分块认证加密格式；测试覆盖多块二进制往返、拒绝覆盖、截断/尾随数据及失败不保留明文。
+- 异常号码隔离测试验证实际 PostgreSQL 审计失败回滚、未确认撤权拒绝、正常号码拒绝、重复执行和参数变更拒绝。
+- `phase43-go-tests.log` / `phase43-go-vet.log`：Go 全包通过。
+- `phase43-final-tests.log` / `phase43-final-vet.log`：最终相关包通过。
+- `phase43-legacy-integration.log` / `phase43-quarantine.log`：真实 PostgreSQL 迁移、回退、隔离回归通过。
+- `phase43-release-gates.log`：隔离部署可暂缺客户端证据，正式开服必须补齐；写入开启、伪布尔值和被修改证据被拒绝。
+- `phase43-database-restore.log`、`phase43-rehearsal-interrupt.log`、`phase43-rehearsal-resume.log`、
+  `phase43-media-history.log`、`phase43-redis-check.log`、`phase43-rollback-route.log`：本次实际数据演练。
+
+完整范围、私密回执位置和可重复入口见 [真实数据演练记录](LEGACY_SNAPSHOT_REHEARSAL.md)。
+没有把本机回退演练当作公网切换，也没有把非同一时间的补充备份当作切换一致性快照。
+本阶段不重跑未修改的客户端工程，不声称三端、VoIP、证书续期或上线观察已通过。

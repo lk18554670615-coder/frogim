@@ -1,15 +1,27 @@
 #requires -Version 7.0
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$Manifest)
+param(
+    [Parameter(Mandatory)][string]$Manifest,
+    [ValidateSet('server-deploy', 'open-business')][string]$Stage = 'open-business'
+)
 $ErrorActionPreference = 'Stop'
 # Read-only release gate. Passing this check never stops services or activates
 # a tenant. Evidence is operator-owned and must describe actual acceptance.
 $release = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json -AsHashtable
-$required = @('go', 'admin', 'flutter', 'web', 'android', 'iosAppleSdk',
-    'androidInstall', 'iosInstall', 'threeClientSmoke', 'getuiRealDevice',
-    'voipLockedScreen', 'migrationRehearsal', 'rollbackRehearsal',
+$required = @('go', 'admin', 'web', 'migrationRehearsal', 'rollbackRehearsal',
     'backupRestore', 'offsiteBackup', 'certificateRenewal', 'serverPreflight')
+$clientChecks = @('flutter', 'android', 'iosAppleSdk', 'androidInstall',
+    'iosInstall', 'threeClientSmoke', 'getuiRealDevice', 'voipLockedScreen', 'passwordlessAccess')
+$artifacts = @('edge', 'platform', 'enterprise', 'web')
+if ($Stage -eq 'open-business') {
+    $required += $clientChecks
+    $artifacts += @('android', 'ios')
+}
 $failures = [Collections.Generic.List[string]]::new()
+if ($Stage -eq 'server-deploy' -and
+    ($release.deploymentMode -ne 'isolated' -or $release.businessWritesEnabled -isnot [bool] -or $release.businessWritesEnabled)) {
+    $failures.Add('Server deployment requires explicit isolation and disabled business writes')
+}
 if ($release.target -ne '18.163.165.233' -or $release.origin -ne 'https://18.163.165.233' -or
     $release.platformAuthUrl -ne 'https://18.163.165.233/platform') { $failures.Add('Target or public addressing mismatch') }
 if ($release.commit -notmatch '^[0-9a-f]{40}$' -or !$release.tag) { $failures.Add('Missing frozen commit/tag') }
@@ -41,7 +53,7 @@ foreach ($name in $required) {
         $failures.Add('serverPreflight: older than two hours')
     }
 }
-foreach ($name in @('edge', 'platform', 'enterprise', 'android', 'ios', 'web')) {
+foreach ($name in $artifacts) {
     $artifact = $release.artifacts[$name]
     if (!$artifact -or !$artifact.path -or !(Test-Path -LiteralPath $artifact.path -PathType Leaf) -or
         $artifact.sha256 -notmatch '^[0-9a-f]{64}$' -or
@@ -54,6 +66,10 @@ if ($release.rehearsalMinutes -le 0 -or $release.rehearsalMinutes -gt 90 -or
 if ($release.freeBytes -lt ($release.requiredBytes + 10GB) -or $release.requiredBytes -le 0) { $failures.Add('Insufficient verified disk headroom') }
 if ($failures.Count) {
     $failures | ForEach-Object { Write-Output "NOT READY: $_" }
-    throw 'Release blocked before maintenance. No services or data were changed.'
+    throw "Release stage '$Stage' blocked. No services or data were changed."
 }
-Write-Output 'Release evidence verified. Proceed only through the tenant-migrate receipt workflow; this check performed no deployment.'
+if ($Stage -eq 'server-deploy') {
+    Write-Output 'Isolated server deployment evidence verified. Client and VoIP acceptance remains required before opening; no business write authorization was granted.'
+} else {
+    Write-Output 'Opening evidence verified. Proceed only through the tenant-migrate receipt workflow; this check performed no deployment or activation.'
+}
