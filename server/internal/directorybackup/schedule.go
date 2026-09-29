@@ -19,8 +19,9 @@ import (
 	"github.com/linli/im/server/internal/tenancy"
 )
 
-const directoryScheduleLock int64 = 490739175
-const directoryDeliveryLock int64 = 490739176
+// These locks must not collide with administrator and push transactions.
+const directoryScheduleLock int64 = 490740002
+const directoryDeliveryLock int64 = 490740003
 
 type dailyRemote interface {
 	Deliver(context.Context, backup.Binding, string, []byte) (backup.Delivery, error)

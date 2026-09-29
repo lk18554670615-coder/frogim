@@ -150,7 +150,7 @@ func TestDirectoryBackupPostgresRoundTripQuarantine(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	s.Close()
+	defer s.Close() // Capture must work while authentication connections are live.
 	again, e := d.Inspect(t.Context())
 	if e != nil || again != identity {
 		t.Fatal("migration changed identity")
@@ -328,6 +328,15 @@ func TestDirectoryBackupPostgresSourceLockAndFutureSchema(t *testing.T) {
 		t.Fatal("concurrent backup bypassed lock")
 	}
 	if _, e = conn.Exec(t.Context(), `SELECT pg_advisory_unlock($1)`, directoryBackupLock); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = conn.Exec(t.Context(), `SELECT pg_advisory_lock($1)`, tenancy.PlatformRecoveryLock); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = d.Capture(t.Context(), r, b, path, key); e == nil {
+		t.Fatal("backup raced offline recovery")
+	}
+	if _, e = conn.Exec(t.Context(), `SELECT pg_advisory_unlock($1)`, tenancy.PlatformRecoveryLock); e != nil {
 		t.Fatal(e)
 	}
 	if _, e = conn.Exec(t.Context(), `CREATE SCHEMA unrelated`); e != nil {

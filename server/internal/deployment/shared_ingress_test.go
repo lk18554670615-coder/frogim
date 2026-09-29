@@ -3,6 +3,7 @@ package deployment
 import (
 	"bytes"
 	"encoding/json"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -54,8 +55,13 @@ func TestSharedIngressBundles(t *testing.T) {
 	if _, _, err := BuildPlatformBundle(c.Platform, "platform-edge"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := BuildEdgeBundle(c); err != nil {
+	edge, err := BuildEdgeBundle(c)
+	if err != nil {
 		t.Fatal(err)
+	}
+	u, _ := url.Parse(c.Platform.PublicURL)
+	if !bytes.Contains(edge, []byte("default_sni "+u.Hostname())) {
+		t.Fatal("edge must select its configured certificate for clients without SNI")
 	}
 	c.Enterprise.Production.SharedIngress = nil
 	if c.Enterprise.Validate() == nil {
@@ -82,8 +88,40 @@ func TestSharedIngressCaddyAdapter(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cmd := exec.Command("docker", "run", "--rm", "-i", "-e", "FROGIM_EDGE_SECRET=fixture-proof", "--entrypoint", "caddy", "caddy@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d", "adapt", "--adapter", "caddyfile", "--config", "/dev/stdin")
 			cmd.Stdin = strings.NewReader(config)
-			if out, err := cmd.CombinedOutput(); err != nil {
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			out, err := cmd.Output()
+			if err != nil {
 				t.Fatalf("adapter failed: %s", out)
+			}
+			if name == "edge" {
+				var adapted any
+				if err := json.Unmarshal(out, &adapted); err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				var visit func(any)
+				visit = func(value any) {
+					switch node := value.(type) {
+					case map[string]any:
+						match, _ := json.Marshal(node["match"])
+						if bytes.Contains(match, []byte(`"/web/*"`)) {
+							route, _ := json.Marshal(node)
+							found = bytes.Contains(route, []byte(`"Location":["/app/"]`)) && bytes.Contains(route, []byte(`"status_code":308`))
+						}
+						for _, child := range node {
+							visit(child)
+						}
+					case []any:
+						for _, child := range node {
+							visit(child)
+						}
+					}
+				}
+				visit(adapted)
+				if !found {
+					t.Fatal("legacy Web path must redirect to /app/ with HTTP 308")
+				}
 			}
 		})
 	}

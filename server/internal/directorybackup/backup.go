@@ -17,7 +17,8 @@ import (
 	"github.com/linli/im/server/internal/tenancy"
 )
 
-const directoryBackupLock int64 = 490739174
+// Keep backup serialization separate from live authentication/recovery locks.
+const directoryBackupLock int64 = 490740001
 
 // The source has exactly one platform directory in public. Extra schemas or
 // non-platform tables are rejected rather than silently omitted from a dump.
@@ -72,6 +73,9 @@ func (d Database) Capture(ctx context.Context, r Request, bundle Bundle, path st
 	defer conn.Close(context.Background())
 	var locked bool
 	if e = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, directoryBackupLock).Scan(&locked); e != nil || !locked {
+		return empty, ErrUnconfirmed
+	}
+	if e = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock_shared($1)`, tenancy.PlatformRecoveryLock).Scan(&locked); e != nil || !locked {
 		return empty, ErrUnconfirmed
 	}
 	if e = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock_shared($1)`, tenancy.PlatformMigrationLock).Scan(&locked); e != nil || !locked {

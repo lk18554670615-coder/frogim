@@ -76,6 +76,7 @@ func BuildEdgeBundle(c EdgeConfig) ([]byte, error) {
 	caddy := fmt.Sprintf(`{
   admin 127.0.0.1:2019
   auto_https off
+  default_sni %s
 }
 http://%s {
   handle /.well-known/acme-challenge/* {
@@ -114,7 +115,7 @@ https://%s {
     }
     redir /web /app/ 308
     handle /web/* {
-      redir /app/ 308
+      redir * /app/ 308
     }
     handle_path /downloads/* {
       root * /srv/downloads
@@ -133,7 +134,7 @@ https://%s {
     }
   }
 }
-`, u.Hostname(), u.Host, u.Host, u.Hostname(), u.Hostname(), pc, pc, pc, pc, e.mediaBucket(), mc, ec)
+`, u.Hostname(), u.Hostname(), u.Host, u.Host, u.Hostname(), u.Hostname(), pc, pc, pc, pc, e.mediaBucket(), mc, ec)
 	// Host networking is confined to this independently operated ingress. All
 	// application bundles retain the strict no-host-namespace policy.
 	compose := map[string]any{"name": "frogim-edge", "services": map[string]any{"gateway": map[string]any{
