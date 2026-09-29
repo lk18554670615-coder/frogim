@@ -45,6 +45,15 @@ foreach ($name in @('flutter','android','iosAppleSdk','androidInstall','iosInsta
 }
 foreach ($name in @('android','ios')) { $release.artifacts[$name] = @{path=$proof;sha256=$hash} }
 Assert-Gate open-business $true
+$release.rehearsalMinutes = 0
+$release.rollbackMinutes = 0
+Assert-Gate server-deploy $true
+Assert-Gate open-business $false
+$release.rehearsalMinutes = 91
+$release.rollbackMinutes = 31
+Assert-Gate open-business $false
+$release.rehearsalMinutes = 60
+$release.rollbackMinutes = 20
 Set-Content -LiteralPath $proof -Value 'CHANGED SYNTHETIC PROOF'
 Assert-Gate open-business $false
 Write-Output 'PASS: isolated deploy allows pending client acceptance; opening requires it; write-enabled deployment and changed evidence are rejected.'

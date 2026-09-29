@@ -61,15 +61,16 @@ foreach ($name in $artifacts) {
         $failures.Add("${name}: pinned artifact missing or changed")
     }
 }
-if ($release.rehearsalMinutes -le 0 -or $release.rehearsalMinutes -gt 90 -or
-    $release.rollbackMinutes -le 0 -or $release.rollbackMinutes -gt 30) { $failures.Add('Rehearsal does not fit the two-hour window') }
+if ($Stage -eq 'open-business' -and
+    ($release.rehearsalMinutes -le 0 -or $release.rehearsalMinutes -gt 90 -or
+    $release.rollbackMinutes -le 0 -or $release.rollbackMinutes -gt 30)) { $failures.Add('Rehearsal does not fit the two-hour window') }
 if ($release.freeBytes -lt ($release.requiredBytes + 10GB) -or $release.requiredBytes -le 0) { $failures.Add('Insufficient verified disk headroom') }
 if ($failures.Count) {
     $failures | ForEach-Object { Write-Output "NOT READY: $_" }
     throw "Release stage '$Stage' blocked. No services or data were changed."
 }
 if ($Stage -eq 'server-deploy') {
-    Write-Output 'Isolated server deployment evidence verified. Client and VoIP acceptance remains required before opening; no business write authorization was granted.'
+    Write-Output 'Isolated server deployment evidence verified. Client, VoIP and complete cutover timing acceptance remains required before opening; no business write authorization was granted.'
 } else {
     Write-Output 'Opening evidence verified. Proceed only through the tenant-migrate receipt workflow; this check performed no deployment or activation.'
 }
