@@ -36,10 +36,10 @@ if (-not [Uri]::TryCreate($PlatformAuthUrl, [UriKind]::Absolute, [ref]$authUri) 
 $PlatformAuthUrl = $PlatformAuthUrl.TrimEnd('/')
 if ($BuildOnly -and $PreflightOnly) { throw 'BuildOnly and PreflightOnly are mutually exclusive.' }
 if ([string]::IsNullOrWhiteSpace($TermsUrl)) {
-    $TermsUrl = "$origin/legal/terms"
+    $TermsUrl = "$origin/legal/terms.html"
 }
 if ([string]::IsNullOrWhiteSpace($PrivacyUrl)) {
-    $PrivacyUrl = "$origin/legal/privacy"
+    $PrivacyUrl = "$origin/legal/privacy.html"
 }
 
 foreach ($entry in @{
@@ -91,20 +91,15 @@ try {
 catch {
     throw "Required authentication contract returned invalid JSON: $PlatformAuthUrl/v2/config/auth"
 }
-$registrationEnabled = $authPolicy.registrationEnabled
-$passwordMinLength = $authPolicy.passwordMinLength
-$passwordMaxBytes = $authPolicy.passwordMaxBytes
-$parsedPasswordMinLength = 0L
-$parsedPasswordMaxBytes = 0L
-$validPasswordMinLength = [long]::TryParse([string]$passwordMinLength, [ref]$parsedPasswordMinLength)
-$validPasswordMaxBytes = [long]::TryParse([string]$passwordMaxBytes, [ref]$parsedPasswordMaxBytes)
+# Platform authentication advertises capabilities, not the legacy enterprise
+# password-policy fields. Require the contract used by this platform-only build.
 if ([int]$authPolicyResponse.StatusCode -ne 200 -or
-    $registrationEnabled -isnot [bool] -or
-    -not $validPasswordMinLength -or
-    $parsedPasswordMinLength -lt 8 -or
-    $parsedPasswordMinLength -gt 16 -or
-    -not $validPasswordMaxBytes -or
-    $parsedPasswordMaxBytes -ne 72) {
+    $authPolicy.tenantAuthentication -ne $true -or
+    $authPolicy.passwordLoginEnabled -ne $true -or
+    $authPolicy.passwordChangeEnabled -ne $true -or
+    $authPolicy.registrationEnabled -isnot [bool] -or
+    $authPolicy.otpLoginEnabled -isnot [bool] -or
+    $authPolicy.passwordResetEnabled -isnot [bool]) {
     throw "Authentication contract is incompatible with this client: $PlatformAuthUrl/v2/config/auth"
 }
 
@@ -181,14 +176,18 @@ if ($getuiReady) {
 } elseif (-not $BuildOnly) { throw 'Getui client SDK credentials are required for a production release. BuildOnly artifacts still require device acceptance.' }
 
 function Invoke-FlutterReleaseBuild([string]$target) {
+    $previousGetuiAppId = $env:GETUI_APPID
     Push-Location $mobileRoot
     try {
+        # Gradle's native manifest and Dart's registration must use the same app.
+        if ($getuiReady) { $env:GETUI_APPID = $env:GETUI_APP_ID }
         & $flutter build $target --release @defines
         if ($LASTEXITCODE -ne 0) {
             throw "Flutter $target release build failed with exit code $LASTEXITCODE."
         }
     }
     finally {
+        $env:GETUI_APPID = $previousGetuiAppId
         Pop-Location
     }
 }
