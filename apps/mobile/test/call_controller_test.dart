@@ -16,10 +16,142 @@ import 'package:linli_im/core/tenant_context.dart';
 import 'package:linli_im/core/tenant_call_scope.dart';
 import 'package:linli_im/data/demo_repository.dart';
 import 'package:linli_im/ui/screens/chat_screen.dart';
-import 'package:livekit_client/livekit_client.dart';
+import 'package:livekit_client/livekit_client.dart' hide TimeoutException;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('Web JS 嵌套对象形式的来电显示、接听及取消事件不丢失', () async {
+    final fixture = _Fixture(incoming: true);
+    addTearDown(fixture.dispose);
+    fixture.repository.emit('call.invited', {
+      'callId': fixture.repository.session.id,
+      'call': Map<Object?, Object?>.from(fixture.repository.sessionJson),
+    });
+    await Future<void>.delayed(Duration.zero);
+    expect(fixture.controller.phase, CallPhase.incoming);
+    expect(fixture.systemCalls.incomingCount, 1);
+    fixture.repository.emit('call.cancelled', {
+      'callId': fixture.repository.session.id,
+      'call': Map<Object?, Object?>.from({
+        ...fixture.repository.sessionJson,
+        'status': 'cancelled',
+      }),
+    });
+    await Future<void>.delayed(Duration.zero);
+    expect(fixture.controller.phase, CallPhase.ended);
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    expect(fixture.controller.phase, CallPhase.idle);
+  });
+
+  test('准备媒体时挂断立即取消，迟到初始化不得发出邀请', () async {
+    final fixture = _Fixture();
+    addTearDown(fixture.dispose);
+    final gate = Completer<void>();
+    fixture.engine.initializeGate = gate;
+    final starting = fixture.controller.startCall(
+      fixture.conversation,
+      CallMediaType.audio,
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(fixture.controller.preparingMedia, isTrue);
+    await fixture.controller.end();
+    await starting;
+    expect(fixture.controller.phase, CallPhase.idle);
+    expect(fixture.engine.disposed, isTrue);
+    gate.complete();
+    await Future<void>.delayed(Duration.zero);
+    expect(fixture.repository.inviteCount, 0);
+    expect(fixture.controller.phase, CallPhase.idle);
+  });
+
+  test('取消后迟到的邀请回执只撤销原呼叫', () async {
+    final fixture = _Fixture();
+    addTearDown(fixture.dispose);
+    final gate = Completer<CallSession>();
+    fixture.repository.inviteGate = gate;
+    final starting = fixture.controller.startCall(
+      fixture.conversation,
+      CallMediaType.audio,
+    );
+    await Future<void>.delayed(Duration.zero);
+    final invited = fixture.repository.session;
+    expect(fixture.repository.inviteCount, 1);
+    await fixture.controller.end();
+    await starting;
+    gate.complete(invited);
+    await Future<void>.delayed(Duration.zero);
+    expect(fixture.repository.cancelledIds, [invited.id]);
+    expect(fixture.controller.session, isNull);
+    expect(fixture.systemCalls.outgoingCount, 0);
+  });
+
+  test('接听准备中挂断拒绝原来电，不会在迟到初始化后接听', () async {
+    final fixture = _Fixture(incoming: true);
+    addTearDown(fixture.dispose);
+    fixture.repository.emit('call.invited', {
+      'call': fixture.repository.sessionJson,
+    });
+    await Future<void>.delayed(Duration.zero);
+    final gate = Completer<void>();
+    fixture.engine.initializeGate = gate;
+    final accepting = fixture.controller.accept();
+    await Future<void>.delayed(Duration.zero);
+    await fixture.controller.end();
+    await accepting;
+    gate.complete();
+    await Future<void>.delayed(Duration.zero);
+    expect(fixture.repository.rejectCount, 1);
+    expect(fixture.repository.cancelledIds, isEmpty);
+    expect(fixture.repository.acceptCount, 0);
+    expect(fixture.repository.joinCount, 0);
+    expect(fixture.controller.phase, CallPhase.idle);
+  });
+
+  test('未返回的设备权限请求超时可关闭，迟到错误不污染新通话', () async {
+    final fixture = _Fixture(
+      preparationTimeout: const Duration(milliseconds: 20),
+    );
+    addTearDown(fixture.dispose);
+    final gate = Completer<void>();
+    fixture.engine.initializeGate = gate;
+    await expectLater(
+      fixture.controller.startCall(fixture.conversation, CallMediaType.audio),
+      throwsA(isA<TimeoutException>()),
+    );
+    expect(fixture.controller.errorMessage, contains('准备超时'));
+    expect(fixture.engine.disposed, isTrue);
+    await fixture.controller.dismissFailure();
+    fixture.engine = _FakeEngine();
+    await fixture.controller.startCall(
+      fixture.conversation,
+      CallMediaType.audio,
+    );
+    final id = fixture.controller.session!.id;
+    gate.completeError(StateError('late permission failure'));
+    await Future<void>.delayed(Duration.zero);
+    expect(fixture.controller.phase, CallPhase.outgoing);
+    expect(fixture.controller.session!.id, id);
+    expect(fixture.controller.errorMessage, isNull);
+  });
+
+  test('初始化期间切换身份不使用新账号发出旧邀请', () async {
+    final fixture = _Fixture();
+    addTearDown(fixture.dispose);
+    final gate = Completer<void>();
+    fixture.engine.initializeGate = gate;
+    final starting = fixture.controller.startCall(
+      fixture.conversation,
+      CallMediaType.audio,
+    );
+    await Future<void>.delayed(Duration.zero);
+    fixture.user = _Fixture.peer;
+    gate.complete();
+    await starting;
+    expect(fixture.repository.inviteCount, 0);
+    expect(fixture.engine.disposed, isTrue);
+    expect(fixture.controller.phase, CallPhase.idle);
+  });
 
   group('tenant-scoped native actions', () {
     final owner = Object();
@@ -627,17 +759,19 @@ class _Fixture {
     bool incoming = false,
     Object? engineError,
     bool? requiresTenantScope,
+    Duration preparationTimeout = const Duration(seconds: 30),
   }) {
     repository = _FakeCallRepository(incoming: incoming);
     engine = _FakeEngine(initializeError: engineError);
     systemCalls = _FakeSystemCallService();
     controller = CallController(
       repository: repository,
-      currentUser: () => me,
+      currentUser: () => user,
       findConversation: (_) => conversation,
       engineFactory: () => engine,
       systemCallService: systemCalls,
       requiresTenantScope: requiresTenantScope,
+      preparationTimeout: preparationTimeout,
     );
   }
 
@@ -662,7 +796,8 @@ class _Fixture {
     members: const [me, peer],
   );
   late final _FakeCallRepository repository;
-  late final _FakeEngine engine;
+  late _FakeEngine engine;
+  AppUser? user = me;
   late final _FakeSystemCallService systemCalls;
   late final CallController controller;
   void dispose() {
@@ -732,6 +867,10 @@ class _FakeCallRepository implements CallRepository {
   final events = StreamController<CallSignalEvent>.broadcast();
   CallSession session;
   int acceptCount = 0;
+  int inviteCount = 0;
+  int rejectCount = 0;
+  final cancelledIds = <String>[];
+  Completer<CallSession>? inviteGate;
   int getCount = 0;
   Completer<CallSession>? getGate;
   int joinCount = 0;
@@ -804,21 +943,25 @@ class _FakeCallRepository implements CallRepository {
     required String conversationId,
     String? calleeUserId,
     required CallMediaType mediaType,
-  }) async => session = CallSession(
-    id: callId,
-    conversationId: conversationId,
-    kind: calleeUserId == null ? 'group' : 'direct',
-    callerId: 'me',
-    calleeId: calleeUserId ?? '',
-    participantIds: calleeUserId == null
-        ? const ['me', 'peer']
-        : ['me', calleeUserId],
-    joinedUserIds: const ['me'],
-    mediaType: mediaType,
-    status: 'invited',
-    invitedAt: DateTime.now(),
-    expiresAt: DateTime.now().add(const Duration(seconds: 30)),
-  );
+  }) async {
+    inviteCount++;
+    session = CallSession(
+      id: callId,
+      conversationId: conversationId,
+      kind: calleeUserId == null ? 'group' : 'direct',
+      callerId: 'me',
+      calleeId: calleeUserId ?? '',
+      participantIds: calleeUserId == null
+          ? const ['me', 'peer']
+          : ['me', calleeUserId],
+      joinedUserIds: const ['me'],
+      mediaType: mediaType,
+      status: 'invited',
+      invitedAt: DateTime.now(),
+      expiresAt: DateTime.now().add(const Duration(seconds: 30)),
+    );
+    return inviteGate == null ? session : await inviteGate!.future;
+  }
 
   @override
   Future<CallSession> getCall(String callId) async {
@@ -834,12 +977,16 @@ class _FakeCallRepository implements CallRepository {
   }
 
   @override
-  Future<CallSession> rejectCall(String callId, {String reason = ''}) async =>
-      session;
+  Future<CallSession> rejectCall(String callId, {String reason = ''}) async {
+    rejectCount++;
+    return session;
+  }
 
   @override
-  Future<CallSession> cancelCall(String callId, {String reason = ''}) async =>
-      session;
+  Future<CallSession> cancelCall(String callId, {String reason = ''}) async {
+    cancelledIds.add(callId);
+    return session;
+  }
 
   @override
   Future<CallSession> hangupCall(
@@ -905,6 +1052,8 @@ class _FakeEngine implements CallMediaEngine {
   final connections = StreamController<CallConnectionState>.broadcast();
   final media = StreamController<void>.broadcast();
   bool initialized = false;
+  bool disposed = false;
+  Completer<void>? initializeGate;
   bool muted = false;
   bool cameraEnabled = true;
   bool speakerEnabled = true;
@@ -937,6 +1086,7 @@ class _FakeEngine implements CallMediaEngine {
     required CallMediaType mediaType,
   }) async {
     if (initializeError case final error?) throw error;
+    await initializeGate?.future;
     initialized = true;
   }
 
@@ -978,6 +1128,7 @@ class _FakeEngine implements CallMediaEngine {
 
   @override
   Future<void> dispose() async {
+    disposed = true;
     await connections.close();
     await media.close();
   }

@@ -143,32 +143,46 @@ class LiveKitCallMediaEngine implements CallMediaEngine {
     required CallConfiguration configuration,
     required CallMediaType mediaType,
   }) async {
+    if (_disposing) throw StateError('通话已取消');
     if (_room != null || _localAudio != null || _localVideo != null) return;
     if (configuration.provider != 'livekit') {
       throw StateError('不支持的通话媒体服务');
     }
     _mediaType = mediaType;
-    _localAudio = await LocalAudioTrack.create(
+    final audio = await LocalAudioTrack.create(
       const AudioCaptureOptions(
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
       ),
     );
+    if (_disposing) {
+      await audio.stop();
+      await audio.dispose();
+      throw StateError('通话已取消');
+    }
+    _localAudio = audio;
     if (mediaType == CallMediaType.video) {
-      _localVideo = await LocalVideoTrack.createCameraTrack(
+      final video = await LocalVideoTrack.createCameraTrack(
         const CameraCaptureOptions(
           cameraPosition: CameraPosition.front,
           maxFrameRate: 15,
           params: _videoParameters,
         ),
       );
+      if (_disposing) {
+        await video.stop();
+        await video.dispose();
+        throw StateError('通话已取消');
+      }
+      _localVideo = video;
     }
     _emitMedia();
   }
 
   @override
   Future<void> connect(CallMediaSession session) async {
+    if (_disposing) throw StateError('通话已取消');
     if (_connected) return;
     if (_localAudio == null) {
       throw StateError('通话媒体尚未初始化');
@@ -226,6 +240,10 @@ class LiveKitCallMediaEngine implements CallMediaEngine {
           ),
         ),
       );
+      if (_disposing) {
+        await room.disconnect();
+        throw StateError('通话已取消');
+      }
       _connected = true;
       await room.setSpeakerOn(_speakerEnabled);
       await room.localParticipant?.setMicrophoneEnabled(!_muted);
@@ -235,7 +253,9 @@ class LiveKitCallMediaEngine implements CallMediaEngine {
       _connections.add(CallConnectionState.connected);
       _emitMedia();
     } catch (_) {
-      _connections.add(CallConnectionState.failed);
+      if (!_disposing && !_connections.isClosed) {
+        _connections.add(CallConnectionState.failed);
+      }
       rethrow;
     }
   }
@@ -328,6 +348,17 @@ class LiveKitCallMediaEngine implements CallMediaEngine {
     }
     final room = _room;
     _room = null;
+    final audio = _localAudio;
+    final video = _localVideo;
+    _localAudio = null;
+    _localVideo = null;
+    // Capture starts before the room owns a publication. A failed handshake or
+    // slow room teardown must not leave those devices recording in the browser.
+    for (final track in <LocalTrack?>[audio, video]) {
+      try {
+        await track?.stop().timeout(const Duration(seconds: 2));
+      } catch (_) {}
+    }
     await _listener?.dispose();
     _listener = null;
     if (room != null) {
@@ -338,18 +369,16 @@ class LiveKitCallMediaEngine implements CallMediaEngine {
         // cleanup must still finish and preserve the original connection error.
       }
       try {
-        await room.dispose();
+        await room.dispose().timeout(const Duration(seconds: 3));
       } catch (_) {
         // Native WebRTC resources are best-effort after a failed handshake.
       }
-    } else {
-      await _localAudio?.stop();
-      await _localAudio?.dispose();
-      await _localVideo?.stop();
-      await _localVideo?.dispose();
     }
-    _localAudio = null;
-    _localVideo = null;
+    for (final track in <LocalTrack?>[audio, video]) {
+      try {
+        await track?.dispose().timeout(const Duration(seconds: 2));
+      } catch (_) {}
+    }
     if (!_connections.isClosed) {
       _connections.add(CallConnectionState.closed);
       await _connections.close();

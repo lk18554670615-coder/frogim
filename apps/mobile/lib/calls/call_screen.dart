@@ -283,7 +283,10 @@ class _CallHeading extends StatelessWidget {
     final status = switch (controller.phase) {
       CallPhase.incoming => controller.isVideo ? '邀请你视频通话' : '邀请你语音通话',
       CallPhase.outgoing => '正在等待对方接听…',
-      CallPhase.connecting => '正在建立安全连接…',
+      CallPhase.connecting =>
+        controller.preparingMedia
+            ? '正在准备${controller.isVideo ? '摄像头和麦克风' : '麦克风'}，请确认设备权限…'
+            : '正在建立安全连接…',
       CallPhase.active =>
         controller.session?.isGroup == true
             ? '${controller.participantCount} 人 · ${_duration(controller.elapsed)}'
