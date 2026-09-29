@@ -18,6 +18,16 @@ import (
 // the corresponding deployment artifact; this cannot verify a cloud firewall.
 func validatePlatformRuntime(get func(string) string) error {
 	invalid := errors.New("platform runtime profile invalid; inspect private operator configuration")
+	if !tenancy.ValidFixedVerificationCode(get("PLATFORM_FIXED_VERIFICATION_CODE")) {
+		return invalid
+	}
+	if get("PLATFORM_FIXED_VERIFICATION_CODE") != "" {
+		for _, key := range []string{"PLATFORM_OTP_WEBHOOK_URL", "PLATFORM_OTP_WEBHOOK_TOKEN", "PLATFORM_PASSWORD_RESET_SMS_URL", "PLATFORM_PASSWORD_RESET_SMS_TOKEN"} {
+			if get(key) != "" {
+				return invalid
+			}
+		}
+	}
 	env, mode := get("PLATFORM_ENV"), get("PLATFORM_DEPLOYMENT_MODE")
 	if env == "development" {
 		if mode != "" && mode != "local_preview" {

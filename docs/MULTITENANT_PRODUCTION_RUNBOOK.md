@@ -141,7 +141,12 @@ Compose 转义，不应绕过代理直接当作普通 Compose 执行。
 
 ## 4. 默认关闭和来源 IP
 
-平台未配置真实短信时 `registrationEnabled/otpLoginEnabled=false`；没有固定验证码回退。
+平台默认未配置短信时 `registrationEnabled/otpLoginEnabled/passwordResetEnabled=false`，供应商失败不会回退到固定验证码。
+若运维明确选择原开发验证码行为，可在私有平台配置设置 `fixedVerificationCode: "123456"`，
+渲染为 `PLATFORM_FIXED_VERIFICATION_CODE=123456`。它同时启用注册、验证码登录和密码找回，
+不发送真实短信，不验证手机归属；不能与登录或找回密码的短信 webhook 配置混用。
+错误验证码、限流、封禁、凭据撤权、找回挑战有效期及企业隔离仍生效；未接入平台的自助换绑和注销不因此开放。
+移除此字段并配置真实短信适配器即可切回手机收码，不应开启整个生产服务的开发模式。
 `suppliers` 缺失时所有真实推送关闭。配置不全或 APNs 生产模式误用 sandbox 会拒绝生成。
 企业只使用中央推送，不能持有共享 App 供应商密钥。
 

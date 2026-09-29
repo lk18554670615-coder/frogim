@@ -104,6 +104,23 @@ func TestPlatformProductionBundle(t *testing.T) {
 	}
 }
 
+func TestPlatformFixedVerificationConfig(t *testing.T) {
+	c := platformBundleFixture(t)
+	c.FixedVerificationCode = "123456"
+	if c.Validate() != nil || c.RuntimeEnvironment()["PLATFORM_FIXED_VERIFICATION_CODE"] != "123456" {
+		t.Fatal("fixed verification not rendered")
+	}
+	c.FixedVerificationCode = "12345"
+	if c.Validate() == nil {
+		t.Fatal("invalid fixed code")
+	}
+	c.FixedVerificationCode = "123456"
+	c.Suppliers = map[string]string{"PLATFORM_OTP_WEBHOOK_URL": "https://sms.example.test", "PLATFORM_OTP_WEBHOOK_TOKEN": strings.Repeat("a", 32)}
+	if c.Validate() == nil {
+		t.Fatal("mixed verification providers")
+	}
+}
+
 func TestPlatformProductionRejectsUnsafeConfiguration(t *testing.T) {
 	c := platformBundleFixture(t)
 	for name, mutate := range map[string]func(*PlatformConfig){

@@ -42,6 +42,9 @@ func (s *Store) RequestPasswordRecovery(ctx context.Context, id, phone, token st
 		return err
 	}
 	code := fmt.Sprintf("%06d", n.Int64())
+	if fixed, ok := sms.(*FixedOTP); ok {
+		code = fixed.code
+	}
 	// Missing, blocked and not-yet-active accounts get the same delivery response.
 	// No directory or enterprise identity is exposed before phone verification.
 	tag, err := s.pool.Exec(ctx, `INSERT INTO platform_password_recovery(id,capability_hash,phone,account_id,assignment_version,auth_version,code_hash,expires_at,realm_version)

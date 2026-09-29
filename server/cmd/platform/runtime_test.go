@@ -29,6 +29,23 @@ func TestProductionPlatformRequiresExplicitCompleteProfile(t *testing.T) {
 	if validatePlatformRuntime(get) != nil {
 		t.Fatal("valid production profile rejected")
 	}
+	values["PLATFORM_FIXED_VERIFICATION_CODE"] = "123456"
+	if validatePlatformRuntime(get) != nil {
+		t.Fatal("explicit fixed verification rejected")
+	}
+	values["PLATFORM_FIXED_VERIFICATION_CODE"] = "123456\n"
+	if validatePlatformRuntime(get) == nil {
+		t.Fatal("invalid fixed verification accepted")
+	}
+	values["PLATFORM_FIXED_VERIFICATION_CODE"] = "123456"
+	for _, key := range []string{"PLATFORM_OTP_WEBHOOK_URL", "PLATFORM_PASSWORD_RESET_SMS_TOKEN"} {
+		values[key] = "configured"
+		if validatePlatformRuntime(get) == nil {
+			t.Fatal("mixed verification providers accepted")
+		}
+		delete(values, key)
+	}
+	delete(values, "PLATFORM_FIXED_VERIFICATION_CODE")
 	for key, bad := range map[string]string{"PLATFORM_DEPLOYMENT_MODE": "", "PLATFORM_PUBLIC_URL": "https://127.0.0.1:18443", "PLATFORM_WEB_ORIGIN": "*", "PLATFORM_ADMIN_PASSWORD_HASH": "plaintext", "PLATFORM_CA_FILE": "relative", "PLATFORM_DEV_OTP_CODE": "123456", "PLATFORM_DEV_MODE": "true", "PLATFORM_ADDR": ":80", "PLATFORM_CONTROL_ADDR": ":8090", "PLATFORM_DATABASE_URL": "postgres://shared.example.test/db"} {
 		t.Run(key, func(t *testing.T) {
 			before := values[key]

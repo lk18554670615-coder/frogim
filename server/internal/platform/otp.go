@@ -12,8 +12,8 @@ import (
 	"github.com/linli/im/server/internal/tenancy"
 )
 
-// WebhookOTP is the only runtime OTP provider. There is intentionally no
-// development/fixed code fallback in the platform executable.
+// WebhookOTP delegates verification to a configured SMS provider. Fixed-code
+// verification must be selected explicitly; provider failures never enable it.
 type WebhookOTP struct {
 	url, token string
 	client     *http.Client

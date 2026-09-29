@@ -136,6 +136,13 @@ func run() error {
 			return err
 		}
 	}
+	if code := os.Getenv("PLATFORM_FIXED_VERIFICATION_CODE"); code != "" {
+		fixed, fixedErr := platform.NewFixedOTP(code)
+		if fixedErr != nil {
+			return fixedErr
+		}
+		api.OTP, api.RecoverySMS = fixed, fixed
+	}
 	publicAddr := os.Getenv("PLATFORM_ADDR")
 	if publicAddr == "" {
 		publicAddr = "127.0.0.1:8090"

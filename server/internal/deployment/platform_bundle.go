@@ -22,24 +22,25 @@ import (
 // PlatformConfig is an operator-owned private file, never an admin API request.
 // There is one platform project. It contains no business database, IM or media.
 type PlatformConfig struct {
-	SharedIngress     *SharedIngress    `json:"sharedIngress,omitempty"`
-	SharedDatastores  bool              `json:"sharedDatastores,omitempty"`
-	ToolsImage        string            `json:"toolsImage"`
-	PublicURL         string            `json:"publicUrl"`
-	ControlURL        string            `json:"controlUrl"`
-	PublicBindIP      string            `json:"publicBindIp"`
-	ControlBindIP     string            `json:"controlBindIp"`
-	DatabaseSecret    string            `json:"databaseSecret"`
-	RedisSecret       string            `json:"redisSecret"`
-	GatewaySecret     string            `json:"gatewaySecret"`
-	AdminUsername     string            `json:"adminUsername"`
-	AdminPasswordHash string            `json:"adminPasswordHash"`
-	PublicTLS         EnterpriseTLS     `json:"publicTls"`
-	ControlTLS        EnterpriseTLS     `json:"controlTls"`
-	Peers             []PlatformPeer    `json:"peers"`
-	Catalog           []Release         `json:"catalog"`
-	Suppliers         map[string]string `json:"suppliers,omitempty"`
-	APNSPrivateKey    string            `json:"apnsPrivateKey,omitempty"`
+	SharedIngress         *SharedIngress    `json:"sharedIngress,omitempty"`
+	SharedDatastores      bool              `json:"sharedDatastores,omitempty"`
+	ToolsImage            string            `json:"toolsImage"`
+	PublicURL             string            `json:"publicUrl"`
+	ControlURL            string            `json:"controlUrl"`
+	PublicBindIP          string            `json:"publicBindIp"`
+	ControlBindIP         string            `json:"controlBindIp"`
+	DatabaseSecret        string            `json:"databaseSecret"`
+	RedisSecret           string            `json:"redisSecret"`
+	GatewaySecret         string            `json:"gatewaySecret"`
+	AdminUsername         string            `json:"adminUsername"`
+	AdminPasswordHash     string            `json:"adminPasswordHash"`
+	PublicTLS             EnterpriseTLS     `json:"publicTls"`
+	ControlTLS            EnterpriseTLS     `json:"controlTls"`
+	Peers                 []PlatformPeer    `json:"peers"`
+	Catalog               []Release         `json:"catalog"`
+	Suppliers             map[string]string `json:"suppliers,omitempty"`
+	APNSPrivateKey        string            `json:"apnsPrivateKey,omitempty"`
+	FixedVerificationCode string            `json:"fixedVerificationCode,omitempty"`
 }
 type PlatformPeer struct {
 	TenantID   string `json:"tenantId"`
@@ -94,6 +95,16 @@ func productionPublicBind(raw string) bool {
 	return err == nil && !ip.IsLoopback() && !ip.IsMulticast() && !ip.IsLinkLocalUnicast() && (ip.IsUnspecified() || ip.IsGlobalUnicast())
 }
 func (c PlatformConfig) Validate() error {
+	if !tenancy.ValidFixedVerificationCode(c.FixedVerificationCode) {
+		return ErrBundle
+	}
+	if c.FixedVerificationCode != "" {
+		for _, key := range []string{"PLATFORM_OTP_WEBHOOK_URL", "PLATFORM_OTP_WEBHOOK_TOKEN", "PLATFORM_PASSWORD_RESET_SMS_URL", "PLATFORM_PASSWORD_RESET_SMS_TOKEN"} {
+			if c.Suppliers[key] != "" {
+				return ErrBundle
+			}
+		}
+	}
 	if c.SharedIngress != nil && (!c.SharedDatastores || c.SharedIngress.valid() != nil || c.SharedIngress.HTTPSPort < 1024 || c.SharedIngress.HTTPSPort > 65535 || c.SharedIngress.HTTPSPort == originPort(c.ControlURL) || c.SharedIngress.Secret == c.GatewaySecret) {
 		return ErrBundle
 	}
@@ -177,6 +188,9 @@ func (c PlatformConfig) RuntimeEnvironment() map[string]string {
 	}
 	for key, value := range c.Suppliers {
 		env[key] = value
+	}
+	if c.FixedVerificationCode != "" {
+		env["PLATFORM_FIXED_VERIFICATION_CODE"] = c.FixedVerificationCode
 	}
 	if c.APNSPrivateKey != "" {
 		env["PLATFORM_APNS_VOIP_KEY_FILE"] = "/config/apns.pem"
