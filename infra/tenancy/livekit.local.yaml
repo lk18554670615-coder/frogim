@@ -1,0 +1,15 @@
+port: 7880
+rtc:
+  node_ip: 127.0.0.1
+  tcp_port: 17881
+  udp_port: 17882-17889
+  use_external_ip: false
+  allow_tcp_fallback: true
+room:
+  auto_create: false
+  empty_timeout: 60
+  departure_timeout: 20
+  max_participants: 9
+logging:
+  level: warn
+  json: true

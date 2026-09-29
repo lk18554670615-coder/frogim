@@ -23,20 +23,43 @@ import (
 //go:embed schema.sql
 var normalizedSchema string
 
+//go:embed tenant_schema.sql
+var tenantSchema string
+
+//go:embed tenant_credentials_schema.sql
+var tenantCredentialsSchema string
+
+//go:embed tenant_media_schema.sql
+var tenantMediaSchema string
+
+//go:embed tenant_access_schema.sql
+var tenantAccessSchema string
+
+//go:embed tenant_realm_schema.sql
+var tenantRealmSchema string
+
+//go:embed tenant_push_schema.sql
+var tenantPushSchema string
+
+//go:embed tenant_legacy_import_schema.sql
+var tenantLegacyImportSchema string
+
 type Postgres struct {
 	pool            *pgxpool.Pool
 	historyBoundary GroupHistoryBoundaryReader
 }
 
-const schemaVersion = 72
+const schemaVersion = 79
 
 type PostgresOptions struct {
-	MaxConns          int32
-	MinConns          int32
-	MaxConnLifetime   time.Duration
-	MaxConnIdleTime   time.Duration
-	HealthCheckPeriod time.Duration
-	StatementTimeout  time.Duration
+	TenantID           string
+	BindExistingTenant bool
+	MaxConns           int32
+	MinConns           int32
+	MaxConnLifetime    time.Duration
+	MaxConnIdleTime    time.Duration
+	HealthCheckPeriod  time.Duration
+	StatementTimeout   time.Duration
 }
 
 func secureOpaqueToken(prefix string) (string, error) {
@@ -96,7 +119,19 @@ func NewPostgresWithOptions(ctx context.Context, url string, options PostgresOpt
 		pool.Close()
 		return nil, err
 	}
+	if err = p.verifyDatabaseRealm(ctx, options.TenantID); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	if err = p.verifyTenantAdoption(ctx, options.TenantID, options.BindExistingTenant); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	if err = p.migrate(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	if err = p.BindTenant(ctx, options.TenantID, options.BindExistingTenant); err != nil {
 		pool.Close()
 		return nil, err
 	}
@@ -162,6 +197,41 @@ func (p *Postgres) migrate(ctx context.Context) error {
 			// engine either adds a friend immediately or creates a manager review,
 			// so unresolved legacy invitations must never cross that boundary.
 			if _, err = tx.Exec(ctx, `UPDATE im_group_invites SET status='cancelled',resolved_at=COALESCE(resolved_at,now()),updated_at=now() WHERE status='pending'`); err != nil {
+				return err
+			}
+		}
+		if current < 73 {
+			if _, err = tx.Exec(ctx, tenantSchema); err != nil {
+				return err
+			}
+		}
+		if current < 74 {
+			if _, err = tx.Exec(ctx, tenantCredentialsSchema); err != nil {
+				return err
+			}
+		}
+		if current < 75 {
+			if _, err = tx.Exec(ctx, tenantMediaSchema); err != nil {
+				return err
+			}
+		}
+		if current < 76 {
+			if _, err = tx.Exec(ctx, tenantAccessSchema); err != nil {
+				return err
+			}
+		}
+		if current < 77 {
+			if _, err = tx.Exec(ctx, tenantRealmSchema); err != nil {
+				return err
+			}
+		}
+		if current < 78 {
+			if _, err = tx.Exec(ctx, tenantPushSchema); err != nil {
+				return err
+			}
+		}
+		if current < 79 {
+			if _, err = tx.Exec(ctx, tenantLegacyImportSchema); err != nil {
 				return err
 			}
 		}
@@ -496,7 +566,7 @@ func (p *Postgres) RegisterPasswordUser(ctx context.Context, phone, name, id, ha
 func (p *Postgres) PasswordCredentials(ctx context.Context, phone string) (*model.User, string, error) {
 	u := &model.User{}
 	var hash string
-	err := p.pool.QueryRow(ctx, `SELECT id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,allow_search_by_handle,allow_search_by_phone,gender,banned,created_at,password_hash FROM im_users WHERE phone=$1`, phone).Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.AllowSearchByHandle, &u.AllowSearchByPhone, &u.Gender, &u.Banned, &u.CreatedAt, &hash)
+	err := p.pool.QueryRow(ctx, `SELECT id,phone,name,COALESCE(handle,''),handle_change_count,signature,COALESCE(avatar_media_id,''),avatar_url,allow_search_by_handle,allow_search_by_phone,gender,banned,created_at,password_hash FROM im_users WHERE phone=$1 AND local_identity_state='active'`, phone).Scan(&u.ID, &u.Phone, &u.Name, &u.Handle, &u.HandleChangeCount, &u.Signature, &u.AvatarMediaID, &u.AvatarURL, &u.AllowSearchByHandle, &u.AllowSearchByPhone, &u.Gender, &u.Banned, &u.CreatedAt, &hash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, "", ErrNotFound
 	}
@@ -510,7 +580,7 @@ func (p *Postgres) UpdatePassword(ctx context.Context, phone, hash string, updat
 	}
 	defer tx.Rollback(ctx)
 	var uid string
-	if err = tx.QueryRow(ctx, `UPDATE im_users SET password_hash=$2,password_updated_at=$3,updated_at=$3 WHERE phone=$1 RETURNING id`, phone, hash, updated).Scan(&uid); errors.Is(err, pgx.ErrNoRows) {
+	if err = tx.QueryRow(ctx, `UPDATE im_users SET password_hash=$2,password_updated_at=$3,updated_at=$3 WHERE phone=$1 AND local_identity_state='active' RETURNING id`, phone, hash, updated).Scan(&uid); errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {
 		return err
@@ -601,7 +671,7 @@ func (p *Postgres) RotateDeviceRefreshSession(ctx context.Context, oldID, newID,
 
 func (p *Postgres) DeviceSessionActive(ctx context.Context, sessionID, uid, deviceKind string) (bool, error) {
 	var active bool
-	err := p.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_refresh_sessions WHERE user_id=$1 AND device_kind=$2 AND session_id=$3 AND revoked_at IS NULL AND expires_at>now())`, uid, deviceKind, sessionID).Scan(&active)
+	err := p.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_refresh_sessions s JOIN im_users u ON u.id=s.user_id WHERE s.user_id=$1 AND s.device_kind=$2 AND s.session_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.local_identity_state='active')`, uid, deviceKind, sessionID).Scan(&active)
 	return active, err
 }
 
@@ -1544,19 +1614,30 @@ func (p *Postgres) ClaimPush(ctx context.Context, n int) ([]OutboxItem, error) {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `SELECT id,user_id,event_type,payload,attempts FROM im_push_outbox WHERE (status='pending' AND available_at<=now()) OR (status='processing' AND COALESCE(locked_at,created_at)<now()-interval '5 minutes') ORDER BY id FOR UPDATE SKIP LOCKED LIMIT $1`, n)
+	var managed bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_tenant_identity WHERE singleton)`).Scan(&managed); err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT id,user_id,event_type,payload,attempts,tenant_push FROM im_push_outbox WHERE (status='pending' AND available_at<=now()) OR (status='processing' AND COALESCE(locked_at,created_at)<now()-interval '5 minutes') ORDER BY id FOR UPDATE SKIP LOCKED LIMIT $1`, n)
 	if err != nil {
 		return nil, err
 	}
 	var out []OutboxItem
 	for rows.Next() {
 		var x OutboxItem
-		var raw []byte
-		if err = rows.Scan(&x.ID, &x.UserID, &x.EventType, &raw, &x.Attempts); err != nil {
+		var raw, frozen []byte
+		if err = rows.Scan(&x.ID, &x.UserID, &x.EventType, &raw, &x.Attempts, &frozen); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		_ = json.Unmarshal(raw, &x.Payload)
+		x.TenantManaged = managed
+		if len(frozen) > 0 {
+			// Corrupt/old provenance cannot be reconstructed with current identity.
+			if json.Unmarshal(frozen, &x.TenantPush) != nil {
+				x.TenantPush = nil
+			}
+		}
 		out = append(out, x)
 	}
 	rows.Close()
@@ -1573,7 +1654,7 @@ func (p *Postgres) ClaimPush(ctx context.Context, n int) ([]OutboxItem, error) {
 		userIndexes[out[i].UserID] = append(userIndexes[out[i].UserID], i)
 		itemIDs = append(itemIDs, out[i].ID)
 	}
-	if len(userIDs) > 0 {
+	if len(userIDs) > 0 && !managed {
 		deviceRows, queryErr := tx.Query(ctx, `SELECT user_id,id,platform,push_token,provider,notifications_enabled,preview_enabled,sound_enabled,vibration_enabled FROM (
 			SELECT d.*,row_number() OVER(PARTITION BY user_id ORDER BY id) AS device_rank FROM im_devices d
 			WHERE user_id=ANY($1::text[]) AND notifications_enabled=true

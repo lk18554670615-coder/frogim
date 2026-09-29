@@ -6,10 +6,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const sdkPath = path.resolve(__dirname, '../web/wukongimjssdk-1.3.5.umd.js');
-const bytes = fs.readFileSync(sdkPath);
+// The pinned npm UMD mixes LF/CRLF. Git text checkout normalizes it; validate
+// the canonical LF content on both Windows and Linux. Verified against the
+// SHA256-locked npm archive (raw UMD: 47ae5759...63875), not a new SDK version.
+const bytes = fs.readFileSync(sdkPath, 'utf8').replace(/\r\n/g, '\n');
 assert.equal(
   crypto.createHash('sha256').update(bytes).digest('hex'),
-  '47ae5759b21ec1ad67fb1ad7a63f4d6ddb0dfacd226a5fcb9104b99fcd763875',
+  '2c2665fdb9c045d14b42696c2eba5294706dd1efc9623e2ec6a9cb24be5f6fda',
   'bundled UMD file drifted from the frozen 1.3.5 artifact',
 );
 

@@ -10,8 +10,14 @@ import 'wukong_gateway_contract.dart';
 @JS('globalThis.wk')
 external JSObject? get _wkGlobal;
 
-WukongGateway createWukongGateway({WukongDataSource? dataSource}) =>
-    WebWukongGateway(dataSource: dataSource);
+@JS('frogimResetWukongSession')
+external JSBoolean _resetSession(JSObject sdk);
+
+// JS SDK history is memory-only; its owner disposes it before changing scope.
+WukongGateway createWukongGateway({
+  WukongDataSource? dataSource,
+  String? cacheNamespace,
+}) => WebWukongGateway(dataSource: dataSource);
 
 class WebWukongGateway
     implements WukongGateway, WukongHistoryCache, WukongDeletionCache {
@@ -151,6 +157,8 @@ class WebWukongGateway
       );
     }
     await disconnect();
+    _checkNotDisposed();
+    if (_sdk case final previous?) _resetSession(previous);
     final previousEventManager = _eventManager;
     final previousEventCallback = _eventCallback;
     if (previousEventManager != null && previousEventCallback != null) {
@@ -186,6 +194,7 @@ class WebWukongGateway
     _eventManager = _object(sdk, 'eventManager');
     _eventCallback = null;
     _callbacks.clear();
+    _clientMsgBySeq.clear();
     _configureProvider(_object(config, 'provider'));
     _configureListeners();
     for (final type in WukongContentType.custom) {
@@ -199,6 +208,7 @@ class WebWukongGateway
 
   void _configureProvider(JSObject provider) {
     final connectAddress = ((JSFunction complete) {
+      if (_disposed) return;
       complete.callAsFunction(null, _session!.wsUrl.toJS);
     }).toJS;
     final syncConversations = ((JSAny? _) => _syncWebConversations().toJS).toJS;
@@ -257,6 +267,7 @@ class WebWukongGateway
         type: _integer(channel, 'channelType'),
       ),
     );
+    _checkNotDisposed();
     final item = raw ?? const <String, Object?>{};
     final info = _sdk!.callMethod<JSObject>('newChannelInfo'.toJS);
     info
@@ -290,6 +301,7 @@ class WebWukongGateway
       version: version,
       limit: 500,
     );
+    _checkNotDisposed();
     return (items ?? const <Map<String, Object?>>[])
         .map((item) {
           final subscriber = _constructor(
@@ -334,6 +346,7 @@ class WebWukongGateway
       version: version,
       limit: limit.clamp(1, 500),
     );
+    _checkNotDisposed();
     return (items ?? const <Map<String, Object?>>[])
         .map((item) {
           final extra = _constructor(
@@ -377,6 +390,7 @@ class WebWukongGateway
     final result = <JSObject>[];
     for (var page = 0; page < 50; page++) {
       final items = await source.syncReminders(version: version, limit: 500);
+      _checkNotDisposed();
       for (final item in items) {
         final reminder = _constructor('Reminder').callAsConstructor<JSObject>();
         final channel = _sdk!.callMethodVarArgs<JSObject>('newChannel'.toJS, [
@@ -416,6 +430,7 @@ class WebWukongGateway
 
   void _configureListeners() {
     final connection = ((JSNumber status, JSNumber? reason, JSObject? _) {
+      if (_disposed) return;
       final value = status.toDartInt;
       final state = switch (value) {
         1 => WukongConnectionState.connected,
@@ -439,6 +454,7 @@ class WebWukongGateway
       if (value == 1) _refreshWebReminders();
     }).toJS;
     final message = ((JSObject raw) {
+      if (_disposed) return;
       final mapped = _fromWebMessage(raw);
       final isSending = mapped.state == WukongMessageState.sending;
       if (isSending && mapped.clientSeq > 0) {
@@ -455,6 +471,7 @@ class WebWukongGateway
       );
     }).toJS;
     final sendStatus = ((JSObject ack) {
+      if (_disposed) return;
       final clientSeq = _integer(ack, 'clientSeq');
       final clientMsgNo = _clientMsgBySeq.remove(clientSeq) ?? '';
       _sendResults.add(
@@ -468,6 +485,7 @@ class WebWukongGateway
       );
     }).toJS;
     final command = ((JSObject raw) {
+      if (_disposed) return;
       final mapped = _fromWebMessage(raw);
       _events.add(
         WukongGatewayEvent(
@@ -480,6 +498,7 @@ class WebWukongGateway
       _refreshWebReminders();
     }).toJS;
     final conversation = ((JSObject raw, JSNumber action) {
+      if (_disposed) return;
       final channel = _object(raw, 'channel');
       _events.add(
         WukongGatewayEvent(
@@ -497,6 +516,7 @@ class WebWukongGateway
       );
     }).toJS;
     final messageEvent = ((JSObject raw) {
+      if (_disposed) return;
       final data = _map(raw.getProperty<JSAny?>('dataJson'.toJS)?.dartify());
       _events.add(
         WukongGatewayEvent(
@@ -558,6 +578,7 @@ class WebWukongGateway
 
   @override
   Future<void> markRead(WukongChannel channel) async {
+    _checkNotDisposed();
     final sdk = _sdk;
     final manager = _conversationManager;
     if (sdk == null || manager == null) return;
@@ -675,6 +696,7 @@ class WebWukongGateway
       lastMsgSeqs: '',
       messageCount: 1,
     );
+    _checkNotDisposed();
     return (items ?? const <Map<String, Object?>>[])
         .map(_webConversation)
         .toList()
@@ -695,6 +717,7 @@ class WebWukongGateway
       limit: _integer(options, 'limit').clamp(1, 500),
       pullMode: _integer(options, 'pullMode'),
     );
+    _checkNotDisposed();
     final messages = response?['messages'] as List<Object?>? ?? const [];
     return messages
         .map((value) => _webSyncedMessage(_map(value)))
@@ -821,7 +844,9 @@ class WebWukongGateway
   @override
   Future<void> dispose() async {
     if (_disposed) return;
+    _disposed = true;
     await disconnect(logout: true);
+    if (_sdk case final previous?) _resetSession(previous);
     final eventManager = _eventManager;
     final eventCallback = _eventCallback;
     if (eventManager != null && eventCallback != null) {
@@ -831,7 +856,6 @@ class WebWukongGateway
       );
     }
     _eventCallback = null;
-    _disposed = true;
     _callbacks.clear();
     await _states.close();
     await _events.close();

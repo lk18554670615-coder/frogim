@@ -1,0 +1,51 @@
+diff --git a/internal/user/handler/event_close.go b/internal/user/handler/event_close.go
+--- a/internal/user/handler/event_close.go
++++ b/internal/user/handler/event_close.go
+@@ -24,11 +24,11 @@ func (h *Handler) closeConn(ctx *eventbus.UserContext) {
+ 			h.Error("closeConn: conn node id is 0")
+ 			return
+ 		}
+-		// 移除逻辑连接
+-		eventbus.User.DirectRemoveConn(conn)
+ 
+ 		// 如果不是本地节点，则转发关闭请求
+ 		if !options.G.IsLocalNode(conn.NodeId) {
++			// Preserve the existing remote-node forwarding behavior.
++			eventbus.User.DirectRemoveConn(conn)
+ 			h.forwardToNode(conn.NodeId, conn.Uid, e)
+ 			return
+ 		}
+@@ -42,12 +42,18 @@ func (h *Handler) closeConn(ctx *eventbus.UserContext) {
+ 		}
+ 		if realConn == nil {
+ 			h.Info("closeConn: conn not exist", zap.String("uid", conn.Uid), zap.Int64("connId", conn.ConnId))
++			eventbus.User.DirectRemoveConn(conn)
+ 			continue
+ 		}
++		// DirectRemoveConn also removes ConnManager's physical lookup. Closing
++		// afterwards leaves an authenticated socket alive but reported offline.
++		// Close first; failed validation/close must retain the online barrier.
+ 		err = realConn.Close()
+ 		if err != nil {
+ 			h.Info("closeConn: Failed to close the conn", zap.Error(err))
++			continue
+ 		}
++		eventbus.User.DirectRemoveConn(conn)
+ 	}
+ }
+ 
+diff --git a/internal/user/handler/event_connect.go b/internal/user/handler/event_connect.go
+--- a/internal/user/handler/event_connect.go
++++ b/internal/user/handler/event_connect.go
+@@ -25,7 +25,10 @@ func (h *Handler) connect(ctx *eventbus.UserContext) {
+ 		reasonCode, packet, err := h.handleConnect(event)
+ 		if err != nil {
+ 			h.Error("handle connect err", zap.Error(err))
+-			return
++			// Authentication failure must terminate the unauthenticated socket;
++			// do not leave a revoked token hanging without CONNACK or EOF.
++			eventbus.User.CloseConn(conn)
++			continue
+ 		}
+ 		if reasonCode == wkproto.ReasonSuccess {
+ 			if conn.LastActive <= 0 {

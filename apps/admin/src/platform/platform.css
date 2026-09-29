@@ -1,0 +1,67 @@
+@import '../../tokens.css';
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--color-canvas); color: var(--color-ink); font-family: var(--font-body); font-size: 14px; }
+button, input, textarea, select { font: inherit; }
+button { cursor: pointer; border: 1px solid var(--color-rule-strong); border-radius: 8px; padding: 9px 14px; background: var(--color-paper); color: var(--color-link); }
+button:hover:not(:disabled) { background: var(--color-selected); }
+button:disabled { opacity: .55; cursor: not-allowed; }
+.primary { background: var(--color-primary); color: var(--color-primary-ink); border-color: var(--color-primary); }
+button.primary:hover:not(:disabled) { background: var(--color-primary-hover); }
+:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 3px; }
+label { display: grid; gap: 7px; color: var(--color-ink-secondary); }
+input, select, textarea { min-width: 0; width: 100%; border: 1px solid var(--color-rule-strong); border-radius: 8px; padding: 10px; background: var(--color-paper); color: var(--color-ink); }
+textarea { min-height: 90px; resize: vertical; }
+h1 { font-size: 26px; margin: 0 0 10px; } h2 { margin-top: 0; }
+.muted, small { color: var(--color-ink-secondary); }
+small, td code { display: block; margin-top: 6px; }
+code { font-family: var(--font-mono); overflow-wrap: anywhere; font-size: 12px; }
+.platform-shell header { background: var(--color-paper); border-bottom: 1px solid var(--color-rule); padding: 18px 26px; display: flex; justify-content: space-between; gap: 16px; }
+.platform-shell header > div { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.platform-shell header img { width: 36px; height: 36px; }
+.preview-label { border-radius: 6px; padding: 5px 8px; background: var(--color-selected); color: var(--color-link); font-size: 12px; }
+.platform-body { display: grid; grid-template-columns: 200px minmax(0, 1fr); min-height: calc(100vh - 76px); }
+nav { background: var(--color-paper); padding: 24px 16px; border-right: 1px solid var(--color-rule); }
+nav button { width: 100%; text-align: left; margin-bottom: 8px; border-color: transparent; color: var(--color-ink-secondary); }
+nav button[aria-current="page"] { color: var(--color-link); background: var(--color-selected); border-left: 3px solid var(--color-primary); font-weight: 700; }
+nav p { font-size: 12px; color: var(--color-ink-secondary); line-height: 1.8; margin: 24px 12px; }
+.platform-body main { padding: 30px; min-width: 0; }
+.heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.preview-banner { padding: 12px 16px; border-left: 3px solid var(--color-primary); background: var(--color-selected); line-height: 1.6; }
+.filters { display: flex; flex-wrap: wrap; align-items: end; gap: 14px; margin: 22px 0; }
+.filters label { flex: 1 1 180px; max-width: 290px; }
+.table-scroll { overflow-x: auto; border: 1px solid var(--color-rule); border-radius: 12px; background: var(--color-paper); }
+table { border-collapse: collapse; width: 100%; min-width: 800px; }
+th, td { padding: 16px; text-align: left; border-bottom: 1px solid var(--color-rule); vertical-align: top; line-height: 1.5; max-width: 350px; overflow-wrap: anywhere; }
+th { font-size: 12px; color: var(--color-ink-secondary); background: var(--color-paper-subtle); }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: var(--color-selected); }
+.row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.empty { text-align: center; padding: 50px; color: var(--color-ink-secondary); }
+footer { display: flex; gap: 16px; align-items: center; justify-content: space-between; margin-top: 20px; }
+footer div { display: flex; gap: 10px; }
+.error { color: var(--color-danger); line-height: 1.6; }
+.error button { margin-left: 16px; }
+.one-time-code { padding: 18px; border: 1px solid var(--color-primary); border-radius: 10px; background: var(--color-paper); margin-bottom: 20px; }
+.one-time-code code { display: block; margin: 14px 0; font-size: 16px; }
+.platform-login { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+.platform-login form { width: min(100%, 440px); padding: 36px; background: var(--color-paper); border: 1px solid var(--color-rule); border-radius: 16px; display: grid; gap: 20px; }
+.platform-login img { width: 52px; height: 52px; } .platform-login p { margin: 0; line-height: 1.7; }
+dialog { border: 1px solid var(--color-rule); border-radius: 16px; padding: 28px; width: min(560px, calc(100vw - 32px)); color: var(--color-ink); max-height: calc(100vh - 40px); overflow-y: auto; }
+dialog::backdrop { background: var(--color-overlay); }
+dialog form { display: grid; gap: 18px; } dialog p { margin: 0; line-height: 1.8; }
+.confirmation { display: flex; align-items: start; gap: 10px; } .confirmation input { width: 18px; height: 18px; margin: 0; accent-color: var(--color-primary); flex-shrink: 0; }
+.dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.release-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 310px), 1fr)); gap: 18px; margin-top: 22px; }
+.release-card { background: var(--color-paper); border: 1px solid var(--color-rule); padding: 22px; border-radius: 12px; min-width: 0; }
+.release-card dl { display: grid; gap: 6px; }
+.release-card dt { color: var(--color-ink-secondary); margin-top: 8px; }
+.release-card dd { margin: 0; overflow-wrap: anywhere; }
+.release-history { margin-top: 20px; padding-bottom: 18px; border-bottom: 1px solid var(--color-rule); overflow-wrap: anywhere; }
+.release-notes { white-space: pre-wrap; }
+@media (max-width: 720px) {
+  .platform-shell header { padding: 14px; } .platform-shell header > div { gap: 8px; }
+  .platform-body { display: block; } nav { display: flex; padding: 10px; gap: 8px; overflow-x: auto; } nav button { width: auto; flex-shrink: 0; margin: 0; } nav p { display: none; }
+  .platform-body main { padding: 18px 14px; } .filters label { max-width: none; }
+  .platform-login form { padding: 24px; } footer { flex-wrap: wrap; }
+}

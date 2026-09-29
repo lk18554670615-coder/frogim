@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"time"
 
+	"github.com/linli/im/server/internal/clientversion"
 	"github.com/linli/im/server/internal/model"
+	"github.com/linli/im/server/internal/tenancy"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -1509,12 +1511,15 @@ type Media struct {
 	Size         int64  `json:"size"`
 }
 type OutboxItem struct {
-	ID        int64          `json:"id"`
-	UserID    string         `json:"userId"`
-	EventType string         `json:"eventType"`
-	Payload   map[string]any `json:"payload"`
-	Devices   []Device       `json:"devices"`
-	Attempts  int            `json:"attempts"`
+	// These are enterprise-local provenance, never legacy provider payloads.
+	TenantManaged bool                 `json:"-"`
+	TenantPush    *tenancy.PushRequest `json:"-"`
+	ID            int64                `json:"id"`
+	UserID        string               `json:"userId"`
+	EventType     string               `json:"eventType"`
+	Payload       map[string]any       `json:"payload"`
+	Devices       []Device             `json:"devices"`
+	Attempts      int                  `json:"attempts"`
 }
 type OutboxStore interface {
 	ClaimPush(context.Context, int) ([]OutboxItem, error)
@@ -1575,17 +1580,7 @@ type PolicyStore interface {
 
 // ClientVersionPolicy is the durable rollout policy for one released client.
 // Install identifiers are evaluated by the application and are never stored.
-type ClientVersionPolicy struct {
-	Platform          string    `json:"platform"`
-	MinimumVersion    string    `json:"minimumVersion"`
-	LatestVersion     string    `json:"latestVersion"`
-	ForceUpdate       bool      `json:"forceUpdate"`
-	RolloutPercentage int       `json:"rolloutPercentage"`
-	ReleaseNotes      string    `json:"releaseNotes"`
-	DownloadURL       string    `json:"downloadUrl"`
-	UpdatedBy         string    `json:"updatedBy"`
-	UpdatedAt         time.Time `json:"updatedAt"`
-}
+type ClientVersionPolicy = clientversion.Policy
 
 // ClientVersionReleaseRecord is an immutable policy snapshot reconstructed
 // from the audit entry written in the same transaction as a release.

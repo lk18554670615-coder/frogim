@@ -20,6 +20,12 @@
 
 NSDictionary *_launchNotification;
 NSDictionary *_launchLocalNotification;
+static NSData *linliVoipToken;
+static NSString *linliVoipCID;
+static NSString *linliVoipGeneration;
+static BOOL linliVoipStarted = NO;
+static BOOL linliVoipSubmitted = NO;
+static __weak GetuiflutPlugin *linliVoipPlugin;
 @interface GetuiflutPlugin()<GeTuiSdkDelegate> {
     BOOL _started;
     NSDictionary *_launchOptions;
@@ -29,12 +35,39 @@ NSDictionary *_launchLocalNotification;
 
 @implementation GetuiflutPlugin
 
++ (void)voipChanged {
+    linliVoipSubmitted = NO;
+    linliVoipGeneration = NSUUID.UUID.UUIDString.lowercaseString;
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"LinliGetuiVoipChanged" object:nil];
+    [linliVoipPlugin.channel invokeMethod:@"onVoipRegistrationChanged" arguments:@{}];
+}
++ (void)setVoipToken:(NSData *)token {
+    if (![linliVoipToken isEqualToData:token]) {
+        linliVoipToken = [token copy];
+        [self voipChanged];
+    }
+    [self voipRegistration];
+}
++ (NSDictionary *)voipRegistration {
+    if (!linliVoipSubmitted && linliVoipStarted && linliVoipCID.length && linliVoipToken.length) {
+        // SDK acceptance is required; this is not a claim of device receipt.
+        linliVoipSubmitted = [GeTuiSdk registerVoipTokenCredentials:linliVoipToken];
+    }
+    BOOL ready = linliVoipSubmitted && linliVoipCID.length && linliVoipToken.length;
+    return @{@"ready":@(ready), @"cid":ready ? linliVoipCID : @"",
+             @"deviceId":ready ? [@"getui-voip-" stringByAppendingString:linliVoipGeneration] : @""};
+}
++ (void)handleVoipPayload:(NSDictionary *)payload {
+    [GeTuiSdk handleVoipNotification:payload];
+}
+
 + (void)registerWithRegistrar:(NSObject<FlutterPluginRegistrar>*)registrar {
   FlutterMethodChannel* channel = [FlutterMethodChannel
       methodChannelWithName:@"getuiflut"
             binaryMessenger:[registrar messenger]];
   GetuiflutPlugin *instance = [[GetuiflutPlugin alloc] init];
   instance.channel = channel;
+  linliVoipPlugin = instance;
   [registrar addApplicationDelegate:instance];
   [registrar addMethodCallDelegate:instance channel:channel];
 //  [instance registerRemoteNotification];
@@ -88,6 +121,8 @@ NSDictionary *_launchLocalNotification;
       result(FlutterMethodNotImplemented);
   } else if([@"getClientId" isEqualToString:call.method]) {
       result([GeTuiSdk clientId]);
+  } else if([@"getVoipRegistration" isEqualToString:call.method]) {
+      result([GetuiflutPlugin voipRegistration]);
   } else if([@"setBadge" isEqualToString:call.method]) {
       [self setBadge:call result:result];
   } else if([@"resetBadge" isEqualToString:call.method]) {
@@ -123,13 +158,15 @@ NSDictionary *_launchLocalNotification;
 }
 
 - (void)startSdk:(FlutterMethodCall*)call result:(FlutterResult)result {
-    NSLog(@"\n>>>GTSDK startSdk launchNotification:%@", _launchNotification);
     _started = YES;
+    linliVoipStarted = YES;
     NSDictionary *ConfigurationInfo = call.arguments;
     [GeTuiSdk startSdkWithAppId:ConfigurationInfo[@"appId"] appKey:ConfigurationInfo[@"appKey"] appSecret:ConfigurationInfo[@"appSecret"] delegate:self launchingOptions:_launchOptions ?: @{}];
     
     // 注册远程通知
     [GeTuiSdk registerRemoteNotification: (UNAuthorizationOptionSound | UNAuthorizationOptionAlert | UNAuthorizationOptionBadge)];
+    // CID callback and SDK token acceptance separately gate VoIP readiness.
+    result(nil);
 }
 
 - (void)onlyStartSdk:(FlutterMethodCall*)call result:(FlutterResult)result {
@@ -279,6 +316,13 @@ NSDictionary *_launchLocalNotification;
 }
 /** SDK启动成功返回cid */
 - (void)GeTuiSdkDidRegisterClient:(NSString *)clientId {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (![linliVoipCID isEqualToString:clientId]) {
+            linliVoipCID = [clientId copy];
+            [GetuiflutPlugin voipChanged];
+        }
+        [GetuiflutPlugin voipRegistration];
+    });
     // [ GTSdk ]：个推SDK已注册，返回clientId
     NSLog(@"\n>>>GTSDK RegisterClient:%@", clientId);
     if ([clientId isEqualToString:@""]) {

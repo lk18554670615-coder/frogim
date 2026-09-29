@@ -26,6 +26,8 @@ type Getui struct {
 	Client                      *http.Client
 	// 联合 APNs VoIP 模式下，iOS 来电只走 PushKit，避免再出现一条普通通知。
 	SuppressIOSCallsWithVoIP bool
+	// Only the platform explicitly configures this separate CID capability.
+	VoIP bool
 
 	mu        sync.Mutex
 	token     string
@@ -56,8 +58,15 @@ func (g *Getui) Send(ctx context.Context, item store.OutboxItem) error {
 	retryable := false
 	invalidOnly := true
 	for _, device := range item.Devices {
-		if device.Provider != "getui" || strings.TrimSpace(device.PushToken) == "" {
+		expected := "getui"
+		if g.VoIP {
+			expected = "getui_voip"
+		}
+		if device.Provider != expected || strings.TrimSpace(device.PushToken) == "" {
 			continue
+		}
+		if g.VoIP && (device.Platform != "ios" || item.EventType != "call.invited") {
+			return permanentDeliveryError(errors.New("invalid Getui VoIP event"))
 		}
 		if hasVoIPDevice && strings.EqualFold(device.Platform, "ios") {
 			continue
@@ -87,6 +96,9 @@ func (g *Getui) Send(ctx context.Context, item store.OutboxItem) error {
 }
 
 func (g *Getui) sendCID(ctx context.Context, item store.OutboxItem, device store.Device) error {
+	if _, err := getuiTTL(item.Payload, time.Now()); err != nil {
+		return err
+	}
 	token, err := g.accessToken(ctx, false)
 	if err != nil {
 		return err
@@ -129,7 +141,6 @@ func (g *Getui) sendCID(ctx context.Context, item store.OutboxItem, device store
 	}
 	body := map[string]any{
 		"request_id":   requestID,
-		"settings":     map[string]any{"ttl": 72 * 60 * 60 * 1000},
 		"audience":     map[string]any{"cid": []string{device.PushToken}},
 		"push_message": pushMessage,
 		"push_channel": map[string]any{
@@ -147,7 +158,25 @@ func (g *Getui) sendCID(ctx context.Context, item store.OutboxItem, device store
 			},
 		},
 	}
-	code, message, err := g.call(ctx, http.MethodPost, "/push/single/cid", token, body, nil)
+	if g.VoIP {
+		// No online transmission, ordinary alert or Android vendor fallback.
+		delete(body, "push_message")
+		body["push_channel"] = map[string]any{"ios": map[string]any{"type": "voip", "payload": string(payload)}}
+	}
+	// Recompute after provider authentication, including token refresh. Reusing
+	// the original duration after a retry would extend the notification's life.
+	submit := func() (int, string, error) {
+		ttl, e := getuiTTL(item.Payload, time.Now())
+		if e != nil {
+			return 0, "", e
+		}
+		body["settings"] = map[string]any{"ttl": ttl}
+		if g.VoIP {
+			body["settings"] = map[string]any{"ttl": ttl, "strategy": map[string]any{"ios": 2}}
+		}
+		return g.call(ctx, http.MethodPost, "/push/single/cid", token, body, nil)
+	}
+	code, message, err := submit()
 	if err != nil {
 		return err
 	}
@@ -156,7 +185,7 @@ func (g *Getui) sendCID(ctx context.Context, item store.OutboxItem, device store
 		if err != nil {
 			return err
 		}
-		code, message, err = g.call(ctx, http.MethodPost, "/push/single/cid", token, body, nil)
+		code, message, err = submit()
 		if err != nil {
 			return err
 		}
@@ -170,6 +199,27 @@ func (g *Getui) sendCID(ctx context.Context, item store.OutboxItem, device store
 	return nil
 }
 
+// Getui settings.ttl uses milliseconds (official REST v2 common parameters).
+// A managed message is never queued for the legacy default of three days.
+func getuiTTL(payload map[string]any, now time.Time) (int64, error) {
+	if payload["tenantId"] == nil {
+		return (72 * time.Hour).Milliseconds(), nil
+	}
+	raw, _ := payload["expiresAt"].(string)
+	expires, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return 0, permanentDeliveryError(errors.New("Getui notification scope incomplete"))
+	}
+	remaining := expires.Sub(now)
+	if remaining < time.Millisecond {
+		return 0, permanentDeliveryError(errors.New("Getui notification expired"))
+	}
+	if remaining > 24*time.Hour {
+		remaining = 24 * time.Hour
+	}
+	return remaining.Milliseconds(), nil
+}
+
 // getuiNotification deliberately excludes message text, friend verification
 // text, file names and other user-authored fields. The notification is only a
 // safe preview plus routing identifiers; the client fetches authoritative data
@@ -177,6 +227,7 @@ func (g *Getui) sendCID(ctx context.Context, item store.OutboxItem, device store
 func getuiNotification(item store.OutboxItem) (string, string, map[string]any) {
 	payload := item.Payload
 	navigation := map[string]any{"type": item.EventType, "unread": 1, "badge": "+1"}
+	copyTenantScope(navigation, payload)
 	for _, key := range []string{"conversationId", "messageId", "requestId", "announcementId", "callId", "mediaType"} {
 		if value := stringValue(payload[key]); value != "" {
 			navigation[key] = value
@@ -322,6 +373,9 @@ func (g *Getui) call(ctx context.Context, method, path, token string, body, data
 	client := g.Client
 	if client == nil {
 		client = &http.Client{Timeout: 8 * time.Second}
+	}
+	if err := checkSubmission(ctx); err != nil {
+		return 0, "", err
 	}
 	res, err := client.Do(req)
 	if err != nil {

@@ -1,0 +1,9 @@
+# Operator-only helper; no listening ports or host Docker socket. pg_dump and
+# pg_restore are from the exact same pinned PostgreSQL 17 distribution as DB.
+FROM postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+COPY build/platform-backup/platform-backup /opt/frogim/platform-backup
+COPY build/platform-backup/backup-offsite /opt/frogim/backup-offsite
+RUN chmod 0555 /opt/frogim/platform-backup /opt/frogim/backup-offsite
+USER 10001:10001
+WORKDIR /tmp
+ENTRYPOINT ["/opt/frogim/platform-backup"]

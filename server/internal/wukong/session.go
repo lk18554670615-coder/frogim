@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"github.com/linli/im/server/internal/tenancy"
 	"net"
 	"net/url"
 	"strconv"
@@ -117,6 +118,28 @@ func (s *SessionIssuer) Issue(ctx context.Context, uid, platform string) (*ImSes
 		return nil, err
 	}
 	return &ImSession{UID: uid, Token: token, DeviceFlag: deviceFlag, DeviceLevel: DeviceLevelMaster, TCPURL: s.tcpURL, WSURL: s.wsURL, SDK: sdk, IssuedAt: s.now().UTC()}, nil
+}
+
+// Managed enterprises must never reinstall pre-revocation credentials when a
+// user signs in again. The same generation remains stable for normal refresh;
+// account and enterprise lifecycle changes each derive a different credential.
+// Standalone Issue intentionally keeps the existing wire-compatible behavior.
+func (s *SessionIssuer) IssueTenant(ctx context.Context, i tenancy.Identity, authVersion, realmVersion int64, platform string) (*ImSession, error) {
+	if i.Validate() != nil || authVersion < 1 || realmVersion < 1 {
+		return nil, tenancy.ErrInvalid
+	}
+	flag, sdk, err := platformDevice(platform)
+	if err != nil {
+		return nil, err
+	}
+	mac := hmac.New(sha256.New, s.secret)
+	parts := []string{"wukongim-tenant-v2", i.TenantID, i.AccountID, i.LocalUserID, strconv.FormatInt(i.AssignmentVersion, 10), strconv.FormatInt(authVersion, 10), strconv.FormatInt(realmVersion, 10), strconv.Itoa(flag)}
+	_, _ = mac.Write([]byte(strings.Join(parts, "\x00")))
+	token := "wk2_" + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	if err = s.ensureProvisioned(ctx, i.LocalUserID, token, flag, DeviceLevelMaster); err != nil {
+		return nil, err
+	}
+	return &ImSession{UID: i.LocalUserID, Token: token, DeviceFlag: flag, DeviceLevel: DeviceLevelMaster, TCPURL: s.tcpURL, WSURL: s.wsURL, SDK: sdk, IssuedAt: s.now().UTC()}, nil
 }
 
 func (s *SessionIssuer) ensureProvisioned(ctx context.Context, uid, token string, deviceFlag, deviceLevel int) error {

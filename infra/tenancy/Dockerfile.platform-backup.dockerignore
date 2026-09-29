@@ -1,0 +1,8 @@
+**
+!build/
+!build/platform-backup/
+!build/platform-backup/platform-backup
+!build/platform-backup/backup-offsite
+!infra/
+!infra/tenancy/
+!infra/tenancy/Dockerfile.platform-backup

@@ -6,7 +6,18 @@ This directory is an auditable source copy of the official
 - Upstream archive: `https://pub.dev/api/archives/wukongimfluttersdk-1.7.9.tar.gz`
 - Upstream archive SHA-256: `b6191a86cd1e4caacaa4652e95709310eb1493f159fee65e1dd53c2a3ff9e80a`
 - License: Apache-2.0; the upstream `LICENSE` is retained in this directory.
-- Public version/API/protocol/database schema: unchanged.
+- Public version/protocol/database schema: unchanged. Optional local storage namespace added below.
+
+## Tenant-local database isolation
+
+`Options.databaseNamespace` separates native databases and migration-version
+preferences by the application's immutable tenant/local-user/assignment scope.
+The filename uses SHA256, not the raw scope. Omitting this option preserves the
+legacy filename. The wire UID and message schema are not changed.
+`WKDBHelper` waits for outstanding close operations and SQL initialization
+before exposing the next database. Windows tests cover namespace derivation;
+real Android/iOS switching and in-flight SDK callback isolation still require
+device verification. This is not a claim of completed device acceptance.
 
 ## Patch 1: immediate transport termination handling
 
@@ -76,3 +87,15 @@ lossless holder for the uint64 stream ID, and exposes the values on
 Every patched file and its upstream counterpart is SHA-256 locked in
 `third_party/wukongim/versions.lock.json`. Run
 `infra/scripts/verify-wukong-flutter-patch.sh` after dependency changes.
+
+## Tenant session boundaries
+
+`Options.databaseNamespace` is an optional account/tenant/assignment cache scope.
+It is hashed for database filenames and migration preferences; it never changes
+the protocol UID. Database reopening waits for the prior close and migrations.
+Logout discards the transport resend queue and channel memory cache, and the
+channel provider's generation rejects responses completed after that reset.
+The application adapter fences old callbacks and drains its send queue before
+installing a new identity. These safeguards are covered by local unit tests;
+real Android/iOS concurrent socket/DB teardown is still a separate acceptance
+requirement, not implied by unit-test success.

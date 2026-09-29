@@ -19,15 +19,18 @@ import 'native_history_cache.dart';
 import 'wukong_gateway_contract.dart';
 import 'wukong_gateway_macos_easy.dart';
 
-WukongGateway createWukongGateway({WukongDataSource? dataSource}) =>
-    Platform.isMacOS
+WukongGateway createWukongGateway({
+  WukongDataSource? dataSource,
+  String? cacheNamespace,
+}) => Platform.isMacOS
     ? MacOSWukongGateway(dataSource: dataSource)
-    : IoWukongGateway(dataSource: dataSource);
+    : IoWukongGateway(dataSource: dataSource, cacheNamespace: cacheNamespace);
 
 class IoWukongGateway
     implements WukongGateway, WukongHistoryCache, WukongDeletionCache {
   @override
   Future<void> markMessagesDeleted(List<String> ids) async {
+    _checkNotDisposed();
     await WKIM.shared.messageManager.saveRemoteExtraMsg(
       ids
           .map(
@@ -44,10 +47,13 @@ class IoWukongGateway
     String channelId,
     GroupHistoryAccess? access,
   ) => invalidateNativeGroupHistory(channelId, access);
-  factory IoWukongGateway({WukongDataSource? dataSource}) =>
-      IoWukongGateway._(dataSource);
+  factory IoWukongGateway({
+    WukongDataSource? dataSource,
+    String? cacheNamespace,
+  }) => IoWukongGateway._(dataSource, cacheNamespace);
 
-  IoWukongGateway._(this._dataSource);
+  IoWukongGateway._(this._dataSource, this._cacheNamespace);
+  final String? _cacheNamespace;
 
   static const _listenerKey = 'linli_wukong_gateway';
   final WukongDataSource? _dataSource;
@@ -61,6 +67,7 @@ class IoWukongGateway
   bool _disposed = false;
   Completer<void>? _fullConnectCompleter;
   Future<void> _fullSendQueue = Future<void>.value();
+  Future<void> _setupQueue = Future<void>.value();
   bool _reminderSyncing = false;
   bool _reminderSyncAgain = false;
 
@@ -80,10 +87,18 @@ class IoWukongGateway
   WukongSession? get session => _session;
 
   @override
-  Future<void> initialize(WukongSession session) async {
+  Future<void> initialize(WukongSession session) {
+    _checkNotDisposed();
+    final next = _setupQueue.then((_) => _initializeSession(session));
+    _setupQueue = next.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return next;
+  }
+
+  Future<void> _initializeSession(WukongSession session) async {
     _checkNotDisposed();
     session.validate();
     await disconnect();
+    _checkNotDisposed();
     _session = session;
     if (!Platform.isAndroid && !Platform.isIOS) {
       throw UnsupportedError('the full SDK gateway supports Android and iOS');
@@ -97,12 +112,12 @@ class IoWukongGateway
   }
 
   Future<void> _initializeFull(WukongSession session) async {
-    final options = Options.newDefault(
-      session.uid,
-      session.token,
-      addr: session.tcpAddress,
-    )..deviceFlag = session.deviceFlag;
+    final options =
+        Options.newDefault(session.uid, session.token, addr: session.tcpAddress)
+          ..deviceFlag = session.deviceFlag
+          ..databaseNamespace = _cacheNamespace;
     final ready = await WKIM.shared.setup(options);
+    _checkNotDisposed();
     if (!ready) {
       throw StateError(
         'WuKong Flutter SDK local database initialization failed',
@@ -115,6 +130,7 @@ class IoWukongGateway
     final eventManager = WKIM.shared.eventManager;
     eventManager.removeEventListener(_listenerKey);
     eventManager.addEventListener(_listenerKey, (event) {
+      if (_disposed) return;
       _events.add(
         WukongGatewayEvent(
           kind: WukongGatewayEventKind.messageEvent,
@@ -137,6 +153,7 @@ class IoWukongGateway
       }
     });
     messages.addOnRefreshMsgListener(_listenerKey, (item) {
+      if (_disposed) return;
       final mapped = _mapFullMessage(item);
       _events.add(
         WukongGatewayEvent(
@@ -159,6 +176,7 @@ class IoWukongGateway
       }
     });
     messages.addOnMsgInsertedListener((item) {
+      if (_disposed) return;
       final mapped = _mapFullMessage(item);
       _events.add(
         WukongGatewayEvent(
@@ -176,6 +194,7 @@ class IoWukongGateway
     final channels = WKIM.shared.channelManager;
     channels.removeOnRefreshListener(_listenerKey);
     channels.addOnRefreshListener(_listenerKey, (item) {
+      if (_disposed) return;
       _events.add(
         WukongGatewayEvent(
           kind: WukongGatewayEventKind.conversationChanged,
@@ -206,6 +225,7 @@ class IoWukongGateway
     final conversations = WKIM.shared.conversationManager;
     conversations.removeOnRefreshMsgListListener(_listenerKey);
     conversations.addOnRefreshMsgListListener(_listenerKey, (items) {
+      if (_disposed) return;
       for (final item in items) {
         _events.add(
           WukongGatewayEvent(
@@ -226,6 +246,7 @@ class IoWukongGateway
     final reminders = WKIM.shared.reminderManager;
     reminders.removeOnNewReminderListener(_listenerKey);
     reminders.addOnNewReminderListener(_listenerKey, (items) {
+      if (_disposed) return;
       for (final item in items) {
         _events.add(
           WukongGatewayEvent(
@@ -239,6 +260,7 @@ class IoWukongGateway
 
     WKIM.shared.cmdManager.removeCmdListener(_listenerKey);
     WKIM.shared.cmdManager.addOnCmdListener(_listenerKey, (command) {
+      if (_disposed) return;
       _events.add(
         WukongGatewayEvent(
           kind: WukongGatewayEventKind.command,
@@ -288,17 +310,20 @@ class IoWukongGateway
 
   @override
   Future<void> markRead(WukongChannel channel) async {
+    _checkNotDisposed();
     if (_session != null) {
       await WKIM.shared.conversationManager.updateRedDot(
         channel.id,
         channel.type,
         0,
       );
+      _checkNotDisposed();
       final reminders = await WKIM.shared.reminderManager.getWithChannel(
         channel.id,
         channel.type,
         0,
       );
+      _checkNotDisposed();
       await _doneReminderIDs(reminders.map((item) => item.reminderID));
     }
   }
@@ -321,10 +346,12 @@ class IoWukongGateway
   }
 
   Future<WukongMessage> _sendFull(WukongOutgoingMessage outgoing) async {
+    _checkNotDisposed();
     final manager = WKIM.shared.messageManager;
     final requestedClientMsgNo = outgoing.clientMsgNo?.trim() ?? '';
     if (!outgoing.noPersist && requestedClientMsgNo.isNotEmpty) {
       final existing = await manager.getWithClientMsgNo(requestedClientMsgNo);
+      _checkNotDisposed();
       if (existing != null) {
         if (existing.status != full.WKSendMsgResult.sendSuccess) {
           // Keep the durable clientMsgNo/clientSeq for idempotency, but send
@@ -350,6 +377,7 @@ class IoWukongGateway
           );
           existing.status = full.WKSendMsgResult.sendLoading;
           await manager.saveMsg(existing);
+          _checkNotDisposed();
           manager.setRefreshMsg(existing);
           _outgoingClientSeqs.add(existing.clientSeq);
           WKIM.shared.connectionManager.sendMessage(existing);
@@ -389,6 +417,7 @@ class IoWukongGateway
       item.fromUID,
       full.WKChannelType.personal,
     );
+    _checkNotDisposed();
     if (from != null) item.setFrom(from);
 
     if (!outgoing.noPersist) {
@@ -397,7 +426,9 @@ class IoWukongGateway
         item.channelID,
         item.channelType,
       );
+      _checkNotDisposed();
       item.clientSeq = await manager.saveMsg(item);
+      _checkNotDisposed();
       if (item.clientSeq <= 0) {
         throw StateError(
           'WuKong Flutter SDK failed to persist outgoing message',
@@ -407,6 +438,7 @@ class IoWukongGateway
         item,
         0,
       );
+      _checkNotDisposed();
       manager.setOnMsgInserted(item);
       if (conversation != null) {
         WKIM.shared.conversationManager.setRefreshUIMsgs([conversation]);
@@ -422,6 +454,7 @@ class IoWukongGateway
   }
 
   void _onFullConnection(int status, int? reasonCode, Object? info) {
+    if (_disposed) return;
     if (status == full.WKConnectStatus.kicked) {
       // WuKongIM handles a server DISCONNECT as logout and clears the SDK
       // credentials before publishing `kicked`. Mirror that invalidation in
@@ -461,6 +494,7 @@ class IoWukongGateway
   }
 
   void _emitFullMessage(WukongGatewayEventKind kind, full.WKMsg item) {
+    if (_disposed) return;
     final mapped = _mapFullMessage(item);
     _events.add(
       WukongGatewayEvent(kind: kind, message: mapped, channel: mapped.channel),
@@ -517,6 +551,7 @@ class IoWukongGateway
           lastMsgSeqs: lastMsgSeqs,
           messageCount: msgCount,
         );
+        if (_disposed) return;
         for (final item in items ?? const <Map<String, Object?>>[]) {
           final conversation = full.WKSyncConvMsg()
             ..channelID = _string(item['channel_id'])
@@ -532,8 +567,10 @@ class IoWukongGateway
                 .toList();
           result.conversations!.add(conversation);
         }
+      } catch (_) {
+        // Provider errors must not become unhandled asynchronous exceptions.
       } finally {
-        complete(result);
+        if (!_disposed) complete(result);
       }
     }();
   }
@@ -557,6 +594,7 @@ class IoWukongGateway
           limit: limit,
           pullMode: pullMode,
         );
+        if (_disposed) return;
         if (response != null) {
           result
             ..startMessageSeq = _int(response['start_message_seq'])
@@ -566,9 +604,11 @@ class IoWukongGateway
                 .map(_syncMessage)
                 .toList();
         }
-      } finally {
-        complete(result);
+      } catch (_) {
+        if (!_disposed) complete(null);
+        return;
       }
+      if (!_disposed) complete(result);
     }();
   }
 
@@ -581,8 +621,10 @@ class IoWukongGateway
       final channel = WukongChannel(id: channelId, type: channelType);
       try {
         final raw = await _dataSource?.channelInfo(channel);
+        if (_disposed) return;
         complete(_fullChannel(raw ?? const {}, channel));
       } catch (_) {
+        if (_disposed) return;
         // The SDK callback has no error channel. Complete with a minimally
         // identified channel so message insertion cannot stall; a later fetch
         // replaces it with authoritative business data.
@@ -631,18 +673,21 @@ class IoWukongGateway
         ..remoteExtraMap = _map(raw['remote_extra']);
 
   Future<void> _syncFullChannelMembers(WukongChannel channel) async {
+    _checkNotDisposed();
     final source = _dataSource;
     if (source == null) return;
     var version = await WKIM.shared.channelMemberManager.getMaxVersion(
       channel.id,
       channel.type,
     );
+    _checkNotDisposed();
     for (var page = 0; page < 50; page++) {
       final items = await source.syncChannelMembers(
         channel: channel,
         version: version,
         limit: 200,
       );
+      _checkNotDisposed();
       if (items.isEmpty) return;
       final mapped = items.map((raw) {
         final item = full.WKChannelMember()
@@ -663,13 +708,14 @@ class IoWukongGateway
         return item;
       }).toList();
       await WKIM.shared.channelMemberManager.saveOrUpdateList(mapped);
+      _checkNotDisposed();
       if (items.length < 200) return;
     }
     throw StateError('WuKong channel member sync exceeded 50 pages');
   }
 
   void _emitFullMemberChange(full.WKChannelMember? item) {
-    if (item == null) return;
+    if (item == null || _disposed) return;
     _events.add(
       WukongGatewayEvent(
         kind: WukongGatewayEventKind.conversationChanged,
@@ -684,6 +730,7 @@ class IoWukongGateway
   }
 
   Future<void> _syncPlatformReminders() async {
+    if (_disposed) return;
     if (_reminderSyncing) {
       _reminderSyncAgain = true;
       return;
@@ -695,11 +742,13 @@ class IoWukongGateway
       do {
         _reminderSyncAgain = false;
         var version = await WKIM.shared.reminderManager.getMaxVersion();
+        _checkNotDisposed();
         for (var page = 0; page < 50; page++) {
           final items = await source.syncReminders(
             version: version,
             limit: 500,
           );
+          _checkNotDisposed();
           if (items.isEmpty) break;
           for (final item in items) {
             version = max(version, _int(item['version']));
@@ -722,6 +771,7 @@ class IoWukongGateway
               ..publisher = _string(item['publisher']);
           }).toList();
           await WKIM.shared.reminderManager.saveOrUpdateReminders(mapped);
+          _checkNotDisposed();
           if (items.length < 500) break;
           if (page == 49) {
             throw StateError('WuKong reminder sync exceeded 50 pages');
@@ -734,6 +784,7 @@ class IoWukongGateway
   }
 
   Future<void> _doneReminderIDs(Iterable<int> rawIDs) async {
+    _checkNotDisposed();
     final source = _dataSource;
     if (source == null) return;
     final ids = rawIDs.where((id) => id > 0).toSet().toList()..sort();
@@ -741,6 +792,7 @@ class IoWukongGateway
       await source.doneReminders(
         ids.sublist(offset, min(offset + 500, ids.length)),
       );
+      _checkNotDisposed();
     }
     if (ids.isNotEmpty) await _syncPlatformReminders();
   }
@@ -788,6 +840,12 @@ class IoWukongGateway
   @override
   Future<void> dispose() async {
     if (_disposed) return;
+    _disposed = true;
+    // A previous asynchronous SDK.setup must finish before another account
+    // can open the singleton database. Late setup cannot reinstall listeners.
+    await _setupQueue;
+    // Reject queued sends before closing the SDK DB or installing another UID.
+    await _fullSendQueue;
     await disconnect(logout: true);
     WKIM.shared.connectionManager.removeOnConnectionStatus(_listenerKey);
     WKIM.shared.eventManager.removeEventListener(_listenerKey);
@@ -802,7 +860,6 @@ class IoWukongGateway
     );
     WKIM.shared.reminderManager.removeOnNewReminderListener(_listenerKey);
     WKIM.shared.cmdManager.removeCmdListener(_listenerKey);
-    _disposed = true;
     await _states.close();
     await _events.close();
     await _sendResults.close();

@@ -6,10 +6,26 @@ import (
 	"strings"
 	"time"
 
+	"github.com/linli/im/server/internal/clientversion"
 	"github.com/linli/im/server/internal/store"
 )
 
 func (x *API) clientVersion(w http.ResponseWriter, r *http.Request) {
+	if x.cfg.TenantID != "" {
+		q := r.URL.Query()
+		if _, e := clientversion.Evaluate(q.Get("platform"), q.Get("version"), q.Get("installId"), nil); e != nil {
+			writeError(w, 400, "INVALID_ARGUMENT", "版本查询参数无效")
+			return
+		}
+		var decision clientversion.Decision
+		if x.platformControl == nil || x.platformControl.Call(r.Context(), "/internal/tenancy/client-version", map[string]string{"platform": q.Get("platform"), "version": q.Get("version"), "installId": q.Get("installId")}, &decision) != nil {
+			writeError(w, 503, "PLATFORM_VERSION_UNAVAILABLE", "平台升级信息暂不可用，请稍后重试")
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		write(w, 200, map[string]any{"data": decision})
+		return
+	}
 	decision, err := x.app.EvaluateClientVersion(
 		r.Context(),
 		r.URL.Query().Get("platform"),

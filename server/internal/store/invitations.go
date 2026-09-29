@@ -233,7 +233,7 @@ func (p *Postgres) LoginOrCreateUserWithInvite(ctx context.Context, phone, name,
 		return nil, false, err
 	}
 	defer tx.Rollback(ctx)
-	if existing, lookupErr := scanUser(tx.QueryRow(ctx, `SELECT `+inviteUserColumns+` FROM im_users WHERE phone=$1 FOR UPDATE`, phone)); lookupErr == nil {
+	if existing, lookupErr := scanUser(tx.QueryRow(ctx, `SELECT `+inviteUserColumns+` FROM im_users WHERE phone=$1 AND local_identity_state<>'retired' FOR UPDATE`, phone)); lookupErr == nil {
 		if existing.Banned {
 			return nil, false, ErrForbidden
 		}
@@ -257,9 +257,9 @@ func (p *Postgres) LoginOrCreateUserWithInvite(ctx context.Context, phone, name,
 			return nil, false, err
 		}
 	}
-	u, err := scanUser(tx.QueryRow(ctx, `INSERT INTO im_users(id,phone,name,handle,created_at) VALUES($1,$2,$3,'gg_'||left(md5($1),20),$4) ON CONFLICT(phone) DO NOTHING RETURNING `+inviteUserColumns, id, phone, name, created))
+	u, err := scanUser(tx.QueryRow(ctx, `INSERT INTO im_users(id,phone,name,handle,created_at) VALUES($1,$2,$3,'gg_'||left(md5($1),20),$4) ON CONFLICT(phone) WHERE local_identity_state<>'retired' DO NOTHING RETURNING `+inviteUserColumns, id, phone, name, created))
 	if errors.Is(err, pgx.ErrNoRows) {
-		u, err = scanUser(tx.QueryRow(ctx, `SELECT `+inviteUserColumns+` FROM im_users WHERE phone=$1`, phone))
+		u, err = scanUser(tx.QueryRow(ctx, `SELECT `+inviteUserColumns+` FROM im_users WHERE phone=$1 AND local_identity_state<>'retired'`, phone))
 		if err != nil {
 			return nil, false, err
 		}

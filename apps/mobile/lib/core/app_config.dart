@@ -9,6 +9,8 @@ abstract final class AppConfig {
     'API_BASE_URL',
     defaultValue: '',
   );
+  static const platformAuthUrl = String.fromEnvironment('PLATFORM_AUTH_URL');
+  static bool get usesPlatformAuthentication => platformAuthUrl.isNotEmpty;
   static const enableDemo = bool.fromEnvironment(
     'ENABLE_DEMO',
     defaultValue: false,
@@ -39,6 +41,7 @@ abstract final class AppConfig {
   static void validate() => validateConfiguration(
     environment: environment,
     apiBaseUrl: apiBaseUrl,
+    platformAuthUrl: platformAuthUrl,
     enableDemo: enableDemo,
     mediaMaxBytes: mediaMaxBytes,
     getuiEnabled: getuiEnabled,
@@ -52,6 +55,7 @@ abstract final class AppConfig {
   static void validateConfiguration({
     required String environment,
     required String apiBaseUrl,
+    String platformAuthUrl = '',
     required bool enableDemo,
     required int mediaMaxBytes,
     required bool getuiEnabled,
@@ -67,6 +71,20 @@ abstract final class AppConfig {
     }
 
     final hasApi = apiBaseUrl.trim().isNotEmpty;
+    final hasPlatform = platformAuthUrl.isNotEmpty;
+    if (hasPlatform) {
+      final uri = Uri.tryParse(platformAuthUrl);
+      if (!_validUrl(platformAuthUrl, const {'https'}) ||
+          uri!.hasQuery ||
+          (uri.path.isNotEmpty && uri.path != '/')) {
+        throw StateError('PLATFORM_AUTH_URL must be an HTTPS root URL');
+      }
+      if (hasApi) {
+        throw StateError(
+          'Platform builds must not include a fallback API_BASE_URL',
+        );
+      }
+    }
     if (hasApi && !_validUrl(apiBaseUrl, const {'http', 'https'})) {
       throw StateError('API_BASE_URL must be a valid HTTP(S) URL');
     }
@@ -75,10 +93,11 @@ abstract final class AppConfig {
     if (enableDemo) {
       throw StateError('Demo mode is not supported by this application');
     }
-    if (releaseLike && !hasApi) {
+    if (releaseLike && !hasApi && !hasPlatform) {
       throw StateError('$environment builds require API_BASE_URL');
     }
     if (environment == 'production' &&
+        !hasPlatform &&
         !_validUrl(apiBaseUrl, const {'https'})) {
       throw StateError('Production requires an HTTPS API URL');
     }

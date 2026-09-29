@@ -11,12 +11,130 @@ import 'package:linli_im/calls/call_screen.dart';
 import 'package:linli_im/calls/system_call_service_contract.dart';
 import 'package:linli_im/core/app_controller.dart';
 import 'package:linli_im/core/models.dart';
+import 'package:linli_im/core/runtime_endpoints.dart';
+import 'package:linli_im/core/tenant_context.dart';
+import 'package:linli_im/core/tenant_call_scope.dart';
 import 'package:linli_im/data/demo_repository.dart';
 import 'package:linli_im/ui/screens/chat_screen.dart';
 import 'package:livekit_client/livekit_client.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  group('tenant-scoped native actions', () {
+    final owner = Object();
+    final expiry = DateTime.now().toUtc().add(const Duration(hours: 1));
+    void attach({String generation = 'a', int assignment = 1}) {
+      RuntimeEndpoints.attach(
+        owner,
+        TenantContext(
+          tenantId: 'tenant-a',
+          displayName: 'A',
+          httpBaseUrl: Uri.parse('https://a.example.test'),
+          assignmentVersion: assignment,
+          configVersion: 1,
+        ),
+        localUserId: 'me',
+        authVersion: 1,
+        realmVersion: 1,
+        expiresAt: expiry,
+        callSessionId: generation * 43,
+      );
+    }
+
+    setUp(attach);
+    tearDown(() => RuntimeEndpoints.clear(owner));
+    final invalid = <String, Map<String, Object?>>{
+      'tenant': {'tenantId': 'tenant-b'},
+      'user': {'localUserId': 'other'},
+      'assignment': {'assignmentVersion': 2},
+      'auth': {'authVersion': 2},
+      'realm': {'realmVersion': 2},
+      'login generation': {'callSessionId': 'b' * 43},
+      'expired': {'expiresAt': '2000-01-01T00:00:00Z'},
+    };
+    for (final entry in invalid.entries) {
+      test('rejects old ${entry.key} before any business request', () async {
+        final fixture = _Fixture(incoming: true, requiresTenantScope: true);
+        addTearDown(fixture.dispose);
+        fixture.systemCalls.emit(
+          SystemCallAction(
+            type: SystemCallActionType.accept,
+            serverCallId: fixture.repository.session.id,
+            systemCallId: 'old-native-id',
+            tenantScope: TenantCallScope({
+              ...RuntimeEndpoints.notificationContext,
+              ...entry.value,
+            }),
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        expect(fixture.repository.getCount, 0);
+        expect(fixture.repository.acceptCount, 0);
+        expect(fixture.systemCalls.dismissedSystemIds, ['old-native-id']);
+      });
+    }
+    test('managed session rejects unscoped legacy actions', () async {
+      final fixture = _Fixture(incoming: true, requiresTenantScope: true);
+      addTearDown(fixture.dispose);
+      fixture.systemCalls.emit(
+        SystemCallAction(
+          type: SystemCallActionType.accept,
+          serverCallId: fixture.repository.session.id,
+          systemCallId: 'legacy-native-id',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(fixture.repository.getCount, 0);
+      expect(fixture.systemCalls.dismissedSystemIds, ['legacy-native-id']);
+    });
+    test(
+      'same-session native accept still uses authoritative business call',
+      () async {
+        final fixture = _Fixture(incoming: true, requiresTenantScope: true);
+        addTearDown(fixture.dispose);
+        fixture.systemCalls.emit(
+          SystemCallAction(
+            type: SystemCallActionType.accept,
+            serverCallId: fixture.repository.session.id,
+            systemCallId: 'current-native-id',
+            tenantScope: TenantCallScope(RuntimeEndpoints.notificationContext),
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        expect(fixture.repository.getCount, 1);
+        expect(fixture.repository.acceptCount, 1);
+        expect(fixture.repository.joinCount, 1);
+        expect(fixture.systemCalls.dismissedSystemIds, isEmpty);
+      },
+    );
+    test(
+      'identity change while loading call cannot accept late result',
+      () async {
+        final fixture = _Fixture(incoming: true, requiresTenantScope: true);
+        addTearDown(fixture.dispose);
+        final gate = Completer<CallSession>();
+        fixture.repository.getGate = gate;
+        fixture.systemCalls.emit(
+          SystemCallAction(
+            type: SystemCallActionType.accept,
+            serverCallId: fixture.repository.session.id,
+            systemCallId: 'old-native-id',
+            tenantScope: TenantCallScope(RuntimeEndpoints.notificationContext),
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(fixture.repository.getCount, 1);
+        attach(generation: 'b');
+        gate.complete(fixture.repository.session);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        expect(fixture.repository.acceptCount, 0);
+        expect(fixture.repository.joinCount, 0);
+        expect(fixture.controller.phase, CallPhase.idle);
+        expect(fixture.systemCalls.dismissedSystemIds, ['old-native-id']);
+      },
+    );
+  });
 
   test(
     'Android cold-start accept restores media without presenting incoming UI again',
@@ -83,8 +201,8 @@ void main() {
 
     expect(fixture.controller.phase, CallPhase.idle);
     expect(
-      fixture.systemCalls.endedCallIds,
-      contains(fixture.repository.session.id),
+      fixture.systemCalls.dismissedSystemIds,
+      contains('stale-system-call-id'),
     );
   });
 
@@ -505,7 +623,11 @@ void main() {
 }
 
 class _Fixture {
-  _Fixture({bool incoming = false, Object? engineError}) {
+  _Fixture({
+    bool incoming = false,
+    Object? engineError,
+    bool? requiresTenantScope,
+  }) {
     repository = _FakeCallRepository(incoming: incoming);
     engine = _FakeEngine(initializeError: engineError);
     systemCalls = _FakeSystemCallService();
@@ -515,6 +637,7 @@ class _Fixture {
       findConversation: (_) => conversation,
       engineFactory: () => engine,
       systemCallService: systemCalls,
+      requiresTenantScope: requiresTenantScope,
     );
   }
 
@@ -549,6 +672,10 @@ class _Fixture {
 }
 
 class _FakeSystemCallService implements SystemCallService {
+  final dismissedSystemIds = <String>[];
+  @override
+  Future<void> dismiss(String systemCallId) async =>
+      dismissedSystemIds.add(systemCallId);
   final actionController = StreamController<SystemCallAction>.broadcast();
   int incomingCount = 0;
   int outgoingCount = 0;
@@ -605,6 +732,8 @@ class _FakeCallRepository implements CallRepository {
   final events = StreamController<CallSignalEvent>.broadcast();
   CallSession session;
   int acceptCount = 0;
+  int getCount = 0;
+  Completer<CallSession>? getGate;
   int joinCount = 0;
   String? lastHangupReason;
 
@@ -692,7 +821,10 @@ class _FakeCallRepository implements CallRepository {
   );
 
   @override
-  Future<CallSession> getCall(String callId) async => session;
+  Future<CallSession> getCall(String callId) async {
+    getCount++;
+    return getGate == null ? session : await getGate!.future;
+  }
 
   @override
   Future<CallSession> acceptCall(String callId) async {

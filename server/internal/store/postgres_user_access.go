@@ -22,7 +22,7 @@ func (p *Postgres) RecordUserAccess(ctx context.Context, e UserAccessLog) error 
 	}
 	defer tx.Rollback(ctx)
 	if e.UserID == "" && e.LookupPhone != "" {
-		err = tx.QueryRow(ctx, `SELECT id FROM im_users WHERE phone=$1 AND created_at<=$2`, e.LookupPhone, e.OccurredAt).Scan(&e.UserID)
+		err = tx.QueryRow(ctx, `SELECT id FROM im_users WHERE phone=$1 AND created_at<=$2 AND local_identity_state='active'`, e.LookupPhone, e.OccurredAt).Scan(&e.UserID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}

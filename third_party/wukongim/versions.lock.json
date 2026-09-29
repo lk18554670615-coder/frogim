@@ -133,13 +133,19 @@
         "path": "third_party/wukongim/flutter-sdk-1.7.9-patched",
         "upstreamFiles": {
           "lib/manager/connect_manager.dart": "b58e4f9b12944f20b8b1e3ddf070f3860bac2979206a97c6321f1771a95afce2",
+          "lib/common/options.dart": "8ec18048d3300f81bf93dd6be33d32ed35a8a435876a2237e94be93e4274eec3",
+          "lib/db/wk_db_helper.dart": "2cd5f1d4af507817ec7ea981a6ae967d7c0cc0460c4e2fb9ace042f83d1173f5",
+          "lib/manager/channel_manager.dart": "e1a60309ae86a21a028250a47df9d91a2248ba3150cfa4e3a348603ce163463b",
           "lib/proto/proto.dart": "e4fb0860ef3a43bc31a44405e274287496980090ae983c4b124253817b9bc6a7",
           "lib/proto/packet.dart": "ea6d348797c9a53644aaeb8092edecdcf5456eb165ef646c99474d4c3bee9329",
           "lib/entity/msg.dart": "7ced12c373ce58da02538faddf68a90c5e3f6ee049942576cc3051be9f35d61c",
           "lib/wkim.dart": "b3f0fe19b87ce2c37292d17a50b1aa25cc4dcab23e7f296a728d3fdccb7a9271"
         },
         "patchedFiles": {
-          "lib/manager/connect_manager.dart": "b0309e9172b925e1fbd79adab4aa42c73089d72c39c1c9c8771e70036699c0b9",
+          "lib/manager/connect_manager.dart": "f8ea2d59877e5ffaad026898031605f5b37665ea1203763c1d24603d454651f5",
+          "lib/manager/channel_manager.dart": "4c5af670d5f0fd63c0ca1fe7e70e60e6b6bb85a1a4e405dd50c040f17f8c14e1",
+          "lib/common/options.dart": "e34fb3d3a5d2ee559717af40edaa4fab19c4fa1ffe1f53fd19257358e8becd52",
+          "lib/db/wk_db_helper.dart": "1f3d571edff23caa3559b1e073223ae90a37db0bfd64ed3435a127bbc15ec7fa",
           "lib/manager/event_manager.dart": "824adf231e2c6ddef1b4cc1e883833bc491b28d8f7f252815bddc469018ea61e",
           "lib/proto/proto.dart": "060fa3db9c175f986f856c944fedfa958ab0eff0b5db9b0b712c89e7f63c74ca",
           "lib/proto/packet.dart": "fe79c11811b1a7414269af8d707fbec857f3b3f58c0dda735269eedce4444fc7",
@@ -152,7 +158,9 @@
           "replace the singleton socket wrapper on reconnect so the CONNECT frame is written to the newly opened socket",
           "decode and dispatch the pinned v2.2.5 EventPacket (frame type 12; 10/11 are SUB/SUBACK)",
           "correct SettingStream to bit 1 and decode the v4 legacy flag/no/uint64-id wire order",
-          "expose legacy stream metadata already present on message frames"
+          "expose legacy stream metadata already present on message frames",
+          "optional hashed tenant/local-user/assignment storage namespace without changing the wire UID; await database closure and schema creation before reuse",
+          "clear channel memory cache and resend queue on logout; reject late channel provider results from an old cache generation"
         ],
         "validation": [
           "Android 15 API 35 re-CONNACK in 8.82 seconds and post-recovery SendAck reason=1",

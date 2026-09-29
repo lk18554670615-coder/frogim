@@ -4,7 +4,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
-import '../../core/app_config.dart';
+import '../../core/runtime_endpoints.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/app_theme.dart';
@@ -42,13 +42,16 @@ class LinliNetworkImage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final trimmed = url.trim();
-    final resolved = trimmed.startsWith('/') && AppConfig.apiBaseUrl.isNotEmpty
-        ? '${AppConfig.apiBaseUrl}$trimmed'
+    final resolved =
+        trimmed.startsWith('/') && RuntimeEndpoints.businessBaseUrl.isNotEmpty
+        ? '${RuntimeEndpoints.businessBaseUrl}$trimmed'
         : trimmed;
     return CachedNetworkImage(
       imageUrl: resolved,
       httpHeaders: mediaAccess.headersFor(resolved),
-      cacheKey: mediaAccess.owns(resolved) ? resolved : cacheKey,
+      cacheKey: mediaAccess.owns(resolved)
+          ? resolved
+          : RuntimeEndpoints.scopedCacheKey(cacheKey),
       width: width,
       height: height,
       fit: fit,
@@ -172,8 +175,8 @@ class PersonAvatar extends StatelessWidget {
     final resolvedAvatarUrl =
         avatarUrl != null &&
             avatarUrl!.startsWith('/') &&
-            AppConfig.apiBaseUrl.isNotEmpty
-        ? '${AppConfig.apiBaseUrl}$avatarUrl'
+            RuntimeEndpoints.businessBaseUrl.isNotEmpty
+        ? '${RuntimeEndpoints.businessBaseUrl}$avatarUrl'
         : avatarUrl;
     final fallback = Center(
       child: Text(

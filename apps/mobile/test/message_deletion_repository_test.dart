@@ -189,13 +189,16 @@ void main() {
     addTearDown(f.repo.close);
     await f.login();
     f.pending = Completer<void>();
-    final request = f.repo.deleteMessagesForEveryone('c', ['100']);
+    final request = expectLater(
+      f.repo.deleteMessagesForEveryone('c', ['100']),
+      throwsStateError,
+    );
     await Future<void>.delayed(Duration.zero);
     await f.repo.logout();
     f.uid = 'other-account';
     await f.login();
     f.pending!.complete();
-    expect(await request, ['100']);
+    await request;
     expect(f.repo.isMessageDeleted('100'), false);
     expect(f.store.values.containsKey('mutual-deletions.other-account'), false);
   });

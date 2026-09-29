@@ -17,7 +17,11 @@ const mediaCookieName = "im_media_session"
 // Web video elements cannot attach Authorization headers. This HttpOnly cookie
 // is accepted ONLY by the media content route, never by ordinary business APIs.
 func (x *API) addMediaSession(w http.ResponseWriter, r *http.Request, response map[string]any, claims *auth.Claims) {
-	token, err := x.auth.IssueMediaSession(claims.Subject, claims.SessionID, claims.DeviceKind)
+	manager, err := x.tenantTokenManager(r.Context(), claims.Subject)
+	if err != nil {
+		return
+	}
+	token, err := manager.IssueMediaSession(claims.Subject, claims.SessionID, claims.DeviceKind)
 	if err != nil {
 		return
 	}
@@ -28,7 +32,7 @@ func (x *API) addMediaSession(w http.ResponseWriter, r *http.Request, response m
 }
 
 func (x *API) setMediaCookie(w http.ResponseWriter, r *http.Request, token string, maxAge int) {
-	secure := r.TLS != nil || (x.cfg.TrustProxy && r.Header.Get("X-Forwarded-Proto") == "https")
+	secure := r.TLS != nil || (x.trustedForwarding(r) && r.Header.Get("X-Forwarded-Proto") == "https")
 	sameSite := http.SameSiteLaxMode
 	if secure {
 		sameSite = http.SameSiteNoneMode

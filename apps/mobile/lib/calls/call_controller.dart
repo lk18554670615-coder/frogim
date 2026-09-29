@@ -5,6 +5,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import '../core/models.dart';
+import '../core/app_config.dart';
+import '../core/runtime_endpoints.dart';
+import '../core/tenant_call_scope.dart';
 import '../core/user_identity.dart';
 import 'call_media_engine.dart';
 import 'call_models.dart';
@@ -21,7 +24,10 @@ class CallController extends ChangeNotifier {
     required this.findConversation,
     CallEngineFactory? engineFactory,
     SystemCallService? systemCallService,
-  }) : _engineFactory = engineFactory ?? LiveKitCallMediaEngine.new,
+    bool? requiresTenantScope,
+  }) : _requiresTenantScope =
+           requiresTenantScope ?? AppConfig.usesPlatformAuthentication,
+       _engineFactory = engineFactory ?? LiveKitCallMediaEngine.new,
        _systemCalls = systemCallService ?? createSystemCallService() {
     _events = repository.callEvents.listen(_onCallEvent);
     _systemActions = _systemCalls.actions.listen(_onSystemCallAction);
@@ -33,6 +39,7 @@ class CallController extends ChangeNotifier {
   final Conversation? Function(String id) findConversation;
   final CallEngineFactory _engineFactory;
   final SystemCallService _systemCalls;
+  final bool _requiresTenantScope;
   final Random _random = Random.secure();
   late final StreamSubscription<CallSignalEvent> _events;
   late final StreamSubscription<SystemCallAction> _systemActions;
@@ -343,28 +350,58 @@ class CallController extends ChangeNotifier {
 
   Future<void> _handleSystemCallAction(SystemCallAction action) async {
     if (_disposed) return;
+    bool allowed() {
+      final current = TenantCallScope.parse(
+        RuntimeEndpoints.notificationContext,
+      );
+      if (_requiresTenantScope ||
+          current != null ||
+          action.tenantScope != null) {
+        return current != null &&
+            current.validNow &&
+            action.tenantScope != null &&
+            action.tenantScope!.validNow &&
+            current.sameSession(action.tenantScope!);
+      }
+      return true;
+    }
+
+    if (currentUser() != null && !allowed()) {
+      await _systemCalls.dismiss(action.systemCallId);
+      return;
+    }
     if (session?.id != action.serverCallId) {
       if (phase != CallPhase.idle) return;
       final deadline = DateTime.now().add(const Duration(seconds: 12));
       while (currentUser() == null && DateTime.now().isBefore(deadline)) {
         await Future<void>.delayed(const Duration(milliseconds: 150));
+        if (_disposed) return;
       }
-      if (currentUser() == null) return;
-      try {
-        await _showIncoming(
-          await repository.getCall(action.serverCallId),
-          presentSystemUi: false,
-        );
-      } catch (_) {
-        await _systemCalls.end(action.serverCallId);
+      if (currentUser() == null || !allowed()) {
+        await _systemCalls.dismiss(action.systemCallId);
         return;
       }
+      try {
+        final call = await repository.getCall(action.serverCallId);
+        if (_disposed || !allowed()) {
+          await _systemCalls.dismiss(action.systemCallId);
+          return;
+        }
+        await _showIncoming(call, presentSystemUi: false);
+      } catch (_) {
+        await _systemCalls.dismiss(action.systemCallId);
+        return;
+      }
+    }
+    if (!allowed()) {
+      await _systemCalls.dismiss(action.systemCallId);
+      return;
     }
     if (session?.id != action.serverCallId) {
       // Android Telecom can retain a ringing self-managed call while the app
       // process is frozen. If the business call has since expired or ended,
       // remove that stale native call before it blocks the next invitation.
-      await _systemCalls.end(action.serverCallId);
+      await _systemCalls.dismiss(action.systemCallId);
       return;
     }
     switch (action.type) {

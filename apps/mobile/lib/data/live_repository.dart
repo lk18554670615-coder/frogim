@@ -78,6 +78,8 @@ class LiveImRepository
     String? clientPlatform,
     BusinessRepository? businessRepository,
     WukongGateway? wukongGateway,
+    this.externalSessionRefresh,
+    this.cacheNamespace,
   }) : _client = client ?? createSessionHttpClient(),
        _uploadClient = uploadClient ?? client ?? http.Client(),
        _store = store ?? SecureLocalStore(),
@@ -94,8 +96,15 @@ class LiveImRepository
               _mediaToken == null ? null : mediaAccess.url(id),
           client: _client,
           uploadClient: _uploadClient,
+          sessionEpoch: () => _sessionEpoch,
+          sessionActive: () => !_closed,
         );
-    _wukong = wukongGateway ?? createWukongGateway(dataSource: _business);
+    _wukong =
+        wukongGateway ??
+        createWukongGateway(
+          dataSource: _business,
+          cacheNamespace: cacheNamespace,
+        );
     _conversationCache = LocalConversationCache(
       _store,
       isVisible: _canReadWukongMessage,
@@ -104,6 +113,71 @@ class LiveImRepository
   }
 
   final http.Client _client;
+  final Future<Map<String, Object?>> Function()? externalSessionRefresh;
+  final String? cacheNamespace;
+
+  /// Only a platform-authenticated coordinator supplies this session. Server
+  /// tokens remain the authority; no user-editable routing is introduced.
+  Future<AppUser> acceptPlatformSession(Map<String, Object?> session) =>
+      _acceptSession(session);
+
+  /// Fence immediately, before asynchronous logout/disposal starts. An owner
+  /// must construct a new repository rather than reuse this instance.
+  void invalidateTenantSession() {
+    _closed = true;
+    _sessionEpoch++;
+    mediaAccess.clear(this);
+  }
+
+  Future<bool> renewPlatformSession() => _refreshAccessToken();
+
+  /// Only narrows cached platform metadata; not a signature/authentication
+  /// decision. Enterprise APIs remain responsible for validating this JWT.
+  DateTime? tenantCredentialExpiry({
+    required int authVersion,
+    required int realmVersion,
+  }) {
+    try {
+      final parts = _token?.split('.');
+      if (externalSessionRefresh == null || parts?.length != 3) return null;
+      final claims = jsonDecode(
+        utf8.decode(base64Url.decode(base64Url.normalize(parts![1]))),
+      );
+      if (claims is! Map ||
+          claims['exp'] is! int ||
+          claims['ver'] != authVersion ||
+          claims['realm'] != realmVersion) {
+        return null;
+      }
+      return DateTime.fromMillisecondsSinceEpoch(
+        (claims['exp'] as int) * 1000,
+        isUtc: true,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> clearTenantCredentials() => _clearSession();
+
+  Future<void> revokeTenantCredentials() async {
+    final refresh = _refreshToken;
+    invalidateTenantSession();
+    if (refresh != null) {
+      try {
+        // This is the final request to this immutable enterprise, without
+        // retry or renewal. Never use a later account's repository here.
+        await _rawRequest(
+          'POST',
+          '/v2/auth/logout',
+          jsonEncode({'refreshToken': refresh}),
+        );
+      } catch (_) {
+        /* offline logout still clears local credentials */
+      }
+    }
+    await _clearSession();
+  }
 
   /// Presigned object-storage requests must not carry the browser's API
   /// cookies. Besides avoiding credential leakage, this keeps Web uploads from
@@ -559,14 +633,23 @@ class LiveImRepository
     Object? body,
     bool isProtected = true,
   ]) async {
+    final epoch = _sessionEpoch;
+    if (_closed) throw StateError('企业会话已关闭');
     final encodedBody = body == null ? null : jsonEncode(body);
     var response = await _rawRequest(method, path, encodedBody);
+    if (_closed || epoch != _sessionEpoch) throw StateError('企业会话已变更');
     if (isProtected && response.statusCode == 401) {
       final refreshed = await _refreshAccessToken();
+      // Decoding an unsuccessful 401 only throws the original API error; it
+      // cannot return data. Preserve that contract when refresh cleared the
+      // session, while still fencing every successful/stale response below.
+      if (!refreshed) return _decode(response);
+      if (_closed || epoch != _sessionEpoch) throw StateError('企业会话已变更');
       if (refreshed) {
         response = await _rawRequest(method, path, encodedBody);
       }
     }
+    if (_closed || epoch != _sessionEpoch) throw StateError('企业会话已变更');
     try {
       return _decode(response);
     } on ImApiException catch (error) {
@@ -617,7 +700,7 @@ class LiveImRepository
     String path,
     String? encodedBody,
   ) async {
-    final request = http.Request(method, _uri(path));
+    final request = http.Request(method, _uri(path))..followRedirects = false;
     request.headers.addAll(_headers);
     if (encodedBody != null) request.body = encodedBody;
     try {
@@ -1279,12 +1362,16 @@ class LiveImRepository
 
   Future<bool> _performRefresh() async {
     final refresh = _refreshToken;
-    if (refresh == null) return false;
+    if (_closed || (refresh == null && externalSessionRefresh == null)) {
+      return false;
+    }
     try {
-      final data = await _sendUnprotectedRequest('POST', '/v2/auth/refresh', {
-        'refreshToken': refresh,
-      });
-      if (_refreshToken != refresh) return false;
+      final data = externalSessionRefresh != null
+          ? await externalSessionRefresh!()
+          : await _sendUnprotectedRequest('POST', '/v2/auth/refresh', {
+              'refreshToken': refresh,
+            });
+      if (_closed || _refreshToken != refresh) return false;
       _token = data['accessToken'] as String?;
       _acceptMediaSession(data['mediaAccessToken']);
       _refreshToken = data['refreshToken'] as String? ?? refresh;

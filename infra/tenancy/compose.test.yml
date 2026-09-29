@@ -1,0 +1,97 @@
+# Local, disposable integration dependencies, not a production deployment.
+# Separate PostgreSQL instances deliberately model the three data boundaries.
+name: frogim-tenancy-test
+x-postgres: &postgres
+  image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+  environment:
+    POSTGRES_USER: tenancy_test
+    POSTGRES_PASSWORD: local-disposable-tests-only
+    POSTGRES_DB: tenancy_test
+  tmpfs:
+    - /var/lib/postgresql/data
+  healthcheck:
+    test: [CMD-SHELL, pg_isready -U tenancy_test -d tenancy_test]
+    interval: 2s
+    timeout: 3s
+    retries: 30
+services:
+  enterprise-a-livekit:
+    image: livekit/livekit-server@sha256:d0d1cfdbe95617647bbe91630454526c2cdd88cec83f41114b3495b444918b9a
+    profiles: [im]
+    command: [--config, /etc/livekit.yaml]
+    environment:
+      LIVEKIT_KEYS: 'stack-a: local-disposable-livekit-a-tests-only-32bytes'
+    volumes: [./livekit.test.yaml:/etc/livekit.yaml:ro]
+    ports: ["127.0.0.1:17874:7880"]
+    networks: [enterprise-a]
+  enterprise-b-livekit:
+    image: livekit/livekit-server@sha256:d0d1cfdbe95617647bbe91630454526c2cdd88cec83f41114b3495b444918b9a
+    profiles: [im]
+    command: [--config, /etc/livekit.yaml]
+    environment:
+      LIVEKIT_KEYS: 'stack-b: local-disposable-livekit-b-tests-only-32bytes'
+    volumes: [./livekit.test.yaml:/etc/livekit.yaml:ro]
+    ports: ["127.0.0.1:17875:7880"]
+    networks: [enterprise-b]
+  platform-db:
+    <<: *postgres
+    ports: ["127.0.0.1:15473:5432"]
+    networks: [platform]
+  enterprise-a-db:
+    <<: *postgres
+    ports: ["127.0.0.1:15474:5432"]
+    networks: [enterprise-a]
+  enterprise-b-db:
+    <<: *postgres
+    ports: ["127.0.0.1:15475:5432"]
+    networks: [enterprise-b]
+  platform-redis:
+    image: redis:8-alpine@sha256:978f0e01593e65eed801f2402944efcd936d43b5027e4908a7897baf88ed6241
+    command: [redis-server, --save, "", --appendonly, "no"]
+    ports: ["127.0.0.1:16373:6379"]
+    networks: [platform]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  enterprise-a-im:
+    image: frogim/tenancy-im:workspace
+    build: {context: ../.., dockerfile: infra/tenancy/Dockerfile.im}
+    pull_policy: never
+    profiles: [im]
+    volumes:
+      - ../wukongim/history-test.yaml:/root/wukongim/wk.yaml:ro
+    tmpfs:
+      - /root/wukongim/data
+      - /root/wukongim/logs
+    ports: ["127.0.0.1:15574:5001", "127.0.0.1:15174:5100", "127.0.0.1:15274:5200"]
+    networks: [enterprise-a]
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:5001/health]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  enterprise-b-im:
+    image: frogim/tenancy-im:workspace
+    pull_policy: never
+    profiles: [im]
+    volumes:
+      - ../wukongim/history-test.yaml:/root/wukongim/wk.yaml:ro
+    tmpfs:
+      - /root/wukongim/data
+      - /root/wukongim/logs
+    ports: ["127.0.0.1:15575:5001", "127.0.0.1:15175:5100", "127.0.0.1:15275:5200"]
+    networks: [enterprise-b]
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:5001/health]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+networks:
+  platform:
+    driver: bridge
+  enterprise-a:
+    driver: bridge
+  enterprise-b:
+    driver: bridge

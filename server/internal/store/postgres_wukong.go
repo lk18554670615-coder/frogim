@@ -1089,6 +1089,13 @@ func (p *Postgres) AuthorizeWukongMessage(ctx context.Context, input WukongMessa
 	if input.UserID == "" || input.ConversationID == "" {
 		return WukongMessageRoute{}, ErrForbidden
 	}
+	var activeIdentity bool
+	if err := p.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM im_users WHERE id=$1 AND local_identity_state='active' AND NOT banned AND deleted_at IS NULL) AND NOT EXISTS(SELECT 1 FROM im_tenant_identity WHERE NOT access_enabled)`, input.UserID).Scan(&activeIdentity); err != nil {
+		return WukongMessageRoute{}, err
+	}
+	if !activeIdentity {
+		return WukongMessageRoute{}, ErrForbidden
+	}
 	var businessType int
 	businessErr := p.pool.QueryRow(ctx, `SELECT channel_type FROM im_business_channels WHERE conversation_id=$1`, input.ConversationID).Scan(&businessType)
 	if businessErr == nil {

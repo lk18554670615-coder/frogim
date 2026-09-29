@@ -12,8 +12,56 @@ import '../../core/auth_validation.dart';
 import '../../core/models.dart';
 import '../legal_documents.dart';
 import '../widgets/linli_widgets.dart';
+import 'tenant_password_screen.dart';
 
 enum _LoginMode { code, password, qr }
+
+class _EnterpriseCodeField extends StatelessWidget {
+  const _EnterpriseCodeField({required this.controller});
+  final TextEditingController controller;
+  @override
+  Widget build(BuildContext context) => TextFormField(
+    key: const Key('enterprise-code'),
+    controller: controller,
+    autocorrect: false,
+    enableSuggestions: false,
+    decoration: const InputDecoration(
+      labelText: '企业邀请码（选填）',
+      helperText: '仅新账号使用；留空加入默认企业，已有账号不能通过此处切换企业',
+      helperMaxLines: 3,
+      prefixIcon: Icon(CupertinoIcons.building_2_fill),
+    ),
+  );
+}
+
+class _PendingRegistration extends StatelessWidget {
+  const _PendingRegistration({
+    required this.controller,
+    this.returnAfterSuccess = false,
+  });
+  final AppController controller;
+  final bool returnAfterSuccess;
+  @override
+  Widget build(BuildContext context) {
+    if (!controller.hasPendingRegistration) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: OutlinedButton.icon(
+        key: const Key('resume-registration'),
+        icon: const Icon(CupertinoIcons.refresh),
+        label: const Text('检查开户进度'),
+        onPressed: controller.loading
+            ? null
+            : () async {
+                final completed = await controller.resumeRegistration();
+                if (completed && returnAfterSuccess && context.mounted) {
+                  Navigator.of(context).pop();
+                }
+              },
+      ),
+    );
+  }
+}
 
 String? inviteCodeFromQrPayload(String raw) {
   final value = raw.trim();
@@ -45,6 +93,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final phone = TextEditingController();
   final credential = TextEditingController();
   final inviteCode = TextEditingController();
+  final enterpriseCode = TextEditingController();
   _LoginMode mode = _LoginMode.code;
   bool obscurePassword = true;
   bool agreedToPolicies = false;
@@ -56,6 +105,15 @@ class _LoginScreenState extends State<LoginScreen> {
   Timer? qrPollTimer;
   bool qrPolling = false;
   String? qrStatus;
+
+  _LoginMode get effectiveMode {
+    final policy = widget.controller.authPolicy;
+    if ((mode == _LoginMode.code && !policy.otpLoginEnabled) ||
+        (mode == _LoginMode.qr && !policy.qrLoginEnabled)) {
+      return _LoginMode.password;
+    }
+    return mode;
+  }
 
   @override
   void initState() {
@@ -75,6 +133,7 @@ class _LoginScreenState extends State<LoginScreen> {
     phone.dispose();
     credential.dispose();
     inviteCode.dispose();
+    enterpriseCode.dispose();
     super.dispose();
   }
 
@@ -99,6 +158,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _validateLoginInviteCode() async {
+    if (widget.controller.usesTenantAuthentication) return;
     if (inviteCode.text.trim().isEmpty) {
       setState(() => inviteValid = null);
       return;
@@ -123,7 +183,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _submit() {
-    if (mode == _LoginMode.qr) return;
+    if (effectiveMode == _LoginMode.qr) return;
     if (!(formKey.currentState?.validate() ?? false)) return;
     if (!agreedToPolicies) {
       ScaffoldMessenger.of(
@@ -131,11 +191,12 @@ class _LoginScreenState extends State<LoginScreen> {
       ).showSnackBar(const SnackBar(content: Text('请先阅读并同意用户协议和隐私政策')));
       return;
     }
-    if (mode == _LoginMode.code) {
+    if (effectiveMode == _LoginMode.code) {
       widget.controller.login(
         phone.text,
         credential.text,
         inviteCode: inviteCode.text,
+        enterpriseCode: enterpriseCode.text,
       );
     } else {
       widget.controller.passwordLogin(phone.text, credential.text);
@@ -303,9 +364,9 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Widget _buildLoginForm(BuildContext context, {required bool showBrand}) {
-    final effectiveMode = showBrand && mode == _LoginMode.qr
-        ? _LoginMode.code
-        : mode;
+    final effectiveMode = showBrand && this.effectiveMode == _LoginMode.qr
+        ? _LoginMode.password
+        : this.effectiveMode;
     final qrMode = effectiveMode == _LoginMode.qr;
     return Form(
       key: formKey,
@@ -343,33 +404,36 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
           ],
           SizedBox(height: showBrand ? 26 : 24),
-          CupertinoSlidingSegmentedControl<_LoginMode>(
-            key: const Key('login-mode-control'),
-            groupValue: effectiveMode,
-            backgroundColor: context.linli.selected,
-            thumbColor: Theme.of(context).colorScheme.surfaceContainer,
-            children: {
-              _LoginMode.code: _LoginModeLabel(
-                label: showBrand ? '验证码登录' : '验证码',
-                selected: effectiveMode == _LoginMode.code,
-                compact: !showBrand,
-              ),
-              _LoginMode.password: _LoginModeLabel(
-                label: showBrand ? '密码登录' : '密码',
-                selected: effectiveMode == _LoginMode.password,
-                compact: !showBrand,
-              ),
-              if (!showBrand)
-                _LoginMode.qr: _LoginModeLabel(
-                  label: '扫码登录',
-                  selected: effectiveMode == _LoginMode.qr,
-                  compact: true,
+          if (widget.controller.authPolicy.otpLoginEnabled ||
+              (!showBrand && widget.controller.authPolicy.qrLoginEnabled))
+            CupertinoSlidingSegmentedControl<_LoginMode>(
+              key: const Key('login-mode-control'),
+              groupValue: effectiveMode,
+              backgroundColor: context.linli.selected,
+              thumbColor: Theme.of(context).colorScheme.surfaceContainer,
+              children: {
+                if (widget.controller.authPolicy.otpLoginEnabled)
+                  _LoginMode.code: _LoginModeLabel(
+                    label: showBrand ? '验证码登录' : '验证码',
+                    selected: effectiveMode == _LoginMode.code,
+                    compact: !showBrand,
+                  ),
+                _LoginMode.password: _LoginModeLabel(
+                  label: showBrand ? '密码登录' : '密码',
+                  selected: effectiveMode == _LoginMode.password,
+                  compact: !showBrand,
                 ),
-            },
-            onValueChanged: (value) {
-              if (value != null) _changeMode(value);
-            },
-          ),
+                if (!showBrand && widget.controller.authPolicy.qrLoginEnabled)
+                  _LoginMode.qr: _LoginModeLabel(
+                    label: '扫码登录',
+                    selected: effectiveMode == _LoginMode.qr,
+                    compact: true,
+                  ),
+              },
+              onValueChanged: (value) {
+                if (value != null) _changeMode(value);
+              },
+            ),
           const SizedBox(height: 16),
           if (qrMode)
             _buildQrLoginPanel(context)
@@ -443,6 +507,11 @@ class _LoginScreenState extends State<LoginScreen> {
               },
             ),
             if (effectiveMode == _LoginMode.code &&
+                widget.controller.usesTenantAuthentication) ...[
+              const SizedBox(height: 12),
+              _EnterpriseCodeField(controller: enterpriseCode),
+            ],
+            if (effectiveMode == _LoginMode.code &&
                 widget.controller.authPolicy.invitationEnabled) ...[
               const SizedBox(height: 12),
               TextFormField(
@@ -454,7 +523,9 @@ class _LoginScreenState extends State<LoginScreen> {
                   widget.controller.clearError();
                 },
                 decoration: InputDecoration(
-                  labelText: widget.controller.authPolicy.invitationRequired
+                  labelText: widget.controller.usesTenantAuthentication
+                      ? '个人邀请码（按企业规则填写）'
+                      : widget.controller.authPolicy.invitationRequired
                       ? '邀请码（新用户必填）'
                       : '邀请码（选填）',
                   helperText: inviteValid == true
@@ -464,34 +535,41 @@ class _LoginScreenState extends State<LoginScreen> {
                       : '仅首次登录创建账号时使用，已有账号可留空',
                   errorText: inviteValid == false ? '请检查邀请码' : null,
                   prefixIcon: const Icon(CupertinoIcons.ticket),
-                  suffixIcon: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        tooltip: '校验邀请码',
-                        onPressed: inviteChecking
-                            ? null
-                            : _validateLoginInviteCode,
-                        icon: inviteChecking
-                            ? const SizedBox.square(
-                                dimension: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(CupertinoIcons.check_mark_circled),
-                      ),
-                      IconButton(
-                        tooltip: '扫描邀请码',
-                        onPressed: _scanLoginInviteCode,
-                        icon: const Icon(CupertinoIcons.qrcode_viewfinder),
-                      ),
-                    ],
-                  ),
+                  suffixIcon: widget.controller.usesTenantAuthentication
+                      ? null
+                      : Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              tooltip: '校验邀请码',
+                              onPressed: inviteChecking
+                                  ? null
+                                  : _validateLoginInviteCode,
+                              icon: inviteChecking
+                                  ? const SizedBox.square(
+                                      dimension: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(
+                                      CupertinoIcons.check_mark_circled,
+                                    ),
+                            ),
+                            IconButton(
+                              tooltip: '扫描邀请码',
+                              onPressed: _scanLoginInviteCode,
+                              icon: const Icon(
+                                CupertinoIcons.qrcode_viewfinder,
+                              ),
+                            ),
+                          ],
+                        ),
                 ),
               ),
             ],
-            if (effectiveMode == _LoginMode.password)
+            if (effectiveMode == _LoginMode.password &&
+                widget.controller.authPolicy.passwordResetEnabled)
               Align(
                 alignment: Alignment.centerRight,
                 child: TextButton(
@@ -518,6 +596,8 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
             ],
             const SizedBox(height: 10),
+            _PendingRegistration(controller: widget.controller),
+            TenantPasswordTaskNotice(controller: widget.controller),
             _PolicyConsent(
               key: const Key('login-policy-consent'),
               value: agreedToPolicies,
@@ -536,7 +616,8 @@ class _LoginScreenState extends State<LoginScreen> {
                   : Text(effectiveMode == _LoginMode.code ? '验证码登录' : '密码登录'),
             ),
             const SizedBox(height: 8),
-            if (!widget.controller.authPolicyAvailable ||
+            if ((!widget.controller.usesTenantAuthentication &&
+                    !widget.controller.authPolicyAvailable) ||
                 widget.controller.authPolicy.registrationEnabled)
               OutlinedButton(
                 key: const Key('open-register'),
@@ -868,6 +949,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final password = TextEditingController();
   final confirmPassword = TextEditingController();
   final inviteCode = TextEditingController();
+  final enterpriseCode = TextEditingController();
   bool? inviteValid;
   bool inviteChecking = false;
   bool agreedToPolicies = false;
@@ -894,6 +976,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     password.dispose();
     confirmPassword.dispose();
     inviteCode.dispose();
+    enterpriseCode.dispose();
     super.dispose();
   }
 
@@ -905,7 +988,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
       ).showSnackBar(const SnackBar(content: Text('请先阅读并同意用户协议和隐私政策')));
       return;
     }
-    if (inviteCode.text.trim().isNotEmpty && inviteValid != true) {
+    if (!widget.controller.usesTenantAuthentication &&
+        inviteCode.text.trim().isNotEmpty &&
+        inviteValid != true) {
       final valid = await _validateInviteCode();
       if (!valid) return;
     }
@@ -915,6 +1000,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       password: password.text,
       name: name.text,
       inviteCode: inviteCode.text,
+      enterpriseCode: enterpriseCode.text,
     );
     if (mounted && widget.controller.authenticated) {
       Navigator.of(context).pop();
@@ -973,7 +1059,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
     body: AnimatedBuilder(
       animation: widget.controller,
       builder: (context, _) {
-        if (widget.controller.authPolicyAvailable &&
+        if ((widget.controller.usesTenantAuthentication ||
+                widget.controller.authPolicyAvailable) &&
             !widget.controller.authPolicy.registrationEnabled) {
           return const _RegistrationClosedView();
         }
@@ -1035,6 +1122,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 validator: (value) =>
                     (value?.trim().isNotEmpty ?? false) ? null : '请输入昵称',
               ),
+              if (widget.controller.usesTenantAuthentication) ...[
+                const SizedBox(height: 14),
+                _EnterpriseCodeField(controller: enterpriseCode),
+              ],
               if (widget.controller.authPolicy.invitationEnabled) ...[
                 const SizedBox(height: 14),
                 TextFormField(
@@ -1043,40 +1134,50 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   textCapitalization: TextCapitalization.characters,
                   onChanged: (_) => setState(() => inviteValid = null),
                   decoration: InputDecoration(
-                    labelText: widget.controller.authPolicy.invitationRequired
+                    labelText: widget.controller.usesTenantAuthentication
+                        ? '个人邀请码（按企业规则填写）'
+                        : widget.controller.authPolicy.invitationRequired
                         ? '邀请码'
                         : '邀请码（选填）',
                     helperText: inviteValid == true
                         ? '邀请码有效'
                         : inviteValid == false
                         ? '邀请码无效、已停用或已失效'
+                        : widget.controller.usesTenantAuthentication
+                        ? '与企业邀请码不同；提交后按目标企业规则校验'
                         : '邀请码不区分大小写',
                     errorText: inviteValid == false ? '请检查邀请码' : null,
                     prefixIcon: const Icon(CupertinoIcons.ticket),
-                    suffixIcon: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          tooltip: '校验邀请码',
-                          onPressed: inviteChecking
-                              ? null
-                              : _validateInviteCode,
-                          icon: inviteChecking
-                              ? const SizedBox.square(
-                                  dimension: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(CupertinoIcons.check_mark_circled),
-                        ),
-                        IconButton(
-                          tooltip: '扫描邀请码',
-                          onPressed: _scanInviteCode,
-                          icon: const Icon(CupertinoIcons.qrcode_viewfinder),
-                        ),
-                      ],
-                    ),
+                    suffixIcon: widget.controller.usesTenantAuthentication
+                        ? null
+                        : Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                tooltip: '校验邀请码',
+                                onPressed: inviteChecking
+                                    ? null
+                                    : _validateInviteCode,
+                                icon: inviteChecking
+                                    ? const SizedBox.square(
+                                        dimension: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(
+                                        CupertinoIcons.check_mark_circled,
+                                      ),
+                              ),
+                              IconButton(
+                                tooltip: '扫描邀请码',
+                                onPressed: _scanInviteCode,
+                                icon: const Icon(
+                                  CupertinoIcons.qrcode_viewfinder,
+                                ),
+                              ),
+                            ],
+                          ),
                   ),
                   validator: (value) =>
                       widget.controller.authPolicy.invitationRequired &&
@@ -1119,6 +1220,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 _InlineAuthError(message: widget.controller.error!),
               ],
               const SizedBox(height: 18),
+              _PendingRegistration(
+                controller: widget.controller,
+                returnAfterSuccess: true,
+              ),
               FilledButton(
                 key: const Key('register-submit'),
                 onPressed: widget.controller.loading ? null : _register,
@@ -1247,6 +1352,8 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
   late final phone = TextEditingController(text: widget.initialPhone);
   final code = TextEditingController();
   final password = TextEditingController();
+  final confirmation = TextEditingController();
+  bool confirming = false;
   bool codeRequested = false;
   String? codeRequestedPhone;
 
@@ -1267,13 +1374,23 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
     phone.dispose();
     code.dispose();
     password.dispose();
+    confirmation.dispose();
     super.dispose();
   }
 
   Future<void> _request() async {
+    if (widget.controller.loading || confirming) return;
     if (!(phoneFieldKey.currentState?.validate() ?? false)) return;
-    final success = await widget.controller.requestResetCode(phone.text);
-    if (!mounted || !success) return;
+    final requested = phone.text.trim();
+    if (widget.controller.usesTenantAuthentication) {
+      setState(() {
+        codeRequested = false;
+        codeRequestedPhone = null;
+        code.clear();
+      });
+    }
+    final success = await widget.controller.requestResetCode(requested);
+    if (!mounted || !success || requested != phone.text.trim()) return;
     setState(() {
       codeRequested = true;
       codeRequestedPhone = phone.text.trim();
@@ -1291,16 +1408,53 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
   }
 
   Future<void> _reset() async {
+    if (widget.controller.loading || confirming) return;
     if (!(formKey.currentState?.validate() ?? false)) return;
+    final managed = widget.controller.usesTenantAuthentication;
+    if (managed) {
+      if (!codeRequested || codeRequestedPhone != phone.text.trim()) return;
+      setState(() => confirming = true);
+      final accepted = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('确认重置平台登录密码？'),
+          content: const Text(
+            '原有登录凭据将被撤销；服务器完成企业撤权后才能使用新密码登录。'
+            '提交结果不确定时，可回到登录页查询进度。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              key: const Key('tenant-recovery-confirm'),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('确认重置'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      setState(() => confirming = false);
+      if (accepted != true) return;
+    }
     final success = await widget.controller.resetPassword(
       phone: phone.text,
       code: code.text,
       password: password.text,
     );
     if (!mounted || !success) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('密码已重置，请使用新密码登录')));
+    if (managed) {
+      code.clear();
+      password.clear();
+      confirmation.clear();
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(managed ? '请在登录页查询密码进度，确认完成后重新登录' : '密码已重置，请使用新密码登录'),
+      ),
+    );
     Navigator.pop(context);
   }
 
@@ -1310,77 +1464,123 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
     body: AnimatedBuilder(
       animation: widget.controller,
       builder: (context, _) {
-        return Form(
-          key: formKey,
-          autovalidateMode: AutovalidateMode.disabled,
-          child: ListView(
-            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-            padding: EdgeInsets.fromLTRB(
-              MediaQuery.sizeOf(context).width > 528
-                  ? (MediaQuery.sizeOf(context).width - 480) / 2
-                  : 24,
-              24,
-              MediaQuery.sizeOf(context).width > 528
-                  ? (MediaQuery.sizeOf(context).width - 480) / 2
-                  : 24,
-              36,
+        return PopScope(
+          canPop: !widget.controller.loading && !confirming,
+          child: AbsorbPointer(
+            absorbing: widget.controller.loading || confirming,
+            child: Form(
+              key: formKey,
+              autovalidateMode: AutovalidateMode.disabled,
+              child: ListView(
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
+                padding: EdgeInsets.fromLTRB(
+                  MediaQuery.sizeOf(context).width > 528
+                      ? (MediaQuery.sizeOf(context).width - 480) / 2
+                      : 24,
+                  24,
+                  MediaQuery.sizeOf(context).width > 528
+                      ? (MediaQuery.sizeOf(context).width - 480) / 2
+                      : 24,
+                  36,
+                ),
+                children: [
+                  const _AuthFlowHeader(
+                    title: '找回密码',
+                    subtitle: '验证绑定手机号后设置新密码。',
+                  ),
+                  if (widget.controller.usesTenantAuthentication) ...[
+                    const SizedBox(height: 12),
+                    const Text('请输入专用找回验证码（10 分钟内有效），登录验证码不能用于重置。刷新页面后需重新获取。'),
+                    if (!widget.controller.authPolicy.passwordResetEnabled)
+                      const Text('平台尚未启用短信找回，请联系企业管理员重置。'),
+                  ],
+                  const SizedBox(height: 28),
+                  const _AuthSectionLabel(label: '验证账号归属'),
+                  const SizedBox(height: 10),
+                  _phoneField(
+                    phone,
+                    fieldKey: phoneFieldKey,
+                    onChanged: _phoneChanged,
+                  ),
+                  const SizedBox(height: 14),
+                  _codeField(
+                    code,
+                    onRequest: _request,
+                    requestLabel: codeRequested ? '重新获取' : '获取验证码',
+                    requestEnabled:
+                        !widget.controller.loading &&
+                        (!widget.controller.usesTenantAuthentication ||
+                            widget.controller.authPolicy.passwordResetEnabled),
+                    onChanged: (_) => widget.controller.clearError(),
+                  ),
+                  if (codeRequested)
+                    _AuthCodeSentNotice(
+                      validMinutes: widget.controller.usesTenantAuthentication
+                          ? 10
+                          : 5,
+                    ),
+                  const SizedBox(height: 24),
+                  const _AuthSectionLabel(label: '设置新密码'),
+                  const SizedBox(height: 10),
+                  _AuthPasswordField(
+                    fieldKey: const Key('reset-password'),
+                    controller: password,
+                    label: '新密码',
+                    helperText: widget.controller.authPolicy.passwordHelperText,
+                    textInputAction: TextInputAction.done,
+                    onChanged: (_) => widget.controller.clearError(),
+                    validator: (value) =>
+                        widget.controller.authPolicy.passwordError(value ?? ''),
+                    onFieldSubmitted: (_) => _reset(),
+                  ),
+                  if (widget.controller.usesTenantAuthentication) ...[
+                    const SizedBox(height: 14),
+                    _AuthPasswordField(
+                      fieldKey: const Key(
+                        'tenant-recovery-password-confirmation',
+                      ),
+                      controller: confirmation,
+                      label: '再次输入新密码',
+                      validator: (value) =>
+                          value == password.text ? null : '两次输入的密码不一致',
+                      onFieldSubmitted: (_) => _reset(),
+                    ),
+                  ],
+                  const SizedBox(height: 14),
+                  const _AuthSecurityNotice(),
+                  if (widget.controller.error != null) ...[
+                    const SizedBox(height: 12),
+                    _InlineAuthError(message: widget.controller.error!),
+                  ],
+                  const SizedBox(height: 18),
+                  FilledButton(
+                    key: const Key('reset-submit'),
+                    onPressed:
+                        widget.controller.loading ||
+                            (widget.controller.usesTenantAuthentication &&
+                                (!codeRequested ||
+                                    !widget
+                                        .controller
+                                        .authPolicy
+                                        .passwordResetEnabled))
+                        ? null
+                        : _reset,
+                    child: widget.controller.loading
+                        ? const SizedBox.square(
+                            dimension: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('确认重置密码'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('返回登录'),
+                  ),
+                ],
+              ),
             ),
-            children: [
-              const _AuthFlowHeader(title: '找回密码', subtitle: '验证绑定手机号后设置新密码。'),
-              const SizedBox(height: 28),
-              const _AuthSectionLabel(label: '验证账号归属'),
-              const SizedBox(height: 10),
-              _phoneField(
-                phone,
-                fieldKey: phoneFieldKey,
-                onChanged: _phoneChanged,
-              ),
-              const SizedBox(height: 14),
-              _codeField(
-                code,
-                onRequest: _request,
-                requestLabel: codeRequested ? '重新获取' : '获取验证码',
-                requestEnabled: !widget.controller.loading,
-                onChanged: (_) => widget.controller.clearError(),
-              ),
-              if (codeRequested) const _AuthCodeSentNotice(),
-              const SizedBox(height: 24),
-              const _AuthSectionLabel(label: '设置新密码'),
-              const SizedBox(height: 10),
-              _AuthPasswordField(
-                fieldKey: const Key('reset-password'),
-                controller: password,
-                label: '新密码',
-                helperText: widget.controller.authPolicy.passwordHelperText,
-                textInputAction: TextInputAction.done,
-                onChanged: (_) => widget.controller.clearError(),
-                validator: (value) =>
-                    widget.controller.authPolicy.passwordError(value ?? ''),
-                onFieldSubmitted: (_) => _reset(),
-              ),
-              const SizedBox(height: 14),
-              const _AuthSecurityNotice(),
-              if (widget.controller.error != null) ...[
-                const SizedBox(height: 12),
-                _InlineAuthError(message: widget.controller.error!),
-              ],
-              const SizedBox(height: 18),
-              FilledButton(
-                key: const Key('reset-submit'),
-                onPressed: widget.controller.loading ? null : _reset,
-                child: widget.controller.loading
-                    ? const SizedBox.square(
-                        dimension: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('确认重置密码'),
-              ),
-              const SizedBox(height: 8),
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('返回登录'),
-              ),
-            ],
           ),
         );
       },
@@ -1555,13 +1755,15 @@ class _AuthSecurityNotice extends StatelessWidget {
 }
 
 class _AuthCodeSentNotice extends StatelessWidget {
-  const _AuthCodeSentNotice();
+  const _AuthCodeSentNotice({this.validMinutes = 5});
+
+  final int validMinutes;
 
   @override
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.only(top: 8, left: 4),
     child: Text(
-      '验证码已发送，5 分钟内有效',
+      '验证码已发送，$validMinutes 分钟内有效',
       style: Theme.of(context).textTheme.bodySmall?.copyWith(
         color: context.linli.successText,
         fontWeight: FontWeight.w500,

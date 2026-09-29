@@ -37,6 +37,13 @@ type preparedAdminUser struct {
 	phone, name, password, gender, reason string
 }
 
+// ValidateAdminUserCreation shares standalone validation without writing a
+// local identity or password. The target tenant rechecks policy at prepare.
+func (a *App) ValidateAdminUserCreation(in AdminUserBatchInput, reason string) (string, string) {
+	_, code, message := a.prepareAdminUser(in.Phone, in.Name, in.Password, in.Gender, reason)
+	return code, message
+}
+
 func (a *App) prepareAdminUser(phone, name, password, gender, reason string) (preparedAdminUser, string, string) {
 	prepared := preparedAdminUser{
 		phone: strings.TrimPrefix(strings.TrimSpace(phone), "+86"), name: strings.TrimSpace(name),

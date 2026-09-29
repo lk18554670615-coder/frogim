@@ -2,6 +2,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getApi, loginAdmin } from './api';
 
 describe('live API adapter', () => {
+  it('平台密码操作发送稳定请求号及确认，严格解析待处理状态', async () => {
+    const mock=vi.fn(async(_url:RequestInfo|URL, init?:RequestInit)=>({ok:true,status:200,headers:new Headers(),json:async()=>init?.method ? {item:{jobId:'cred_1',requestId:'req_1',status:'pending'}} : {managed:true,items:[{jobId:'cred_1',requestId:'req_1',status:'completed'}]}}));
+    vi.stubGlobal('fetch',mock);const api=getApi('test-token');
+    const job=await api.resetTenantUserPassword('u/1','req_1','NotARealPassword123!','测试重置');
+    expect(job.status).toBe('pending');
+    expect(String(mock.mock.calls[0][0])).toContain('/users/u%2F1/tenant-password-reset');
+    expect(JSON.parse(String(mock.mock.calls[0][1]?.body))).toEqual({requestId:'req_1',newPassword:'NotARealPassword123!',reason:'测试重置',confirmed:true});
+    expect((await api.getUserCredentialJobs('u1')).items[0].status).toBe('completed');
+  });
   it('媒体列表保留服务端永久直连地址和视频封面地址', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true, status: 200, headers: new Headers(),
@@ -394,6 +403,19 @@ describe('live API adapter', () => {
     ]);
     expect(String(fetchMock.mock.calls[0][0])).toContain('/users/batch');
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ items, reason: '运营工单 BATCH-1', confirmed: true });
+  });
+
+  it('企业开户保留任务状态、未知结果和稳定请求号', async () => {
+    const job = { jobId: 'job_a', requestId: 'req_a', localUserId: 'u_a', phone: '02800000001', name: '开户', status: 'pending', createdAt: '2026-09-28T00:00:00Z' };
+    const mock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => ({ ok: true, status: 200, headers: new Headers(), json: async () => String(input).includes('/provisioning-jobs') ? { managed: true, items: [job] } : String(input).endsWith('/batch') ? { batchId: 'batch_a', total: 2, succeeded: 0, failed: 0, pending: 1, unknown: 1, items: [{ clientRow: 1, status: 'pending', job }, { clientRow: 2, status: 'unknown', code: 'PLATFORM_UNAVAILABLE' }] } : { item: job } }));
+    vi.stubGlobal('fetch', mock);
+    const api = getApi('token');
+    expect(await api.createUser({ phone: job.phone, name: job.name, password: 'Password123!', gender: 'female' }, 'audit', 'req_a')).toMatchObject(job);
+    expect(JSON.parse(String(mock.mock.calls[0][1]?.body)).requestId).toBe('req_a');
+    expect(await api.getAccountProvisioningJobs('job_a')).toMatchObject({ managed: true, items: [job] });
+    const batch = await api.createUsersBatch([], 'audit', 'batch_a');
+    expect(batch).toMatchObject({ pending: 1, unknown: 1, succeeded: 0, failed: 0 });
+    expect(batch.items.map(item => item.status)).toEqual(['pending', 'unknown']);
   });
 
   it('新历史接口未上线时从真实审计记录读取发布快照', async () => {

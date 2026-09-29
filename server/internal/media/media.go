@@ -72,6 +72,21 @@ type Prepared struct {
 	ExpiresAt time.Time         `json:"expiresAt"`
 }
 
+// Ready checks the configured bucket without creating or changing objects.
+func (s *Service) Ready(ctx context.Context) error {
+	if s.client == nil {
+		return ErrUnavailable
+	}
+	exists, err := s.client.BucketExists(ctx, s.bucket)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrUnavailable
+	}
+	return nil
+}
+
 func New(endpoint, publicEndpoint, androidPublicEndpoint, access, secret, bucket, region string, secure, publicSecure bool, maxBytes int64, m Metadata) (*Service, error) {
 	s := &Service{bucket: bucket, metadata: m, maxBytes: maxBytes}
 	if endpoint == "" {

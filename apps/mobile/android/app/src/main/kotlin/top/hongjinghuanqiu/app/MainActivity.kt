@@ -46,6 +46,9 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        // Issued at engine attachment, not on a Dart request: a delayed old
+        // engine cannot ask for a fresh controller and replace the new state.
+        val tenantCallControl = LinliTenantCalls.begin()
         messageFeedback = LinliMessageFeedback(this, flutterEngine.dartExecutor.binaryMessenger)
         systemCallChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -53,6 +56,11 @@ class MainActivity : FlutterActivity() {
         ).also { channel ->
             channel.setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "beginTenantCallControl" -> result.success(tenantCallControl)
+                    "setTenantCallState" -> {
+                        val value = call.arguments as? Map<*, *>
+                        result.success(value != null && LinliTenantCalls.update(this, value))
+                    }
                     "drainLaunchActions" -> result.success(drainSystemCallActions())
                     else -> result.notImplemented()
                 }
@@ -151,11 +159,15 @@ class MainActivity : FlutterActivity() {
         val systemCallId = data.getString("EXTRA_CALLKIT_ID")?.takeIf { it.isNotBlank() } ?: return
         @Suppress("DEPRECATION")
         val extra = data.getSerializable("EXTRA_CALLKIT_EXTRA") as? Map<*, *> ?: return
+        val tenantScope = extra["tenantScope"] as? Map<*, *>
+        if (LinliTenantCalls.managed(this) && !LinliTenantCalls.acceptsAction(this, extra)) return
+        if (!LinliTenantCalls.managed(this) && tenantScope != null) return
         val serverCallId = extra["serverCallId"]?.toString()?.takeIf { it.isNotBlank() } ?: return
         val action = JSONObject()
             .put("type", type)
             .put("serverCallId", serverCallId)
             .put("systemCallId", systemCallId)
+        if (tenantScope != null) action.put("tenantScope", JSONObject(tenantScope))
         val preferences = getSharedPreferences(systemCallPreferencesName, MODE_PRIVATE)
         val pending = runCatching {
             JSONArray(preferences.getString(systemCallPendingKey, "[]"))
@@ -191,6 +203,7 @@ class MainActivity : FlutterActivity() {
                         "type" to type,
                         "serverCallId" to serverCallId,
                         "systemCallId" to systemCallId,
+                        "tenantScope" to action.optJSONObject("tenantScope")?.let(LinliTenantCalls::map),
                     ),
                 )
             }

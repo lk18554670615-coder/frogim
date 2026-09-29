@@ -1,0 +1,15 @@
+**
+!build/
+!build/tenancy-local/
+!build/tenancy-local/bin/
+!build/tenancy-local/bin/tenant-runtime
+!build/tenancy-local/bin/tenant-volume
+!build/tenancy-local/bin/enterprise
+!apps/
+!apps/admin/
+!apps/admin/dist/
+!apps/admin/dist/**
+!server/
+!server/.data/
+!server/.data/ip2region/
+!server/.data/ip2region/**

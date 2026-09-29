@@ -1,0 +1,17 @@
+# Operator-built, digest-pinned platform-only image. Never copies .data, private
+# config, passwords, business media or source enterprise volumes into the image.
+FROM caddy@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d AS gateway
+FROM alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+ARG PLATFORM_PUBLIC_URL
+RUN addgroup -S -g 10001 im && adduser -S -D -H -u 10001 -G im im && mkdir -p /config /caddy-data /caddy-config && chown -R 10001:10001 /config /caddy-data /caddy-config
+COPY build/platform-production/bin/ /opt/frogim/
+COPY --from=gateway /usr/bin/caddy /usr/bin/caddy
+COPY --from=gateway /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+RUN chown 10001:10001 /usr/bin/caddy && chmod 0555 /usr/bin/caddy /opt/frogim/* && printf '{"platformUrl":"%s","environment":"production","baseHref":"/app/"}' "$PLATFORM_PUBLIC_URL" > /opt/frogim/platform-web.json && chmod 0444 /opt/frogim/platform-web.json
+COPY apps/admin/dist-platform/ /srv/platform/
+COPY build/platform-production/web/ /srv/web/
+ENV XDG_DATA_HOME=/caddy-data XDG_CONFIG_HOME=/caddy-config HOME=/tmp
+USER 10001:10001
+WORKDIR /tmp
+ENTRYPOINT ["/opt/frogim/tenant-runtime"]
+LABEL com.frogim.scope="platform-bundle"

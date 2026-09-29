@@ -386,10 +386,15 @@ func (c *Control) IssueParticipant(callID, userID, conversationID, mediaType str
 	if err != nil {
 		return ParticipantSession{}, err
 	}
+	return c.issueParticipant(callID, userID, string(metadata))
+}
+
+func (c *Control) issueParticipant(callID, userID, metadata string) (ParticipantSession, error) {
 	grant := &lkauth.VideoGrant{RoomJoin: true, Room: CallRoomName(callID)}
 	grant.SetCanPublish(true)
 	grant.SetCanSubscribe(true)
 	grant.SetCanPublishData(false)
+	grant.SetCanUpdateOwnMetadata(false)
 	grant.SetCanPublishSources([]lkproto.TrackSource{
 		lkproto.TrackSource_MICROPHONE,
 		lkproto.TrackSource_CAMERA,
@@ -398,7 +403,7 @@ func (c *Control) IssueParticipant(callID, userID, conversationID, mediaType str
 	})
 	token, err := lkauth.NewAccessToken(c.apiKey, c.apiSecret).
 		SetIdentity(userID).
-		SetMetadata(string(metadata)).
+		SetMetadata(metadata).
 		SetValidFor(c.tokenTTL).
 		SetVideoGrant(grant).
 		ToJWT()

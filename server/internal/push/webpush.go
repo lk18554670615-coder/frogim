@@ -17,6 +17,7 @@ import (
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/webpushpolicy"
 )
 
 const maxWebPushSubscriptionBytes = 8192
@@ -27,6 +28,7 @@ const maxWebPushSubscriptionBytes = 8192
 type WebPush struct {
 	PublicKey, PrivateKey, Subject string
 	Client                         webpush.HTTPClient
+	Policy                         *webpushpolicy.Policy
 }
 
 func (w *WebPush) Send(ctx context.Context, item store.OutboxItem) error {
@@ -65,10 +67,16 @@ func (w *WebPush) Send(ctx context.Context, item store.OutboxItem) error {
 
 func (w *WebPush) sendDevice(ctx context.Context, item store.OutboxItem, device store.Device) error {
 	subscription, err := ParseWebPushSubscription(device.PushToken)
+	if w.Policy != nil {
+		_, subscription, err = w.Policy.Subscription(device.PushToken)
+	}
 	if err != nil {
 		return invalidWebPushSubscriptionDeliveryError(device.ID)
 	}
 	title, body, navigation := getuiNotification(item)
+	if w.Policy != nil && (navigation["tenantId"] == nil || navigation["pushBindingId"] != device.ID || navigation["pushBindingRevision"] == nil) {
+		return permanentDeliveryError(errors.New("Web Push scope incomplete"))
+	}
 	if !device.PreviewEnabled {
 		body = "你收到一条新消息"
 	}
@@ -91,12 +99,30 @@ func (w *WebPush) sendDevice(ctx context.Context, item store.OutboxItem, device 
 	}
 	client := w.Client
 	if client == nil {
-		client = newRestrictedWebPushClient()
+		client = newRestrictedWebPushClient(w.Policy)
+	}
+	ttl := 72 * 60 * 60
+	if item.Payload["tenantId"] != nil {
+		expires, ok := item.Payload["expiresAt"].(string)
+		deadline, e := time.Parse(time.RFC3339Nano, expires)
+		if !ok || e != nil {
+			return permanentDeliveryError(errors.New("Web Push scope incomplete"))
+		}
+		if !deadline.After(time.Now()) {
+			return permanentDeliveryError(errors.New("Web Push notification expired"))
+		}
+		ttl = int(time.Until(deadline).Seconds())
+		if ttl < 1 {
+			ttl = 1
+		}
+		if ttl > 24*60*60 {
+			ttl = 24 * 60 * 60
+		}
 	}
 	response, err := webpush.SendNotificationWithContext(ctx, payload, subscription, &webpush.Options{
-		HTTPClient: client, Subscriber: w.Subject,
+		HTTPClient: submissionHTTPClient{next: client}, Subscriber: w.Subject,
 		VAPIDPublicKey: w.PublicKey, VAPIDPrivateKey: w.PrivateKey,
-		TTL: 72 * 60 * 60, Urgency: urgency, Topic: webPushTopic(item),
+		TTL: ttl, Urgency: urgency, Topic: webPushTopic(item),
 	})
 	if err != nil {
 		return retryableDeliveryError(errors.New("Web Push request failed"))
@@ -158,11 +184,14 @@ func webPushTopic(item store.OutboxItem) string {
 			key = item.UserID + ":" + conversationID
 		}
 	}
+	if tenant := stringValue(item.Payload["tenantId"]); tenant != "" {
+		key = tenant + ":" + stringValue(item.Payload["pushBindingId"]) + ":" + key
+	}
 	digest := sha256.Sum256([]byte(key))
 	return base64.RawURLEncoding.EncodeToString(digest[:18])
 }
 
-func newRestrictedWebPushClient() *http.Client {
+func newRestrictedWebPushClient(policy ...*webpushpolicy.Policy) *http.Client {
 	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
@@ -171,13 +200,16 @@ func newRestrictedWebPushClient() *http.Client {
 		if err != nil {
 			return nil, errors.New("invalid Web Push address")
 		}
+		if len(policy) > 0 && policy[0] != nil && (port != "443" || !policy[0].Hosts[strings.ToLower(host)]) {
+			return nil, errors.New("Web Push destination denied")
+		}
 		addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 		if err != nil {
 			return nil, errors.New("Web Push endpoint lookup failed")
 		}
 		for _, address := range addresses {
 			ip := address.IP
-			if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+			if !webpushpolicy.PublicIP(ip) {
 				continue
 			}
 			return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))

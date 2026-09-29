@@ -1,0 +1,6 @@
+# Trusted local-preview host agent. Never expose its Docker socket to a tenant.
+# Docker CLI and its bundled Compose plugin are pinned with the base image.
+FROM docker.io/library/docker@sha256:24f7a518d6a1445ac7881645611153ac4cee56af40b14f16c344206901b382db
+COPY build/tenancy-local/bin/tenant-agent /opt/frogim/tenant-agent
+RUN chmod 0555 /opt/frogim/tenant-agent
+ENTRYPOINT ["/opt/frogim/tenant-agent"]

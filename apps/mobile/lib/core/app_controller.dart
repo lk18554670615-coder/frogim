@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart';
 import '../calls/call_controller.dart';
 import '../calls/call_repository.dart';
 import '../data/im_repository.dart';
+import '../data/tenant_auth_repository.dart';
 import '../data/live_repository.dart' show ImApiException;
 import '../im/business_features.dart';
 import '../im/structured_event_text.dart';
@@ -22,13 +23,37 @@ import 'group_member_directory.dart';
 import 'group_send_policy.dart';
 import 'image_dimensions.dart';
 import 'models.dart';
+import 'runtime_endpoints.dart';
+import 'tenant_password.dart';
+import 'tenant_push.dart';
 import 'video_source_lifecycle.dart';
 import 'message_feedback.dart';
 import 'user_presence.dart';
 
 class AppController extends ChangeNotifier {
   AppController(this.repository, {MessageFeedback? messageFeedback})
-    : messageFeedback = messageFeedback ?? MessageFeedback();
+    : messageFeedback = messageFeedback ?? MessageFeedback() {
+    if (usesTenantAuthentication) authPolicy = _closedTenantPolicy;
+  }
+
+  static const _closedTenantPolicy = AuthPolicy(
+    registrationEnabled: false,
+    otpLoginEnabled: false,
+    qrLoginEnabled: false,
+    passwordResetEnabled: false,
+  );
+  bool get usesTenantAuthentication =>
+      repository is TenantAuthenticationRepository;
+  bool get hasPendingRegistration =>
+      repository is TenantAuthenticationRepository &&
+      (repository as TenantAuthenticationRepository).hasPendingRegistration;
+  bool get supportsTenantPasswordChange =>
+      repository is TenantPasswordRepository &&
+      (repository as TenantPasswordRepository).supportsPasswordChange;
+  TenantPasswordProgress? get tenantPasswordProgress =>
+      repository is TenantPasswordRepository
+      ? (repository as TenantPasswordRepository).passwordChangeProgress
+      : null;
 
   final MessageFeedback messageFeedback;
 
@@ -38,6 +63,7 @@ class AppController extends ChangeNotifier {
   );
   late final CallController? callController = repository is CallRepository
       ? CallController(
+          requiresTenantScope: usesTenantAuthentication,
           repository: repository as CallRepository,
           currentUser: () => currentUser,
           findConversation: (id) =>
@@ -347,7 +373,42 @@ class AppController extends ChangeNotifier {
   String? _activeConversationId;
   String? _pendingConversationId;
   String? _pushDeviceId;
+  Object _pushSession = Object();
+  bool _pushSuspended = false;
+  Object? get pushSession =>
+      authenticated && !_disposed && !_pushSuspended ? _pushSession : null;
+
+  Future<Set<String>> allowedPushProviders() async {
+    if (!usesTenantAuthentication) return const {'getui', 'apns_voip'};
+    final source = repository;
+    if (source is! TenantPushRepository) return const {};
+    return (await (source as TenantPushRepository).pushCapabilities())
+        .providers;
+  }
+
+  void _checkPushSession(Object? session) {
+    if (session == null || !identical(session, pushSession)) {
+      throw StateError('推送所属会话已变更');
+    }
+  }
+
   String? _voipPushDeviceId;
+  String voipPushStatus = '来电推送尚未就绪';
+  void setVoipPushStatus(String value, Object expectedSession) {
+    _checkPushSession(expectedSession);
+    if (voipPushStatus == value) return;
+    voipPushStatus = value;
+    notifyListeners();
+  }
+
+  Future<void> revokeVoipPushDevice(Object expectedSession) async {
+    _checkPushSession(expectedSession);
+    final id = _voipPushDeviceId;
+    if (id != null) await repository.removeUserDevice(id);
+    _checkPushSession(expectedSession);
+    _voipPushDeviceId = null;
+  }
+
   bool _disposed = false;
   Future<void>? _authenticationBootstrap;
   bool _stickyAuthenticationError = false;
@@ -802,6 +863,8 @@ class AppController extends ChangeNotifier {
   }
 
   void _enterAuthenticatedShell(AppUser user, {bool refreshProfile = false}) {
+    _pushSession = Object();
+    _pushSuspended = false;
     _invalidateForwardTasks();
     for (final id in _typingUsers.keys.toList()) {
       _clearConversationTyping(id);
@@ -920,8 +983,12 @@ class AppController extends ChangeNotifier {
       // server-enforced legacy registration/reset flow available and use the
       // conservative built-in password limits until the optional policy can
       // be fetched. Only an explicit policy response may disable registration.
-      authPolicy = const AuthPolicy();
-      authPolicyLoadError = '认证策略接口暂不可用，已使用兼容规则';
+      authPolicy = usesTenantAuthentication
+          ? _closedTenantPolicy
+          : const AuthPolicy();
+      authPolicyLoadError = usesTenantAuthentication
+          ? '统一认证策略暂不可用，暂不开放注册和验证码登录'
+          : '认证策略接口暂不可用，已使用兼容规则';
     } finally {
       authPolicyLoaded = true;
       authPolicyLoading = false;
@@ -939,6 +1006,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<bool> requestCode(String phone) async {
+    if (loading || !authPolicy.otpLoginEnabled) return false;
     final normalized = phone.trim();
     if (!validAuthPhone(normalized)) {
       error = '请输入有效手机号';
@@ -964,7 +1032,9 @@ class AppController extends ChangeNotifier {
     String phone,
     String code, {
     String inviteCode = '',
+    String enterpriseCode = '',
   }) async {
+    if (loading) return;
     if (!validAuthPhone(phone) || code.trim().isEmpty) {
       error = '请输入有效手机号和验证码';
       notifyListeners();
@@ -975,11 +1045,18 @@ class AppController extends ChangeNotifier {
     notifyListeners();
     var enteredShell = false;
     try {
-      final user = await repository.login(
-        phone.trim(),
-        code.trim(),
-        inviteCode: inviteCode.trim(),
-      );
+      final user = usesTenantAuthentication
+          ? await (repository as TenantAuthenticationRepository).tenantLogin(
+              phone.trim(),
+              code.trim(),
+              inviteCode: inviteCode.trim(),
+              enterpriseCode: enterpriseCode.trim(),
+            )
+          : await repository.login(
+              phone.trim(),
+              code.trim(),
+              inviteCode: inviteCode.trim(),
+            );
       enteredShell = true;
       _enterAuthenticatedShell(user);
     } catch (exception) {
@@ -994,6 +1071,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> passwordLogin(String phone, String password) async {
+    if (loading) return;
     if (!validAuthPhone(phone) || password.isEmpty) {
       error = '请输入手机号和密码';
       notifyListeners();
@@ -1080,8 +1158,11 @@ class AppController extends ChangeNotifier {
     required String password,
     required String name,
     String inviteCode = '',
+    String enterpriseCode = '',
   }) async {
-    if (authPolicyAvailable && !authPolicy.registrationEnabled) {
+    if (loading) return false;
+    if ((usesTenantAuthentication || authPolicyAvailable) &&
+        !authPolicy.registrationEnabled) {
       error = '当前暂未开放新账号注册';
       notifyListeners();
       return false;
@@ -1107,13 +1188,22 @@ class AppController extends ChangeNotifier {
     notifyListeners();
     var enteredShell = false;
     try {
-      final user = await repository.register(
-        phone: phone.trim(),
-        code: code.trim(),
-        password: password,
-        name: name.trim(),
-        inviteCode: inviteCode.trim(),
-      );
+      final user = usesTenantAuthentication
+          ? await (repository as TenantAuthenticationRepository).tenantRegister(
+              phone: phone.trim(),
+              code: code.trim(),
+              password: password,
+              name: name.trim(),
+              inviteCode: inviteCode.trim(),
+              enterpriseCode: enterpriseCode.trim(),
+            )
+          : await repository.register(
+              phone: phone.trim(),
+              code: code.trim(),
+              password: password,
+              name: name.trim(),
+              inviteCode: inviteCode.trim(),
+            );
       enteredShell = true;
       _enterAuthenticatedShell(user);
       return true;
@@ -1141,6 +1231,29 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<bool> resumeRegistration() async {
+    if (loading || !usesTenantAuthentication) return false;
+    loading = true;
+    error = null;
+    notifyListeners();
+    var enteredShell = false;
+    try {
+      final user = await (repository as TenantAuthenticationRepository)
+          .resumeRegistration();
+      enteredShell = true;
+      _enterAuthenticatedShell(user);
+      return true;
+    } catch (exception) {
+      error = _messageFor(exception, fallback: '暂时无法查询开户进度');
+      return false;
+    } finally {
+      if (!enteredShell) {
+        loading = false;
+        notifyListeners();
+      }
+    }
+  }
+
   Future<InviteCodeProfile> loadInviteCode() => repository.inviteCode();
 
   Future<InviteCodeProfile?> changeInviteCode(String value) async {
@@ -1158,7 +1271,71 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<bool> changeTenantPassword(String current, String next) async {
+    if (loading || !authenticated || !supportsTenantPasswordChange) {
+      return false;
+    }
+    final epoch = _forwardSessionEpoch;
+    final user = currentUser?.id;
+    loading = true;
+    error = null;
+    notifyListeners();
+    try {
+      await (repository as TenantPasswordRepository).changeLoginPassword(
+        current,
+        next,
+      );
+      // The repository already stopped business traffic. Do not let a delayed
+      // password response sign a different account out of the application.
+      if (!_disposed &&
+          epoch == _forwardSessionEpoch &&
+          currentUser?.id == user) {
+        await logout();
+      }
+      return true;
+    } catch (exception) {
+      if (!_disposed && epoch == _forwardSessionEpoch) {
+        error = _messageFor(exception, fallback: '暂时无法修改密码，请稍后重试');
+      }
+      return false;
+    } finally {
+      if (!_disposed && epoch == _forwardSessionEpoch) {
+        loading = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> checkTenantPasswordChange({bool dismiss = false}) async {
+    if (loading || authenticated || repository is! TenantPasswordRepository) {
+      return;
+    }
+    final epoch = _forwardSessionEpoch;
+    loading = true;
+    error = null;
+    notifyListeners();
+    try {
+      final source = repository as TenantPasswordRepository;
+      if (dismiss) {
+        await source.dismissPasswordChange();
+      } else {
+        await source.checkPasswordChange();
+      }
+    } catch (exception) {
+      if (!_disposed && epoch == _forwardSessionEpoch) {
+        error = _messageFor(exception, fallback: '暂时无法查询密码进度，请稍后重试');
+      }
+    } finally {
+      if (!_disposed && epoch == _forwardSessionEpoch) {
+        loading = false;
+        notifyListeners();
+      }
+    }
+  }
+
   Future<bool> requestResetCode(String phone) async {
+    if (loading) return false;
+    final epoch = _forwardSessionEpoch;
     if (!validAuthPhone(phone)) {
       error = '请输入有效手机号';
       notifyListeners();
@@ -1169,13 +1346,18 @@ class AppController extends ChangeNotifier {
     notifyListeners();
     try {
       await repository.requestPasswordResetCode(phone.trim());
+      if (_disposed || epoch != _forwardSessionEpoch) return false;
       return true;
     } catch (exception) {
-      error = _messageFor(exception, fallback: '验证码发送失败');
+      if (!_disposed && epoch == _forwardSessionEpoch) {
+        error = _messageFor(exception, fallback: '验证码发送失败');
+      }
       return false;
     } finally {
-      loading = false;
-      notifyListeners();
+      if (!_disposed && epoch == _forwardSessionEpoch) {
+        loading = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -1184,6 +1366,8 @@ class AppController extends ChangeNotifier {
     required String code,
     required String password,
   }) async {
+    if (loading) return false;
+    final epoch = _forwardSessionEpoch;
     if (!validAuthPhone(phone) || code.trim().isEmpty) {
       error = '请完整填写重置信息';
       notifyListeners();
@@ -1204,13 +1388,18 @@ class AppController extends ChangeNotifier {
         code: code.trim(),
         password: password,
       );
+      if (_disposed || epoch != _forwardSessionEpoch) return false;
       return true;
     } catch (exception) {
-      error = _messageFor(exception, fallback: '密码重置失败');
+      if (!_disposed && epoch == _forwardSessionEpoch) {
+        error = _messageFor(exception, fallback: '密码重置失败');
+      }
       return false;
     } finally {
-      loading = false;
-      notifyListeners();
+      if (!_disposed && epoch == _forwardSessionEpoch) {
+        loading = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -1823,10 +2012,14 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _reloadHistoryAfterPolicy(String cid) async {
+    final epoch = _forwardSessionEpoch;
     final userId = currentUser?.id;
     final active = _messageLoadOperations[cid];
     if (active != null) await active;
-    if (_disposed || currentUser?.id != userId || activeConversationId != cid) {
+    if (_disposed ||
+        epoch != _forwardSessionEpoch ||
+        currentUser?.id != userId ||
+        activeConversationId != cid) {
       return;
     }
     await loadMessages(cid, force: true);
@@ -1866,8 +2059,10 @@ class AppController extends ChangeNotifier {
     String conversationId,
     String sessionUserId,
   ) async {
+    final epoch = _forwardSessionEpoch;
     final cached = await _readCachedMessages(conversationId);
     if (_disposed ||
+        epoch != _forwardSessionEpoch ||
         !authenticated ||
         currentUser?.id != sessionUserId ||
         cached.isEmpty) {
@@ -1886,6 +2081,12 @@ class AppController extends ChangeNotifier {
     String conversationId, {
     required bool force,
   }) async {
+    final epoch = _forwardSessionEpoch;
+    final userId = currentUser?.id;
+    bool current() =>
+        !_disposed &&
+        epoch == _forwardSessionEpoch &&
+        currentUser?.id == userId;
     messageLoading.add(conversationId);
     messageErrors.remove(conversationId);
     notifyListeners();
@@ -1904,6 +2105,7 @@ class AppController extends ChangeNotifier {
     if (!_messages.containsKey(conversationId) &&
         repository is CachedMessageRepository) {
       final cached = await _readCachedMessages(conversationId);
+      if (!current()) return;
       if (cached.isNotEmpty) {
         _messages[conversationId] = _mergeMessageLists(const [], cached);
         notifyListeners();
@@ -1911,6 +2113,7 @@ class AppController extends ChangeNotifier {
     }
     try {
       final remoteResult = await remoteMessages;
+      if (!current()) return;
       if (remoteResult.error case final error?) {
         Error.throwWithStackTrace(error, remoteResult.stackTrace!);
       }
@@ -1937,14 +2140,17 @@ class AppController extends ChangeNotifier {
         await loadOlderMessages(conversationId);
       }
     } catch (exception) {
+      if (!current()) return;
       messageErrors[conversationId] = _messageFor(
         exception,
         fallback: '消息加载失败，请重试',
       );
       _messages.putIfAbsent(conversationId, () => []);
     } finally {
-      messageLoading.remove(conversationId);
-      notifyListeners();
+      if (current()) {
+        messageLoading.remove(conversationId);
+        notifyListeners();
+      }
     }
   }
 
@@ -1952,6 +2158,12 @@ class AppController extends ChangeNotifier {
     String conversationId, {
     int limit = 50,
   }) async {
+    final epoch = _forwardSessionEpoch;
+    final userId = currentUser?.id;
+    bool currentSession() =>
+        !_disposed &&
+        epoch == _forwardSessionEpoch &&
+        currentUser?.id == userId;
     if (messageHistoryLoading.contains(conversationId) ||
         !messageHistoryHasMore(conversationId)) {
       return false;
@@ -1977,14 +2189,13 @@ class AppController extends ChangeNotifier {
     try {
       var cursor = beforeSequence;
       var progressed = false;
-      final sessionUserId = currentUser?.id;
       do {
         final older = await historyRepository.olderMessages(
           conversationId,
           beforeSequence: cursor,
           limit: limit,
         );
-        if (_disposed || currentUser?.id != sessionUserId) return false;
+        if (!currentSession()) return false;
         final merged = _mergeMessageLists(
           _messages[conversationId] ?? const <ChatMessage>[],
           older,
@@ -2016,14 +2227,17 @@ class AppController extends ChangeNotifier {
         cursor = nextOldest;
       } while (true);
     } catch (exception) {
+      if (!currentSession()) return false;
       messageHistoryErrors[conversationId] = _messageFor(
         exception,
         fallback: '较早的消息加载失败，请稍后重试',
       );
       return false;
     } finally {
-      messageHistoryLoading.remove(conversationId);
-      notifyListeners();
+      if (currentSession()) {
+        messageHistoryLoading.remove(conversationId);
+        notifyListeners();
+      }
     }
   }
 
@@ -3374,7 +3588,10 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> clearLocalMessages(String conversationId) async {
+    final epoch = _forwardSessionEpoch;
+    final userId = currentUser?.id;
     await repository.persistMessages(conversationId, const []);
+    if (!_forwardSessionValid(epoch, userId)) return;
     _messages[conversationId] = [];
     notifyListeners();
   }
@@ -3399,6 +3616,9 @@ class AppController extends ChangeNotifier {
   }
 
   void _scheduleDelivered(String conversationId, int sequence) {
+    final epoch = _forwardSessionEpoch;
+    final userId = currentUser?.id;
+    if (!_forwardSessionValid(epoch, userId)) return;
     if (sequence <= (_lastDeliveredSeq[conversationId] ?? 0)) return;
     _pendingDeliveredSeq[conversationId] = max(
       sequence,
@@ -3407,11 +3627,17 @@ class AppController extends ChangeNotifier {
     _deliveryTimers[conversationId]?.cancel();
     _deliveryTimers[conversationId] = Timer(
       const Duration(milliseconds: 160),
-      () => unawaited(_flushDelivered(conversationId)),
+      () {
+        if (_forwardSessionValid(epoch, userId)) {
+          unawaited(_flushDelivered(conversationId));
+        }
+      },
     );
   }
 
   Future<void> _flushDelivered(String conversationId) async {
+    final epoch = _forwardSessionEpoch;
+    final userId = currentUser?.id;
     _deliveryTimers.remove(conversationId)?.cancel();
     final sequence = _pendingDeliveredSeq[conversationId] ?? 0;
     if (sequence <= (_lastDeliveredSeq[conversationId] ?? 0)) {
@@ -3420,6 +3646,7 @@ class AppController extends ChangeNotifier {
     }
     try {
       await repository.markDelivered(conversationId, sequence);
+      if (!_forwardSessionValid(epoch, userId)) return;
       _lastDeliveredSeq[conversationId] = sequence;
       if ((_pendingDeliveredSeq[conversationId] ?? 0) <= sequence) {
         _pendingDeliveredSeq.remove(conversationId);
@@ -3430,7 +3657,10 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _flushPendingDeliveries() async {
+    final epoch = _forwardSessionEpoch;
+    final userId = currentUser?.id;
     for (final conversationId in _pendingDeliveredSeq.keys.toList()) {
+      if (!_forwardSessionValid(epoch, userId)) return;
       await _flushDelivered(conversationId);
     }
   }
@@ -3454,10 +3684,13 @@ class AppController extends ChangeNotifier {
       unawaited(_sendTyping(conversationId, false));
       return;
     }
-    _typingStopTimers[conversationId] = Timer(
-      const Duration(seconds: 4),
-      () => updateTyping(conversationId, false),
-    );
+    final epoch = _forwardSessionEpoch;
+    final userId = currentUser?.id;
+    _typingStopTimers[conversationId] = Timer(const Duration(seconds: 4), () {
+      if (_forwardSessionValid(epoch, userId)) {
+        updateTyping(conversationId, false);
+      }
+    });
     final now = DateTime.now();
     final lastSent = _lastTypingSent[conversationId];
     if (_typingAnnounced.contains(conversationId) &&
@@ -3471,10 +3704,12 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _sendTyping(String conversationId, bool typing) async {
+    final epoch = _forwardSessionEpoch;
+    final userId = currentUser?.id;
     try {
       await repository.setTyping(conversationId, typing);
     } catch (_) {
-      if (typing) {
+      if (typing && _forwardSessionValid(epoch, userId)) {
         _typingAnnounced.remove(conversationId);
         _lastTypingSent.remove(conversationId);
       }
@@ -3490,8 +3725,11 @@ class AppController extends ChangeNotifier {
     required bool previewEnabled,
     required bool soundEnabled,
     required bool vibrationEnabled,
+    Object? expectedPushSession,
   }) async {
     if (!authenticated || cid.trim().isEmpty) return;
+    final session = expectedPushSession ?? pushSession;
+    _checkPushSession(session);
     await repository.registerDevice(
       deviceId: deviceId,
       platform: platform,
@@ -3502,6 +3740,7 @@ class AppController extends ChangeNotifier {
       soundEnabled: soundEnabled,
       vibrationEnabled: vibrationEnabled,
     );
+    _checkPushSession(session);
     _pushDeviceId = deviceId;
   }
 
@@ -3512,30 +3751,52 @@ class AppController extends ChangeNotifier {
     required bool previewEnabled,
     required bool soundEnabled,
     required bool vibrationEnabled,
+    Object? expectedPushSession,
   }) async {
     if (!authenticated || token.trim().isEmpty) return;
+    final session = expectedPushSession ?? pushSession;
+    _checkPushSession(session);
     await repository.registerDevice(
       deviceId: deviceId,
       platform: 'ios',
-      provider: 'apns_voip',
+      provider: usesTenantAuthentication ? 'getui_voip' : 'apns_voip',
       pushToken: token.trim(),
       notificationsEnabled: notificationsEnabled,
       previewEnabled: previewEnabled,
       soundEnabled: soundEnabled,
       vibrationEnabled: vibrationEnabled,
     );
+    _checkPushSession(session);
     _voipPushDeviceId = deviceId;
   }
 
-  Future<void> registerWebPushDevice({
+  Future<TenantPushBinding?> registerWebPushDevice({
     required String deviceId,
     required String subscription,
     required bool notificationsEnabled,
     required bool previewEnabled,
     required bool soundEnabled,
     required bool vibrationEnabled,
+    Object? expectedPushSession,
   }) async {
-    if (!authenticated || subscription.trim().isEmpty) return;
+    if (!authenticated || subscription.trim().isEmpty) return null;
+    final session = expectedPushSession ?? pushSession;
+    _checkPushSession(session);
+    if (usesTenantAuthentication) {
+      final source = repository;
+      if (source is! TenantPushRepository) throw StateError('平台推送尚未配置');
+      final result = await (source as TenantPushRepository).registerBrowserPush(
+        deviceId: deviceId,
+        subscription: subscription,
+        notificationsEnabled: notificationsEnabled,
+        previewEnabled: previewEnabled,
+        soundEnabled: soundEnabled,
+        vibrationEnabled: vibrationEnabled,
+      );
+      _checkPushSession(session);
+      _pushDeviceId = deviceId;
+      return result;
+    }
     await repository.registerDevice(
       deviceId: deviceId,
       platform: 'web',
@@ -3546,13 +3807,20 @@ class AppController extends ChangeNotifier {
       soundEnabled: soundEnabled,
       vibrationEnabled: vibrationEnabled,
     );
+    _checkPushSession(session);
     _pushDeviceId = deviceId;
+    return null;
   }
 
   void refreshPushConfiguration() => notifyListeners();
 
   void handlePushPayload(Map<String, dynamic> payload) {
+    if (_disposed) return;
     final normalized = _flattenPushPayload(payload);
+    if (usesTenantAuthentication &&
+        (!authenticated || !RuntimeEndpoints.acceptsNotification(normalized))) {
+      return;
+    }
     unawaited(callController?.handlePushPayload(normalized));
     final conversationId =
         normalized['conversationId']?.toString() ??
@@ -4616,6 +4884,8 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    _pushSuspended = true;
+    _pushSession = Object();
     _invalidateForwardTasks();
     loading = true;
     notifyListeners();
@@ -4635,7 +4905,13 @@ class AppController extends ChangeNotifier {
         );
       }
     }
-    for (final deviceId in [_pushDeviceId, _voipPushDeviceId]) {
+    // Managed logout revokes every binding in the platform session transaction,
+    // including registrations whose ACK was lost. Do not wait for per-device
+    // requests before fencing that session.
+    for (final deviceId
+        in usesTenantAuthentication
+            ? const <String?>[]
+            : [_pushDeviceId, _voipPushDeviceId]) {
       if (deviceId == null) continue;
       try {
         await repository.removeUserDevice(deviceId);
@@ -4661,6 +4937,8 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _clearAuthenticatedState() async {
+    _pushSuspended = true;
+    _pushSession = Object();
     presence.setAccount(null);
     messageFeedback.setAccount(null);
     _invalidateForwardTasks();

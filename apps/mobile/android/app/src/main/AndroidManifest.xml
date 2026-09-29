@@ -66,6 +66,9 @@
             android:name="flutterEmbedding"
             android:value="2" />
         <meta-data
+            android:name="top.hongjinghuanqiu.app.TENANT_AUTH_ENABLED"
+            android:value="${TENANT_AUTH_ENABLED}" />
+        <meta-data
             android:name="PUSH_APPID"
             android:value="${GETUI_APPID}" />
         <service

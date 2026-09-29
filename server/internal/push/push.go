@@ -220,7 +220,8 @@ func (d *Dispatcher) deliver(ctx context.Context, item store.OutboxItem) {
 	if policy, ok := d.store.(store.PushPresentationPolicyStore); ok {
 		allowed, err = policy.CanPresentPush(deliveryCtx, item)
 	}
-	if err == nil && allowed && len(item.Devices) > 0 {
+	_, platformDevices := d.provider.(interface{ usesPlatformDevices() })
+	if err == nil && allowed && (len(item.Devices) > 0 || platformDevices) {
 		err = d.provider.Send(deliveryCtx, item)
 	}
 	var delivery *DeliveryError

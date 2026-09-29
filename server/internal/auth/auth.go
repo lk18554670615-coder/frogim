@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"github.com/linli/im/server/internal/tenancy"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -12,14 +13,22 @@ import (
 type Manager struct {
 	Secret                []byte
 	AccessTTL, RefreshTTL time.Duration
+	TenantID              string
+	Identity              tenancy.Identity
+	TenantAuthVersion     int64
+	TenantRealmVersion    int64
 }
 
 type Claims struct {
-	TokenType   string `json:"typ"`
-	Role        string `json:"role,omitempty"`
-	AuthVersion int64  `json:"ver,omitempty"`
-	SessionID   string `json:"sid,omitempty"`
-	DeviceKind  string `json:"dev,omitempty"`
+	TenantID          string `json:"tenant,omitempty"`
+	PlatformAccountID string `json:"account,omitempty"`
+	AssignmentVersion int64  `json:"assignment,omitempty"`
+	TokenType         string `json:"typ"`
+	Role              string `json:"role,omitempty"`
+	AuthVersion       int64  `json:"ver,omitempty"`
+	RealmVersion      int64  `json:"realm,omitempty"`
+	SessionID         string `json:"sid,omitempty"`
+	DeviceKind        string `json:"dev,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -95,7 +104,10 @@ func (m Manager) sign(userID, typ string, ttl time.Duration, sessionID, deviceKi
 	if err != nil {
 		return "", err
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{TokenType: typ, SessionID: sessionID, DeviceKind: deviceKind, RegisteredClaims: jwt.RegisteredClaims{Subject: userID, ID: id, IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now.Add(-5 * time.Second)), ExpiresAt: jwt.NewNumericDate(now.Add(ttl))}}).SignedString(m.Secret)
+	if m.TenantID != "" && (m.Identity.Validate() != nil || m.Identity.TenantID != m.TenantID || m.Identity.LocalUserID != userID || m.TenantAuthVersion < 1 || m.TenantRealmVersion < 1) {
+		return "", errors.New("tenant identity required")
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{TenantID: m.TenantID, PlatformAccountID: m.Identity.AccountID, AssignmentVersion: m.Identity.AssignmentVersion, AuthVersion: m.TenantAuthVersion, RealmVersion: m.TenantRealmVersion, TokenType: typ, SessionID: sessionID, DeviceKind: deviceKind, RegisteredClaims: jwt.RegisteredClaims{Subject: userID, ID: id, IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now.Add(-5 * time.Second)), ExpiresAt: jwt.NewNumericDate(now.Add(ttl))}}).SignedString(m.Secret)
 }
 
 func (m Manager) Parse(raw, expected string) (string, error) {
@@ -119,6 +131,12 @@ func (m Manager) ParseClaims(raw, expected string) (*Claims, error) {
 	c, ok := t.Claims.(*Claims)
 	if !ok || c.TokenType != expected || c.Subject == "" {
 		return nil, errors.New("invalid token claims")
+	}
+	if expected != "admin" && c.TenantID != m.TenantID {
+		return nil, errors.New("token belongs to another enterprise")
+	}
+	if expected != "admin" && m.TenantID != "" && (!tenancy.ValidID(c.PlatformAccountID) || c.AssignmentVersion < 1 || c.AuthVersion < 1 || c.RealmVersion < 1) {
+		return nil, errors.New("invalid enterprise identity")
 	}
 	return c, nil
 }

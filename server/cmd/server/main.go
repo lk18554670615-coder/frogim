@@ -16,6 +16,7 @@ import (
 	"github.com/linli/im/server/internal/httpapi"
 	"github.com/linli/im/server/internal/push"
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/tenancy"
 	"github.com/linli/im/server/internal/wukong"
 )
 
@@ -29,6 +30,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	pg, err := store.NewPostgresWithOptions(ctx, cfg.DatabaseURL, store.PostgresOptions{
+		TenantID: cfg.TenantID, BindExistingTenant: cfg.BindExistingTenant,
 		MaxConns: int32(cfg.DBMaxConns), MinConns: int32(cfg.DBMinConns),
 		MaxConnLifetime: cfg.DBMaxConnLifetime, MaxConnIdleTime: cfg.DBMaxConnIdleTime,
 		HealthCheckPeriod: cfg.DBHealthCheckPeriod, StatementTimeout: cfg.DBStatementTimeout,
@@ -81,6 +83,33 @@ func main() {
 		}
 	}
 	api := httpapi.New(cfg, application)
+	var tenantControlServer *http.Server
+	if cfg.TenantID != "" {
+		tlsConfig, tlsErr := tenancy.TLSConfig(cfg.TenantCAFile, cfg.TenantCertFile, cfg.TenantKeyFile)
+		if tlsErr != nil {
+			slog.Error("enterprise TLS configuration unavailable")
+			os.Exit(1)
+		}
+		peer, peerErr := tenancy.NewRPC(cfg.PlatformControlURL, tlsConfig, tenancy.PlatformIdentity)
+		if peerErr != nil {
+			slog.Error("platform control peer unavailable")
+			os.Exit(1)
+		}
+		api.ConfigureTenant(pg, peer)
+		authorities, authorityErr := tenancy.CaptureAuthorities(tlsConfig, cfg.TenantCAFile)
+		if authorityErr != nil {
+			slog.Error("enterprise running trust configuration unavailable")
+			os.Exit(1)
+		}
+		api.ConfigureRecoveryAuthorities(authorities)
+		tenantControlServer = &http.Server{Addr: cfg.TenantControlAddr, Handler: api.TenantControlHandler(), TLSConfig: tlsConfig, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 60 * time.Second}
+		go func() {
+			if err := tenantControlServer.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("enterprise control listener failed")
+				os.Exit(1)
+			}
+		}()
+	}
 	defer api.Close()
 	if err = api.SetupError(); err != nil {
 		slog.Error("IM transport unavailable", "error", err)
@@ -159,12 +188,35 @@ func main() {
 	}
 	shutdown, cancelShutdown := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelShutdown()
+	if tenantControlServer != nil {
+		_ = tenantControlServer.Shutdown(shutdown)
+	}
 	if err := server.Shutdown(shutdown); err != nil {
 		slog.Error("graceful shutdown", "error", err)
 	}
 }
 
 func configuredPushProvider(cfg config.Config) (push.Provider, error) {
+	if cfg.TenantID != "" {
+		if cfg.PushProvider == "noop" {
+			return push.Noop{}, nil
+		}
+		if cfg.PushProvider != "platform" {
+			return nil, errors.New("managed enterprise cannot use a direct push provider")
+		}
+		tlsConfig, err := tenancy.TLSConfig(cfg.TenantCAFile, cfg.TenantCertFile, cfg.TenantKeyFile)
+		if err != nil {
+			return nil, err
+		}
+		peer, err := tenancy.NewRPC(cfg.PlatformControlURL, tlsConfig, tenancy.PlatformIdentity)
+		if err != nil {
+			return nil, err
+		}
+		return push.TenantProxy{TenantID: cfg.TenantID, Peer: peer}, nil
+	}
+	if cfg.PushProvider == "platform" {
+		return nil, errors.New("platform push requires enterprise identity")
+	}
 	getui := func(suppressIOSCalls bool) push.Provider {
 		return &push.Getui{
 			AppID: cfg.GetuiAppID, AppKey: cfg.GetuiAppKey, MasterSecret: cfg.GetuiMasterSecret,

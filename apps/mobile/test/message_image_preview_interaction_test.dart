@@ -1,7 +1,6 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:linli_im/core/app_theme.dart';
 import 'package:linli_im/core/image_send_editor.dart';
@@ -109,8 +108,12 @@ void main() {
   });
 
   testWidgets('图片编辑器顶部图标为白色且按钮不小于 48', (tester) async {
-    final image = base64Decode(
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=',
+    final asset = await rootBundle.load(
+      'assets/brand/qingwaguagua-mark-transparent.png',
+    );
+    final image = asset.buffer.asUint8List(
+      asset.offsetInBytes,
+      asset.lengthInBytes,
     );
     await tester.pumpWidget(
       MaterialApp(

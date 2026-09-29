@@ -1,4 +1,5 @@
 import 'call_models.dart';
+import '../core/tenant_call_scope.dart';
 
 enum SystemCallActionType { restore, accept, decline, end, timeout, mute }
 
@@ -8,12 +9,14 @@ class SystemCallAction {
     required this.serverCallId,
     required this.systemCallId,
     this.muted,
+    this.tenantScope,
   });
 
   final SystemCallActionType type;
   final String serverCallId;
   final String systemCallId;
   final bool? muted;
+  final TenantCallScope? tenantScope;
 }
 
 abstract interface class SystemCallService {
@@ -40,6 +43,9 @@ abstract interface class SystemCallService {
   Future<void> setConnected(String serverCallId);
   Future<void> setMuted(String serverCallId, bool muted);
   Future<void> end(String serverCallId);
+
+  /// Remove this exact native UI, never derive an ID using a newer account.
+  Future<void> dismiss(String systemCallId);
   Future<String?> voipPushToken();
   Future<void> dispose();
 }

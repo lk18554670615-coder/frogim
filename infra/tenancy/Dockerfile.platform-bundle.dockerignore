@@ -1,0 +1,12 @@
+**
+!build/
+!build/platform-production/
+!build/platform-production/bin/
+!build/platform-production/bin/platform
+!build/platform-production/bin/tenant-runtime
+!build/platform-production/web/
+!build/platform-production/web/**
+!apps/
+!apps/admin/
+!apps/admin/dist-platform/
+!apps/admin/dist-platform/**

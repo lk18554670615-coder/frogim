@@ -7,6 +7,9 @@ import {
   Server, Settings, ShieldAlert, ShieldCheck, Trash2, Upload, Users, Wifi, X,
 } from 'lucide-react';
 import { ApiError, getApi, loginAdmin } from './api';
+import { accountJobLabel, TenantAccountJobsPanel } from './TenantAccountJobs';
+import { TenantPasswordReset } from './TenantPasswordReset';
+import type { TenantAccountJob } from './types';
 import { UserAccessSummary, UserAccessLogPanel, IPAccountsPanel, IPValue } from './UserAccess';
 import type {
   AdminApi, AdministratorRecord, AdministratorRoleRecord, AdminClientDeviceRecord, AdminDirectMessageRecord, AdminGroupBlacklistRecord, AdminGroupMessageRecord, AdminSession, AdminSettings, AdminUserBatchItemResult, AdminUserBatchResult, AdminUserBlockRecord, AdminUserDeviceRecord, AdminUserRelationRecord, AnnouncementInput, AnnouncementRecord, AuditLog, CallRecord, ClientPlatform, ClientVersionPolicy, ClientVersionReleaseRecord, DashboardData, GroupMemberRecord, GroupOverview, GroupRecord, GroupSettingsChanges,
@@ -470,7 +473,7 @@ function IPAccountsDialog({ip,onClose}:{ip:string;onClose:()=>void}) {
   return <DetailDialog title="同 IP 账号" detail={currentIP} onClose={onClose}><IPAccountsPanel key={currentIP} api={api} ip={currentIP} notify={notify} onIP={setCurrentIP}/></DetailDialog>;
 }
 function UserDetailDialog({ user, onClose }: { user: UserRecord; onClose: () => void }) {
-  const { api, mode,notify } = useApi();
+  const { api, mode,notify,can } = useApi();
   const [selectedIP,setSelectedIP]=useState<string>();
   const [section, setSection] = useState<'profile' | 'friends' | 'blocks' | 'devices' | 'access'>('profile');
   const [chatFriend, setChatFriend] = useState<UserRecord>();
@@ -494,6 +497,7 @@ function UserDetailDialog({ user, onClose }: { user: UserRecord; onClose: () => 
       {section==='access'&&<UserAccessLogPanel api={api} userId={user.id} notify={notify} onIP={setSelectedIP}/>}
       {section==='profile'&&<section className="user-access-profile"><UserAccessSummary access={currentUser.access} onIP={setSelectedIP} notify={notify} full/></section>}
       {section==='profile'&&<InviteSourceEditor user={currentUser} invitation={overview.invitation} reload={state.reload}/>}
+      {section==='profile'&&<TenantPasswordReset key={currentUser.id} api={api} userId={currentUser.id} canWrite={can('users.write')}/>}
       {section==='profile'&&<section className="detail-section message-permission-section"><div className="detail-section-heading"><div><h3>用户类型</h3><p>用户类型只通过用户列表中的开关修改。</p></div><Badge value={currentUser.isInternalUser?'active':'neutral'} label={currentUser.isInternalUser?'内部用户':'普通用户'}/></div><div className="message-permission-card"><p>{currentUser.isInternalUser?'该用户可全端删除消息，并可在 PC Web 查看当前好友的最近登录 IP 和归属地。':'该用户不具备全端删除消息和查看好友登录 IP 的特殊权限。'}</p><div className="message-permission-meta"><span>群聊删除仍校验群主或管理员身份</span><span>好友 IP 仍校验真实好友与单聊关系</span><span>敏感操作记录审计</span></div></div></section>}
       {section === 'profile' && <dl className="detail-list user-profile-list"><div><dt>呱呱号</dt><dd className="mono">{currentUser.handle}</dd></div><div><dt>手机号</dt><dd>{currentUser.phone}</dd></div><div><dt>性别</dt><dd>{overview.gender === 'male' ? '男' : overview.gender === 'female' ? '女' : '未展示'}</dd></div><div><dt>在线状态</dt><dd>{currentUser.online ? `当前在线（${currentUser.onlineConnections || 1} 个连接）` : '当前离线'}</dd></div><div><dt>最后离线</dt><dd>{currentUser.lastOfflineAt ? dateTimeLabel(currentUser.lastOfflineAt) : '暂无记录'}</dd></div><div><dt>注册时间</dt><dd>{currentUser.registeredAt}</dd></div><div><dt>呱呱号修改记录</dt><dd>已修改 {overview.handleChangesUsed} 次，剩余 {overview.handleChangesRemaining} 次</dd></div><div><dt>个性签名</dt><dd>{overview.signature || '未设置'}</dd></div>{currentUser.bannedUntil && <div className="detail-list-wide"><dt>封禁截止</dt><dd>{dateTimeLabel(currentUser.bannedUntil)}</dd></div>}</dl>}
       {section === 'friends' && <section className="detail-section user-detail-section"><div className="detail-section-heading"><div><h3>好友列表</h3><p>展示好友备注、标签、建立时间，并可审计查看聊天正文。</p></div></div>{friends.loading && <Skeleton rows={4} />}{friends.error && <ErrorState message={friends.error} retry={friends.reload} />}{friends.data && <UserRelationTable items={friends.data} empty="该用户暂无好友" onMessages={setChatFriend} />}</section>}
@@ -926,40 +930,60 @@ function MediaPicker({ value, onChange, label }: { value: string; onChange: (val
   </div>;
 }
 
-function SingleUserCreateForm() {
+function SingleUserCreateForm({ onSubmitted }: { onSubmitted: () => void }) {
   const { api, notify, can } = useApi();
   const [phone, setPhone] = useState(''); const [name, setName] = useState(''); const [gender, setGender] = useState<UserRecord['gender']>('unspecified');
   const [password, setPassword] = useState(''); const [reason, setReason] = useState(''); const [saving, setSaving] = useState(false); const [error, setError] = useState('');
+  const requestId = useRef(crypto.randomUUID());
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const [attempted, setAttempted] = useState(false), [confirming, setConfirming] = useState(false), [job, setJob] = useState<TenantAccountJob>();
   const validPhone = /^\d{11}$/.test(phone); const valid = validPhone && name.trim().length > 0 && password.length >= 8 && reason.trim().length > 0 && can('users.write');
-  const submit = async (event: FormEvent) => {
-    event.preventDefault(); if (!valid || saving) return; setSaving(true); setError('');
+  const submit = async () => {
+    if (!valid || saving || job) return; setSaving(true); setError(''); setAttempted(true);
     try {
-      const created = await api.createUser({ phone, name: name.trim(), password, gender }, reason.trim());
+      const created = await api.createUser({ phone, name: name.trim(), password, gender }, reason.trim(), requestId.current);
+      if (!alive.current) return;
+      onSubmitted();
+      if ('jobId' in created) { setJob(created); setPassword(''); notify('已提交平台开户任务，请确认任务变为已开通'); return; }
       notify(`用户 ${created.nickname} 已创建`); window.history.pushState({}, '', `/users?q=${encodeURIComponent(phone)}`); window.dispatchEvent(new PopStateEvent('popstate'));
-    } catch (cause) { setError(errorMessage(cause)); } finally { setSaving(false); }
+    } catch (cause) {
+      if (!alive.current) return;
+      setError(errorMessage(cause)); onSubmitted();
+      if (cause instanceof ApiError && cause.status < 500 && cause.code !== 'ACCOUNT_REQUEST_CHANGED') { setAttempted(false); requestId.current = crypto.randomUUID(); }
+    } finally { if (alive.current) setSaving(false); }
   };
-  return <form className="settings-section create-user-card" onSubmit={(event) => void submit(event)}>
+  return <><form className="settings-section create-user-card" onSubmit={(event) => { event.preventDefault(); if (valid && !job) setConfirming(true); }}>
     <div className="settings-title"><CircleUserRound size={20} /><div><h2>账号资料</h2><p>号码国家码固定为 +86；本地号码只校验是否为 11 位数字，初始密码遵循当前服务端动态密码策略。</p></div></div>
+    <fieldset disabled={saving || attempted || Boolean(job)} style={{ border: 0, padding: 0, margin: 0 }}>
     <div className="form-grid"><label className="field-label">手机号<div className="phone-input"><span>+86</span><input aria-label="11位数字号码" inputMode="numeric" autoComplete="tel-national" value={phone} maxLength={11} onChange={(event) => setPhone(event.target.value.replace(/\D/g, '').slice(0, 11))} placeholder="10000000000" required /></div>{phone && !validPhone && <small className="field-error">请输入 11 位数字</small>}</label><label className="field-label">昵称<input value={name} maxLength={40} onChange={(event) => setName(event.target.value)} placeholder="填写用户昵称" required /></label><label className="field-label">性别<select value={gender} onChange={(event) => setGender(event.target.value as UserRecord['gender'])}><option value="unspecified">未设置</option><option value="male">男</option><option value="female">女</option></select></label><label className="field-label">初始密码<input type="password" autoComplete="new-password" minLength={8} maxLength={72} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 位，以服务端策略为准" required /></label></div>
     <label className="field-label">操作理由<textarea value={reason} maxLength={500} onChange={(event) => setReason(event.target.value)} placeholder="填写工单编号、业务需求或创建依据" required /></label>
+    </fieldset>
     {error && <div className="inline-notice danger" role="alert"><AlertTriangle size={15} />{error}</div>}{!can('users.write') && <div className="inline-notice warning" role="status"><AlertTriangle size={15} />当前角色没有创建用户权限</div>}
-    <button className="button primary" type="submit" disabled={!valid || saving}><Plus size={17} />{saving ? '正在创建…' : '创建用户'}</button>
-  </form>;
+    {job && <p role="status">开户任务已受理 · 请求号 {job.requestId}。请以下方任务列表的最新状态为准。</p>}
+    {attempted && !job && <p>本次请求号：<span className="mono">{requestId.current}</span>。结果未确认时请保持原内容重试，或先核对下方任务列表。</p>}
+    {!job && <button className="button primary" type="submit" disabled={!valid || saving}><Plus size={17} />{saving ? '正在创建…' : attempted ? '使用原请求重试' : '创建用户'}</button>}
+    {job && <button type="button" className="button secondary" onClick={() => { setPhone(''); setName(''); setPassword(''); setReason(''); setJob(undefined); setAttempted(false); requestId.current = crypto.randomUUID(); }}>新增另一用户</button>}
+  </form><ConfirmDialog open={confirming} title="确认新增用户" detail={`将为 ${phone} 创建账号；企业模式需等待平台完成唯一归属及本地身份开通。`} confirmLabel="确认创建用户" onClose={() => setConfirming(false)} onConfirm={submit}><p>操作理由：{reason}</p></ConfirmDialog></>;
 }
 
-function BatchUserCreatePanel() {
+function BatchUserCreatePanel({ onSubmitted }: { onSubmitted: () => void }) {
   const { api, mode, notify, can } = useApi();
   const inputRef = useRef<HTMLInputElement>(null);
+  const requestId = useRef(crypto.randomUUID());
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const settings = useResource(() => api.getSettings(), [api, mode]);
   const [fileName, setFileName] = useState(''); const [rows, setRows] = useState<UserImportPreviewRow[]>([]);
   const [parsing, setParsing] = useState(false); const [error, setError] = useState(''); const [reason, setReason] = useState('');
   const [confirming, setConfirming] = useState(false); const [result, setResult] = useState<AdminUserBatchResult>();
   const validRows = rows.filter((row) => row.valid); const localFailures = rows.length - validRows.length;
   const resultByRow = useMemo(() => new Map(result?.items.map((item) => [item.clientRow, item]) ?? []), [result]);
-  useUnsavedChanges(rows.some((row) => Boolean(row.password)) && !result, '批量导入文件中仍有尚未提交的初始密码');
+  const retryRows = result ? validRows.filter(row => resultByRow.get(row.clientRow)?.status === 'unknown') : validRows;
+  useUnsavedChanges(rows.some((row) => Boolean(row.password)), '批量导入中仍有尚未确认结果的初始密码，请先核对开户任务');
   const chooseFile = async (file?: File) => {
     if (!file) return;
-    setParsing(true); setError(''); setRows([]); setResult(undefined); setFileName(file.name);
+    setParsing(true); setError(''); setRows([]); setResult(undefined); setFileName(file.name); requestId.current = crypto.randomUUID();
     try {
       if (settings.error) throw new Error('当前密码策略加载失败，请刷新后重试');
       const parsed = await parseUserImportFile(file, settings.data?.passwordMinLength ?? 8);
@@ -969,16 +993,22 @@ function BatchUserCreatePanel() {
     finally { setParsing(false); if (inputRef.current) inputRef.current.value = ''; }
   };
   const submit = async () => {
-    if (!validRows.length || !reason.trim()) throw new Error('请先修正文件并填写操作理由');
-    const response = await api.createUsersBatch(validRows.map(({ clientRow, phone, name, password, gender }) => ({ clientRow, phone, name, password, gender })), reason.trim());
+    if (!retryRows.length || !reason.trim()) throw new Error('请先修正文件并填写操作理由');
+    let response: AdminUserBatchResult;
+    try { response = await api.createUsersBatch(retryRows.map(({ clientRow, phone, name, password, gender }) => ({ clientRow, phone, name, password, gender })), reason.trim(), requestId.current); }
+    finally { if (alive.current) onSubmitted(); }
+    if (!alive.current) return;
     const serverResults = new Map(response.items.map((item) => [item.clientRow, item]));
-    const combined = rows.map<AdminUserBatchItemResult>((row) => serverResults.get(row.clientRow) ?? {
+    const combined = rows.map<AdminUserBatchItemResult>((row) => serverResults.get(row.clientRow) ?? resultByRow.get(row.clientRow) ?? {
       clientRow: row.clientRow, status: 'failed', code: row.validationCode, message: row.validationMessage,
     });
     const succeeded = combined.filter((item) => item.status === 'created').length;
-    setResult({ ...response, total: rows.length, succeeded, failed: rows.length - succeeded, items: combined });
-    setRows((current) => current.map((row) => ({ ...row, password: '' })));
-    notify(`批量新增完成：成功 ${succeeded} 个，失败 ${rows.length - succeeded} 个`, succeeded ? 'success' : 'danger');
+    const pending = combined.filter(item => item.status === 'pending').length, unknown = combined.filter(item => item.status === 'unknown').length;
+    const failed = rows.length - succeeded - pending - unknown;
+    setResult({ ...response, total: rows.length, succeeded, pending, unknown, failed, items: combined });
+    const unknownRows = new Set(combined.filter(item => item.status === 'unknown').map(item => item.clientRow));
+    setRows((current) => current.map((row) => ({ ...row, password: unknownRows.has(row.clientRow) ? row.password : '' })));
+    notify(pending || unknown ? `批量提交：已开通 ${succeeded} 个，开通中 ${pending} 个，结果未确认 ${unknown} 个，失败 ${failed} 个；请核对开户任务` : `批量新增完成：成功 ${succeeded} 个，失败 ${failed} 个`, succeeded || pending ? 'success' : 'danger');
   };
   const reset = () => { setFileName(''); setRows([]); setResult(undefined); setReason(''); setError(''); };
   return <>
@@ -993,8 +1023,9 @@ function BatchUserCreatePanel() {
       {error && <div className="inline-notice danger" role="alert"><AlertTriangle size={15} />{error}</div>}
       {rows.length > 0 && <>
         <div className="batch-import-summary"><strong>共 {rows.length} 行</strong><span className="success-text">可导入 {validRows.length} 行</span><span className={localFailures ? 'danger-text' : ''}>预检失败 {localFailures} 行</span>{result && <><span className="success-text">创建成功 {result.succeeded} 行</span><span className={result.failed ? 'danger-text' : ''}>最终失败 {result.failed} 行</span></>}</div>
-        <div className="table-wrap batch-import-table"><table><thead><tr><th>原始行</th><th>手机号</th><th>昵称</th><th>性别</th><th>初始密码</th><th>状态</th></tr></thead><tbody>{rows.map((row) => { const item = resultByRow.get(row.clientRow); const created = item?.status === 'created'; const failedMessage = item?.message ?? row.validationMessage; return <tr key={row.clientRow}><td>{row.clientRow}</td><td className="mono">{row.phone || '—'}</td><td>{row.name || '—'}</td><td>{row.gender === 'male' ? '男' : row.gender === 'female' ? '女' : '未设置'}</td><td>{row.password ? '已填写' : '已清除'}</td><td>{created ? <Badge value="active" label={`创建成功 · ${item.user?.id ?? ''}`} /> : failedMessage ? <><Badge value="banned" label={result ? '创建失败' : '预检失败'} /><small>{failedMessage}</small></> : <Badge value="neutral" label="等待提交" />}</td></tr>; })}</tbody></table></div>
-        <div className="batch-import-footer"><label className="field-label">操作理由<textarea value={reason} maxLength={500} disabled={Boolean(result)} onChange={(event) => setReason(event.target.value)} placeholder="填写工单编号、业务需求或批量开户依据" required /></label><div className="row-actions"><button type="button" className="button secondary" onClick={reset}>{result ? '导入另一批' : '清除文件'}</button>{result && <button type="button" className="button secondary" onClick={() => void downloadUserImportResult(rows, result.items)}><Download size={16} />下载结果</button>}<button type="button" className="button primary" disabled={Boolean(result) || !validRows.length || !reason.trim() || !can('users.write')} onClick={() => setConfirming(true)}><Users size={16} />确认批量新增</button></div></div>
+        {result && <p role="status">开通中 {result.pending ?? 0} 行 · 结果未确认 {result.unknown ?? 0} 行。已受理任务在下方刷新；未确认行可以使用原请求重试。</p>}
+        <div className="table-wrap batch-import-table"><table><thead><tr><th>原始行</th><th>手机号</th><th>昵称</th><th>性别</th><th>初始密码</th><th>状态</th></tr></thead><tbody>{rows.map((row) => { const item = resultByRow.get(row.clientRow); const created = item?.status === 'created'; const failedMessage = item?.message ?? row.validationMessage; return <tr key={row.clientRow}><td>{row.clientRow}</td><td className="mono">{row.phone || '—'}</td><td>{row.name || '—'}</td><td>{row.gender === 'male' ? '男' : row.gender === 'female' ? '女' : '未设置'}</td><td>{row.password ? '已填写' : '已清除'}</td><td>{item?.job ? accountJobLabel(item.job) : item?.status === 'unknown' ? '结果未确认，请核对任务或使用原请求重试' : created ? <Badge value="active" label={`创建成功 · ${item.user?.id ?? ''}`} /> : failedMessage ? <><Badge value="banned" label={result ? '创建失败' : '预检失败'} /><small>{failedMessage}</small></> : <Badge value="neutral" label="等待提交" />}</td></tr>; })}</tbody></table></div>
+        <div className="batch-import-footer"><label className="field-label">操作理由<textarea value={reason} maxLength={500} disabled={Boolean(result)} onChange={(event) => setReason(event.target.value)} placeholder="填写工单编号、业务需求或批量开户依据" required /></label><div className="row-actions"><button type="button" className="button secondary" onClick={reset}>{result ? '导入另一批' : '清除文件'}</button>{result && <button type="button" className="button secondary" onClick={() => void downloadUserImportResult(rows, result.items)}><Download size={16} />下载结果</button>}<button type="button" className="button primary" disabled={!retryRows.length || !reason.trim() || !can('users.write')} onClick={() => setConfirming(true)}><Users size={16} />{result ? '使用原请求重试未确认行' : '确认批量新增'}</button></div></div>
       </>}
       {!can('users.write') && <div className="inline-notice warning" role="status"><AlertTriangle size={15} />当前角色没有创建用户权限</div>}
     </section>
@@ -1003,8 +1034,11 @@ function BatchUserCreatePanel() {
 }
 
 function CreateUserPage() {
+  const { api } = useApi();
+  const [revision, setRevision] = useState(0);
+  const submitted = () => setRevision(value => value + 1);
   const [mode, setMode] = useState<'single' | 'batch'>('single');
-  return <><PageHeader title="新增用户" description="由后台直接创建 11 位数字号码账号，不校验手机号号段，也不受公开注册开关和短信验证码影响。" /><div className="tabs create-user-tabs" role="tablist"><button type="button" role="tab" aria-selected={mode === 'single'} className={mode === 'single' ? 'active' : ''} onClick={() => setMode('single')}>单个新增</button><button type="button" role="tab" aria-selected={mode === 'batch'} className={mode === 'batch' ? 'active' : ''} onClick={() => setMode('batch')}>批量导入</button></div>{mode === 'single' ? <SingleUserCreateForm /> : <BatchUserCreatePanel />}</>;
+  return <><PageHeader title="新增用户" description="由后台创建 11 位数字号码账号；企业模式由平台统一校验唯一归属，只能开通到本企业。后台开户豁免公开注册开关和邀请码。" /><div className="tabs create-user-tabs" role="tablist"><button type="button" role="tab" aria-selected={mode === 'single'} className={mode === 'single' ? 'active' : ''} onClick={() => setMode('single')}>单个新增</button><button type="button" role="tab" aria-selected={mode === 'batch'} className={mode === 'batch' ? 'active' : ''} onClick={() => setMode('batch')}>批量导入</button></div>{mode === 'single' ? <SingleUserCreateForm onSubmitted={submitted} /> : <BatchUserCreatePanel onSubmitted={submitted} />}<TenantAccountJobsPanel api={api} revision={revision} /></>;
 }
 
 function UserDeviceSummary({ user }: { user: UserRecord }) {

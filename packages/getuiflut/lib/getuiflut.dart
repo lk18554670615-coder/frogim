@@ -16,6 +16,12 @@ class Getuiflut {
    *         事件处理器
    *----------------------------*/
   late EventHandler _onReceiveClientId;
+  EventHandlerMap? _onVoipRegistrationChanged;
+
+  Future<Map<String, dynamic>> get voipRegistration async {
+    final value = await _channel.invokeMapMethod<String, dynamic>('getVoipRegistration');
+    return value ?? const {};
+  }
   late EventHandler _onRegisterDeviceToken;
   late EventHandler _onAppLinkPayload;
   late EventHandler _onGrantAuthorization;
@@ -47,17 +53,17 @@ class Getuiflut {
   }
 
   /// 初始化SDK（Android/ohos）
-   void get initGetuiSdk {
-     _channel.invokeMethod('initGetuiPush');
+   Future<void> get initGetuiSdk async {
+     await _channel.invokeMethod('initGetuiPush');
   }
 
   /// 启动SDK（iOS标准模式）
-  void startSdk({
+  Future<void> startSdk({
     required String appId,
     required String appKey,
     required String appSecret,
-  }) {
-    _channel.invokeMethod(
+  }) async {
+    await _channel.invokeMethod(
       'startSdk',
       {'appId': appId, 'appKey': appKey, 'appSecret': appSecret},
     );
@@ -231,6 +237,7 @@ class Getuiflut {
    *        事件处理器配置
    *----------------------------*/
   void addEventHandler({
+    EventHandlerMap? onVoipRegistrationChanged,
     required EventHandler onReceiveClientId,
     required EventHandlerMap onNotificationMessageArrived,
     required EventHandlerMap onNotificationMessageClicked,
@@ -252,6 +259,7 @@ class Getuiflut {
   }) {
     // 初始化所有事件处理器
     _onReceiveClientId = onReceiveClientId;
+    _onVoipRegistrationChanged = onVoipRegistrationChanged;
     _onRegisterDeviceToken = onRegisterDeviceToken;
     _onNotificationMessageArrived = onNotificationMessageArrived;
     _onNotificationMessageClicked = onNotificationMessageClicked;
@@ -278,9 +286,9 @@ class Getuiflut {
    *        内部处理方法
    *----------------------------*/
   Future _handleMethod(MethodCall call) async {
-    print('_handleMethod  method:' + call.method);
-    print('_handleMethod  args :' + call.arguments.toString());
     switch (call.method) {
+      case "onVoipRegistrationChanged":
+        return _onVoipRegistrationChanged?.call(Map<String, dynamic>.from(call.arguments as Map));
       case "onReceiveClientId":
         return _onReceiveClientId(call.arguments);
       case "onRegisterDeviceToken":

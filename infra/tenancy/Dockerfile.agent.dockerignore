@@ -1,0 +1,5 @@
+**
+!build/
+!build/tenancy-local/
+!build/tenancy-local/bin/
+!build/tenancy-local/bin/tenant-agent

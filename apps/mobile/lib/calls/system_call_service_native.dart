@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -16,12 +15,21 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'call_models.dart';
 import 'system_call_service_contract.dart';
+import 'system_call_identity.dart';
+import 'system_call_service_ios.dart';
+export 'system_call_identity.dart';
+import '../core/app_config.dart';
+import '../core/runtime_endpoints.dart';
+import '../core/tenant_call_scope.dart';
 
-const _pendingActionsKey = 'calls.pending_system_actions.v1';
+const _pendingActionsKey = 'calls.pending_system_actions.v2';
 const _permissionPromptedKey = 'calls.system_permission_prompted.v1';
-const _systemCallChannel = MethodChannel('top.hongjinghuanqiu.app/system_calls');
+const _systemCallChannel = MethodChannel(
+  'top.hongjinghuanqiu.app/system_calls',
+);
 
-SystemCallService createSystemCallService() => NativeSystemCallService();
+SystemCallService createSystemCallService() =>
+    Platform.isIOS ? IosSystemCallService() : NativeSystemCallService();
 
 /// 由 Android 插件的无头 FlutterEngine 调用，只保存最小动作，主引擎恢复后再鉴权请求服务端。
 @pragma('vm:entry-point')
@@ -29,7 +37,11 @@ Future<void> linliSystemCallBackgroundHandler(CallEvent event) async {
   WidgetsFlutterBinding.ensureInitialized();
   final action = _serializedAction(event);
   if (action == null) return;
+  if (AppConfig.usesPlatformAuthentication && action['tenantScope'] == null) {
+    return;
+  }
   final preferences = await SharedPreferences.getInstance();
+  await preferences.reload();
   final pending = preferences.getStringList(_pendingActionsKey) ?? <String>[];
   final encoded = jsonEncode(action);
   if (!pending.contains(encoded)) {
@@ -44,7 +56,7 @@ Future<void> linliSystemCallBackgroundHandler(CallEvent event) async {
 class NativeSystemCallService implements SystemCallService {
   final _actions = StreamController<SystemCallAction>.broadcast();
   final Map<String, String> _systemToServer = {};
-  final Map<String, String> _serverToSystem = {};
+  final Map<String, TenantCallScope?> _systemScopes = {};
   StreamSubscription<CallEvent?>? _subscription;
   Future<void>? _initialization;
   bool _disposed = false;
@@ -131,10 +143,12 @@ class NativeSystemCallService implements SystemCallService {
     String? callerHandle,
     String? avatarUrl,
   }) async {
+    final scope = TenantCallScope.parse(RuntimeEndpoints.notificationContext);
     await initialize();
-    final systemId = systemCallIdFor(session.id);
+    if (_disposed || !_scopeCurrent(scope)) return false;
+    final systemId = systemCallIdFor(session.id, scope: scope);
+    _systemScopes[systemId] = scope;
     _systemToServer[systemId] = session.id;
-    _serverToSystem[session.id] = systemId;
     try {
       await FlutterCallkitIncoming.showCallkitIncoming(
         _params(
@@ -143,8 +157,13 @@ class NativeSystemCallService implements SystemCallService {
           displayName: callerName,
           handle: callerHandle,
           avatarUrl: avatarUrl,
+          scope: scope,
         ),
       );
+      if (_disposed || !_scopeCurrent(scope)) {
+        await dismiss(systemId);
+        return false;
+      }
       return true;
     } on MissingPluginException {
       return false;
@@ -161,10 +180,12 @@ class NativeSystemCallService implements SystemCallService {
     String? calleeHandle,
     String? avatarUrl,
   }) async {
+    final scope = TenantCallScope.parse(RuntimeEndpoints.notificationContext);
     await initialize();
-    final systemId = systemCallIdFor(session.id);
+    if (_disposed || !_scopeCurrent(scope)) return;
+    final systemId = systemCallIdFor(session.id, scope: scope);
+    _systemScopes[systemId] = scope;
     _systemToServer[systemId] = session.id;
-    _serverToSystem[session.id] = systemId;
     try {
       await FlutterCallkitIncoming.startCall(
         _params(
@@ -173,8 +194,10 @@ class NativeSystemCallService implements SystemCallService {
           displayName: calleeName,
           handle: calleeHandle,
           avatarUrl: avatarUrl,
+          scope: scope,
         ),
       );
+      if (_disposed || !_scopeCurrent(scope)) await dismiss(systemId);
     } on MissingPluginException {
       // 测试与非移动平台忽略系统通话展示。
     }
@@ -182,10 +205,10 @@ class NativeSystemCallService implements SystemCallService {
 
   @override
   Future<void> setConnected(String serverCallId) async {
+    final systemId = _currentSystemId(serverCallId);
+    if (systemId == null) return;
     try {
-      await FlutterCallkitIncoming.setCallConnected(
-        _serverToSystem[serverCallId] ?? systemCallIdFor(serverCallId),
-      );
+      await FlutterCallkitIncoming.setCallConnected(systemId);
     } on MissingPluginException {
       // 纯 Dart 测试没有原生插件。
     }
@@ -193,11 +216,10 @@ class NativeSystemCallService implements SystemCallService {
 
   @override
   Future<void> setMuted(String serverCallId, bool muted) async {
+    final systemId = _currentSystemId(serverCallId);
+    if (systemId == null) return;
     try {
-      await FlutterCallkitIncoming.muteCall(
-        _serverToSystem[serverCallId] ?? systemCallIdFor(serverCallId),
-        isMuted: muted,
-      );
+      await FlutterCallkitIncoming.muteCall(systemId, isMuted: muted);
     } on MissingPluginException {
       // 纯 Dart 测试没有原生插件。
     }
@@ -205,15 +227,34 @@ class NativeSystemCallService implements SystemCallService {
 
   @override
   Future<void> end(String serverCallId) async {
-    final systemId =
-        _serverToSystem.remove(serverCallId) ?? systemCallIdFor(serverCallId);
+    final systemId = _currentSystemId(serverCallId);
+    if (systemId == null) return;
+    await dismiss(systemId);
+  }
+
+  @override
+  Future<void> dismiss(String systemId) async {
     _systemToServer.remove(systemId);
+    _systemScopes.remove(systemId);
     try {
       await FlutterCallkitIncoming.endCall(systemId);
     } on MissingPluginException {
       // 纯 Dart 测试没有原生插件。
+    } on PlatformException catch (error) {
+      if (kDebugMode) debugPrint('Dismiss native call failed: ${error.code}');
     }
   }
+
+  // An old tenant may have the same server call ID. Restored native IDs are
+  // never allowed to replace the current session's mapping.
+  String? _currentSystemId(String serverId) => _systemToServer.entries
+      .where(
+        (entry) =>
+            entry.value == serverId &&
+            _scopeCurrent(_systemScopes[entry.key], requireFresh: false),
+      )
+      .map((entry) => entry.key)
+      .firstOrNull;
 
   @override
   Future<String?> voipPushToken() async {
@@ -235,6 +276,7 @@ class NativeSystemCallService implements SystemCallService {
     required String displayName,
     required String? handle,
     required String? avatarUrl,
+    required TenantCallScope? scope,
   }) {
     final seconds = session.expiresAt.difference(DateTime.now()).inSeconds;
     return CallKitParams(
@@ -249,6 +291,7 @@ class NativeSystemCallService implements SystemCallService {
         'serverCallId': session.id,
         'conversationId': session.conversationId,
         'mediaType': session.mediaType.name,
+        if (scope != null) 'tenantScope': scope.data,
       },
       missedCallNotification: const NotificationParams(
         showNotification: true,
@@ -300,7 +343,7 @@ class NativeSystemCallService implements SystemCallService {
 
   void _handleEvent(CallEvent? event) {
     if (event == null || _disposed) return;
-    final action = _actionFromEvent(event, _systemToServer);
+    final action = _actionFromEvent(event, _systemToServer, _systemScopes);
     if (action != null) _emitAction(action);
   }
 
@@ -314,7 +357,7 @@ class NativeSystemCallService implements SystemCallService {
       final action = systemCallActionFromMap(raw);
       if (action == null) continue;
       _systemToServer[action.systemCallId] = action.serverCallId;
-      _serverToSystem[action.serverCallId] = action.systemCallId;
+      _systemScopes[action.systemCallId] = action.tenantScope;
       _emitAction(action);
     }
   }
@@ -325,7 +368,8 @@ class NativeSystemCallService implements SystemCallService {
       final serverId = _serverId(params);
       if (serverId == null) continue;
       _systemToServer[params.id] = serverId;
-      _serverToSystem[serverId] = params.id;
+      final scope = TenantCallScope.parse(params.extra?['tenantScope']);
+      _systemScopes[params.id] = scope;
       _emitAction(
         SystemCallAction(
           type: params.isAccepted
@@ -333,6 +377,7 @@ class NativeSystemCallService implements SystemCallService {
               : SystemCallActionType.restore,
           serverCallId: serverId,
           systemCallId: params.id,
+          tenantScope: scope,
         ),
       );
     }
@@ -340,27 +385,27 @@ class NativeSystemCallService implements SystemCallService {
 
   Future<void> _drainBackgroundActions() async {
     final preferences = await SharedPreferences.getInstance();
-    final pending = preferences.getStringList(_pendingActionsKey) ?? const [];
+    await preferences.reload();
+    // Old unscoped actions cannot safely be replayed after the migration.
+    if (AppConfig.usesPlatformAuthentication) {
+      await preferences.remove('calls.pending_system_actions.v1');
+    }
+    final pending = [
+      ...?preferences.getStringList(_pendingActionsKey),
+      if (!AppConfig.usesPlatformAuthentication)
+        ...?preferences.getStringList('calls.pending_system_actions.v1'),
+    ];
     if (pending.isEmpty) return;
     await preferences.remove(_pendingActionsKey);
+    await preferences.remove('calls.pending_system_actions.v1');
     for (final raw in pending) {
       try {
         final json = jsonDecode(raw) as Map<String, Object?>;
-        final type = SystemCallActionType.values.byName(
-          json['type']! as String,
-        );
-        final serverId = json['serverCallId']! as String;
-        final systemId = json['systemCallId']! as String;
-        _systemToServer[systemId] = serverId;
-        _serverToSystem[serverId] = systemId;
-        _emitAction(
-          SystemCallAction(
-            type: type,
-            serverCallId: serverId,
-            systemCallId: systemId,
-            muted: json['muted'] as bool?,
-          ),
-        );
+        final action = systemCallActionFromMap(json);
+        if (action == null) continue;
+        _systemToServer[action.systemCallId] = action.serverCallId;
+        _systemScopes[action.systemCallId] = action.tenantScope;
+        _emitAction(action);
       } catch (_) {
         // 损坏或旧版本动作直接丢弃，避免误操作其他通话。
       }
@@ -372,7 +417,10 @@ class NativeSystemCallService implements SystemCallService {
     final key =
         '${action.type.name}|${action.serverCallId}|'
         '${action.systemCallId}|${action.muted}';
-    if (!_emittedActionKeys.add(key)) return;
+    if (action.type != SystemCallActionType.mute &&
+        !_emittedActionKeys.add(key)) {
+      return;
+    }
     if (_emittedActionKeys.length > 64) {
       _emittedActionKeys.remove(_emittedActionKeys.first);
     }
@@ -383,25 +431,31 @@ class NativeSystemCallService implements SystemCallService {
   Future<void> dispose() async {
     _disposed = true;
     await _subscription?.cancel();
+    for (final id in _systemToServer.keys.toList()) {
+      await dismiss(id);
+    }
     await _actions.close();
   }
 }
 
-String systemCallIdFor(String serverCallId) {
-  final bytes = sha256.convert(utf8.encode(serverCallId)).bytes.toList();
-  bytes[6] = (bytes[6] & 0x0f) | 0x50;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  final hex = bytes
-      .take(16)
-      .map((value) => value.toRadixString(16).padLeft(2, '0'))
-      .join();
-  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-'
-      '${hex.substring(16, 20)}-${hex.substring(20, 32)}';
+bool _scopeCurrent(TenantCallScope? scope, {bool requireFresh = true}) {
+  final current = TenantCallScope.parse(RuntimeEndpoints.notificationContext);
+  if (AppConfig.usesPlatformAuthentication ||
+      scope != null ||
+      current != null) {
+    return current != null &&
+        current.validNow &&
+        scope != null &&
+        (!requireFresh || scope.validNow) &&
+        current.sameSession(scope);
+  }
+  return true;
 }
 
 SystemCallAction? _actionFromEvent(
   CallEvent event,
   Map<String, String> systemToServer,
+  Map<String, TenantCallScope?> systemScopes,
 ) {
   final params = switch (event) {
     CallEventActionCallAccept(:final callKitParams) => callKitParams,
@@ -430,11 +484,17 @@ SystemCallAction? _actionFromEvent(
     _ => (null, null),
   };
   if (type == null) return null;
+  final explicitScope = params?.extra?.containsKey('tenantScope') == true;
+  final scope = explicitScope
+      ? TenantCallScope.parse(params!.extra!['tenantScope'])
+      : systemScopes[systemId];
+  if (explicitScope && scope == null) return null;
   return SystemCallAction(
     type: type,
     serverCallId: serverId,
     systemCallId: systemId,
     muted: muted,
+    tenantScope: scope,
   );
 }
 
@@ -442,35 +502,13 @@ String? _serverId(CallKitParams? params) =>
     params?.extra?['serverCallId']?.toString();
 
 Map<String, Object?>? _serializedAction(CallEvent event) {
-  final action = _actionFromEvent(event, const {});
+  final action = _actionFromEvent(event, const {}, const {});
   if (action == null) return null;
   return {
     'type': action.type.name,
     'serverCallId': action.serverCallId,
     'systemCallId': action.systemCallId,
     if (action.muted != null) 'muted': action.muted,
+    if (action.tenantScope != null) 'tenantScope': action.tenantScope!.data,
   };
-}
-
-SystemCallAction? systemCallActionFromMap(Map<Object?, Object?> json) {
-  final typeName = json['type']?.toString();
-  final serverCallId = json['serverCallId']?.toString();
-  final systemCallId = json['systemCallId']?.toString();
-  if (typeName == null ||
-      serverCallId == null ||
-      serverCallId.isEmpty ||
-      systemCallId == null ||
-      systemCallId.isEmpty) {
-    return null;
-  }
-  final type = SystemCallActionType.values
-      .where((value) => value.name == typeName)
-      .firstOrNull;
-  if (type == null) return null;
-  return SystemCallAction(
-    type: type,
-    serverCallId: serverCallId,
-    systemCallId: systemCallId,
-    muted: json['muted'] as bool?,
-  );
 }

@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# Preview-only companion to the pinned Linli patch; no production image is replaced.
+FROM docker.io/library/golang@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5 AS source
+ENV GOPROXY=https://goproxy.cn|https://proxy.golang.org|direct
+RUN apk add --no-cache patch=2.8-r0
+ADD --checksum=sha256:a6c225123ea99130f38c4ef828f85ff6648ccfda4e9a9acba50354ddb2965306 https://codeload.github.com/WuKongIM/WuKongIM/tar.gz/a888f89533d0e7d1b2030e06504ca97f1ad891d4 /tmp/wukongim.tar.gz
+COPY infra/wukongim/server-patch/wukongim-v2.2.5-linli.patch /tmp/linli.patch
+RUN sed -i 's/\r$//' /tmp/linli.patch && echo '6163ffc38a5bf4fbed2d7c94610c336708066f05df5a2bb5f49e20951f16b01a  /tmp/linli.patch' | sha256sum -c - && mkdir /src && tar -xzf /tmp/wukongim.tar.gz --strip-components=1 -C /src && cd /src && patch --batch --forward -p1 < /tmp/linli.patch
+WORKDIR /src
+RUN go mod download
+COPY infra/tenancy/wukong-im/close-connection.patch /tmp/close.patch
+COPY infra/tenancy/wukong-im/close_connection_test.go /src/internal/user/handler/tenant_close_test.go
+RUN sed -i 's/\r$//' /tmp/close.patch && echo 'c700e9d57aa07603ddc65d37266b7140d69244ae9ea165c819aeab028350ae56  /tmp/close.patch' | sha256sum -c - && patch --batch --forward -p1 < /tmp/close.patch && go test ./internal/user/handler ./internal/eventbus ./internal/api ./internal/plugin ./pkg/wkcache
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-w -s -X main.Commit=a888f89533d0e7d1b2030e06504ca97f1ad891d4 -X main.Version=tenancy-local -X main.TreeState=patched' -o /out/wukongim ./main.go
+FROM docker.io/library/alpine@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
+ENV TZ=Asia/Shanghai
+RUN apk add --no-cache ca-certificates=20260611-r0 tzdata=2026c-r0
+COPY --from=source /out/wukongim /home/app
+COPY --from=source /src/config/wk.yaml /root/wukongim/wk.yaml
+WORKDIR /home
+ENTRYPOINT ["/home/app", "--config=/root/wukongim/wk.yaml", "--ignoreMissingConfig=true"]
+LABEL com.frogim.scope="tenancy-local-preview" com.frogim.im-fix="close-physical-before-remove"

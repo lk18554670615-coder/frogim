@@ -117,8 +117,9 @@ export interface AdminUserBatchInput {
 
 export interface AdminUserBatchItemResult {
   clientRow: number;
-  status: 'created' | 'failed';
+  status: 'created' | 'failed' | 'pending' | 'unknown';
   user?: UserRecord;
+  job?: TenantAccountJob;
   code?: string;
   message?: string;
 }
@@ -128,7 +129,18 @@ export interface AdminUserBatchResult {
   total: number;
   succeeded: number;
   failed: number;
+  pending?: number;
+  unknown?: number;
   items: AdminUserBatchItemResult[];
+}
+
+export interface TenantAccountJob {
+  jobId: string; requestId: string; localUserId: string; phone: string; name: string;
+  status: 'pending' | 'blocked' | 'completed'; errorCode?: string; createdAt: string;
+}
+
+export interface TenantCredentialJob {
+  jobId: string; requestId: string; status: 'pending' | 'completed'; errorCode?: string;
 }
 
 export interface InternalUserUpdate {
@@ -951,8 +963,11 @@ export interface AdminApi {
   getDashboard(): Promise<DashboardData>;
   getUsers(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string, ip?: string, ipSource?: string, internalUser?: string): Promise<PageResult<UserRecord>>;
   getUserAccessLogs(filters: UserAccessFilters): Promise<UserAccessLogPage>;
-  createUser(input: { phone: string; name: string; password: string; gender: UserRecord['gender'] }, reason: string): Promise<UserRecord>;
-  createUsersBatch(items: AdminUserBatchInput[], reason: string): Promise<AdminUserBatchResult>;
+  createUser(input: { phone: string; name: string; password: string; gender: UserRecord['gender'] }, reason: string, requestId?: string): Promise<UserRecord | TenantAccountJob>;
+  createUsersBatch(items: AdminUserBatchInput[], reason: string, requestId?: string): Promise<AdminUserBatchResult>;
+  getAccountProvisioningJobs(jobId?: string): Promise<{ managed: boolean; items: TenantAccountJob[] }>;
+  getUserCredentialJobs(userId: string): Promise<{ managed: boolean; items: TenantCredentialJob[] }>;
+  resetTenantUserPassword(userId: string, requestId: string, newPassword: string, reason: string): Promise<TenantCredentialJob>;
   getUserOverview(id: string): Promise<UserOverview>;
   getInviteCodes(query?: string, status?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<InviteCodeRecord>>;
   getInviteRelations(query?: string, method?: string, from?: string, to?: string, page?: number, pageSize?: number, cursor?: string): Promise<PageResult<InviteRelationRecord>>;

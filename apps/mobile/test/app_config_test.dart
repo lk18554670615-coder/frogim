@@ -5,6 +5,7 @@ void main() {
   void validate({
     String environment = 'production',
     String apiBaseUrl = 'https://chat.example.test',
+    String platformAuthUrl = '',
     bool enableDemo = false,
     int mediaMaxBytes = 100 * 1024 * 1024,
     bool getuiEnabled = false,
@@ -16,6 +17,7 @@ void main() {
   }) => AppConfig.validateConfiguration(
     environment: environment,
     apiBaseUrl: apiBaseUrl,
+    platformAuthUrl: platformAuthUrl,
     enableDemo: enableDemo,
     mediaMaxBytes: mediaMaxBytes,
     getuiEnabled: getuiEnabled,
@@ -28,6 +30,29 @@ void main() {
 
   test('production accepts complete secure release configuration', () {
     expect(validate, returnsNormally);
+  });
+
+  test('platform builds require trusted root and forbid legacy fallback', () {
+    expect(
+      () =>
+          validate(apiBaseUrl: '', platformAuthUrl: 'https://platform.example'),
+      returnsNormally,
+    );
+    expect(
+      () => validate(platformAuthUrl: 'https://platform.example'),
+      throwsStateError,
+    );
+    for (final url in [
+      'http://platform.example',
+      'https://platform.example/path',
+      'https://platform.example?tenant=a',
+      'https://user:pass@platform.example',
+    ]) {
+      expect(
+        () => validate(apiBaseUrl: '', platformAuthUrl: url),
+        throwsStateError,
+      );
+    }
   });
 
   test('production rejects demo mode and an insecure API endpoint', () {

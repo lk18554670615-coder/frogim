@@ -1,0 +1,46 @@
+# Optional operator-owned service, separate from platform API lifecycle. Never
+# starts from compose.local.yml. Use an audited helper @sha256 digest, existing
+# private directories and the exact platform network; no host/socket access.
+name: frogim-platform-backup
+services:
+  directory-backup:
+    image: ${PLATFORM_BACKUP_IMAGE:?pinned helper image digest required}
+    platform: linux/amd64
+    pull_policy: never
+    entrypoint: [/opt/frogim/platform-backup]
+    command: [-mode, schedule-run, -config, /operator/worker.json, -key-file, /keys/platform-backup.key]
+    restart: unless-stopped
+    user: '10001:10001'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 512m
+    stop_grace_period: 45s
+    tmpfs: [/tmp:rw,nosuid,nodev,size=67108864]
+    networks: [platform, offsite-egress]
+    volumes:
+      - type: bind
+        source: ${PLATFORM_BACKUP_OPERATOR_DIR:?private worker configuration directory required}
+        target: /operator
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PLATFORM_BACKUP_KEY_DIR:?independent key directory required}
+        target: /keys
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PLATFORM_BACKUP_RELEASE_DIR:?current private platform release required}
+        target: /release
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PLATFORM_BACKUP_ARCHIVE_DIR:?existing private archive directory required}
+        target: /archives
+        bind: {create_host_path: false}
+networks:
+  platform:
+    external: true
+    name: ${PLATFORM_BACKUP_NETWORK:?exact existing platform private network required}
+  offsite-egress: {}

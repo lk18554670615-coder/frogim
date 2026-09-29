@@ -13,6 +13,7 @@ import (
 
 func (x *API) createAdminUser(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
+		RequestID string `json:"requestId"`
 		Phone     string `json:"phone"`
 		Name      string `json:"name"`
 		Password  string `json:"password"`
@@ -22,6 +23,10 @@ func (x *API) createAdminUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if decode(r, &payload) != nil || !confirmedReason(payload.Confirmed, payload.Reason) {
 		writeError(w, http.StatusBadRequest, "CONFIRMATION_REQUIRED", "confirmed and reason are required")
+		return
+	}
+	if x.cfg.TenantID != "" {
+		x.createTenantAdminUser(w, r, payload.RequestID, app.AdminUserBatchInput{Phone: payload.Phone, Name: payload.Name, Password: payload.Password, Gender: payload.Gender}, payload.Reason)
 		return
 	}
 	user, err := x.app.CreateAdminUser(r.Context(), uid(r), payload.Phone, payload.Name, payload.Password, payload.Gender, payload.Reason)
@@ -36,6 +41,7 @@ func (x *API) createAdminUser(w http.ResponseWriter, r *http.Request) {
 
 func (x *API) createAdminUsersBatch(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
+		RequestID string                    `json:"requestId"`
 		Items     []app.AdminUserBatchInput `json:"items"`
 		Reason    string                    `json:"reason"`
 		Confirmed bool                      `json:"confirmed"`
@@ -46,6 +52,10 @@ func (x *API) createAdminUsersBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(payload.Items) == 0 || len(payload.Items) > 100 {
 		writeError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "items must contain between 1 and 100 users")
+		return
+	}
+	if x.cfg.TenantID != "" {
+		x.createTenantAdminBatch(w, r, payload.RequestID, payload.Items, payload.Reason)
 		return
 	}
 	batchID, items, err := x.app.CreateAdminUsersBatch(r.Context(), uid(r), payload.Items, payload.Reason)

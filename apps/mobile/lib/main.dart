@@ -18,6 +18,7 @@ import 'core/push_service.dart';
 import 'core/web_context_menu.dart';
 import 'data/im_repository.dart';
 import 'data/live_repository.dart';
+import 'data/platform_repository.dart';
 import 'ui/screens/home_screen.dart';
 import 'ui/screens/client_upgrade_screen.dart';
 import 'ui/screens/login_screen.dart';
@@ -96,7 +97,10 @@ class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     controller = AppController(
-      widget.repository ?? ResilientImRepository.fromEnvironment(),
+      widget.repository ??
+          (AppConfig.usesPlatformAuthentication
+              ? PlatformImRepository.fromEnvironment()
+              : ResilientImRepository.fromEnvironment()),
     );
     ClientDiagnostics.instance.attach(controller.repository);
     pushCoordinator = PushCoordinator();

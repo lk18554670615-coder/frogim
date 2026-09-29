@@ -13,14 +13,25 @@ class WKChannelManager {
   static WKChannelManager get shared => _instance;
 
   final Map<String, WKChannel> _list = {};
+  int _cacheGeneration = 0;
+
+  // A channel ID can exist in more than one account/tenant. Never retain the
+  // previous account's memory cache or allow its late provider to repopulate it.
+  void resetLocalCache() {
+    _cacheGeneration++;
+    _list.clear();
+    _getChannelInfoBack = null;
+  }
   late final HashMap<String, Function(WKChannel)> _refreshChannelMap;
   late final HashMap<String, Function(WKChannel)> _refreshChannelAvatarMap;
   Function(String channelID, int channelType, Function(WKChannel) back)?
       _getChannelInfoBack;
 
   fetchChannelInfo(String channelID, int channelType) {
+    final generation = _cacheGeneration;
     if (_getChannelInfoBack != null) {
       _getChannelInfoBack!(channelID, channelType, (wkChannel) {
+        if (generation != _cacheGeneration) return;
         addOrUpdateChannel(wkChannel);
       });
     }
@@ -33,10 +44,12 @@ class WKChannelManager {
   }
 
   Future<WKChannel?> getChannel(String channelID, int channelType) async {
+    final generation = _cacheGeneration;
     String key = _getKey(channelID, channelType);
     WKChannel? channel = _list[key];
     if (channel == null || channel.channelID == '') {
       channel = await ChannelDB.shared.query(channelID, channelType);
+      if (generation != _cacheGeneration) return null;
       if (channel != null) {
         _list[key] = channel;
       }

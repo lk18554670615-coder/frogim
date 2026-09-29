@@ -1,6 +1,7 @@
 package push
 
 import (
+	"bytes"
 	"context"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,12 +11,96 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/webpushpolicy"
 )
+
+type webPushHTTPFunc func(*http.Request) (*http.Response, error)
+
+func (f webPushHTTPFunc) Do(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestPlatformWebPushEncryptedScopeTTLAndRejection(t *testing.T) {
+	provider, token := testWebPushProvider(t, "https://push.example.com/private-subscription", nil)
+	policy, e := webpushpolicy.New(provider.PublicKey, provider.PrivateKey, provider.Subject, "push.example.com")
+	if e != nil {
+		t.Fatal(e)
+	}
+	provider.Policy = policy
+	calls := 0
+	status := 201
+	provider.Client = webPushHTTPFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		ttl, e := strconv.Atoi(r.Header.Get("TTL"))
+		if e != nil || ttl < 1 || ttl > 60 || r.Header.Get("Content-Encoding") != "aes128gcm" || r.Header.Get("Authorization") == "" {
+			t.Error("missing encryption or excessive TTL")
+		}
+		body, _ := io.ReadAll(r.Body)
+		if len(body) == 0 || bytes.Contains(body, []byte("tenant-private")) || bytes.Contains(body, []byte("binding-private")) {
+			t.Error("unencrypted scope")
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader("private provider error"))}, nil
+	})
+	item := store.OutboxItem{UserID: "user", EventType: "message.created", Payload: map[string]any{
+		"tenantId": "tenant-private", "localUserId": "user", "assignmentVersion": 1, "authVersion": 2, "realmVersion": 3,
+		"pushBindingId": "binding-private", "pushBindingRevision": 1, "expiresAt": time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano), "conversationId": "conversation",
+	}, Devices: []store.Device{{ID: "binding-private", Platform: "web", Provider: "webpush", PushToken: token}}}
+	if e = provider.Send(t.Context(), item); e != nil || calls != 1 {
+		t.Fatal("valid managed delivery", e)
+	}
+	_, _, navigation := getuiNotification(item)
+	if navigation["pushBindingId"] != "binding-private" || navigation["pushBindingRevision"] != int64(1) {
+		t.Fatal("missing binding fence")
+	}
+	originalTopic := webPushTopic(item)
+	item.Payload["pushBindingId"] = "other-binding"
+	if webPushTopic(item) == originalTopic {
+		t.Fatal("topics collide across bindings")
+	}
+	if e = provider.Send(t.Context(), item); e == nil || calls != 1 {
+		t.Fatal("mismatching device sent")
+	}
+	item.Payload["pushBindingId"] = "binding-private"
+	for _, field := range []string{"tenantId", "authVersion", "pushBindingRevision", "expiresAt"} {
+		saved := item.Payload[field]
+		delete(item.Payload, field)
+		if e = provider.Send(t.Context(), item); e == nil || calls != 1 {
+			t.Fatal("incomplete platform scope sent", field)
+		}
+		item.Payload[field] = saved
+	}
+	item.Payload["expiresAt"] = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)
+	if e = provider.Send(t.Context(), item); e == nil || calls != 1 {
+		t.Fatal("expired scope sent")
+	}
+	item.Payload["expiresAt"] = time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano)
+	for _, code := range []int{404, 410, 429, 503, 403} {
+		status = code
+		e = provider.Send(t.Context(), item)
+		var d *DeliveryError
+		if !errors.As(e, &d) || d.InvalidOnly != (code == 404 || code == 410) || d.Retryable != (code == 429 || code == 503) || strings.Contains(e.Error(), "private") {
+			t.Fatal("unsafe classification", code)
+		}
+	}
+}
+
+func TestRestrictedWebPushTransport(t *testing.T) {
+	client := newRestrictedWebPushClient(&webpushpolicy.Policy{Hosts: map[string]bool{"127.0.0.1": true}})
+	if client.CheckRedirect(nil, nil) == nil || client.Transport.(*http.Transport).Proxy != nil {
+		t.Fatal("redirect/proxy boundary missing")
+	}
+	for _, address := range []string{"127.0.0.1:443", "denied.example:443", "127.0.0.1:80"} {
+		if conn, e := client.Transport.(*http.Transport).DialContext(t.Context(), "tcp", address); e == nil {
+			conn.Close()
+			t.Fatal("unsafe destination dialled")
+		}
+	}
+}
 
 func TestWebPushSendsEncryptedPrivacySafeNotification(t *testing.T) {
 	const privateConversationID = "conversation-private-routing-marker-4f7d8b2c"

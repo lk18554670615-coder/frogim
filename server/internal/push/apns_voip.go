@@ -128,6 +128,9 @@ func (a *APNSVoIP) sendDevice(ctx context.Context, outboxID int64, device store.
 	req.Header.Set("apns-priority", "10")
 	req.Header.Set("apns-expiration", "0")
 	req.Header.Set("apns-id", apnsRequestID(outboxID, device.ID))
+	if err := checkSubmission(ctx); err != nil {
+		return err
+	}
 	res, err := a.client().Do(req)
 	if err != nil {
 		return retryableDeliveryError(errors.New("APNs VoIP request failed"))
@@ -209,6 +212,7 @@ func apnsVoIPPayload(item store.OutboxItem) ([]byte, error) {
 		"nameCaller":     "青蛙呱呱联系人",
 		"handle":         "青蛙呱呱",
 	}
+	copyTenantScope(payload, item.Payload)
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return nil, errors.New("failed to encode APNs VoIP payload")

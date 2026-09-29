@@ -1,0 +1,210 @@
+# Persistent, loopback-only platform + DEFAULT enterprise. No production data.
+name: frogim-tenancy-local
+x-runtime: &runtime
+  image: frogim/tenancy-local:workspace
+  build:
+    context: ../..
+    dockerfile: infra/tenancy/Dockerfile.local
+  restart: unless-stopped
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  read_only: true
+  tmpfs: [/tmp]
+x-postgres: &postgres
+  image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+  restart: unless-stopped
+  healthcheck:
+    test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+    interval: 2s
+    timeout: 3s
+    retries: 30
+x-redis: &redis
+  image: redis:8-alpine@sha256:978f0e01593e65eed801f2402944efcd936d43b5027e4908a7897baf88ed6241
+  restart: unless-stopped
+  command: [sh, -c, 'exec redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"']
+  healthcheck:
+    test: [CMD-SHELL, 'REDISCLI_AUTH="$${REDIS_PASSWORD}" redis-cli ping']
+    interval: 2s
+    timeout: 3s
+    retries: 30
+services:
+  platform-db:
+    <<: *postgres
+    env_file: [{path: ../../.data/tenancy-local/platform/db.env, format: raw}]
+    volumes: [platform_db:/var/lib/postgresql/data]
+    networks: [platform]
+  platform-redis:
+    <<: *redis
+    env_file: [{path: ../../.data/tenancy-local/platform/redis.env, format: raw}]
+    volumes: [platform_redis:/data]
+    networks: [platform]
+  platform-api:
+    <<: *runtime
+    env_file: [{path: ../../.data/tenancy-local/platform/api.env, format: raw}]
+    environment:
+      PLATFORM_WEB_ORIGIN: http://127.0.0.1:18900,https://127.0.0.1:18443
+      PLATFORM_AGENTS_FILE: /agentplane/peers.json
+    volumes:
+      - ../../.data/tenancy-local/platform/pki:/config/pki:ro
+      - ../../.data/tenancy-local/platform/peers.json:/config/peers.json:ro
+      - ../../.data/tenancy-local/ops/platform:/agentplane:ro
+    depends_on:
+      platform-db: {condition: service_healthy}
+      platform-redis: {condition: service_healthy}
+    networks: [platform, control, agent-control]
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8090/health]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  # Inspection only: no host ports, Docker socket, privileged mode or writable
+  # host filesystem. local_preview never attests physical host isolation.
+  enterprise-agent:
+    <<: *runtime
+    entrypoint: [/opt/frogim/tenant-agent]
+    env_file: [{path: ../../.data/tenancy-local/ops/agent/api.env, format: raw}]
+    volumes: [../../.data/tenancy-local/ops/agent:/config:ro]
+    networks: [agent-control]
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8451/health]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  platform-gateway:
+    image: caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile.platform-local:/etc/caddy/Caddyfile:ro
+      - ../../.data/tenancy-local/platform/gateway:/certs:ro
+      - ../../apps/admin/dist-platform:/srv/platform:ro
+      - ../../build/tenancy-local/web:/srv/web:ro
+    ports: ["127.0.0.1:18900:8080", "127.0.0.1:18443:8443"]
+    networks: [platform]
+    depends_on: {platform-api: {condition: service_healthy}}
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/health]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  enterprise-db:
+    <<: *postgres
+    env_file: [{path: ../../.data/tenancy-local/enterprise/db.env, format: raw}]
+    volumes: [enterprise_db:/var/lib/postgresql/data]
+    networks: [enterprise]
+  enterprise-redis:
+    <<: *redis
+    env_file: [{path: ../../.data/tenancy-local/enterprise/redis.env, format: raw}]
+    volumes: [enterprise_redis:/data]
+    networks: [enterprise]
+  enterprise-minio:
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z@sha256:d249d1fb6966de4d8ad26c04754b545205ff15a62e4fd19ebd0f26fa5baacbc0
+    command: [server, /data, --console-address, ':9001']
+    env_file: [{path: ../../.data/tenancy-local/enterprise/minio.env, format: raw}]
+    volumes: [enterprise_media:/data]
+    networks: [enterprise]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, curl, -f, http://127.0.0.1:9000/minio/health/live]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  enterprise-media-init:
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z@sha256:fb8f773eac8ef9d6da0486d5dec2f42f219358bcb8de579d1623d518c9ebd4cc
+    env_file: [{path: ../../.data/tenancy-local/enterprise/minio.env, format: raw}]
+    entrypoint: [sh, -c]
+    command: ['mc alias set local http://enterprise-minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" >/dev/null && mc mb --ignore-existing "local/$${IM_S3_BUCKET}" && mc anonymous set none "local/$${IM_S3_BUCKET}"']
+    networks: [enterprise]
+    depends_on: {enterprise-minio: {condition: service_healthy}}
+  enterprise-plugins-init:
+    image: nexachat-wukong-policy-plugin-init@sha256:f67bad14625ceceab9a84e3c0ccbd9259c50979920c0fe6cd8961d28c202e16d
+    pull_policy: never
+    volumes: [enterprise_plugins:/data/plugins]
+    networks: [enterprise]
+  enterprise-api:
+    <<: *runtime
+    entrypoint: [/opt/frogim/enterprise]
+    env_file: [{path: ../../.data/tenancy-local/enterprise/api.env, format: raw}]
+    volumes:
+      - ../../.data/tenancy-local/enterprise/pki:/config/pki:ro
+      - enterprise_plugins:/plugins
+      - ../../server/.data/ip2region:/opt/ip2region:ro
+    environment:
+      IM_IP_REGION_DIR: /opt/ip2region
+    networks: [enterprise, control]
+    depends_on:
+      enterprise-db: {condition: service_healthy}
+      enterprise-redis: {condition: service_healthy}
+      enterprise-media-init: {condition: service_completed_successfully}
+      enterprise-plugins-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/ready]
+      interval: 3s
+      timeout: 3s
+      retries: 50
+      start_period: 10s
+  enterprise-im:
+    image: frogim/tenancy-im:workspace
+    build: {context: ../.., dockerfile: infra/tenancy/Dockerfile.im}
+    pull_policy: never
+    env_file: [{path: ../../.data/tenancy-local/enterprise/im.env, format: raw}]
+    volumes:
+      - ../wukongim/wk.yaml:/root/wukongim/wk.yaml:ro
+      - enterprise_im:/root/wukongim/data
+      - enterprise_im_logs:/root/wukongim/logs
+      - enterprise_plugins:/root/wukongim/data/plugins
+    ports: ["127.0.0.1:15180:5100"]
+    networks: [enterprise]
+    restart: unless-stopped
+    depends_on: {enterprise-plugins-init: {condition: service_completed_successfully}}
+    healthcheck:
+      test: [CMD-SHELL, 'wget -q --header="token: $${WK_MANAGERTOKEN}" -O /dev/null http://127.0.0.1:5001/health']
+      interval: 3s
+      timeout: 3s
+      retries: 50
+  enterprise-livekit:
+    image: livekit/livekit-server@sha256:d0d1cfdbe95617647bbe91630454526c2cdd88cec83f41114b3495b444918b9a
+    command: [--config, /etc/livekit.yaml]
+    env_file: [{path: ../../.data/tenancy-local/enterprise/livekit.env, format: raw}]
+    volumes: [./livekit.local.yaml:/etc/livekit.yaml:ro]
+    ports: ["127.0.0.1:17881:17881", "127.0.0.1:17882-17889:17882-17889/udp"]
+    networks: [enterprise]
+    restart: unless-stopped
+  enterprise-gateway:
+    image: caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    volumes:
+      - ./Caddyfile.enterprise-local:/etc/caddy/Caddyfile:ro
+      - ../../.data/tenancy-local/enterprise/gateway:/certs:ro
+      - ../../apps/admin/dist:/srv/admin:ro
+    ports: ["127.0.0.1:18444:8444", "127.0.0.1:18445:8445"]
+    networks: [enterprise]
+    depends_on: {enterprise-api: {condition: service_healthy}}
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/health]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  local-bootstrap:
+    <<: *runtime
+    profiles: [bootstrap]
+    restart: 'no'
+    entrypoint: [/opt/frogim/tenancy-local, -bootstrap]
+    env_file: [{path: ../../.data/tenancy-local/platform/api.env, format: raw}]
+    volumes:
+      - ../../.data/tenancy-local/platform/pki:/config/pki:ro
+      - ../../.data/tenancy-local/credentials.json:/local-credentials.json:ro
+    networks: [platform, control]
+networks:
+  platform: {}
+  enterprise: {}
+  control: {internal: true}
+  agent-control: {internal: true}
+volumes:
+  platform_db: {}
+  platform_redis: {}
+  enterprise_db: {}
+  enterprise_redis: {}
+  enterprise_media: {}
+  enterprise_im: {}
+  enterprise_im_logs: {}
+  enterprise_plugins: {}

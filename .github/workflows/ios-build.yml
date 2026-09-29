@@ -82,6 +82,13 @@ jobs:
       - name: Test signing metadata validation
         run: python3 -m unittest discover -s tool -p test_ios_signing.py -v
 
+      - name: Test native tenant call identity policy
+        run: |
+          swiftc -swift-version 5 ios/Runner/LinliTenantCallPolicy.swift \
+            tool/native_calls/TenantCallPolicyTests.swift \
+            -o "$RUNNER_TEMP/tenant-call-policy-tests"
+          "$RUNNER_TEMP/tenant-call-policy-tests"
+
       - name: Compile release iOS app without signing
         run: |
           flutter build ios --release --no-codesign \

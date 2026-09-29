@@ -31,6 +31,9 @@ func (p *WithRedis) CanPresentPush(ctx context.Context, item OutboxItem) (bool, 
 }
 
 func (p *Postgres) CanPresentPush(ctx context.Context, item OutboxItem) (bool, error) {
+	if item.TenantManaged {
+		return p.canPresentTenantPush(ctx, item)
+	}
 	if item.EventType == "messages.deleted" {
 		return false, nil
 	}

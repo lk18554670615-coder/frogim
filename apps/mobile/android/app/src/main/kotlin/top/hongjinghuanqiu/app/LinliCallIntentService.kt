@@ -32,14 +32,35 @@ class LinliCallIntentService : FlutterIntentService() {
     private fun showNativeIncomingCall(context: Context, payload: JSONObject) {
         val serverCallId = payload.optString("callId")
         if (serverCallId.isBlank()) return
+        val managed = LinliTenantCalls.managed(context)
+        if (managed) {
+            LinliTenantCalls.publishIncoming(context, payload, serverCallId) { scope ->
+                publishNativeIncomingCall(context, payload, serverCallId, scope)
+            }
+        } else {
+            if (payload.has("tenantId") || payload.has("localUserId")) return
+            publishNativeIncomingCall(context, payload, serverCallId, null)
+        }
+    }
+
+    private fun publishNativeIncomingCall(
+        context: Context, payload: JSONObject, serverCallId: String,
+        scope: LinliTenantCallPolicy.Scope?,
+    ) {
+        val duration = if (scope == null) 30_000L else minOf(
+            30_000L, scope.expires - System.currentTimeMillis(),
+            (LinliTenantCallPolicy.expiry(payload.optString("expiresAt")) ?: 0L) - System.currentTimeMillis(),
+        )
+        if (duration <= 0L) return
         val conversationId = payload.optString("conversationId")
         val mediaType = payload.optString("mediaType", "audio")
-        val systemCallId = LinliCallId.deterministicUuid(serverCallId).toString()
+        val systemCallId = LinliCallId.deterministicUuid(scope?.seed(serverCallId) ?: serverCallId).toString()
         val extra = hashMapOf<String, Any?>(
             "serverCallId" to serverCallId,
             "conversationId" to conversationId,
             "mediaType" to mediaType,
         )
+        if (scope != null) extra["tenantScope"] = HashMap(scope.fields)
         // flutter_callkit_incoming 3.1.5 publishes this Bundle/broadcast
         // protocol in its Android manifest. Avoid importing plugin-internal
         // Kotlin classes, which AGP 9 does not expose to the app module.
@@ -49,7 +70,7 @@ class LinliCallIntentService : FlutterIntentService() {
             putString("EXTRA_CALLKIT_APP_NAME", "青蛙呱呱")
             putString("EXTRA_CALLKIT_HANDLE", "青蛙呱呱")
             putInt("EXTRA_CALLKIT_TYPE", if (mediaType == "video") 1 else 0)
-            putLong("EXTRA_CALLKIT_DURATION", 30_000L)
+            putLong("EXTRA_CALLKIT_DURATION", duration)
             putString("EXTRA_CALLKIT_TEXT_ACCEPT", "接听")
             putString("EXTRA_CALLKIT_TEXT_DECLINE", "拒绝")
             putSerializable("EXTRA_CALLKIT_EXTRA", extra)

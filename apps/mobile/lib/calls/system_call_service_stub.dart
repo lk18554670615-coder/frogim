@@ -33,6 +33,8 @@ class _StubSystemCallService implements SystemCallService {
   @override
   Future<void> end(String serverCallId) async {}
   @override
+  Future<void> dismiss(String systemCallId) async {}
+  @override
   Future<String?> voipPushToken() async => null;
   @override
   Future<void> dispose() async {}

@@ -29,7 +29,15 @@ func (x *API) permanentMediaURL(mediaID string, cover bool) string {
 }
 
 func (x *API) permanentMediaSignature(mediaID, kind string) string {
-	mac := hmac.New(sha256.New, []byte(x.cfg.JWTSecret))
+	key := x.cfg.MediaSigningSecret
+	if key == "" {
+		key = x.cfg.JWTSecret
+	} // Standalone upgrade keeps existing URLs.
+	return signPermanentMedia(key, mediaID, kind)
+}
+
+func signPermanentMedia(key, mediaID, kind string) string {
+	mac := hmac.New(sha256.New, []byte(key))
 	_, _ = mac.Write([]byte("media-public:v1:" + mediaID + ":" + kind))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
@@ -65,7 +73,12 @@ func (x *API) permanentMediaContent(w http.ResponseWriter, r *http.Request) {
 	}
 	expected := []byte(x.permanentMediaSignature(mediaID, kind))
 	provided := []byte(strings.TrimSpace(r.PathValue("signature")))
-	if len(expected) != len(provided) || subtle.ConstantTimeCompare(expected, provided) != 1 {
+	valid := len(expected) == len(provided) && subtle.ConstantTimeCompare(expected, provided) == 1
+	if x.cfg.LegacyMediaSigningSecret != "" {
+		legacy := []byte(signPermanentMedia(x.cfg.LegacyMediaSigningSecret, mediaID, kind))
+		valid = valid || (len(legacy) == len(provided) && subtle.ConstantTimeCompare(legacy, provided) == 1)
+	}
+	if !valid {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "media is unavailable")
 		return
 	}

@@ -33,31 +33,36 @@ import (
 	"github.com/linli/im/server/internal/netutil"
 	"github.com/linli/im/server/internal/push"
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/tenancy"
 	"github.com/linli/im/server/internal/wukong"
 	"github.com/linli/im/server/internal/wukongplugin"
 )
 
 type API struct {
-	accessRecorder  *accesslog.Recorder
-	ipRegion        *ipregion.Resolver
-	cfg             config.Config
-	app             *app.App
-	auth            auth.Manager
-	media           mediaService
-	cleaner         mediaCleanupService
-	mux             *http.ServeMux
-	started         time.Time
-	limits          *limiter
-	otp             otpProvider
-	links           *linkpreview.Service
-	wukongClient    *wukong.Client
-	presence        *wukong.PresenceCache
-	imSessions      *wukong.SessionIssuer
-	wukongSetupErr  error
-	pluginInstaller *wukongplugin.Installer
-	pluginSetupErr  error
-	livekit         livekitControl
-	livekitSetupErr error
+	tenantStore         *store.Postgres
+	tenantMediaProxy    http.Handler
+	platformControl     *tenancy.RPC
+	recoveryAuthorities string
+	accessRecorder      *accesslog.Recorder
+	ipRegion            *ipregion.Resolver
+	cfg                 config.Config
+	app                 *app.App
+	auth                auth.Manager
+	media               mediaService
+	cleaner             mediaCleanupService
+	mux                 *http.ServeMux
+	started             time.Time
+	limits              *limiter
+	otp                 otpProvider
+	links               *linkpreview.Service
+	wukongClient        *wukong.Client
+	presence            *wukong.PresenceCache
+	imSessions          *wukong.SessionIssuer
+	wukongSetupErr      error
+	pluginInstaller     *wukongplugin.Installer
+	pluginSetupErr      error
+	livekit             livekitControl
+	livekitSetupErr     error
 }
 type mediaService interface {
 	Prepare(context.Context, string, string, string, int64) (media.Prepared, error)
@@ -147,7 +152,7 @@ func New(cfg config.Config, a *app.App) *API {
 	if cfg.CallInviteTTL == 0 {
 		cfg.CallInviteTTL = 30 * time.Second
 	}
-	x := &API{cfg: cfg, app: a, auth: auth.Manager{Secret: []byte(cfg.JWTSecret), AccessTTL: cfg.AccessTTL, RefreshTTL: cfg.RefreshTTL}, started: time.Now(), limits: newLimiter(), links: linkpreview.New(linkpreview.Config{})}
+	x := &API{cfg: cfg, app: a, auth: auth.Manager{Secret: []byte(cfg.JWTSecret), AccessTTL: cfg.AccessTTL, RefreshTTL: cfg.RefreshTTL, TenantID: cfg.TenantID}, started: time.Now(), limits: newLimiter(), links: linkpreview.New(linkpreview.Config{})}
 	x.accessRecorder = accesslog.New(a)
 	if cfg.IPRegionDir != "" {
 		x.ipRegion = ipregion.New(cfg.IPRegionDir)
@@ -247,6 +252,7 @@ func (x *API) RunMediaCleanup(ctx context.Context) {
 	}
 }
 func (x *API) routes() {
+	x.mux.HandleFunc("POST /v2/auth/tenant-session", x.requireClientPlatform(x.tenantSession))
 	x.mux.HandleFunc("GET /health", x.health)
 	x.mux.HandleFunc("GET /ready", x.ready)
 	x.mux.HandleFunc("GET /metrics", x.metrics)
@@ -427,6 +433,7 @@ func (x *API) routes() {
 	x.mux.Handle("POST /v2/calls/{id}/cancel", x.requireAuth(http.HandlerFunc(x.cancelCall)))
 	x.mux.Handle("POST /v2/calls/{id}/hangup", x.requireAuth(http.HandlerFunc(x.hangupCall)))
 	x.mux.Handle("POST /v2/calls/{id}/token", x.requireAuth(http.HandlerFunc(x.livekitCallToken)))
+	x.mux.HandleFunc("GET /livekit/{path...}", x.tenantLiveKitSignal)
 	x.mux.Handle("POST /v2/reports", x.requireAuth(http.HandlerFunc(x.report)))
 	x.mux.Handle("GET /v2/announcements", x.requireAuth(http.HandlerFunc(x.announcements)))
 	x.mux.Handle("POST /v2/announcements/{id}/read", x.requireAuth(http.HandlerFunc(x.readAnnouncement)))
@@ -437,6 +444,10 @@ func (x *API) routes() {
 	x.mux.Handle("GET /v2/admin/user-access-logs", x.requireAdmin(http.HandlerFunc(x.adminUserAccessLogs)))
 	x.mux.Handle("POST /v2/admin/users", x.requireAdmin(http.HandlerFunc(x.createAdminUser)))
 	x.mux.Handle("POST /v2/admin/users/batch", x.requireAdmin(http.HandlerFunc(x.createAdminUsersBatch)))
+	x.mux.Handle("GET /v2/admin/users/provisioning-jobs", x.requireAdmin(http.HandlerFunc(x.tenantAdminJobs)))
+	x.mux.Handle("POST /v2/admin/users/{id}/tenant-password-reset", x.requireAdmin(http.HandlerFunc(x.resetTenantUserPassword)))
+	x.mux.Handle("GET /v2/admin/users/{id}/credential-jobs/{jobId}", x.requireAdmin(http.HandlerFunc(x.tenantUserCredentialStatus)))
+	x.mux.Handle("GET /v2/admin/users/{id}/credential-jobs", x.requireAdmin(http.HandlerFunc(x.tenantUserCredentialJobs)))
 	x.mux.Handle("GET /v2/admin/users/{id}", x.requireAdmin(http.HandlerFunc(x.adminUserOverview)))
 	x.mux.Handle("PUT /v2/admin/users/{id}/internal-user", x.requireAdmin(http.HandlerFunc(x.setInternalUser)))
 	x.mux.Handle("GET /v2/admin/users/{id}/friends", x.requireAdmin(http.HandlerFunc(x.adminUserFriends)))
@@ -637,6 +648,27 @@ func isTerminalCallStatus(status string) bool {
 }
 
 func (x *API) livekitCallToken(w http.ResponseWriter, r *http.Request) {
+	if x.cfg.TenantID != "" && r.Context().Value(tenantFenceContextKey{}) != true {
+		if x.tenantStore == nil {
+			writeError(w, 503, "LIVEKIT_UNAVAILABLE", "企业通话身份未就绪")
+			return
+		}
+		err := x.tenantStore.WithTenantSessionFence(r.Context(), uid(r), func() error {
+			_, version, err := x.tenantStore.TenantAuthIdentity(r.Context(), x.cfg.TenantID, uid(r))
+			if err != nil {
+				return err
+			}
+			if expected, ok := r.Context().Value(tenantAuthVersionContextKey{}).(int64); !ok || expected != version {
+				return app.ErrForbidden
+			}
+			x.livekitCallToken(w, r.WithContext(context.WithValue(r.Context(), tenantFenceContextKey{}, true)))
+			return nil
+		})
+		if err != nil {
+			writeError(w, 401, "TENANT_CALL_REJECTED", "通话身份已失效")
+		}
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	if x.livekit == nil || x.livekitSetupErr != nil {
@@ -663,7 +695,29 @@ func (x *API) livekitCallToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "LIVEKIT_UNAVAILABLE", "LiveKit room is unavailable; retry the request")
 		return
 	}
-	session, err := x.livekit.IssueParticipant(call.ID, uid(r), call.ConversationID, call.MediaType)
+	var session livekitcontrol.ParticipantSession
+	if x.cfg.TenantID != "" {
+		control, ok := x.livekit.(tenantLiveKitControl)
+		if !ok || x.tenantMediaProxy == nil {
+			writeError(w, 503, "LIVEKIT_UNAVAILABLE", "企业通话入口未就绪")
+			return
+		}
+		i, version, identityErr := x.tenantStore.TenantAuthIdentity(r.Context(), x.cfg.TenantID, uid(r))
+		expected, versionOK := r.Context().Value(tenantAuthVersionContextKey{}).(int64)
+		if identityErr != nil || !versionOK || version != expected {
+			writeError(w, 401, "TENANT_CALL_REJECTED", "通话身份已失效")
+			return
+		}
+		realm, e := x.tenantStore.TenantRealmVersion(r.Context(), x.cfg.TenantID)
+		expectedRealm, realmOK := r.Context().Value(tenantRealmVersionContextKey{}).(int64)
+		if e != nil || !realmOK || realm != expectedRealm {
+			writeError(w, 401, "TENANT_CALL_REJECTED", "企业访问状态已变更")
+			return
+		}
+		session, err = control.IssueTenantParticipant(call.ID, call.ConversationID, call.MediaType, i, version, realm)
+	} else {
+		session, err = x.livekit.IssueParticipant(call.ID, uid(r), call.ConversationID, call.MediaType)
+	}
 	if err != nil {
 		slog.Error("LiveKit participant token failed", "callId", call.ID, "error", err)
 		writeError(w, http.StatusServiceUnavailable, "LIVEKIT_UNAVAILABLE", "LiveKit token is unavailable")
@@ -793,6 +847,9 @@ func (x *API) middleware(next http.Handler) http.Handler {
 			writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "too many requests")
 			return
 		}
+		if !x.allowTenantRoute(w, r) {
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -814,7 +871,19 @@ func (x *API) originAllowed(origin string) bool {
 	}
 	return false
 }
-func (x *API) clientIP(r *http.Request) string { return netutil.ClientIP(r, x.cfg.TrustProxy) }
+func (x *API) clientIP(r *http.Request) string {
+	if x.cfg.GatewaySecret != "" {
+		return netutil.GatewayClientIP(r, x.cfg.GatewaySecret)
+	}
+	return netutil.ClientIP(r, x.cfg.TrustProxy)
+}
+
+func (x *API) trustedForwarding(r *http.Request) bool {
+	if x.cfg.GatewaySecret != "" {
+		return netutil.GatewayAuthenticated(r, x.cfg.GatewaySecret)
+	}
+	return x.cfg.TrustProxy
+}
 func (x *API) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		claims, err := x.parseRequestClaims(r)
@@ -837,6 +906,8 @@ func (x *API) requireAuth(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), userKey, claims.Subject)
 		ctx = context.WithValue(ctx, sessionIDKey, claims.SessionID)
 		ctx = context.WithValue(ctx, deviceKindKey, claims.DeviceKind)
+		ctx = context.WithValue(ctx, tenantAuthVersionContextKey{}, claims.AuthVersion)
+		ctx = context.WithValue(ctx, tenantRealmVersionContextKey{}, claims.RealmVersion)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -861,6 +932,8 @@ func (x *API) requireUserToken(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), userKey, claims.Subject)
 		ctx = context.WithValue(ctx, sessionIDKey, claims.SessionID)
 		ctx = context.WithValue(ctx, deviceKindKey, claims.DeviceKind)
+		ctx = context.WithValue(ctx, tenantAuthVersionContextKey{}, claims.AuthVersion)
+		ctx = context.WithValue(ctx, tenantRealmVersionContextKey{}, claims.RealmVersion)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -1002,6 +1075,33 @@ func (x *API) parseRequestClaims(r *http.Request) (*auth.Claims, error) {
 	return x.auth.ParseClaims(raw, "access")
 }
 func (x *API) deviceSessionActive(claims *auth.Claims) (bool, error) {
+	if x.cfg.TenantID != "" {
+		if x.tenantStore == nil {
+			return false, app.ErrUnavailable
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		i, version, err := x.tenantStore.TenantAuthIdentity(ctx, x.cfg.TenantID, claims.Subject)
+		if errors.Is(err, store.ErrForbidden) {
+			return false, nil
+		}
+		if err != nil {
+			return false, app.ErrUnavailable
+		}
+		if i.AccountID != claims.PlatformAccountID || i.AssignmentVersion != claims.AssignmentVersion || i.TenantID != claims.TenantID || version != claims.AuthVersion {
+			return false, nil
+		}
+		realm, err := x.tenantStore.TenantRealmVersion(ctx, x.cfg.TenantID)
+		if errors.Is(err, store.ErrForbidden) {
+			return false, nil
+		}
+		if err != nil {
+			return false, app.ErrUnavailable
+		}
+		if realm != claims.RealmVersion {
+			return false, nil
+		}
+	}
 	// Persistent deployments reject pre-device-session tokens. The in-memory
 	// test store keeps them only for isolated protocol tests that issue JWTs
 	// without creating a refresh-session row.
@@ -1194,7 +1294,12 @@ func (x *API) issueUserSession(w http.ResponseWriter, r *http.Request, u *model.
 		writeError(w, http.StatusServiceUnavailable, "IM_UNAVAILABLE", "instant messaging service is temporarily unavailable")
 		return
 	}
-	a, refresh, sessionID, err := x.auth.IssueDeviceSession(u.ID, deviceKindForPlatform(platform))
+	manager, err := x.tenantTokenManager(r.Context(), u.ID)
+	if err != nil {
+		handleErr(w, err)
+		return
+	}
+	a, refresh, sessionID, err := manager.IssueDeviceSession(u.ID, deviceKindForPlatform(platform))
 	if err != nil {
 		handleErr(w, err)
 		return
@@ -1689,6 +1794,31 @@ func (x *API) refreshLegacySession(w http.ResponseWriter, r *http.Request, claim
 }
 
 func (x *API) issueIMSession(ctx context.Context, userID, platform string) (*wukong.ImSession, error) {
+	if x.cfg.TenantID != "" && ctx.Value(tenantFenceContextKey{}) != true {
+		if x.tenantStore == nil {
+			return nil, app.ErrUnavailable
+		}
+		var result *wukong.ImSession
+		err := x.tenantStore.WithTenantSessionFence(ctx, userID, func() error {
+			_, version, err := x.tenantStore.TenantAuthIdentity(ctx, x.cfg.TenantID, userID)
+			if err != nil {
+				return err
+			}
+			if expected, ok := ctx.Value(tenantAuthVersionContextKey{}).(int64); !ok || expected != version {
+				return app.ErrForbidden
+			}
+			realm, e := x.tenantStore.TenantRealmVersion(ctx, x.cfg.TenantID)
+			if e != nil {
+				return e
+			}
+			if expected, ok := ctx.Value(tenantRealmVersionContextKey{}).(int64); !ok || expected != realm {
+				return app.ErrForbidden
+			}
+			result, err = x.issueIMSession(context.WithValue(ctx, tenantFenceContextKey{}, true), userID, platform)
+			return err
+		})
+		return result, err
+	}
 	if !x.cfg.WukongEnabled {
 		return nil, nil
 	}
@@ -1697,6 +1827,26 @@ func (x *API) issueIMSession(ctx context.Context, userID, platform string) (*wuk
 	}
 	if strings.TrimSpace(platform) == "" {
 		return nil, nil
+	}
+	if x.cfg.TenantID != "" {
+		if x.tenantStore == nil {
+			return nil, app.ErrUnavailable
+		}
+		i, version, err := x.tenantStore.TenantAuthIdentity(ctx, x.cfg.TenantID, userID)
+		if err != nil {
+			return nil, err
+		}
+		realm, err := x.tenantStore.TenantRealmVersion(ctx, x.cfg.TenantID)
+		if err != nil {
+			return nil, err
+		}
+		if expected, ok := ctx.Value(tenantAuthVersionContextKey{}).(int64); !ok || expected != version {
+			return nil, app.ErrForbidden
+		}
+		if expected, ok := ctx.Value(tenantRealmVersionContextKey{}).(int64); !ok || expected != realm {
+			return nil, app.ErrForbidden
+		}
+		return x.imSessions.IssueTenant(ctx, i, version, realm, platform)
 	}
 	return x.imSessions.Issue(ctx, userID, platform)
 }

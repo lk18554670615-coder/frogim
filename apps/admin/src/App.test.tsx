@@ -405,9 +405,10 @@ describe('青蛙呱呱管理后台', () => {
     await userEvent.type(screen.getByLabelText('初始密码'), 'StrongPass123!');
     await userEvent.type(screen.getByLabelText('操作理由'), '运营工单 USER-9');
     await userEvent.click(screen.getByRole('button', { name: '创建用户' }));
+    await userEvent.click(within(await screen.findByRole('dialog', { name: '确认新增用户' })).getByRole('button', { name: '确认创建用户' }));
     await waitFor(() => expect(window.location.pathname).toBe('/users'));
     const write = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith('/users') && init?.method === 'POST');
-    expect(JSON.parse(String(write?.[1]?.body))).toEqual({ phone: '02800139000', name: '新建账号', password: 'StrongPass123!', gender: 'female', reason: '运营工单 USER-9', confirmed: true });
+    expect(JSON.parse(String(write?.[1]?.body))).toEqual({ phone: '02800139000', name: '新建账号', password: 'StrongPass123!', gender: 'female', reason: '运营工单 USER-9', confirmed: true, requestId: expect.any(String) });
   });
 
   it('好友聊天记录展示真实正文并要求理由后管理员撤回', async () => {
@@ -426,6 +427,34 @@ describe('青蛙呱呱管理后台', () => {
     expect(await screen.findByText('消息已全端撤回并写入审计')).toBeInTheDocument();
     const write = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith('/messages/88/recall') && init?.method === 'POST');
     expect(JSON.parse(String(write?.[1]?.body))).toEqual({ reason: '违规内容复核确认', confirmed: true });
+  });
+
+  it('企业开户超时后复用请求号，不把平台受理当成创建成功', async () => {
+    let writes = 0;
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/users') && init?.method === 'POST') {
+        bodies.push(JSON.parse(String(init.body))); writes++;
+        if (writes === 1) return response({ error: { code: 'PLATFORM_UNAVAILABLE', message: '结果尚未确认' } }, 503);
+        return response({ item: { jobId: 'job_a', requestId: bodies[0].requestId, localUserId: 'usr_a', phone: '02800000001', name: '待开通', status: 'pending', createdAt: '2026-09-28T00:00:00Z' } }, 202);
+      }
+      if (String(input).includes('/provisioning-jobs')) return response({ managed: true, items: [] });
+      return liveFixture(input, init);
+    }));
+    window.history.replaceState({}, '', '/users/new'); render(<App />);
+    await userEvent.type(await screen.findByLabelText('11位数字号码'), '02800000001');
+    await userEvent.type(screen.getByLabelText('昵称'), '待开通');
+    await userEvent.type(screen.getByLabelText('初始密码'), 'StrongPass123!');
+    await userEvent.type(screen.getByLabelText('操作理由'), 'test request');
+    for (const button of ['创建用户', '使用原请求重试']) {
+      await userEvent.click(await screen.findByRole('button', { name: button }));
+      await userEvent.click(within(await screen.findByRole('dialog', { name: '确认新增用户' })).getByRole('button', { name: '确认创建用户' }));
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: '确认新增用户' })).not.toBeInTheDocument());
+    }
+    expect(bodies).toHaveLength(2); expect(bodies[1]).toEqual(bodies[0]);
+    expect(window.location.pathname).toBe('/users/new');
+    expect(screen.getByLabelText('初始密码')).toHaveValue('');
+    expect(screen.getByRole('button', { name: '新增另一用户' })).toBeInTheDocument();
   });
 
   it('通过真实 WuKongIM 接口发送系统消息并携带审计理由', async () => {

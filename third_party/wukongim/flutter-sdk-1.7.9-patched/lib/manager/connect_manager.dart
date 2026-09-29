@@ -176,6 +176,8 @@ class WKConnectionManager {
     _cancelReconnect();
     isDisconnection = true;
     if (isLogout) {
+      _sendingMsgMap.clear();
+      WKIM.shared.channelManager.resetLocalCache();
       // _isLogout = true;
       WKIM.shared.options.uid = '';
       WKIM.shared.options.token = '';

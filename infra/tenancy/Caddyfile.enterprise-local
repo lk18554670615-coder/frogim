@@ -1,0 +1,35 @@
+{
+  auto_https off
+  admin off
+}
+https://:8444 {
+  tls /certs/public.pem /certs/public.key
+  @private path /internal/* /platform/* /metrics
+  handle @private {
+    respond 404
+  }
+  handle /im {
+    reverse_proxy enterprise-im:5200
+  }
+  handle /livekit/* {
+    # Managed call signaling checks the current tenant/auth generation before
+    # forwarding normal LiveKit RTC requests. Never expose its admin API.
+    reverse_proxy enterprise-api:8080
+  }
+  @businessAPI path /v2/* /health /ready
+  handle @businessAPI {
+    reverse_proxy enterprise-api:8080
+  }
+  handle {
+    root * /srv/admin
+    try_files {path} /index.html
+    file_server
+  }
+}
+http://:8080 {
+  respond /health "gateway-ready"
+}
+https://:8445 {
+  tls /certs/public.pem /certs/public.key
+  reverse_proxy enterprise-minio:9000
+}

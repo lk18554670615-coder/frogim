@@ -34,6 +34,7 @@ apps/mobile/dart_defines.local.json
 .vscode/
 coverage/
 dist/
+/apps/admin/dist-platform/
 build/
 *.log
 __pycache__/

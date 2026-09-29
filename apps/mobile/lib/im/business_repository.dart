@@ -29,6 +29,8 @@ class BusinessRepository
     String? Function(String)? fixedMediaUrl,
     http.Client? client,
     http.Client? uploadClient,
+    int Function()? sessionEpoch,
+    bool Function()? sessionActive,
   }) => BusinessRepository._(
     apiBaseUrl,
     platform,
@@ -37,6 +39,8 @@ class BusinessRepository
     client ?? http.Client(),
     uploadClient ?? client ?? http.Client(),
     fixedMediaUrl,
+    sessionEpoch,
+    sessionActive,
   );
 
   BusinessRepository._(
@@ -47,6 +51,8 @@ class BusinessRepository
     this._client,
     this._uploadClient,
     this._fixedMediaUrl,
+    this._sessionEpoch,
+    this._sessionActive,
   );
 
   final String _apiBaseUrl;
@@ -56,6 +62,8 @@ class BusinessRepository
   final http.Client _client;
   final http.Client _uploadClient;
   final String? Function(String)? _fixedMediaUrl;
+  final int Function()? _sessionEpoch;
+  final bool Function()? _sessionActive;
 
   Future<WukongSession> issueImSession() async {
     final data = await request('POST', '/v2/auth/im-session', {
@@ -826,17 +834,29 @@ class BusinessRepository
     String path, [
     Object? body,
   ]) async {
+    final epoch = _sessionEpoch?.call();
+    void checkSession() {
+      if (_sessionActive?.call() == false || epoch != _sessionEpoch?.call()) {
+        throw StateError('企业会话已变更');
+      }
+    }
+
+    checkSession();
     var response = await _send(method, path, body);
+    checkSession();
     if (response.statusCode == 401 && _refreshAccessToken != null) {
       final refreshed = await _refreshAccessToken();
+      checkSession();
       if (refreshed) response = await _send(method, path, body);
     }
+    checkSession();
     return _decode(response);
   }
 
   Future<http.Response> _send(String method, String path, Object? body) async {
     final token = _accessToken();
-    final request = http.Request(method, Uri.parse('$_apiBaseUrl$path'));
+    final request = http.Request(method, Uri.parse('$_apiBaseUrl$path'))
+      ..followRedirects = false;
     request.headers.addAll({
       'accept': 'application/json',
       'content-type': 'application/json',

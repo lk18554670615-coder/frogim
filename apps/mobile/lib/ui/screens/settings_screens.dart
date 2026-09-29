@@ -21,6 +21,7 @@ import '../legal_documents.dart';
 import '../widgets/linli_widgets.dart';
 import 'chat_screen.dart';
 import 'settings_preferences.dart';
+import 'tenant_password_screen.dart';
 
 class MyInviteCodeScreen extends StatefulWidget {
   const MyInviteCodeScreen({super.key, required this.controller});
@@ -522,7 +523,9 @@ class _AccountSecurityScreenState extends State<AccountSecurityScreen> {
                   key: const Key('account-change-password'),
                   icon: CupertinoIcons.lock,
                   title: '修改登录密码',
-                  subtitle: '验证绑定手机号后更新，完成后重新登录',
+                  subtitle: controller.usesTenantAuthentication
+                      ? '验证当前密码后更新平台密码，完成后重新登录'
+                      : '验证绑定手机号后更新，完成后重新登录',
                   onTap: user?.phone?.trim().isNotEmpty == true
                       ? () => Navigator.of(context).push(
                           MaterialPageRoute(
@@ -769,13 +772,16 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
   );
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: const GlassAppBar(title: Text('修改登录密码')),
-    body: AnimatedBuilder(
-      animation: widget.controller,
-      builder: (context, _) => _buildForm(context),
-    ),
-  );
+  Widget build(BuildContext context) =>
+      widget.controller.usesTenantAuthentication
+      ? TenantChangePasswordScreen(controller: widget.controller)
+      : Scaffold(
+          appBar: const GlassAppBar(title: Text('修改登录密码')),
+          body: AnimatedBuilder(
+            animation: widget.controller,
+            builder: (context, _) => _buildForm(context),
+          ),
+        );
 }
 
 class EditProfileScreen extends StatefulWidget {
@@ -2233,6 +2239,16 @@ class _NotificationSettingsScreenState
             },
           ),
         const SectionHeader('通知偏好'),
+        if (!kIsWeb &&
+            defaultTargetPlatform == TargetPlatform.iOS &&
+            widget.controller?.usesTenantAuthentication == true)
+          ListenableBuilder(
+            listenable: widget.controller!,
+            builder: (context, _) => Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text(widget.controller!.voipPushStatus),
+            ),
+          ),
         SectionCard(
           children: [
             _SwitchRow(

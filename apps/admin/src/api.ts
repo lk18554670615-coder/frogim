@@ -1,5 +1,7 @@
 import type {
   AdminApi,
+  TenantAccountJob,
+  TenantCredentialJob,
   IPRegion,
   UserAccessProfile,
   AdministratorRecord,
@@ -240,6 +242,18 @@ function adaptUserAccess(value: unknown): UserAccessProfile | undefined {
   if (!value || typeof value!=='object') return undefined;
   const r=object(value);return {registrationSource:r.registrationSource==='app'?'app':r.registrationSource==='admin'?'admin':'unknown',registrationIp:string(r.registrationIp),lastLoginIp:string(r.lastLoginIp),lastLoginAt:string(r.lastLoginAt),registrationRegion:adaptIPRegion(r.registrationRegion),lastLoginRegion:adaptIPRegion(r.lastLoginRegion),matchedSources:list(r.matchedSources).map(v=>string(v))};
 }
+function adaptTenantCredentialJob(value: unknown): TenantCredentialJob {
+  const raw = object(value);
+  if (!string(raw.jobId) || !string(raw.requestId) || !['pending', 'completed'].includes(string(raw.status))) throw new Error('密码任务响应不完整，请查询任务确认结果');
+  return { jobId: string(raw.jobId), requestId: string(raw.requestId), status: raw.status as TenantCredentialJob['status'], errorCode: string(raw.errorCode) || undefined };
+}
+
+function adaptTenantAccountJob(value: unknown): TenantAccountJob {
+  const raw = object(value);
+  if (!string(raw.jobId) || !string(raw.requestId) || !['pending', 'blocked', 'completed'].includes(string(raw.status))) throw new Error('开户任务响应无效，请重新查询');
+  return { jobId: string(raw.jobId), requestId: string(raw.requestId), localUserId: string(raw.localUserId), phone: string(raw.phone), name: string(raw.name), status: raw.status as TenantAccountJob['status'], errorCode: string(raw.errorCode) || undefined, createdAt: string(raw.createdAt) };
+}
+
 function adaptUser(value: unknown): UserRecord {
   const raw = object(value);
   const nickname = string(raw.nickname, string(raw.name, '未命名用户'));
@@ -1030,14 +1044,29 @@ function liveApi(token: string): AdminApi {
       const r=object(await request(`/user-access-logs?${params}`,token));
       return {items:list(r.items).map(value=>{const e=object(value);return {id:string(e.id),userId:string(e.userId),user:e.user?adaptUser(e.user):undefined,event:string(e.event),method:string(e.method),result:string(e.result),failureCode:string(e.failureCode),ip:string(e.ip),platform:string(e.platform),occurredAt:string(e.occurredAt),region:adaptIPRegion(e.region)};}),nextCursor:string(r.nextCursor),from:string(r.from),to:string(r.to),retentionDays:number(r.retentionDays,180),geoVersion:string(r.geoVersion)};
     },
-    async createUser(input, reason) { return adaptUser(unwrapItem(await request('/users', token, { method: 'POST', body: JSON.stringify({ ...input, reason, confirmed: true }) }))); },
-    async createUsersBatch(items: AdminUserBatchInput[], reason: string): Promise<AdminUserBatchResult> {
-      const raw = object(await request('/users/batch', token, { method: 'POST', body: JSON.stringify({ items, reason, confirmed: true }) }));
+    async createUser(input, reason, requestId) {
+      const item = object(unwrapItem(await request('/users', token, { method: 'POST', body: JSON.stringify({ ...input, reason, confirmed: true, requestId }) })));
+      return item.jobId ? adaptTenantAccountJob(item) : adaptUser(item);
+    },
+    async getAccountProvisioningJobs(jobId = '') {
+      const raw = object(await request(`/users/provisioning-jobs?jobId=${encodeURIComponent(jobId)}`, token));
+      return { managed: raw.managed === true, items: raw.managed === true ? list(raw.items).map(adaptTenantAccountJob) : [] };
+    },
+    async getUserCredentialJobs(userId) {
+      const raw = object(await request(`/users/${encodeURIComponent(userId)}/credential-jobs`, token));
+      return { managed: raw.managed === true, items: raw.managed === true ? list(raw.items).map(adaptTenantCredentialJob) : [] };
+    },
+    async resetTenantUserPassword(userId, requestId, newPassword, reason) {
+      return adaptTenantCredentialJob(unwrapItem(await request(`/users/${encodeURIComponent(userId)}/tenant-password-reset`, token, { method: 'POST', body: JSON.stringify({ requestId, newPassword, reason, confirmed: true }) })));
+    },
+    async createUsersBatch(items: AdminUserBatchInput[], reason: string, requestId?: string): Promise<AdminUserBatchResult> {
+      const raw = object(await request('/users/batch', token, { method: 'POST', body: JSON.stringify({ items, reason, confirmed: true, requestId }) }));
       return {
-        batchId: string(raw.batchId), total: number(raw.total), succeeded: number(raw.succeeded), failed: number(raw.failed),
+        batchId: string(raw.batchId), total: number(raw.total), succeeded: number(raw.succeeded), failed: number(raw.failed), pending: number(raw.pending), unknown: number(raw.unknown),
         items: list(raw.items).map((value) => {
           const item = object(value); const user = item.user ? adaptUser(item.user) : undefined;
-          return { clientRow: number(item.clientRow), status: string(item.status) === 'created' ? 'created' : 'failed', user, code: string(item.code) || undefined, message: string(item.message) || undefined };
+          const status = item.status === 'created' ? 'created' : item.status === 'pending' ? 'pending' : item.status === 'unknown' ? 'unknown' : 'failed';
+          return { clientRow: number(item.clientRow), status, user, job: item.job ? adaptTenantAccountJob(item.job) : undefined, code: string(item.code) || undefined, message: string(item.message) || undefined };
         }),
       };
     },

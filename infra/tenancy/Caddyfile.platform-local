@@ -1,0 +1,43 @@
+{
+  auto_https off
+  admin off
+}
+http://:8080 {
+  handle /internal/* {
+    respond 404
+  }
+  @platformAPI path /platform/admin/* /v2/* /health
+  handle @platformAPI {
+    reverse_proxy platform-api:8090
+  }
+  handle {
+    root * /srv/platform
+    try_files {path} /platform.html
+    file_server
+  }
+}
+https://:8443 {
+  tls /certs/public.pem /certs/public.key
+  redir /app /app/ 308
+  handle_path /app/* {
+    root * /srv/web
+    @fonts path *.woff *.woff2 *.ttf *.otf
+    header @fonts Cache-Control "public, max-age=2592000, immutable"
+    @pushWorkers path /tenant_push_worker.js /linli_push_worker.js
+    header @pushWorkers Cache-Control "no-cache"
+    try_files {path} /index.html
+    file_server
+  }
+  handle /internal/* {
+    respond 404
+  }
+  @platformAPI path /platform/admin/* /v2/* /health
+  handle @platformAPI {
+    reverse_proxy platform-api:8090
+  }
+  handle {
+    root * /srv/platform
+    try_files {path} /platform.html
+    file_server
+  }
+}

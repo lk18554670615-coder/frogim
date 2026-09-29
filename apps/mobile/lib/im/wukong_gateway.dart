@@ -6,5 +6,10 @@ import 'wukong_gateway_stub.dart'
 
 export 'wukong_gateway_contract.dart';
 
-WukongGateway createWukongGateway({WukongDataSource? dataSource}) =>
-    platform.createWukongGateway(dataSource: dataSource);
+WukongGateway createWukongGateway({
+  WukongDataSource? dataSource,
+  String? cacheNamespace,
+}) => platform.createWukongGateway(
+  dataSource: dataSource,
+  cacheNamespace: cacheNamespace,
+);

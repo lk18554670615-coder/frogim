@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 
-import 'app_config.dart';
+import 'runtime_endpoints.dart';
 import 'client_device.dart';
 
 class ClientUpgradeDecision {
@@ -69,7 +69,7 @@ class ClientUpgradeService {
     this.version,
     this.installId,
   }) : _client = client ?? http.Client(),
-       _apiBaseUrl = apiBaseUrl ?? AppConfig.apiBaseUrl;
+       _apiBaseUrl = apiBaseUrl ?? RuntimeEndpoints.platformBaseUrl;
 
   final http.Client _client;
   final String _apiBaseUrl;

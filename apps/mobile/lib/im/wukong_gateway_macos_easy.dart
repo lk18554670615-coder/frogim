@@ -23,6 +23,7 @@ class MacOSWukongGateway implements WukongGateway {
   WukongConnectionState _state = WukongConnectionState.disconnected;
   WukongSession? _session;
   bool _disposed = false;
+  Future<void> _setupQueue = Future<void>.value();
 
   @override
   Stream<WukongConnectionState> get connectionStates => _states.stream;
@@ -40,7 +41,14 @@ class MacOSWukongGateway implements WukongGateway {
   WukongSession? get session => _session;
 
   @override
-  Future<void> initialize(WukongSession session) async {
+  Future<void> initialize(WukongSession session) {
+    _checkNotDisposed();
+    final next = _setupQueue.then((_) => _initializeSession(session));
+    _setupQueue = next.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return next;
+  }
+
+  Future<void> _initializeSession(WukongSession session) async {
     _checkNotDisposed();
     session.validate();
     if (session.sdk != 'wukong_easy_sdk' || session.deviceFlag != 2) {
@@ -59,6 +67,7 @@ class MacOSWukongGateway implements WukongGateway {
         deviceFlag: easy.WuKongDeviceFlag.pc,
       ),
     );
+    _checkNotDisposed();
     _registerListeners();
   }
 
@@ -94,6 +103,7 @@ class MacOSWukongGateway implements WukongGateway {
     _setState(WukongConnectionState.connecting);
     try {
       await _sdk.connect().timeout(const Duration(seconds: 10));
+      _checkNotDisposed();
       _setState(WukongConnectionState.connected);
       unawaited(_refreshBusinessState());
     } catch (_) {
@@ -132,6 +142,7 @@ class MacOSWukongGateway implements WukongGateway {
           ? const <String, Object?>{'topic': true}
           : null,
     );
+    _checkNotDisposed();
     final reasonCode = result.reasonCode.value;
     final mapped = WukongMessage(
       messageId: result.messageId,
@@ -163,9 +174,11 @@ class MacOSWukongGateway implements WukongGateway {
 
   @override
   Future<void> markRead(WukongChannel channel) async {
+    _checkNotDisposed();
     final source = _dataSource;
     if (source == null) return;
     final reminders = await source.syncReminders(version: 0, limit: 500);
+    _checkNotDisposed();
     final ids = reminders
         .where(
           (item) =>
@@ -255,6 +268,7 @@ class MacOSWukongGateway implements WukongGateway {
         lastMsgSeqs: '',
         messageCount: 1,
       );
+      _checkNotDisposed();
       await source.syncReminders(version: 0, limit: 500);
       if (!_disposed) {
         _events.add(
@@ -282,8 +296,9 @@ class MacOSWukongGateway implements WukongGateway {
   @override
   Future<void> dispose() async {
     if (_disposed) return;
-    if (_sdk.isInitialized) _sdk.dispose();
     _disposed = true;
+    await _setupQueue;
+    if (_sdk.isInitialized) _sdk.dispose();
     await _states.close();
     await _events.close();
     await _sendResults.close();

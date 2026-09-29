@@ -1,0 +1,9 @@
+**
+!infra/
+!infra/wukongim/
+!infra/wukongim/server-patch/
+!infra/wukongim/server-patch/wukongim-v2.2.5-linli.patch
+!infra/tenancy/
+!infra/tenancy/Dockerfile.im
+!infra/tenancy/wukong-im/
+!infra/tenancy/wukong-im/**

@@ -236,8 +236,9 @@ export function buildUserImportResultRows(rows: UserImportPreviewRow[], results:
       '手机号': row.phone,
       '昵称': spreadsheetSafe(row.name),
       '性别': row.rawGender || '未设置',
-      '结果': created ? '创建成功' : '创建失败',
-      '用户ID': result?.user?.id ?? '',
+      '结果': created ? '创建成功' : result?.status === 'pending' ? '开通中' : result?.status === 'unknown' ? '结果未确认' : '创建失败',
+      '用户ID': result?.user?.id ?? result?.job?.localUserId ?? '',
+      '请求号': result?.job?.requestId ?? '',
       '错误代码': result?.code ?? row.validationCode ?? '',
       '失败原因': result?.message ?? row.validationMessage ?? '',
     };

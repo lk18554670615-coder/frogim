@@ -17,6 +17,13 @@ import (
 const DefaultHTTPRateLimitPerMinute = 30000
 
 type Config struct {
+	TenantPublicURL                                                         string
+	TenantDeploymentMode                                                    string
+	TenantID, PlatformControlURL, TenantControlAddr                         string
+	TenantCAFile, TenantCertFile, TenantKeyFile                             string
+	BindExistingTenant                                                      bool
+	TenancyPreview                                                          bool
+	MediaSigningSecret, LegacyMediaSigningSecret                            string
 	IPRegionDir                                                             string
 	Addr, JWTSecret, DatabaseURL, RedisURL, PushProvider                    string
 	Environment                                                             string
@@ -36,6 +43,7 @@ type Config struct {
 	DevMode                                                                 bool
 	SeedDemo                                                                bool
 	TrustProxy                                                              bool
+	GatewaySecret                                                           string
 	DevAllowContainerBind                                                   bool
 	DevIPTestOnly                                                           bool
 	DBMaxConns, DBMinConns                                                  int
@@ -62,6 +70,11 @@ type Config struct {
 
 func Load() Config {
 	return Config{
+		TenantPublicURL: os.Getenv("IM_TENANT_PUBLIC_URL"),
+		TenantID:        os.Getenv("IM_TENANT_ID"), PlatformControlURL: os.Getenv("IM_PLATFORM_CONTROL_URL"), TenantControlAddr: value("IM_TENANT_CONTROL_ADDR", ":8444"),
+		TenantCAFile: os.Getenv("IM_TENANT_CA_FILE"), TenantCertFile: os.Getenv("IM_TENANT_CERT_FILE"), TenantKeyFile: os.Getenv("IM_TENANT_KEY_FILE"), BindExistingTenant: boolValue("IM_TENANT_BIND_EXISTING", false), TenancyPreview: boolValue("IM_TENANCY_PREVIEW", false),
+		TenantDeploymentMode: os.Getenv("IM_TENANT_DEPLOYMENT_MODE"),
+		MediaSigningSecret:   os.Getenv("IM_MEDIA_SIGNING_SECRET"), LegacyMediaSigningSecret: os.Getenv("IM_LEGACY_MEDIA_SIGNING_SECRET"),
 		Addr: value("IM_ADDR", ":8080"), Environment: environment(), JWTSecret: os.Getenv("IM_JWT_SECRET"),
 		DatabaseURL: os.Getenv("IM_DATABASE_URL"), RedisURL: os.Getenv("IM_REDIS_URL"),
 		AdminUsername: os.Getenv("IM_ADMIN_USERNAME"), AdminContactEmail: os.Getenv("IM_ADMIN_CONTACT_EMAIL"), AdminPasswordHash: os.Getenv("IM_ADMIN_PASSWORD_HASH"), AdminID: value("IM_ADMIN_ID", "platform-admin"), AdminRole: value("IM_ADMIN_ROLE", "platform_admin"),
@@ -74,7 +87,8 @@ func Load() Config {
 		OTPWebhookURL: os.Getenv("IM_OTP_WEBHOOK_URL"), OTPWebhookToken: os.Getenv("IM_OTP_WEBHOOK_TOKEN"),
 		S3Endpoint: os.Getenv("IM_S3_ENDPOINT"), S3PublicEndpoint: os.Getenv("IM_S3_PUBLIC_ENDPOINT"), S3AndroidPublicEndpoint: os.Getenv("IM_S3_ANDROID_PUBLIC_ENDPOINT"), S3AccessKey: os.Getenv("IM_S3_ACCESS_KEY"), S3SecretKey: os.Getenv("IM_S3_SECRET_KEY"), S3Bucket: value("IM_S3_BUCKET", "nexachat-media"), S3Region: value("IM_S3_REGION", "us-east-1"), S3Secure: boolValue("IM_S3_SECURE", false), S3PublicSecure: boolValue("IM_S3_PUBLIC_SECURE", false),
 		DevMode: boolValue("IM_DEV_MODE", false), SeedDemo: boolValue("IM_SEED_DEMO", false), TrustProxy: boolValue("IM_TRUST_PROXY", false), DevAllowContainerBind: boolValue("IM_DEV_ALLOW_CONTAINER_BIND", false), DevIPTestOnly: boolValue("IM_IP_TEST_ONLY", false), DevOTPCode: os.Getenv("IM_DEV_OTP_CODE"), AllowedOrigins: csv("IM_ALLOWED_ORIGINS"),
-		DBMaxConns: intValue("IM_DB_MAX_CONNS", 20), DBMinConns: intValue("IM_DB_MIN_CONNS", 2),
+		GatewaySecret: os.Getenv("IM_GATEWAY_SECRET"),
+		DBMaxConns:    intValue("IM_DB_MAX_CONNS", 20), DBMinConns: intValue("IM_DB_MIN_CONNS", 2),
 		HTTPRateLimitPerMinute:           intValue("IM_HTTP_RATE_LIMIT_PER_MINUTE", DefaultHTTPRateLimitPerMinute),
 		WukongInternalRateLimitPerMinute: intValue("IM_WUKONG_INTERNAL_RATE_LIMIT_PER_MINUTE", 120000),
 		DBMaxConnLifetime:                duration("IM_DB_MAX_CONN_LIFETIME", time.Hour), DBMaxConnIdleTime: duration("IM_DB_MAX_CONN_IDLE_TIME", 15*time.Minute), DBHealthCheckPeriod: duration("IM_DB_HEALTH_CHECK_PERIOD", time.Minute), DBStatementTimeout: duration("IM_DB_STATEMENT_TIMEOUT", 15*time.Second),
@@ -92,6 +106,9 @@ func Load() Config {
 }
 
 func (c Config) Validate() error {
+	if err := c.validateTenant(); err != nil {
+		return err
+	}
 	if len(c.JWTSecret) < 32 {
 		return errors.New("IM_JWT_SECRET must contain at least 32 bytes")
 	}
@@ -114,10 +131,18 @@ func (c Config) Validate() error {
 		if c.DevAllowContainerBind || c.DevIPTestOnly {
 			return errors.New("development container and IP-test flags are forbidden in production")
 		}
-		if !strings.HasPrefix(c.OTPWebhookURL, "https://") || len(c.OTPWebhookToken) < 24 {
+		if c.TenantID == "" && (!strings.HasPrefix(c.OTPWebhookURL, "https://") || len(c.OTPWebhookToken) < 24) {
 			return errors.New("production requires an HTTPS OTP webhook and high-entropy token")
 		}
 		switch c.PushProvider {
+		case "platform":
+			if c.TenantID == "" {
+				return errors.New("platform push requires a managed enterprise")
+			}
+		case "noop":
+			if c.TenantID == "" || !c.TenancyPreview || c.Environment != "development" {
+				return errors.New("disabled push is permitted only in the managed local preview")
+			}
 		case "webhook":
 			if !strings.HasPrefix(c.PushWebhookURL, "https://") || len(c.PushWebhookToken) < 24 {
 				return errors.New("production webhook push requires HTTPS and a high-entropy token")

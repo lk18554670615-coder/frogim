@@ -2,6 +2,9 @@ import 'dart:convert';
 
 class AuthPolicy {
   const AuthPolicy({
+    this.otpLoginEnabled = true,
+    this.qrLoginEnabled = true,
+    this.passwordResetEnabled = true,
     this.registrationEnabled = true,
     this.inviteRegistrationMode = 'optional',
     this.passwordMinLength = 8,
@@ -12,6 +15,7 @@ class AuthPolicy {
   });
 
   final bool registrationEnabled;
+  final bool otpLoginEnabled, qrLoginEnabled, passwordResetEnabled;
   final String inviteRegistrationMode;
   final int passwordMinLength;
   final int passwordMaxBytes;
@@ -31,6 +35,9 @@ class AuthPolicy {
         .clamp(1, 1440)
         .toInt();
     return AuthPolicy(
+      otpLoginEnabled: json['otpLoginEnabled'] != false,
+      qrLoginEnabled: json['qrLoginEnabled'] != false,
+      passwordResetEnabled: json['passwordResetEnabled'] != false,
       registrationEnabled: json['registrationEnabled'] is bool
           ? json['registrationEnabled']! as bool
           : true,

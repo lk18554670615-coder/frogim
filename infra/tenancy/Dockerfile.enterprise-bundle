@@ -1,0 +1,29 @@
+# Image-internal tools used by separate, isolated service containers. No private
+# configuration, tenant data, CA key or host Docker socket enters this image.
+# The IM build argument MUST be a preloaded immutable image@sha256 reference.
+ARG IM_IMAGE
+FROM ${IM_IMAGE} AS im
+FROM caddy@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d AS gateway
+FROM livekit/livekit-server@sha256:d0d1cfdbe95617647bbe91630454526c2cdd88cec83f41114b3495b444918b9a AS calls
+FROM nexachat-wukong-policy-plugin-init@sha256:f67bad14625ceceab9a84e3c0ccbd9259c50979920c0fe6cd8961d28c202e16d AS policy
+FROM alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+RUN addgroup -S -g 10001 im && adduser -S -D -H -u 10001 -G im im && mkdir -p /config /plugins /data /logs /caddy-data /caddy-config && chown -R 10001:10001 /config /plugins /data /logs /caddy-data /caddy-config
+COPY build/tenancy-local/bin/enterprise /opt/frogim/enterprise
+COPY build/tenancy-local/bin/tenant-runtime /opt/frogim/tenant-runtime
+COPY build/tenancy-local/bin/tenant-volume /opt/frogim/tenant-volume
+COPY --from=im /home/app /opt/frogim/wukongim
+COPY --from=im /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=gateway /usr/bin/caddy /usr/bin/caddy
+# Upstream Caddy carries cap_net_bind_service. No privileged ports are used;
+# chown clears file capabilities so cap_drop=ALL does not reject exec with EPERM.
+RUN chown 10001:10001 /usr/bin/caddy && chmod 0555 /usr/bin/caddy
+COPY --from=calls /livekit-server /opt/frogim/livekit
+COPY --from=policy --chown=10001:10001 /opt/im-policy/ /plugins/
+RUN cd /plugins && sha256sum wk.plugin.im-policy-linux-amd64.wkp > SHA256SUMS && test "$(cut -c1-64 SHA256SUMS)" = "$(cut -c1-64 wk.plugin.im-policy-linux-amd64.wkp.sha256)" && cut -c1-64 SHA256SUMS | tr -d '\n' > /opt/frogim/policy.sha256 && chmod 0555 /opt/frogim/* /plugins/*.wkp && chmod 0444 /plugins/SHA256SUMS
+COPY apps/admin/dist/ /srv/admin/
+COPY server/.data/ip2region/ /opt/ip2region/
+ENV XDG_DATA_HOME=/caddy-data XDG_CONFIG_HOME=/caddy-config HOME=/tmp
+USER 10001:10001
+WORKDIR /tmp
+ENTRYPOINT ["/opt/frogim/tenant-runtime"]
+LABEL com.frogim.scope="enterprise-bundle"

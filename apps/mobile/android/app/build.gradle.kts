@@ -1,4 +1,5 @@
 import java.util.Properties
+import java.util.Base64
 
 plugins {
     id("com.android.application")
@@ -30,6 +31,14 @@ val releaseSigningValues = listOf(
 val hasAnyReleaseSigningValue = releaseSigningValues.any { !it.isNullOrEmpty() }
 val hasReleaseSigning = releaseSigningValues.all { !it.isNullOrEmpty() }
 
+// Public build mode only. Never copy all DART_DEFINES (which may contain
+// provider configuration) into Android resources or logs.
+val platformAuthDefines = providers.gradleProperty("dart-defines").orNull.orEmpty()
+    .split(',').filter { it.isNotEmpty() }.map { String(Base64.getDecoder().decode(it), Charsets.UTF_8) }
+    .filter { it.startsWith("PLATFORM_AUTH_URL=") }
+if (platformAuthDefines.size > 1) throw GradleException("Ambiguous platform authentication build mode")
+val tenantAuthEnabled = platformAuthDefines.singleOrNull()?.substringAfter('=')?.isNotBlank() == true
+
 if (hasAnyReleaseSigningValue && !hasReleaseSigning) {
     throw GradleException(
         "Incomplete release signing configuration. Provide RELEASE_STORE_FILE, " +
@@ -59,6 +68,7 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        manifestPlaceholders["TENANT_AUTH_ENABLED"] = tenantAuthEnabled.toString()
         manifestPlaceholders["GETUI_APPID"] =
             providers.gradleProperty("GETUI_APPID")
                 .orElse(providers.environmentVariable("GETUI_APPID"))
