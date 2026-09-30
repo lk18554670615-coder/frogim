@@ -23,17 +23,37 @@ beforeEach(() => {
   });
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+function navigate(label: string) {
+  const groupName = ({ 企业目录: '企业', 平台管理员: '治理', 客户端版本: '发布', 企业启停任务: '运行', 账号归属: '账号', 封禁任务: '账号', 身份任务: '账号' } as Record<string, string>)[label];
+  const toggle = screen.getByRole('button', { name: groupName });
+  if (toggle.getAttribute('aria-expanded') !== 'true') fireEvent.click(toggle);
+  fireEvent.click(screen.getByRole('link', { name: label }));
+}
 async function login() {
   await screen.findByRole('button', { name: '登录平台' });
   fireEvent.change(screen.getByLabelText('平台账号'), { target: { value: 'operator' } });
   fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'platform-password' } });
   fireEvent.click(screen.getByRole('button', { name: '登录平台' }));
   await screen.findByRole('heading', { name: '总览' });
-  fireEvent.click(screen.getByRole('button', { name: '企业目录' }));
+  navigate('企业目录');
   await screen.findByRole('heading', { name: '企业目录' });
 }
 
 describe('separate platform operations', () => {
+  it('uses the enterprise-style grouped sidebar and keyboard function search', async () => {
+    render(<PlatformAdmin />);
+    await login();
+    expect(screen.getByRole('link', { name: '企业目录' })).toHaveAttribute('href', '/platform/tenants');
+    fireEvent.click(screen.getByRole('button', { name: '收起侧栏' }));
+    expect(screen.getByRole('button', { name: '展开侧栏' })).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.keyDown(document, { key: 'k', ctrlKey: true });
+    expect(screen.getByRole('searchbox', { name: '查找功能' })).toHaveFocus();
+    fireEvent.change(screen.getByRole('searchbox', { name: '查找功能' }), { target: { value: '封禁' } });
+    fireEvent.click(screen.getByRole('option', { name: /封禁任务/ }));
+    expect(window.location.pathname).toBe('/platform/access-jobs');
+    expect(screen.getByRole('searchbox', { name: '查找功能' })).toHaveValue('');
+    await screen.findByRole('heading', { name: '封禁任务' });
+  });
   it('starts at overview and finds a function without exposing account search in the URL', async () => {
     render(<PlatformAdmin />);
     await screen.findByRole('button', { name: '登录平台' });
@@ -43,7 +63,7 @@ describe('separate platform operations', () => {
     await screen.findByRole('heading', { name: '总览' });
     expect(screen.getByText('在用企业')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('查找功能'), { target: { value: '身份' } });
-    fireEvent.click(screen.getByRole('button', { name: '身份任务' }));
+    fireEvent.click(screen.getByRole('option', { name: /身份任务/ }));
     expect(window.location.pathname).toBe('/platform/jobs');
     fireEvent.change(screen.getByLabelText('任务 ID / 账号 ID'), { target: { value: 'account-private' } });
     expect(window.location.href).not.toContain('account-private');
@@ -55,7 +75,8 @@ describe('separate platform operations', () => {
     render(<PlatformAdmin />);
     await screen.findByRole('heading', { name: '企业详情', level: 1 });
     await screen.findByText('https://a.example');
-    fireEvent.click(screen.getByRole('button', { name: '账号' }));
+    const accountLinks = screen.getAllByRole('button', { name: '账号' });
+    fireEvent.click(accountLinks[accountLinks.length - 1]);
     expect(window.location.pathname).toBe('/platform/accounts');
     expect(new URLSearchParams(window.location.search).get('tenantId')).toBe('a');
     window.history.replaceState(null, '', '/platform/tenants/a');
@@ -97,7 +118,7 @@ describe('separate platform operations', () => {
   it('opens administrator management without mixing the enterprise permission realm', async () => {
     render(<PlatformAdmin />); await login(); await screen.findByText('默认企业', { selector: 'strong' });
     request.mockResolvedValueOnce(Response.json({ items: [{ id: 'operator', username: '平台运营', role: 'operator', enabled: true, authVersion: 1, createdAt: '', updatedAt: '' }], total: 1, page: 1, pageSize: 25 }));
-    fireEvent.click(screen.getByRole('button', { name: '平台管理员' }));
+    navigate('平台管理员');
     await screen.findByRole('table', { name: '平台管理员' });
     expect(screen.getByRole('button', { name: '修改我的密码' })).toBeInTheDocument();
     expect(request.mock.calls.some(([url]) => url.startsWith('/platform/admin/administrators?'))).toBe(true);
@@ -107,7 +128,7 @@ describe('separate platform operations', () => {
     render(<PlatformAdmin />); await login(); await screen.findByText('默认企业', { selector: 'strong' });
     const policies = ['android', 'ios', 'web', 'macos'].map(platform => ({ platform, enabled: false, revision: 0, minimumVersion: '0.0.0', latestVersion: '0.0.0', forceUpdate: false, rolloutPercentage: 100, releaseNotes: '', downloadUrl: '', updatedBy: '', updatedAt: '' }));
     request.mockResolvedValueOnce(Response.json({ items: policies, total: 4, page: 1, pageSize: 25 }));
-    fireEvent.click(screen.getByRole('button', { name: '客户端版本' }));
+    navigate('客户端版本');
     expect(await screen.findAllByText('策略已停用')).toHaveLength(4);
     expect(request.mock.calls.filter(([url]) => url.endsWith('/client-versions')).map(([url]) => url)).toEqual(['/platform/admin/client-versions']);
     expect(screen.getByRole('button', { name: '编辑 Android 策略' })).toBeInTheDocument();
@@ -118,6 +139,7 @@ describe('separate platform operations', () => {
   it('suspends a realm with a durable confirmed request and separate progress page', async () => {
     render(<PlatformAdmin />); await login();
     fireEvent.click(await screen.findByRole('button', { name: '停用企业' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('企业 · a');
     expect(screen.getByRole('dialog')).toHaveTextContent('已分享的固定媒体链接继续有效');
     fireEvent.change(screen.getByLabelText('操作理由'), { target: { value: '维护期间停用企业' } });
     fireEvent.click(screen.getByLabelText('我已确认上述操作与影响范围'));
@@ -143,14 +165,14 @@ describe('separate platform operations', () => {
     expect(screen.queryByRole('button', { name: '停用企业' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '创建邀请码' })).toBeDisabled();
     request.mockResolvedValueOnce(Response.json({ items: [{ jobId: 'realm-1', requestId: 'realm-request', tenantId: 'a', enabled: false, accessVersion: 2, status: 'pending', remaining: 17, attempts: 2, updatedAt: '2026-09-28T00:00:00Z' }], total: 1, page: 1, pageSize: 25 }));
-    fireEvent.click(screen.getByRole('button', { name: '企业启停任务' }));
+    navigate('企业启停任务');
     await screen.findByText('待处理身份 17 个');
     expect(screen.getByText('分批处理，尚未完成')).toBeInTheDocument();
     expect(screen.getByText('请求号：realm-request')).toBeInTheDocument();
   });
   it('freezes a global ban request after uncertainty and retries exactly the original body', async () => {
     render(<PlatformAdmin />); await login();
-    fireEvent.click(screen.getByRole('button', { name: '账号归属' }));
+    navigate('账号归属');
     fireEvent.click(await screen.findByRole('button', { name: '全局封禁' }));
     expect(screen.getByRole('dialog')).toHaveTextContent('不删除聊天记录');
     fireEvent.click(screen.getByRole('button', { name: '确认操作' }));
@@ -176,7 +198,7 @@ describe('separate platform operations', () => {
   it('shows durable ban progress without falsely calling an unconfirmed operation complete', async () => {
     render(<PlatformAdmin />); await login(); await screen.findByText('默认企业', { selector: 'strong' });
     request.mockResolvedValueOnce(Response.json({ items: [{ jobId: 'job-ban', requestId: 'request-ban', accountId: 'account-1', tenantId: 'a', blocked: true, status: 'applying', errorCode: 'ENTERPRISE_ACCESS_UNCONFIRMED', attempts: 3, updatedAt: '2026-09-28T00:00:00Z' }], total: 1, page: 1, pageSize: 25 }));
-    fireEvent.click(screen.getByRole('button', { name: '封禁任务' }));
+    navigate('封禁任务');
     await screen.findByText('企业确认中');
     expect(screen.getByText(/企业会话撤权尚未确认/)).toBeInTheDocument();
     expect(screen.getByText('请求号：request-ban')).toBeInTheDocument();
@@ -187,7 +209,7 @@ describe('separate platform operations', () => {
   });
   it('does not report malformed acceptance as success or lose the original request', async () => {
     render(<PlatformAdmin />); await login();
-    fireEvent.click(screen.getByRole('button', { name: '账号归属' }));
+    navigate('账号归属');
     fireEvent.click(await screen.findByRole('button', { name: '全局封禁' }));
     fireEvent.change(screen.getByLabelText('操作理由'), { target: { value: '不确定响应检查' } });
     fireEvent.click(screen.getByLabelText('我已确认上述操作与影响范围'));
@@ -202,7 +224,7 @@ describe('separate platform operations', () => {
     render(<PlatformAdmin />); await login(); await screen.findByText('默认企业', { selector: 'strong' });
     const account = { id: 'blocked', phone: '13800000702', tenantId: 'a', localUserId: 'local', state: 'blocked', globallyBlocked: true, authVersion: 9, assignmentVersion: 1, accessPending: true };
     request.mockResolvedValueOnce(Response.json({ items: [account], total: 1, page: 1, pageSize: 25 }));
-    fireEvent.click(screen.getByRole('button', { name: '账号归属' }));
+    navigate('账号归属');
     expect(await screen.findByRole('button', { name: '解除全局封禁' })).toBeDisabled();
     request.mockResolvedValueOnce(Response.json({ items: [{ ...account, accessPending: false }], total: 1, page: 1, pageSize: 25 }));
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
@@ -246,7 +268,7 @@ describe('separate platform operations', () => {
   });
   it('retains failed correction inputs and explains the safe retry boundary', async () => {
     render(<PlatformAdmin />); await login();
-    fireEvent.click(screen.getByRole('button', { name: '身份任务' }));
+    navigate('身份任务');
     fireEvent.click(await screen.findByRole('button', { name: '修正邀请码' }));
     fireEvent.change(screen.getByLabelText('个人邀请码'), { target: { value: 'REF123' } });
     fireEvent.change(screen.getByLabelText('操作理由'), { target: { value: '修正无效邀请码' } });
@@ -264,8 +286,8 @@ describe('separate platform operations', () => {
     await screen.findByText('默认企业', { selector: 'strong' });
     expect(screen.queryByRole('button', { name: '登记企业' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '创建邀请码' })).not.toBeInTheDocument();
-    expect(screen.getByText('只读管理员')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '账号归属' }));
+    expect(screen.getAllByText('只读管理员').length).toBeGreaterThan(0);
+    navigate('账号归属');
     await screen.findByText('13800000701');
     expect(screen.queryByRole('button', { name: '全局封禁' })).not.toBeInTheDocument();
   });
