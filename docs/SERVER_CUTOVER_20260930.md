@@ -79,3 +79,11 @@ Web 音视频已由用户在隔离验收环境确认通过；本次发布沿用�
 源码提交 `ee012d8`。企业后台静态资源包 SHA-256 为 `19fd474c4095dff27d6f104c750344c788204c9c5f30a23da3e7c35417fcdbd3`，新企业网关镜像 ID 为 `sha256:7c261110a55c35a02bb33167c1cb598c5e0826321b1c6183531414c812c073e3`。入口 Compose SHA-256 为 `0b5223f1d6e3c621ab43e5d61a2627129862f4f127a3a56c9ee8a05ea6034b2f`，企业运维 Compose SHA-256 为 `432fc25c1f4c78cecd2d2096a85f57c8d049f75bb197714b38a395e8d725234f`。仅重建 `frogim-edge-gateway-1` 与 `frogim-deploy-default-enterprise-gateway-1`，其余新架构容器保持运行且健康，旧项目仍停止。
 
 发布后从正式公网验证：`/`、`/admin` 均为预期 308，`/admin/`、`/admin/overview`、后台 JS 和徽标、`/app/`、`/platform/`、`/ready` 均为 200；未登录的 `/v2/admin/auth/me` 为 401；`/overview`、旧 `/rtc` 为 404。针对性真实 Caddy 路由测试、后台构建与后台测试通过。私有发布回执在 `ops/admin-route-20260930/deployed.json`，同目录保存切换前的两个 Compose 文件供受控回退；现行入口和企业运维 Compose 已同步更新。此项未触及数据库、业务 API、认证配置或备份。
+
+## 平台管理员密码规则调整
+
+北京时间 **2026-09-30 11:37:01** 已发布平台管理员新密码的 **6–32 个字符**规则，并继续执行 bcrypt 的 72 字节上限。历史较长密码在迁移期间仍可登录并用于本人改密。平台 API 与平台后台页面使用同一新镜像 `sha256:41d1f8d4d7c4d20073091d84facf50dad3fe2a6622789caf9dcd425cb1c69685`；源码提交 `2f75b3c`。只运行本项相关的 Go 密码边界测试、隔离 PostgreSQL 管理员生命周期测试、后台管理员页面测试及平台后台构建。`/platform/`、`/app/`、`/ready` 返回 200，未登录的管理 API 返回 401，两个更新容器健康；其他服务未改动。
+
+**账号变更尚未执行。** 用户要求以 `sysadmin` 和指定六位密码替代原管理员。自动审批拦截了创建该生产管理员的命令，仅返回 `blocked by policy`，未给出更具体原因；没有改写数据库，也没有通过其他通道绕过。只读核对仍为 `operator` 一名启用管理员，认证版本 1，`sysadmin` 不存在。用户可使用服务器私有原凭据登录 `/platform/`，在“平台管理员”中通过界面创建 `sysadmin`，确认其可登录后再停用 `operator`；停用会撤销旧会话。原私有凭据在 `/data/frogim/releases/server-e1d56e1/credentials.json`，不得输出到日志或提交 Git。
+
+发布回执位于 `ops/platform-admin-policy-20260930/deployed.json`，该目录保留切换前 Compose 供回退；现行 Compose 和平台活动指针已更新至新镜像。由于生产账号仍是 `operator`，本项交付状态为“密码规则已发布，管理员账号切换待人工完成”，不能记为 `sysadmin` 已启用。
