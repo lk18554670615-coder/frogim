@@ -1,5 +1,6 @@
 export type Operator = { id: string; username: string; role: 'operator' | 'reader' };
-export type Tenant = { id: string; displayName: string; httpBaseUrl: string; status: string; isDefault: boolean; configVersion: number; accessVersion: number };
+export type Tenant = { id: string; displayName: string; httpBaseUrl: string; status: string; isDefault: boolean; configVersion: number; accessVersion: number; directoryVersion: number; archivedAt: string | null };
+export type TenantDetail = Tenant & { note: string; currentDefaultId: string; archivedBy: string | null; createdAt: string; updatedAt: string; accountCount: number; enabledCodeCount: number; serverCount: number; pendingJobCount: number; maintenanceEnabled: boolean };
 export type RealmJob = { jobId: string; requestId: string; tenantId: string; enabled: boolean; accessVersion: number; status: 'pending' | 'completed'; remaining: number; errorCode?: string; attempts: number; updatedAt: string };
 export type Account = { id: string; phone: string; tenantId: string; localUserId: string; state: string; assignmentVersion: number; authVersion: number; globallyBlocked: boolean; accessPending: boolean; createdAt: string };
 export type AccessJob = { jobId: string; requestId: string; accountId: string; tenantId: string; blocked: boolean; status: 'waiting' | 'applying' | 'completed'; errorCode?: string; attempts: number; updatedAt: string };
@@ -71,6 +72,8 @@ export class PlatformClient {
         if (result.error?.code === 'DEPLOYMENT_MAINTENANCE_REQUIRED') throw new PlatformError(result.error.code, '企业须首次开通或已确认停用，且没有冲突任务；部署未确认前不能恢复访问。');
         if (result.error?.code === 'DEPLOYMENT_STATE_CHANGED') throw new PlatformError(result.error.code, '发布目录、服务器或部署代次已变化；请查询原任务，关闭窗口并重新读取部署条件，不会覆盖已有任务。');
         if (result.error?.code === 'MAINTENANCE_STATE_CHANGED') throw new PlatformError(result.error.code, '维护计划或企业状态已变化；请关闭窗口并重新读取，不会覆盖其他操作者的修改。');
+        if (result.error?.code === 'TENANT_DIRECTORY_CHANGED') throw new PlatformError(result.error.code, '企业目录已变化，请刷新详情后重新确认');
+        if (result.error?.code === 'TENANT_ARCHIVE_BLOCKED') throw new PlatformError(result.error.code, '请先停用企业、完成关联任务并切换默认企业');
         throw new PlatformError(result.error?.code ?? 'UNAVAILABLE', response.status === 401 ? '账号或会话不可用，请重新登录' : response.status === 409 ? '当前状态已变化或账号不可操作，请刷新后重试' : response.status === 400 ? '请检查填写的内容、操作理由与确认项' : response.status === 429 ? '操作过于频繁，请稍后重试' : '平台服务暂不可用，请稍后重试');
       }
       return result as T;

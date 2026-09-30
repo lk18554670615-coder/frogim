@@ -11,8 +11,8 @@ const states: Record<string, string> = { pending: '处理中', completed: '本�
 const phases: Record<string, string> = { prepare: '检查维护条件', pause: '确认企业停用', backup: '等待备份核验', resume: '确认企业恢复', finished: '结束' };
 const errors: Record<string, string> = { MAINTENANCE_TENANT_NOT_ACTIVE: '企业原已停用，不接管其他人的维护', MAINTENANCE_WINDOW_EXPIRED: '维护窗口已结束，不再新建备份', MAINTENANCE_BACKUP_NEEDS_ATTENTION: '原备份恢复未确认，请在备份任务中检查后重试；不会自动重试或解锁', MAINTENANCE_BACKUP_FAILED: '未获得有效备份，不能用于恢复', MAINTENANCE_CONTROL_UNCONFIRMED: '控制状态未确认，保持原任务并继续核对' };
 
-export function PlatformBackupSchedules({ client, writable, refresh }: { client: PlatformClient; writable: boolean; refresh: number }) {
-  const [q, setQ] = useState(''), [view, setView] = useState<'backup-schedules' | 'maintenance'>('backup-schedules'), [page, setPage] = useState(1), [reload, setReload] = useState(0);
+export function PlatformBackupSchedules({ client, writable, refresh, initialTenantId = '' }: { client: PlatformClient; writable: boolean; refresh: number; initialTenantId?: string }) {
+  const [q, setQ] = useState(initialTenantId), [view, setView] = useState<'backup-schedules' | 'maintenance'>('backup-schedules'), [page, setPage] = useState(1), [reload, setReload] = useState(0);
   const [loaded, setLoaded] = useState<{ key: string; data: Page<BackupSchedule | MaintenanceRun> } | null>(null), [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [editor, setEditor] = useState<string | null>(null);
   const queryKey = JSON.stringify([view, q, page, reload, refresh]);

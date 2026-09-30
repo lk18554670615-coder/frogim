@@ -2,7 +2,7 @@ package tenancy
 
 // PlatformSchemaVersion is independent of the enterprise schema. Deployment
 // metadata and offline recovery tooling must agree with the directory server.
-const PlatformSchemaVersion = 21
+const PlatformSchemaVersion = 22
 
 const PlatformMigrationLock int64 = 490739173
 

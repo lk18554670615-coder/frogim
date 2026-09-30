@@ -14,8 +14,8 @@ const phases: Record<string, string> = { queued: '待分发', contacting_agent: 
 const errors: Record<string, string> = { DEPLOYMENT_CONTROL_UNCONFIRMED: '代理、维护状态或任务回执尚未确认，企业继续锁定', DEPLOYMENT_BUSINESS_UNCONFIRMED: '容器已确认，业务依赖、数据库版本或停用状态未通过核验', DEPLOYMENT_EXECUTION_UNCONFIRMED: '代理执行未确认，不会自动重新部署；请运维检查后显式重试' };
 const idPattern = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/;
 
-export function PlatformDeployments({ client, writable, refresh }: { client: PlatformClient; writable: boolean; refresh: number }) {
-  const [data, setData] = useState<Page<DeploymentJob> | null>(null), [q, setQ] = useState(''), [page, setPage] = useState(1), [reload, setReload] = useState(0);
+export function PlatformDeployments({ client, writable, refresh, initialTenantId = '' }: { client: PlatformClient; writable: boolean; refresh: number; initialTenantId?: string }) {
+  const [data, setData] = useState<Page<DeploymentJob> | null>(null), [q, setQ] = useState(initialTenantId), [page, setPage] = useState(1), [reload, setReload] = useState(0);
   const [error, setError] = useState(''), [notice, setNotice] = useState(''), [editor, setEditor] = useState<DeploymentJob | 'new' | null>(null);
   useEffect(() => {
     let alive = true; const abort = new AbortController(); setData(null); setError('');

@@ -129,6 +129,13 @@ func (s *Store) Reserve(ctx context.Context, r Registration) (Reservation, error
 	case code != "":
 		err = tx.QueryRow(ctx, `SELECT t.id FROM platform_tenants t JOIN platform_enterprise_codes c ON c.tenant_id=t.id WHERE c.code_hash=$1 AND c.enabled AND t.status='active' FOR SHARE OF t,c`, tenancy.Hash(code)).Scan(&tenantID)
 	default:
+		// Resolve the default only after an in-flight directory switch commits.
+		// Otherwise a registration could see the old row disappear without seeing
+		// the new default in the same statement snapshot.
+		_, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(490739182)`)
+		if err != nil {
+			return Reservation{}, err
+		}
 		err = tx.QueryRow(ctx, `SELECT id FROM platform_tenants WHERE is_default AND status='active' FOR SHARE`).Scan(&tenantID)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {

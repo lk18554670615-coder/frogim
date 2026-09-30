@@ -382,6 +382,12 @@ func failure(w http.ResponseWriter, err error) {
 	status, code, message := 503, "PLATFORM_UNAVAILABLE", "认证服务暂不可用"
 	var rejected *tenancy.OperationRejected
 	switch {
+	case errors.Is(err, ErrTenantNotFound):
+		status, code, message = 404, "TENANT_NOT_FOUND", "企业不存在"
+	case errors.Is(err, ErrTenantDirectoryChanged):
+		status, code, message = 409, "TENANT_DIRECTORY_CHANGED", "企业资料或默认企业已变化，请刷新后重新确认"
+	case errors.Is(err, ErrTenantArchiveBlocked):
+		status, code, message = 409, "TENANT_ARCHIVE_BLOCKED", "请先确认企业停用、完成关联任务并切换默认企业"
 	case errors.Is(err, ErrMaintenanceChanged):
 		status, code, message = 409, "MAINTENANCE_STATE_CHANGED", "维护计划或任务状态已变化，请查询原记录并重新确认"
 	case errors.Is(err, ErrBackupChanged):

@@ -6,8 +6,8 @@ type Operation = { requestId: string; action: 'register' | 'inspect'; serverId: 
 const message = (e: unknown) => e instanceof PlatformError && e.code === 'SERVER_OPERATION_NOT_FOUND' ? '尚未找到本请求结果，可使用原请求重试；不要重复登记。' : e instanceof Error ? e.message : '请求未完成，请查询原请求结果';
 const idPattern = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/;
 
-export function PlatformServers({ client, writable, refresh }: { client: PlatformClient; writable: boolean; refresh: number }) {
-  const [data, setData] = useState<Page<ServerResource> | null>(null), [q, setQ] = useState(''), [page, setPage] = useState(1);
+export function PlatformServers({ client, writable, refresh, initialTenantId = '' }: { client: PlatformClient; writable: boolean; refresh: number; initialTenantId?: string }) {
+  const [data, setData] = useState<Page<ServerResource> | null>(null), [q, setQ] = useState(initialTenantId), [page, setPage] = useState(1);
   const [revision, setRevision] = useState(0), [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [editor, setEditor] = useState<ServerResource | 'new' | null>(null);
   useEffect(() => {

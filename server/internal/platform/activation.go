@@ -26,10 +26,11 @@ func (s *Store) ActivateTenant(ctx context.Context, id, actor, reason string, co
 	}
 	var address, state string
 	var actual, accessVersion int64
-	if err := s.pool.QueryRow(ctx, `SELECT http_base_url,status,config_version,access_version FROM platform_tenants WHERE id=$1`, id).Scan(&address, &state, &actual, &accessVersion); err != nil {
+	var archived bool
+	if err := s.pool.QueryRow(ctx, `SELECT http_base_url,status,config_version,access_version,archived_at IS NOT NULL FROM platform_tenants WHERE id=$1`, id).Scan(&address, &state, &actual, &accessVersion, &archived); err != nil {
 		return err
 	}
-	if actual != version || (state != "provisioning" && state != "active") {
+	if archived || actual != version || (state != "provisioning" && state != "active") {
 		return ErrConflict
 	}
 	nonce, err := tenancy.Secret()
@@ -47,10 +48,10 @@ func (s *Store) ActivateTenant(ctx context.Context, id, actor, reason string, co
 	defer tx.Rollback(ctx)
 	var lockedAddress string
 	var lockedAccessVersion int64
-	if err = tx.QueryRow(ctx, `SELECT http_base_url,status,config_version,access_version FROM platform_tenants WHERE id=$1 FOR UPDATE`, id).Scan(&lockedAddress, &state, &actual, &lockedAccessVersion); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT http_base_url,status,config_version,access_version,archived_at IS NOT NULL FROM platform_tenants WHERE id=$1 FOR UPDATE`, id).Scan(&lockedAddress, &state, &actual, &lockedAccessVersion, &archived); err != nil {
 		return err
 	}
-	if actual != version || lockedAddress != address || lockedAccessVersion != accessVersion || (state != "provisioning" && state != "active") {
+	if archived || actual != version || lockedAddress != address || lockedAccessVersion != accessVersion || (state != "provisioning" && state != "active") {
 		return ErrConflict
 	}
 	if err = noPendingDeployment(ctx, tx, id); err != nil {

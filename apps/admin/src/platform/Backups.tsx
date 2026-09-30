@@ -21,8 +21,8 @@ const phases: Record<string, string> = { queued: '等待分发', contacting_agen
 const idPattern = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/;
 const sameBinding = (a: Binding, b: Binding) => a.tenantId === b.tenantId && a.serverId === b.serverId && a.releaseId === b.releaseId && a.releaseDigest === b.releaseDigest && a.generation === b.generation && a.accessVersion === b.accessVersion && a.schemaVersion === b.schemaVersion;
 
-export function PlatformBackups({ client, writable, refresh }: { client: PlatformClient; writable: boolean; refresh: number }) {
-  const [data, setData] = useState<Page<BackupJob> | null>(null), [q, setQ] = useState(''), [page, setPage] = useState(1), [reload, setReload] = useState(0);
+export function PlatformBackups({ client, writable, refresh, initialTenantId = '' }: { client: PlatformClient; writable: boolean; refresh: number; initialTenantId?: string }) {
+  const [data, setData] = useState<Page<BackupJob> | null>(null), [q, setQ] = useState(initialTenantId), [page, setPage] = useState(1), [reload, setReload] = useState(0);
   const [error, setError] = useState(''), [notice, setNotice] = useState(''), [editor, setEditor] = useState<Edit | null>(null);
   useEffect(() => {
     let alive = true; const abort = new AbortController(); setData(null); setError('');

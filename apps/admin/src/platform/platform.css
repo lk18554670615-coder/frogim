@@ -59,6 +59,14 @@ dialog form { display: grid; gap: 18px; } dialog p { margin: 0; line-height: 1.8
 .release-card dd { margin: 0; overflow-wrap: anywhere; }
 .release-history { margin-top: 20px; padding-bottom: 18px; border-bottom: 1px solid var(--color-rule); overflow-wrap: anywhere; }
 .release-notes { white-space: pre-wrap; }
+.tenant-detail { margin: 18px 0; padding: 20px; border: 1px solid var(--color-rule); border-radius: 12px; background: var(--color-paper); }
+.tenant-detail .heading { margin-bottom: 14px; }
+.tenant-detail .heading h2 { margin: 0; }
+.tenant-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 16px 0; }
+.tenant-detail-grid > div { min-width: 0; padding: 12px; background: var(--color-paper-subtle); border-radius: 8px; }
+.tenant-detail-grid span { display: block; margin-bottom: 7px; color: var(--color-ink-secondary); font-size: 12px; }
+.tenant-detail-grid code { overflow-wrap: anywhere; }
+.tenant-detail > .row-actions { margin-top: 14px; }
 @media (max-width: 720px) {
   .platform-shell header { padding: 14px; } .platform-shell header > div { gap: 8px; }
   .platform-body { display: block; } nav { display: flex; padding: 10px; gap: 8px; overflow-x: auto; } nav button { width: auto; flex-shrink: 0; margin: 0; } nav p { display: none; }

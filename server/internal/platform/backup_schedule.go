@@ -74,8 +74,12 @@ func (s *Store) SetBackupSchedule(ctx context.Context, actor, token, tenant stri
 		return empty, e
 	}
 	var status string
-	if e = tx.QueryRow(ctx, `SELECT status FROM platform_tenants WHERE id=$1 FOR UPDATE`, tenant).Scan(&status); e != nil {
+	var archived bool
+	if e = tx.QueryRow(ctx, `SELECT status,archived_at IS NOT NULL FROM platform_tenants WHERE id=$1 FOR UPDATE`, tenant).Scan(&status, &archived); e != nil {
 		return empty, e
+	}
+	if archived {
+		return empty, ErrTenantArchiveBlocked
 	}
 	before, e := scanSchedule(tx.QueryRow(ctx, `SELECT `+scheduleColumns+` FROM platform_backup_schedules WHERE tenant_id=$1 FOR UPDATE`, tenant))
 	if e != nil && !errors.Is(e, pgx.ErrNoRows) {

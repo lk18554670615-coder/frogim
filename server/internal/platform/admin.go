@@ -55,6 +55,11 @@ func (a *API) adminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /platform/admin/auth/logout", a.admin(false, a.adminLogout))
 	mux.HandleFunc("GET /platform/admin/tenants", a.admin(false, a.adminTenants))
 	mux.HandleFunc("POST /platform/admin/tenants", a.admin(true, a.adminCreateTenant))
+	mux.HandleFunc("GET /platform/admin/tenants/{id}", a.admin(false, a.adminTenantDetail))
+	mux.HandleFunc("PATCH /platform/admin/tenants/{id}", a.admin(true, a.adminUpdateTenant))
+	mux.HandleFunc("POST /platform/admin/tenants/{id}/archive", a.admin(true, a.adminArchiveTenant))
+	mux.HandleFunc("POST /platform/admin/tenants/{id}/unarchive", a.admin(true, a.adminUnarchiveTenant))
+	mux.HandleFunc("POST /platform/admin/tenants/{id}/make-default", a.admin(true, a.adminMakeDefaultTenant))
 	mux.HandleFunc("POST /platform/admin/tenants/{id}/activate", a.admin(true, a.adminActivateTenant))
 	mux.HandleFunc("POST /platform/admin/tenants/{id}/codes", a.admin(true, a.adminCreateCode))
 	mux.HandleFunc("POST /platform/admin/accounts/{id}/transfer", a.admin(true, a.adminTransfer))
@@ -165,9 +170,16 @@ func (a *API) adminCreateTenant(w http.ResponseWriter, r *http.Request) {
 	respond(w, 201, map[string]string{"id": p.ID, "status": "provisioning"})
 }
 func (a *API) adminTenants(w http.ResponseWriter, r *http.Request) {
+	archive := r.URL.Query().Get("archive")
+	if archive != "" && archive != "active" && archive != "archived" && archive != "all" {
+		failure(w, tenancy.ErrInvalid)
+		return
+	}
 	a.adminPage(w, r, `SELECT id AS ordering,jsonb_build_object('id',id,'displayName',display_name,
- 'httpBaseUrl',http_base_url,'status',status,'isDefault',is_default,'configVersion',config_version,'accessVersion',access_version) AS data
- FROM platform_tenants WHERE ($3='' OR status=$3) AND ($4='' OR strpos(display_name,$4)>0 OR id=$4)`, r.URL.Query().Get("state"), strings.TrimSpace(r.URL.Query().Get("q")))
+ 'httpBaseUrl',http_base_url,'status',status,'isDefault',is_default,'configVersion',config_version,'accessVersion',access_version,
+ 'directoryVersion',directory_version,'archivedAt',archived_at) AS data
+ FROM platform_tenants WHERE ($3='' OR status=$3) AND ($4='' OR strpos(display_name,$4)>0 OR id=$4)
+ AND ($5='all' OR ($5='archived' AND archived_at IS NOT NULL) OR ($5<>'archived' AND archived_at IS NULL))`, r.URL.Query().Get("state"), strings.TrimSpace(r.URL.Query().Get("q")), archive)
 }
 func (a *API) adminCreateCode(w http.ResponseWriter, r *http.Request) {
 	var p struct {

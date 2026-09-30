@@ -39,11 +39,15 @@ func (s *Store) requestRealm(ctx context.Context, tenant, request, actor, reason
 	}
 	defer tx.Rollback(ctx)
 	var status string
+	var archived bool
 	var version int64
-	if err = tx.QueryRow(ctx, `SELECT status,access_version FROM platform_tenants WHERE id=$1 FOR UPDATE`, tenant).Scan(&status, &version); errors.Is(err, pgx.ErrNoRows) {
+	if err = tx.QueryRow(ctx, `SELECT status,access_version,archived_at IS NOT NULL FROM platform_tenants WHERE id=$1 FOR UPDATE`, tenant).Scan(&status, &version, &archived); errors.Is(err, pgx.ErrNoRows) {
 		return j, ErrDenied
 	} else if err != nil {
 		return j, err
+	}
+	if archived {
+		return j, ErrTenantArchiveBlocked
 	}
 	phase := "pause"
 	if enabled {

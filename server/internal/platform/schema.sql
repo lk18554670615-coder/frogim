@@ -499,3 +499,10 @@ DO $$ BEGIN
  END IF;
 END $$;
 INSERT INTO platform_schema_migrations(version) VALUES(21) ON CONFLICT DO NOTHING;
+
+-- Directory-only metadata never changes a tenant's deployment binding.
+ALTER TABLE platform_tenants ADD COLUMN IF NOT EXISTS note text NOT NULL DEFAULT '';
+ALTER TABLE platform_tenants ADD COLUMN IF NOT EXISTS directory_version bigint NOT NULL DEFAULT 1 CHECK(directory_version>0);
+ALTER TABLE platform_tenants ADD COLUMN IF NOT EXISTS archived_at timestamptz;
+ALTER TABLE platform_tenants ADD COLUMN IF NOT EXISTS archived_by text;
+INSERT INTO platform_schema_migrations(version) VALUES(22) ON CONFLICT DO NOTHING;

@@ -125,9 +125,10 @@ func (s *Store) ManageServer(ctx context.Context, actor, token string, in Server
 		return replay, first.Commit(ctx)
 	}
 	var address string
+	var archived bool
 	var configVersion int64
-	err = first.QueryRow(ctx, `SELECT http_base_url,config_version FROM platform_tenants WHERE id=$1`, in.TenantID).Scan(&address, &configVersion)
-	if errors.Is(err, pgx.ErrNoRows) || configVersion != in.ExpectedConfigVersion {
+	err = first.QueryRow(ctx, `SELECT http_base_url,config_version,archived_at IS NOT NULL FROM platform_tenants WHERE id=$1`, in.TenantID).Scan(&address, &configVersion, &archived)
+	if errors.Is(err, pgx.ErrNoRows) || configVersion != in.ExpectedConfigVersion || archived {
 		if err == nil || errors.Is(err, pgx.ErrNoRows) {
 			return result, ErrServerChanged
 		}
@@ -170,11 +171,11 @@ func (s *Store) ManageServer(ctx context.Context, actor, token string, in Server
 		return replay, tx.Commit(ctx)
 	}
 	var currentAddress string
-	err = tx.QueryRow(ctx, `SELECT http_base_url,config_version FROM platform_tenants WHERE id=$1 FOR SHARE`, in.TenantID).Scan(&currentAddress, &configVersion)
+	err = tx.QueryRow(ctx, `SELECT http_base_url,config_version,archived_at IS NOT NULL FROM platform_tenants WHERE id=$1 FOR SHARE`, in.TenantID).Scan(&currentAddress, &configVersion, &archived)
 	if err != nil {
 		return result, err
 	}
-	if currentAddress != address || configVersion != in.ExpectedConfigVersion {
+	if archived || currentAddress != address || configVersion != in.ExpectedConfigVersion {
 		return result, ErrServerChanged
 	}
 	if err = noPendingDeployment(ctx, tx, in.TenantID); err != nil {

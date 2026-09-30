@@ -91,8 +91,12 @@ func noPendingDeploymentExcept(ctx context.Context, tx pgx.Tx, tenant, maintenan
 func deploymentFence(ctx context.Context, tx pgx.Tx, tenant, server string) (deploymentBinding, error) {
 	var b deploymentBinding
 	b.TenantID, b.ServerID = tenant, server
-	if e := tx.QueryRow(ctx, `SELECT http_base_url,status,config_version,access_version FROM platform_tenants WHERE id=$1 FOR UPDATE`, tenant).Scan(&b.Address, &b.State, &b.Config, &b.Access); e != nil {
+	var archived bool
+	if e := tx.QueryRow(ctx, `SELECT http_base_url,status,config_version,access_version,archived_at IS NOT NULL FROM platform_tenants WHERE id=$1 FOR UPDATE`, tenant).Scan(&b.Address, &b.State, &b.Config, &b.Access, &archived); e != nil {
 		return b, e
+	}
+	if archived {
+		return b, ErrTenantArchiveBlocked
 	}
 	if b.State != "provisioning" && b.State != "suspended" {
 		return b, ErrDeploymentMaintenance

@@ -119,11 +119,21 @@ func (s *Store) SetEnterpriseCodeStatus(ctx context.Context, id string, enabled 
 	defer tx.Rollback(ctx)
 	var tenant string
 	var before bool
-	err = tx.QueryRow(ctx, `SELECT tenant_id,enabled FROM platform_enterprise_codes WHERE id=$1 FOR UPDATE`, id).Scan(&tenant, &before)
+	err = tx.QueryRow(ctx, `SELECT tenant_id FROM platform_enterprise_codes WHERE id=$1`, id).Scan(&tenant)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrDenied
 	}
 	if err != nil {
+		return err
+	}
+	var archived bool
+	if err = tx.QueryRow(ctx, `SELECT archived_at IS NOT NULL FROM platform_tenants WHERE id=$1 FOR SHARE`, tenant).Scan(&archived); err != nil {
+		return err
+	}
+	if archived {
+		return ErrTenantArchiveBlocked
+	}
+	if err = tx.QueryRow(ctx, `SELECT enabled FROM platform_enterprise_codes WHERE id=$1 FOR UPDATE`, id).Scan(&before); err != nil {
 		return err
 	}
 	if before == enabled {
