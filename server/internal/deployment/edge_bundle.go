@@ -109,6 +109,13 @@ https://%s {
     handle /platform/* {
       %s
     }
+    redir / /app/ 308
+    redir /admin /admin/ 308
+    @adminPrivate path /admin/v2/* /admin/im /admin/livekit/* /admin/ready /admin/health /admin/internal/*
+    respond @adminPrivate 404
+    handle_path /admin/* {
+      %s
+    }
     redir /app /app/ 308
     handle /app/* {
       %s
@@ -129,12 +136,14 @@ https://%s {
     handle /%s/* {
       %s
     }
-    handle {
+    @enterprise path /v2/* /im /livekit/* /ready /health
+    handle @enterprise {
       %s
     }
+    respond 404
   }
 }
-`, u.Hostname(), u.Hostname(), u.Host, u.Host, u.Hostname(), u.Hostname(), pc, pc, pc, pc, e.mediaBucket(), mc, ec)
+`, u.Hostname(), u.Hostname(), u.Host, u.Host, u.Hostname(), u.Hostname(), pc, pc, pc, ec, pc, e.mediaBucket(), mc, ec)
 	// Host networking is confined to this independently operated ingress. All
 	// application bundles retain the strict no-host-namespace policy.
 	compose := map[string]any{"name": "frogim-edge", "services": map[string]any{"gateway": map[string]any{

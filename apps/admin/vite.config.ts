@@ -6,6 +6,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
 
   return {
+    base: env.ENTERPRISE_ADMIN_BASE || '/',
     plugins: [react()],
     server: {
       port: 4173,

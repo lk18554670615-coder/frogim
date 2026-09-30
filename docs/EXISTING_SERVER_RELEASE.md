@@ -41,7 +41,9 @@ Android、iOS、Web 和真实个推/VoIP 在部署后验证。客户端验收期
 
 | 路径 | 目标 |
 | --- | --- |
-| `/`、`/v2/*` | 企业后台、业务 API；旧认证由受管企业服务拒绝 |
+| `/` | 308 跳转 `/app/`，默认进入 Web 客户端 |
+| `/admin/` | 企业管理后台，资源和内页均使用 `/admin/` 基址 |
+| `/v2/*` | 企业业务及管理 API；旧认证由受管企业服务拒绝 |
 | `/platform/` | 平台后台，构建资源基址 `/platform/` |
 | `/platform/admin/*` | 平台管理 API，路径不变 |
 | `/platform/v2/*` | 平台客户端 API，仅删除 `/platform` 前缀 |
@@ -83,6 +85,9 @@ go -C server run ./cmd/edge-bundle -config C:\private\edge.json -out C:\private\
 独立平台、独立企业模式不配置 `sharedIngress`，继续使用原入口规则。
 
 平台 Web/后台使用 `build-platform-bundle.ps1 -PlatformUrl https://18.163.165.233/platform` 构建。
+共享入口的企业后台构建使用 `build-enterprise-bundle.ps1 -AdminBase /admin/`，
+使导航、静态资源及 favicon 留在 `/admin/`，管理 API 仍调用 `/v2/admin`。
+独立部署继续使用默认根基址 `/`。
 Android 发布脚本默认同一平台路径，也可显式传 `-PlatformAuthUrl`；`-BuildOnly` 只构建候选包，
 记录 `onlinePreflightPassed=false`，不代表可切换。iOS 两种构建流程均使用平台认证。
 最终版本号必须高于当前正式版本，并在三端验收前固定；本轮没有发布新版本或修改现网版本策略。

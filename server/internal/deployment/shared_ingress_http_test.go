@@ -107,6 +107,9 @@ http://:19000 {
 		}
 		defer res.Body.Close()
 		b, _ := io.ReadAll(res.Body)
+		if res.StatusCode >= 300 && res.StatusCode < 400 {
+			return res.StatusCode, res.Header.Get("Location"), nil
+		}
 		return res.StatusCode, string(b), nil
 	}
 	deadline := time.Now().Add(15 * time.Second)
@@ -120,11 +123,27 @@ http://:19000 {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	for route, want := range map[string]string{"/": "fixture-admin", "/platform/": "fixture-platform", "/app/": "fixture-web"} {
+	for route, want := range map[string]string{"/admin/": "fixture-admin", "/admin/users": "fixture-admin", "/platform/": "fixture-platform", "/app/": "fixture-web"} {
 		status, body, e := request(edgeURL, route, "GET")
 		if e != nil || status != 200 || body != want {
 			t.Fatalf("static %s: %d %q %v", route, status, body, e)
 		}
+	}
+	for route, want := range map[string]string{"/": "/app/", "/admin": "/admin/"} {
+		status, body, e := request(edgeURL, route, "GET")
+		if e != nil || status != 308 || body != want {
+			t.Fatalf("redirect %s: %d %q %v", route, status, body, e)
+		}
+	}
+	for _, route := range []string{"/overview", "/assets/old.js"} {
+		status, _, e := request(edgeURL, route, "GET")
+		if e != nil || status != 404 {
+			t.Fatalf("unprefixed admin %s: %d %v", route, status, e)
+		}
+	}
+	status, _, e := request(edgeURL, "/admin/v2/admin/auth/me", "GET")
+	if e != nil || status != 404 {
+		t.Fatalf("admin prefix must not expose API: %d %v", status, e)
 	}
 	for _, route := range []string{"/rtc", "/rtc/rtc", "/internal/test", "/metrics", "/twirp/foo", "/v1/old"} {
 		status, _, e := request(edgeURL, route, "GET")

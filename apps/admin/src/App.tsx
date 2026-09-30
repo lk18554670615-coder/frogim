@@ -20,6 +20,7 @@ import type {
   SupportAgentRecord, SupportSessionRecord, SupportSkillRecord, UserOverview, InviteCodeRecord, InviteRelationRecord,
 } from './types';
 import { downloadUserImportResult, downloadUserImportTemplate, markExistingUserPhones, parseUserImportFile, type UserImportPreviewRow } from './user_batch_import';
+import { adminAsset, adminPath, pagePath } from './adminPath';
 
 function inviteBindingMethodLabel(method?: string) {
   return method === 'admin' ? '后台补绑' : method === 'password' ? '密码注册' : method === 'otp' ? '验证码开户' : '未记录';
@@ -154,17 +155,17 @@ function useInfrastructureUnsavedChanges(active: boolean, message: string) {
 }
 
 function usePath(shouldLeave?: () => boolean) {
-  const [path, setPath] = useState(window.location.pathname);
+  const [path, setPath] = useState(pagePath(window.location.pathname));
   const pathRef = useRef(path);
   const shouldLeaveRef = useRef(shouldLeave);
   const bypassNextPop = useRef(false);
   shouldLeaveRef.current = shouldLeave;
   useEffect(() => {
     const update = () => {
-      const next = window.location.pathname;
+      const next = pagePath(window.location.pathname);
       if (next === pathRef.current) return;
       if (!bypassNextPop.current && shouldLeaveRef.current && !shouldLeaveRef.current()) {
-        window.history.pushState({}, '', pathRef.current);
+        window.history.pushState({}, '', adminPath(pathRef.current));
         return;
       }
       bypassNextPop.current = false;
@@ -176,7 +177,7 @@ function usePath(shouldLeave?: () => boolean) {
   }, []);
   const navigate = (next: string, options: { force?: boolean } = {}) => {
     if (options.force) bypassNextPop.current = true;
-    if (window.location.pathname !== next) window.history.pushState({}, '', next);
+    if (window.location.pathname !== adminPath(next)) window.history.pushState({}, '', adminPath(next));
     window.dispatchEvent(new PopStateEvent('popstate'));
   };
   return { path, navigate };
@@ -200,7 +201,7 @@ function useCompactNavigation() {
 }
 
 function AppLink({ to, currentPath, navigate, className = '', children }: { to: string; currentPath: string; navigate: (to: string) => void; className?: string; children: ReactNode }) {
-  return <a href={to} className={`${className} ${currentPath === to ? 'active' : ''}`.trim()} aria-current={currentPath === to ? 'page' : undefined} onClick={(event) => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate(to); } }}>{children}</a>;
+  return <a href={adminPath(to)} className={`${className} ${currentPath === to ? 'active' : ''}`.trim()} aria-current={currentPath === to ? 'page' : undefined} onClick={(event) => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate(to); } }}>{children}</a>;
 }
 
 function useDebouncedValue<T>(value: T, delay = 250) {
@@ -800,11 +801,11 @@ function Shell() {
     if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   };
   const pages: Record<string, ReactNode> = { '/overview': <OverviewPage />, '/users/new': <CreateUserPage />, '/users': <UsersPage />, '/users/banned': <UsersPage scope="banned" />, '/invitations': <InvitationsPage />, '/groups': <GroupsPage />, '/groups/banned': <GroupsPage scope="banned" />, '/reports': <ReportsPage />, '/messages': <MessagesPage />, '/media': <MediaPage />, '/online': <OnlinePage />, '/relationships': <RelationshipsPage />, '/feedback': <FeedbackPage />, '/operations': <OperationsPage />, '/announcements': <AnnouncementsPage />, '/calls': <CallsPage />, '/content-moderation': <ContentModerationPage />, '/business-channels': <BusinessChannelsPage />, '/support-workbench': <SupportWorkbenchPage />, '/im-infrastructure': <ImInfrastructurePage />, '/client-versions': <ClientVersionsPage />, '/sensitive-words': <SensitiveWordsPage />, '/system-health': <HealthPage />, '/audit': <AuditPage />, '/administrators': <AdministratorsPage />, '/change-password': <ChangePasswordPage />, '/settings': <SettingsPage /> };
-  useEffect(() => { if (!pages[path]) { window.history.replaceState({}, '', '/overview'); window.dispatchEvent(new PopStateEvent('popstate')); } }, [path]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!pages[path]) { window.history.replaceState({}, '', adminPath('/overview')); window.dispatchEvent(new PopStateEvent('popstate')); } }, [path]); // eslint-disable-line react-hooks/exhaustive-deps
   return <UnsavedChangesContext.Provider value={setUnsavedMessage}><div className={`app-shell tailadmin-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${sidebarHovered ? 'sidebar-hovered' : ''}`}>
     {compactNavigation && navOpen && <button aria-label="关闭导航" className="nav-scrim" onClick={() => setNavOpen(false)} />}
     <aside ref={sidebarRef} id="admin-navigation" className={`sidebar ${navOpen ? 'open' : ''}`} aria-label="运营控制台导航" onKeyDown={navigationKeyDown} onMouseEnter={() => { if (sidebarCollapsed && !compactNavigation) setSidebarHovered(true); }} onMouseLeave={() => setSidebarHovered(false)}>
-      <div className="brand"><div className="brand-mark"><img src="/qingwaguagua-mark.png" alt="" /></div><div className="brand-copy"><strong>青蛙呱呱</strong><span>运营控制台</span></div></div>
+      <div className="brand"><div className="brand-mark"><img src={adminAsset('qingwaguagua-mark.png')} alt="" /></div><div className="brand-copy"><strong>青蛙呱呱</strong><span>运营控制台</span></div></div>
       <nav aria-label="主导航">
         <p className="sidebar-nav-label">功能菜单</p>
         <AppLink to={overviewNavItem.to} currentPath={path} navigate={requestNavigate} className="nav-item nav-overview"><overviewNavItem.icon size={18} /><span>{overviewNavItem.label}</span></AppLink>
@@ -830,7 +831,7 @@ function Shell() {
             <kbd>⌘ K</kbd>
             {normalizedGlobalSearch && <div className="global-search-results" role="listbox" aria-label="搜索结果">{globalSearchResults.length ? globalSearchResults.map((item) => { const ItemIcon = item.icon; return <button key={item.to} type="button" role="option" aria-selected={item.to === path} onMouseDown={(event) => event.preventDefault()} onClick={() => requestNavigate(item.to)}><span className="search-result-icon"><ItemIcon size={16} /></span><span><strong>{item.label}</strong><small>{item.group}</small></span><ChevronRight size={15} /></button>; }) : <div className="global-search-empty">没有匹配的功能</div>}</div>}
           </div>
-          <div className="mobile-brand"><img src="/qingwaguagua-mark.png" alt="" /><strong>青蛙呱呱</strong></div>
+          <div className="mobile-brand"><img src={adminAsset('qingwaguagua-mark.png')} alt="" /><strong>青蛙呱呱</strong></div>
           <strong className="mobile-page-label">{activeNavigationLabel}</strong>
         </div>
         <div className="topbar-actions">
@@ -946,7 +947,7 @@ function SingleUserCreateForm({ onSubmitted }: { onSubmitted: () => void }) {
       if (!alive.current) return;
       onSubmitted();
       if ('jobId' in created) { setJob(created); setPassword(''); notify('已提交平台开户任务，请确认任务变为已开通'); return; }
-      notify(`用户 ${created.nickname} 已创建`); window.history.pushState({}, '', `/users?q=${encodeURIComponent(phone)}`); window.dispatchEvent(new PopStateEvent('popstate'));
+      notify(`用户 ${created.nickname} 已创建`); window.history.pushState({}, '', adminPath(`/users?q=${encodeURIComponent(phone)}`)); window.dispatchEvent(new PopStateEvent('popstate'));
     } catch (cause) {
       if (!alive.current) return;
       setError(errorMessage(cause)); onSubmitted();
@@ -1101,12 +1102,12 @@ function UsersPage({ scope = 'all' }: { scope?: 'all' | 'banned' }) {
   const openMessage = (user: UserRecord) => { setMessageUser(user); setMessageSender(availableSystemUsers.length === 1 ? availableSystemUsers[0].userId : ''); setMessageContent(''); setMessageReason(''); };
   const closeMessage = () => { setMessageUser(undefined); setMessageSender(''); setMessageContent(''); setMessageReason(''); };
   const sendSystemMessage = async () => { if (!messageUser || !messageSender || !messageContent.trim() || !messageReason.trim()) throw new Error('请选择系统账号并填写消息内容和发送理由'); await api.sendUserSystemMessage(messageUser.id, messageSender, messageContent.trim(), messageReason.trim()); notify(`系统消息已发送给 ${messageUser.nickname}`); closeMessage(); };
-  const viewMessageRecords = (user: UserRecord) => { window.history.pushState({}, '', `/messages?q=${encodeURIComponent(user.id)}`); window.dispatchEvent(new PopStateEvent('popstate')); };
+  const viewMessageRecords = (user: UserRecord) => { window.history.pushState({}, '', adminPath(`/messages?q=${encodeURIComponent(user.id)}`)); window.dispatchEvent(new PopStateEvent('popstate')); };
   const openInternalStatusChange=(user:UserRecord,internal:boolean)=>{setInternalStatusChange({user,internal});setInternalStatusReason('');};
   const applyInternalStatusChange=async()=>{if(!internalStatusChange||!internalStatusReason.trim())throw new Error('请填写操作理由');const result=await api.setUserInternalStatus(internalStatusChange.user.id,internalStatusChange.internal,internalStatusReason.trim());notify(result.changed?'用户类型已更新':'用户类型未变化，操作已记录');setInternalStatusChange(undefined);setInternalStatusReason('');await state.reload();};
   if(selectedIP)return <IPAccountsDialog ip={selectedIP} onClose={()=>setSelectedIP(undefined)}/>;
   if(logsOpen)return <DetailDialog title="登录日志" detail="注册及登录的成功和失败记录；查看操作会写入审计。" onClose={()=>setLogsOpen(false)}><UserAccessLogPanel api={api} notify={notify} onIP={setSelectedIP}/></DetailDialog>;
-  return <><PageHeader title={scope === 'banned' ? '封禁用户' : '用户管理'} description={scope === 'banned' ? '集中查看当前仍处于封禁状态的账号，可进入完整资料核对后解除封禁。' : '查询真实账号资料，查看好友、黑名单和设备，并执行消息通知与账号治理。'} actions={<><button className="button secondary" onClick={()=>setLogsOpen(true)}>登录日志</button><button type="button" className="button primary" disabled={!can('users.write')} onClick={() => { window.history.pushState({}, '', '/users/new'); window.dispatchEvent(new PopStateEvent('popstate')); }}><Plus size={16} />新增用户</button></>} />
+  return <><PageHeader title={scope === 'banned' ? '封禁用户' : '用户管理'} description={scope === 'banned' ? '集中查看当前仍处于封禁状态的账号，可进入完整资料核对后解除封禁。' : '查询真实账号资料，查看好友、黑名单和设备，并执行消息通知与账号治理。'} actions={<><button className="button secondary" onClick={()=>setLogsOpen(true)}>登录日志</button><button type="button" className="button primary" disabled={!can('users.write')} onClick={() => { window.history.pushState({}, '', adminPath('/users/new')); window.dispatchEvent(new PopStateEvent('popstate')); }}><Plus size={16} />新增用户</button></>} />
     <Toolbar query={query} setQuery={setQuery} placeholder="搜索昵称、用户 ID、手机号或呱呱号">{scope === 'all' && <select aria-label="用户状态" className="select-control" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option><option value="active">账号正常</option><option value="banned">已封禁</option></select>}<select aria-label="内部用户筛选" className="select-control" value={internalUserFilter} onChange={event=>setInternalUserFilter(event.target.value)}><option value="">全部用户类型</option><option value="internal">内部用户</option><option value="regular">普通用户</option></select><select aria-label="每页数量" className="select-control" value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option value={20}>每页 20 条</option><option value={50}>每页 50 条</option><option value={100}>每页 100 条</option></select></Toolbar>
     <form className="users-ip-filter" onSubmit={e=>{e.preventDefault();setIP(ipDraft.trim());}}><input aria-label="用户 IP 筛选" value={ipDraft} onChange={e=>setIPDraft(e.target.value)} placeholder="完整 IPv4 / IPv6 地址"/><select className="select-control" aria-label="IP 匹配来源" value={ipSource} onChange={e=>setIPSource(e.target.value)}><option value="any">所有 IP 来源</option><option value="registration">注册 IP</option><option value="last_login">最近登录 IP</option><option value="history">180 天成功历史</option></select><button className="button secondary" type="submit">按 IP 查询</button>{ip&&<button className="button secondary" type="button" onClick={()=>{setIP('');setIPDraft('');}}>清除 IP</button>}</form>
     <DataPanel loading={state.loading} error={state.error} retry={state.reload} empty={!state.data?.items.length} emptyTitle="没有匹配的用户" emptyDetail="调整搜索词或状态筛选后重试。"><>
@@ -2045,7 +2046,7 @@ function LoginPage({ onLogin, sessionNotice = '' }: { onLogin: (username: string
   const submit = async (event: FormEvent) => { event.preventDefault(); setUsernameTouched(true); if (!normalizedUsername || usernameInvalid || !password) return; setSubmitting(true); setError(''); try { await onLogin(normalizedUsername, password); } catch (cause) { setError(errorMessage(cause)); } finally { setSubmitting(false); } };
   return <main className="login-screen">
     <section className="login-form-panel" aria-labelledby="login-title"><div className="login-card">
-      <div className="login-brand login-brand-mobile"><img src="/qingwaguagua-mark.png" alt="" /><div><strong>青蛙呱呱</strong><span>运营控制台</span></div></div>
+      <div className="login-brand login-brand-mobile"><img src={adminAsset('qingwaguagua-mark.png')} alt="" /><div><strong>青蛙呱呱</strong><span>运营控制台</span></div></div>
       <div className="login-heading"><h1 id="login-title">欢迎回来</h1><p>请输入管理员账号和密码</p></div>
       {sessionNotice && <div className="inline-notice warning login-session-notice" role="status"><AlertTriangle size={15} />{sessionNotice}</div>}
       <form onSubmit={(event) => void submit(event)} noValidate>
@@ -2055,7 +2056,7 @@ function LoginPage({ onLogin, sessionNotice = '' }: { onLogin: (username: string
         <button className="button primary full login-submit" type="submit" disabled={submitting || !normalizedUsername || usernameInvalid || !password}><LogIn size={17} />{submitting ? '正在验证…' : '登录控制台'}</button>
       </form>
     </div></section>
-    <aside className="login-brand-panel" aria-label="青蛙呱呱运营控制台"><div><img src="/qingwaguagua-mark.png" alt="" /><strong>青蛙呱呱</strong><span>运营控制台</span></div></aside>
+    <aside className="login-brand-panel" aria-label="青蛙呱呱运营控制台"><div><img src={adminAsset('qingwaguagua-mark.png')} alt="" /><strong>青蛙呱呱</strong><span>运营控制台</span></div></aside>
   </main>;
 }
 

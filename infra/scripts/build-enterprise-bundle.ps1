@@ -1,5 +1,5 @@
 #requires -Version 7.0
-param()
+param([ValidateSet('/', '/admin/')][string]$AdminBase = '/')
 $ErrorActionPreference = 'Stop'
 $bundleRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 function Assert-BundleExit([string]$stage) {
@@ -25,7 +25,14 @@ try {
     }
 } finally { $env:GOOS=$savedGoOS; $env:GOARCH=$savedGoArch; $env:CGO_ENABLED=$savedCGO; Pop-Location }
 Push-Location (Join-Path $bundleRoot 'apps/admin')
-try { & npm run build; Assert-BundleExit 'Enterprise admin production build' } finally { Pop-Location }
+try {
+    $savedAdminBase = $env:ENTERPRISE_ADMIN_BASE
+    $savedAdminApi = $env:VITE_ADMIN_API_URL
+    $env:ENTERPRISE_ADMIN_BASE = $AdminBase
+    if ($AdminBase -eq '/admin/') { $env:VITE_ADMIN_API_URL = '/v2/admin' }
+    try { & npm run build; Assert-BundleExit 'Enterprise admin production build' }
+    finally { $env:ENTERPRISE_ADMIN_BASE = $savedAdminBase; $env:VITE_ADMIN_API_URL = $savedAdminApi }
+} finally { Pop-Location }
 foreach ($name in @('ip2region_v4.xdb','ip2region_v6.xdb','LICENSE.md','ipregion.lock.json')) {
     if (!(Test-Path -LiteralPath (Join-Path $bundleRoot "server/.data/ip2region/$name") -PathType Leaf)) {
         throw 'Prepared offline IP-region assets are required; no production files will be copied.'
