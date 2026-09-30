@@ -32,7 +32,7 @@ describe('platform administrator lifecycle', () => {
     fireEvent.click(screen.getByRole('button', { name: '新增平台管理员' }));
     expect(screen.getByLabelText('管理角色')).toHaveValue('reader');
     fireEvent.change(screen.getByLabelText('新管理员账号'), { target: { value: 'NewReader' } });
-    fireEvent.change(screen.getByLabelText('新密码'), { target: { value: 'TestOnlyPassword123!' } });
+    fireEvent.change(screen.getByLabelText('新密码'), { target: { value: '123456' } });
     fireEvent.submit(screen.getByRole('button', { name: '确认管理员操作' }).closest('form')!);
     await screen.findByText('请填写操作理由并确认权限影响');
     expect(request.mock.calls.some(([, o]) => o.method === 'POST')).toBe(false);
@@ -40,6 +40,15 @@ describe('platform administrator lifecycle', () => {
     await screen.findByText('NewReader 的操作已提交。状态与历史会话以服务器结果为准。');
     expect(localStorage.length).toBe(0);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+  it('rejects a new administrator password shorter than six characters', async () => {
+    mount(); await screen.findByRole('table');
+    fireEvent.click(screen.getByRole('button', { name: '新增平台管理员' }));
+    fireEvent.change(screen.getByLabelText('新管理员账号'), { target: { value: 'NewReader' } });
+    fireEvent.change(screen.getByLabelText('新密码'), { target: { value: '12345' } });
+    confirm();
+    await screen.findByText('新密码需要 6–32 个字符且不超过 72 个 UTF-8 字节');
+    expect(request.mock.calls.some(([, options]) => options.method === 'POST')).toBe(false);
   });
   it('checks lost results without retransmitting the password, and locks the original request', async () => {
     mount(); fireEvent.click(await screen.findByRole('button', { name: '重置密码 · ReaderTwo' }));
@@ -79,7 +88,7 @@ describe('platform administrator lifecycle', () => {
   it('bounds passwords by UTF-8 bytes, not just input character count', async () => {
     mount(); fireEvent.click(await screen.findByRole('button', { name: '重置密码 · ReaderTwo' }));
     fireEvent.change(screen.getByLabelText('新密码'), { target: { value: '密'.repeat(25) } }); confirm();
-    await screen.findByText('新密码需要至少 12 个字符且不超过 72 个 UTF-8 字节');
+    await screen.findByText('新密码需要 6–32 个字符且不超过 72 个 UTF-8 字节');
     expect(request.mock.calls.some(([, o]) => o.method === 'POST')).toBe(false);
   });
 });

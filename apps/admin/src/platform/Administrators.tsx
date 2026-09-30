@@ -22,7 +22,7 @@ export function PlatformAdministrators({ client, operator, refresh, onPasswordCh
     return () => { current = false; abort.abort(); };
   }, [client, page, query, state, refresh, reload]);
   return <section aria-label="平台管理员管理"><p>这是独立的平台权限域，不影响企业后台管理员。停用、调整角色或重置密码会撤销该账号的全部旧会话；恢复账号不会恢复旧会话。</p>
-    <p className="muted">不能修改本人的启停状态或角色。本人修改密码需要验证当前密码；新密码至少 12 个字符、最多 72 个 UTF-8 字节。</p>
+    <p className="muted">不能修改本人的启停状态或角色。本人修改密码需要验证当前密码；新密码为 6–32 个字符，且不超过 72 个 UTF-8 字节。</p>
     {notice && <p role="status">{notice}</p>}
     <div className="filters"><label>管理员账号搜索<input value={query} maxLength={80} onChange={e => { setQuery(e.target.value); setPage(1); }} /></label><label>管理员状态<select value={state} onChange={e => { setState(e.target.value); setPage(1); }}><option value="">全部</option><option value="enabled">启用</option><option value="disabled">停用</option></select></label>{operator.role === 'operator' && <button onClick={() => setOperation({ action: 'create' })}>新增平台管理员</button>}</div>
     {error ? <p role="alert" className="error">{error}<button onClick={() => setReload(v => v + 1)}>重试管理员查询</button></p> : !data ? <p role="status">正在加载管理员…</p> : <>
@@ -51,7 +51,8 @@ function AdministratorEditor({ client, operator, operation, onClose, onSaved }: 
     const values = new FormData(e.currentTarget);
     if (!frozen && (String(values.get('reason') || '').trim().length < 2 || values.get('confirmed') !== 'yes')) { setError('请填写操作理由并确认权限影响'); return; }
     const body: Write = frozen ?? { action: operation.action, targetId: operation.target?.id ?? '', username: String(values.get('username') || '').trim(), role: String(values.get('role') || ''), enabled: operation.action === 'password' ? null : operation.action === 'create' || values.get('enabled') === 'yes', expectedVersion: operation.target?.authVersion ?? 0, requestId: crypto.randomUUID(), reason: String(values.get('reason') || '').trim(), confirmed: true, password: String(values.get('password') || ''), currentPassword: String(values.get('currentPassword') || '') };
-    if (body.action !== 'access' && (Array.from(body.password).length < 12 || new TextEncoder().encode(body.password).length > 72)) { setError('新密码需要至少 12 个字符且不超过 72 个 UTF-8 字节'); return; }
+    const passwordLength = Array.from(body.password).length;
+    if (body.action !== 'access' && (passwordLength < 6 || passwordLength > 32 || new TextEncoder().encode(body.password).length > 72)) { setError('新密码需要 6–32 个字符且不超过 72 个 UTF-8 字节'); return; }
     if (body.action === 'create' && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{2,79}$/.test(body.username)) { setError('账号需 3–80 位字母、数字、短横线或下划线，以字母或数字开头'); return; }
     setFrozen(body); running.current = true; setBusy(true); setError('');
     try { accept(await client.request('/administrators/operations', 'POST', body)); }
@@ -71,7 +72,7 @@ function AdministratorEditor({ client, operator, operation, onClose, onSaved }: 
     {operation.action !== 'password' && <label>管理角色<select name="role" defaultValue={operation.target?.role ?? 'reader'} disabled={locked}><option value="reader">只读管理员</option><option value="operator">运营管理员</option></select></label>}
     {operation.action === 'access' && <label className="confirmation"><input name="enabled" type="checkbox" value="yes" defaultChecked={operation.target?.enabled} disabled={locked} />启用管理员账号</label>}
     {self && <label>当前密码<input name="currentPassword" type="password" autoComplete="current-password" required maxLength={72} disabled={locked} /></label>}
-    {operation.action !== 'access' && <label>新密码<input name="password" type="password" autoComplete="new-password" required maxLength={72} disabled={locked} /></label>}
+    {operation.action !== 'access' && <label>新密码<input name="password" type="password" autoComplete="new-password" required maxLength={32} disabled={locked} /></label>}
     <label>操作理由<textarea name="reason" required minLength={2} maxLength={300} disabled={locked} /></label>
     <label className="confirmation"><input name="confirmed" value="yes" type="checkbox" required disabled={locked} />我已确认目标账号、角色及旧会话失效的影响</label>
     {error && <p role="alert" className="error">{error}</p>}

@@ -32,6 +32,7 @@ func TestPlatformPostgresAdministratorLifecycle(t *testing.T) {
 	token := releaseTestAdmin(t, s)
 	const actor = "release-operator"
 	in := adminCreateInput("new-reader", "SupportReader", "reader")
+	in.Password = "123456"
 	created, err := s.ManageAdministrator(ctx, actor, token, in)
 	if err != nil || created.Role != "reader" || !created.Enabled || created.AuthVersion != 1 {
 		t.Fatal("create", err)

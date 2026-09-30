@@ -78,7 +78,7 @@ func (s *Store) ManageAdministrator(ctx context.Context, actor, token string, in
 	var passwordHash []byte
 	var err error
 	if in.Action != "access" {
-		if len([]rune(in.Password)) < 12 || len(in.Password) > 72 {
+		if !validAdminPassword(in.Password) {
 			return result, tenancy.ErrInvalid
 		}
 		passwordHash, err = bcrypt.GenerateFromPassword([]byte(in.Password), 12)
@@ -201,6 +201,11 @@ func (s *Store) ManageAdministrator(ctx context.Context, actor, token string, in
 		return result, err
 	}
 	return result, tx.Commit(ctx)
+}
+
+func validAdminPassword(password string) bool {
+	characters := len([]rune(password))
+	return characters >= 6 && characters <= 32 && len(password) <= 72
 }
 
 func (a *API) adminAdministrators(w http.ResponseWriter, r *http.Request) {
