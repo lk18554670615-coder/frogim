@@ -52,6 +52,7 @@ func (a *API) adminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /platform/admin/deployments/{id}/retry", a.admin(true, a.adminRetryDeployment))
 	mux.HandleFunc("POST /platform/admin/auth/login", a.adminLogin)
 	mux.HandleFunc("GET /platform/admin/auth/me", a.admin(false, a.adminMe))
+	mux.HandleFunc("GET /platform/admin/overview", a.admin(false, a.adminOverview))
 	mux.HandleFunc("POST /platform/admin/auth/logout", a.admin(false, a.adminLogout))
 	mux.HandleFunc("GET /platform/admin/tenants", a.admin(false, a.adminTenants))
 	mux.HandleFunc("POST /platform/admin/tenants", a.admin(true, a.adminCreateTenant))
@@ -295,5 +296,6 @@ func (a *API) adminJobs(w http.ResponseWriter, r *http.Request) {
  'blocked',blocked,'leased',COALESCE(lease_until>clock_timestamp(),false),'updatedAt',updated_at) AS data
  FROM platform_jobs WHERE ($3='' OR target_tenant_id=$3 OR source_tenant_id=$3)
  AND ($4='' OR ($4='blocked' AND blocked) OR ($4='pending' AND step<>'completed' AND NOT blocked)
- OR ($4='completed' AND step='completed'))`, r.URL.Query().Get("tenantId"), r.URL.Query().Get("state"))
+ OR ($4='completed' AND step='completed'))
+ AND ($5='' OR id=$5 OR account_id=$5)`, r.URL.Query().Get("tenantId"), r.URL.Query().Get("state"), strings.TrimSpace(r.URL.Query().Get("q")))
 }

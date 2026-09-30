@@ -1,18 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { PlatformAdmin } from './PlatformAdmin';
-import { PlatformClient } from './api';
+import { PlatformClient, PlatformError } from './api';
 
 const request = vi.fn();
 let signedIn = false;
 beforeEach(() => {
   signedIn = false;
+  window.history.replaceState(null, '', '/platform/overview');
   vi.stubGlobal('fetch', request); request.mockReset();
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
   request.mockImplementation(async (url: string) => {
     if (url.endsWith('/auth/login')) { signedIn = true; return Response.json({ ok: true }); }
     if (url.endsWith('/auth/logout')) { signedIn = false; return Response.json({ ok: true }); }
     if (url.endsWith('/auth/me')) return signedIn ? Response.json({ id: 'operator', username: '平台运营', role: 'operator' }) : Response.json({ error: { code: 'INVALID_CREDENTIALS' } }, { status: 401 });
+    if (url.endsWith('/overview')) return Response.json({ generatedAt: '2026-09-30T00:00:00Z', tenants: { active: 1, provisioning: 0, suspended: 0, archived: 0 }, work: { inProgress: 0, attention: 0 }, items: [] });
+    if (url.endsWith('/tenants/a')) return Response.json({ id: 'a', displayName: '默认企业', status: 'active', httpBaseUrl: 'https://a.example', isDefault: true, configVersion: 1, accessVersion: 1, directoryVersion: 1, archivedAt: null, archivedBy: null, note: '', currentDefaultId: 'a', createdAt: '2026-09-29T00:00:00Z', updatedAt: '2026-09-29T00:00:00Z', accountCount: 1, enabledCodeCount: 0, serverCount: 1, pendingJobCount: 0, maintenanceEnabled: false });
     if (url.includes('/tenants?')) return Response.json({ items: [{ id: 'a', displayName: '默认企业', status: 'active', httpBaseUrl: 'https://a.example', isDefault: true, configVersion: 1, accessVersion: 1 }], total: 1, page: 1, pageSize: 25 });
     if (url.includes('/accounts?')) return Response.json({ items: [{ id: 'account-1', phone: '13800000701', tenantId: 'a', localUserId: 'local-1', state: 'active', assignmentVersion: 3, authVersion: 7, globallyBlocked: false, accessPending: false }], total: 1, page: 1, pageSize: 25 });
     if (url.includes('/jobs?')) return Response.json({ items: [{ id: 'job_1', kind: 'registration', accountId: 'u1', targetTenantId: 'a', assignmentVersion: 1, step: 'prepare_target', blocked: true, leased: false, attempts: 1, errorCode: 'INVITE_INVALID', updatedAt: '2026-09-27T00:00:00Z' }], total: 1, page: 1, pageSize: 25 });
@@ -25,10 +28,48 @@ async function login() {
   fireEvent.change(screen.getByLabelText('平台账号'), { target: { value: 'operator' } });
   fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'platform-password' } });
   fireEvent.click(screen.getByRole('button', { name: '登录平台' }));
+  await screen.findByRole('heading', { name: '总览' });
+  fireEvent.click(screen.getByRole('button', { name: '企业目录' }));
   await screen.findByRole('heading', { name: '企业目录' });
 }
 
 describe('separate platform operations', () => {
+  it('starts at overview and finds a function without exposing account search in the URL', async () => {
+    render(<PlatformAdmin />);
+    await screen.findByRole('button', { name: '登录平台' });
+    fireEvent.change(screen.getByLabelText('平台账号'), { target: { value: 'operator' } });
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'platform-password' } });
+    fireEvent.click(screen.getByRole('button', { name: '登录平台' }));
+    await screen.findByRole('heading', { name: '总览' });
+    expect(screen.getByText('在用企业')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('查找功能'), { target: { value: '身份' } });
+    fireEvent.click(screen.getByRole('button', { name: '身份任务' }));
+    expect(window.location.pathname).toBe('/platform/jobs');
+    fireEvent.change(screen.getByLabelText('任务 ID / 账号 ID'), { target: { value: 'account-private' } });
+    expect(window.location.href).not.toContain('account-private');
+    await waitFor(() => expect(request.mock.calls.some(([url]) => String(url).includes('/jobs?q=account-private'))).toBe(true));
+  });
+  it('opens a direct enterprise detail link and keeps its related enterprise filter', async () => {
+    signedIn = true;
+    window.history.replaceState(null, '', '/platform/tenants/a');
+    render(<PlatformAdmin />);
+    await screen.findByRole('heading', { name: '企业详情', level: 1 });
+    await screen.findByText('https://a.example');
+    fireEvent.click(screen.getByRole('button', { name: '账号' }));
+    expect(window.location.pathname).toBe('/platform/accounts');
+    expect(new URLSearchParams(window.location.search).get('tenantId')).toBe('a');
+    window.history.replaceState(null, '', '/platform/tenants/a');
+    fireEvent.popState(window);
+    await screen.findByRole('heading', { name: '企业详情', level: 1 });
+  });
+  it('offers reconnection instead of showing login after a temporary session lookup failure', async () => {
+    request.mockRejectedValueOnce(new TypeError('network unavailable'));
+    render(<PlatformAdmin />);
+    await screen.findByRole('heading', { name: '会话状态暂时无法确认' });
+    expect(screen.queryByRole('button', { name: '登录平台' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重新连接' }));
+    await screen.findByRole('button', { name: '登录平台' });
+  });
   it('restores the platform session after a page reload and clears it on logout', async () => {
     const first = render(<PlatformAdmin />); await login();
     await screen.findByText('默认企业', { selector: 'strong' });
@@ -172,7 +213,9 @@ describe('separate platform operations', () => {
   it('requires confirmation and sends the observed configuration version for activation', async () => {
     const client = new PlatformClient();
     vi.spyOn(client, 'login').mockResolvedValue({ id: 'operator', username: '平台运营', role: 'operator' });
-    const api = vi.spyOn(client, 'request').mockRejectedValueOnce(new Error('no restored session')).mockResolvedValue({ items: [{ id: 'new', displayName: '待开通企业', status: 'provisioning', httpBaseUrl: 'https://new.example', isDefault: false, configVersion: 7 }], total: 1, page: 1, pageSize: 25 });
+    const api = vi.spyOn(client, 'request').mockRejectedValueOnce(new PlatformError('INVALID_CREDENTIALS', 'no restored session'))
+      .mockResolvedValueOnce({ generatedAt: '2026-09-30T00:00:00Z', tenants: { active: 0, provisioning: 1, suspended: 0, archived: 0 }, work: { inProgress: 0, attention: 0 }, items: [] })
+      .mockResolvedValue({ items: [{ id: 'new', displayName: '待开通企业', status: 'provisioning', httpBaseUrl: 'https://new.example', isDefault: false, configVersion: 7 }], total: 1, page: 1, pageSize: 25 });
     render(<PlatformAdmin client={client} />); await login();
     fireEvent.click(await screen.findByRole('button', { name: '检查并激活' }));
     expect(screen.getByRole('dialog')).toHaveTextContent('任一失败均不激活');
@@ -221,7 +264,7 @@ describe('separate platform operations', () => {
     await screen.findByText('默认企业', { selector: 'strong' });
     expect(screen.queryByRole('button', { name: '登记企业' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '创建邀请码' })).not.toBeInTheDocument();
-    expect(screen.getByText('只读', { selector: 'span' })).toBeInTheDocument();
+    expect(screen.getByText('只读管理员')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '账号归属' }));
     await screen.findByText('13800000701');
     expect(screen.queryByRole('button', { name: '全局封禁' })).not.toBeInTheDocument();

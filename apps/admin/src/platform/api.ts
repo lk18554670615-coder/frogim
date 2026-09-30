@@ -8,6 +8,12 @@ export type EnterpriseCode = { id: string; tenantId: string; enabled: boolean; s
 export type IdentityJob = { id: string; kind: string; accountId: string; sourceTenantId: string | null; targetTenantId: string; assignmentVersion: number; step: string; errorCode: string; attempts: number; blocked: boolean; leased: boolean; updatedAt: string };
 export type Audit = { id: string; actorId: string; action: string; accountId: string | null; tenantId: string | null; jobId: string | null; reason: string; metadata: Record<string, unknown>; createdAt: string };
 export type Page<T> = { items: T[]; total: number; page: number; pageSize: number };
+export type Overview = {
+  generatedAt: string;
+  tenants: { active: number; provisioning: number; suspended: number; archived: number };
+  work: { inProgress: number; attention: number };
+  items: { kind: 'jobs' | 'access-jobs' | 'realm-jobs' | 'deployments' | 'backups' | 'maintenance'; id: string; tenantId: string; state: string; errorCode: string; updatedAt: string }[];
+};
 
 export class PlatformError extends Error {
   constructor(public code: string, message: string) { super(message); }
