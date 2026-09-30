@@ -71,3 +71,11 @@ Web 音视频已由用户在隔离验收环境确认通过；本次发布沿用�
 - `/ready`、`/app/`、`/platform/` 及认证配置均返回 200。发布记录和验收证据在 `ops/platform-fixed-c94e948/{prepared,deployed,verification-smoke}.json`；本机日志在 `.data/registration-release-20260930`。这是服务端实测，Android/iOS 原生界面和推送真机验收仍待完成。
 
 本次不涉及数据库结构变更。若此 API 版本需回退，仅使用私有 `compose-before.json` 对 `platform-api` 执行 `--no-deps --no-build --pull never` 更新，并同步恢复对应私有平台配置和当前指针；不得恢复整库、启动原认证系统或重新执行迁移。切回真实短信需移除固定验证码字段并配置短信适配器，禁止同时配置两种验证码提供方式。
+
+## 企业管理后台入口调整
+
+北京时间 **2026-09-30 11:08:49**，统一入口已将 `/` 以 308 跳转到 `/app/`，`/admin` 以 308 跳转到 `/admin/`。企业管理后台的页面、资源和内页统一位于 `/admin/`；企业管理 API 仍使用 `/v2/admin/*`，平台后台仍位于 `/platform/`。未加前缀的旧后台页面路径（如 `/overview`）返回 404。
+
+源码提交 `ee012d8`。企业后台静态资源包 SHA-256 为 `19fd474c4095dff27d6f104c750344c788204c9c5f30a23da3e7c35417fcdbd3`，新企业网关镜像 ID 为 `sha256:7c261110a55c35a02bb33167c1cb598c5e0826321b1c6183531414c812c073e3`。入口 Compose SHA-256 为 `0b5223f1d6e3c621ab43e5d61a2627129862f4f127a3a56c9ee8a05ea6034b2f`，企业运维 Compose SHA-256 为 `432fc25c1f4c78cecd2d2096a85f57c8d049f75bb197714b38a395e8d725234f`。仅重建 `frogim-edge-gateway-1` 与 `frogim-deploy-default-enterprise-gateway-1`，其余新架构容器保持运行且健康，旧项目仍停止。
+
+发布后从正式公网验证：`/`、`/admin` 均为预期 308，`/admin/`、`/admin/overview`、后台 JS 和徽标、`/app/`、`/platform/`、`/ready` 均为 200；未登录的 `/v2/admin/auth/me` 为 401；`/overview`、旧 `/rtc` 为 404。针对性真实 Caddy 路由测试、后台构建与后台测试通过。私有发布回执在 `ops/admin-route-20260930/deployed.json`，同目录保存切换前的两个 Compose 文件供受控回退；现行入口和企业运维 Compose 已同步更新。此项未触及数据库、业务 API、认证配置或备份。
