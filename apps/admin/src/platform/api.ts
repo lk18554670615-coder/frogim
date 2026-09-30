@@ -13,9 +13,8 @@ export class PlatformError extends Error {
   constructor(public code: string, message: string) { super(message); }
 }
 
-/** Credentials remain in memory, not localStorage, URLs or the enterprise client. */
+/** Browser sessions use a path-scoped HttpOnly cookie; no token enters web storage. */
 export class PlatformClient {
-  private token = '';
   private generation = 0;
   private requests = new Set<AbortController>();
   onExpired: (() => void) | undefined;
@@ -23,27 +22,25 @@ export class PlatformClient {
   async login(username: string, password: string): Promise<Operator> {
     this.clear();
     const epoch = this.generation;
-    const session = await this.request<{ accessToken: string }>('/auth/login', 'POST', { username, password });
-    if (epoch !== this.generation || !/^[A-Za-z0-9_-]{43}$/.test(session.accessToken)) throw new PlatformError('INVALID_SESSION', '平台会话无效');
-    this.token = session.accessToken;
+    const session = await this.request<{ ok: boolean }>('/auth/login', 'POST', { username, password }, undefined, { 'X-Platform-Session': 'cookie' });
+    if (epoch !== this.generation || session.ok !== true) throw new PlatformError('INVALID_SESSION', '平台会话无效');
     try { return await this.request<Operator>('/auth/me'); }
     catch (error) { this.clear(); throw error; }
   }
 
   async logout(): Promise<void> {
     const epoch = this.generation;
-    try { if (this.token) await this.request('/auth/logout', 'POST', {}); }
+    try { await this.request('/auth/logout', 'POST', {}); }
     finally { if (epoch === this.generation) this.clear(); }
   }
 
   clear(): void {
     this.generation++;
-    this.token = '';
     for (const request of this.requests) request.abort();
     this.requests.clear();
   }
 
-  async request<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
+  async request<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal, extraHeaders?: Record<string, string>): Promise<T> {
     if (!/^\/[a-z0-9/-]+(?:\?[^#]*)?$/i.test(path) || path.includes('..')) throw new Error('Invalid platform route');
     const epoch = this.generation;
     const controller = new AbortController();
@@ -54,8 +51,8 @@ export class PlatformClient {
     const timeout = setTimeout(abort, 15000);
     try {
       const response = await fetch(`/platform/admin${path}`, {
-        method, credentials: 'omit', redirect: 'error', cache: 'no-store', signal: controller.signal,
-        headers: { 'Content-Type': 'application/json', ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}) },
+        method, credentials: 'same-origin', redirect: 'error', cache: 'no-store', signal: controller.signal,
+        headers: { 'Content-Type': 'application/json', ...extraHeaders },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
       const result = await response.json();

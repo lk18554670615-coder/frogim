@@ -4,12 +4,15 @@ import { PlatformAdmin } from './PlatformAdmin';
 import { PlatformClient } from './api';
 
 const request = vi.fn();
+let signedIn = false;
 beforeEach(() => {
+  signedIn = false;
   vi.stubGlobal('fetch', request); request.mockReset();
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
   request.mockImplementation(async (url: string) => {
-    if (url.endsWith('/auth/login')) return Response.json({ accessToken: 'a'.repeat(43) });
-    if (url.endsWith('/auth/me')) return Response.json({ id: 'operator', username: '平台运营', role: 'operator' });
+    if (url.endsWith('/auth/login')) { signedIn = true; return Response.json({ ok: true }); }
+    if (url.endsWith('/auth/logout')) { signedIn = false; return Response.json({ ok: true }); }
+    if (url.endsWith('/auth/me')) return signedIn ? Response.json({ id: 'operator', username: '平台运营', role: 'operator' }) : Response.json({ error: { code: 'INVALID_CREDENTIALS' } }, { status: 401 });
     if (url.includes('/tenants?')) return Response.json({ items: [{ id: 'a', displayName: '默认企业', status: 'active', httpBaseUrl: 'https://a.example', isDefault: true, configVersion: 1, accessVersion: 1 }], total: 1, page: 1, pageSize: 25 });
     if (url.includes('/accounts?')) return Response.json({ items: [{ id: 'account-1', phone: '13800000701', tenantId: 'a', localUserId: 'local-1', state: 'active', assignmentVersion: 3, authVersion: 7, globallyBlocked: false, accessPending: false }], total: 1, page: 1, pageSize: 25 });
     if (url.includes('/jobs?')) return Response.json({ items: [{ id: 'job_1', kind: 'registration', accountId: 'u1', targetTenantId: 'a', assignmentVersion: 1, step: 'prepare_target', blocked: true, leased: false, attempts: 1, errorCode: 'INVITE_INVALID', updatedAt: '2026-09-27T00:00:00Z' }], total: 1, page: 1, pageSize: 25 });
@@ -18,6 +21,7 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 async function login() {
+  await screen.findByRole('button', { name: '登录平台' });
   fireEvent.change(screen.getByLabelText('平台账号'), { target: { value: 'operator' } });
   fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'platform-password' } });
   fireEvent.click(screen.getByRole('button', { name: '登录平台' }));
@@ -25,6 +29,20 @@ async function login() {
 }
 
 describe('separate platform operations', () => {
+  it('restores the platform session after a page reload and clears it on logout', async () => {
+    const first = render(<PlatformAdmin />); await login();
+    await screen.findByText('默认企业', { selector: 'strong' });
+    first.unmount();
+    const second = render(<PlatformAdmin />);
+    await screen.findByRole('heading', { name: '企业目录' });
+    expect(screen.queryByRole('button', { name: '登录平台' })).not.toBeInTheDocument();
+    expect(request.mock.calls.filter(([url]) => url.endsWith('/auth/login'))).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: '退出登录' }));
+    await screen.findByRole('button', { name: '登录平台' });
+    second.unmount();
+    render(<PlatformAdmin />);
+    await screen.findByRole('button', { name: '登录平台' });
+  });
   it('opens administrator management without mixing the enterprise permission realm', async () => {
     render(<PlatformAdmin />); await login(); await screen.findByText('默认企业', { selector: 'strong' });
     request.mockResolvedValueOnce(Response.json({ items: [{ id: 'operator', username: '平台运营', role: 'operator', enabled: true, authVersion: 1, createdAt: '', updatedAt: '' }], total: 1, page: 1, pageSize: 25 }));
@@ -143,7 +161,7 @@ describe('separate platform operations', () => {
   it('requires confirmation and sends the observed configuration version for activation', async () => {
     const client = new PlatformClient();
     vi.spyOn(client, 'login').mockResolvedValue({ id: 'operator', username: '平台运营', role: 'operator' });
-    const api = vi.spyOn(client, 'request').mockResolvedValue({ items: [{ id: 'new', displayName: '待开通企业', status: 'provisioning', httpBaseUrl: 'https://new.example', isDefault: false, configVersion: 7 }], total: 1, page: 1, pageSize: 25 });
+    const api = vi.spyOn(client, 'request').mockRejectedValueOnce(new Error('no restored session')).mockResolvedValue({ items: [{ id: 'new', displayName: '待开通企业', status: 'provisioning', httpBaseUrl: 'https://new.example', isDefault: false, configVersion: 7 }], total: 1, page: 1, pageSize: 25 });
     render(<PlatformAdmin client={client} />); await login();
     fireEvent.click(await screen.findByRole('button', { name: '检查并激活' }));
     expect(screen.getByRole('dialog')).toHaveTextContent('任一失败均不激活');
@@ -202,7 +220,8 @@ describe('separate platform operations', () => {
     await client.login('operator', 'secret');
     const [url, options] = request.mock.calls[0];
     expect(url).toBe('/platform/admin/auth/login');
-    expect(options.credentials).toBe('omit'); expect(options.redirect).toBe('error');
+    expect(options.credentials).toBe('same-origin'); expect(options.redirect).toBe('error');
+    expect(options.headers['X-Platform-Session']).toBe('cookie');
     expect(options.headers.Authorization).toBeUndefined();
     client.clear();
     await client.request('/tenants?page=1');

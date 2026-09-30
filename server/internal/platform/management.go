@@ -30,12 +30,17 @@ func (a *API) adminMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) adminLogout(w http.ResponseWriter, r *http.Request) {
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	_, err := a.Store.pool.Exec(r.Context(), `UPDATE platform_admin_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE token_hash=$1 AND admin_id=$2`, tenancy.Hash(token), actorID(r))
+	token, _ := adminToken(r)
+	cookieToken := ""
+	if cookie, err := r.Cookie(adminSessionCookie); err == nil {
+		cookieToken = cookie.Value
+	}
+	_, err := a.Store.pool.Exec(r.Context(), `UPDATE platform_admin_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE token_hash IN ($1,$2) AND admin_id=$3`, tenancy.Hash(token), tenancy.Hash(cookieToken), actorID(r))
 	if err != nil {
 		failure(w, err)
 		return
 	}
+	adminCookie(w, "", strings.HasPrefix(r.Header.Get("Origin"), "https://"), -1)
 	respond(w, 200, map[string]bool{"ok": true})
 }
 

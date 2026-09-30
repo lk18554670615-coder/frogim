@@ -88,10 +88,49 @@ func (a *API) adminRoutes(mux *http.ServeMux) {
 
 type adminContextKey struct{}
 
+const adminSessionCookie = "frogim_platform_admin"
+
+func (a *API) adminCookieOriginAllowed(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" || (r.Header.Get("Sec-Fetch-Site") != "" && r.Header.Get("Sec-Fetch-Site") != "same-origin") {
+		return false
+	}
+	if origin == a.WebOrigin && origin != "" {
+		return true
+	}
+	for _, configured := range a.WebOrigins {
+		if origin == configured {
+			return true
+		}
+	}
+	return false
+}
+
+func adminCookie(w http.ResponseWriter, token string, secure bool, maxAge int) {
+	http.SetCookie(w, &http.Cookie{
+		Name: adminSessionCookie, Value: token, Path: "/platform/admin",
+		HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode, MaxAge: maxAge,
+	})
+}
+
+func adminToken(r *http.Request) (string, bool) {
+	if authorization := r.Header.Get("Authorization"); authorization != "" {
+		if !strings.HasPrefix(authorization, "Bearer ") {
+			return "", false
+		}
+		return strings.TrimPrefix(authorization, "Bearer "), false
+	}
+	cookie, err := r.Cookie(adminSessionCookie)
+	if err != nil {
+		return "", false
+	}
+	return cookie.Value, true
+}
+
 func (a *API) admin(write bool, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if len(token) != 43 {
+		token, fromCookie := adminToken(r)
+		if len(token) != 43 || (fromCookie && r.Method != http.MethodGet && !a.adminCookieOriginAllowed(r)) {
 			failure(w, ErrDenied)
 			return
 		}
@@ -112,6 +151,11 @@ func (a *API) admin(write bool, next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 func (a *API) adminLogin(w http.ResponseWriter, r *http.Request) {
+	browserSession := r.Header.Get("X-Platform-Session") == "cookie"
+	if browserSession && !a.adminCookieOriginAllowed(r) {
+		failure(w, ErrDenied)
+		return
+	}
 	var p struct{ Username, Password string }
 	if readJSON(w, r, &p) != nil {
 		failure(w, tenancy.ErrInvalid)
@@ -146,6 +190,11 @@ func (a *API) adminLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if tag.RowsAffected() != 1 {
 		failure(w, ErrDenied)
+		return
+	}
+	if browserSession {
+		adminCookie(w, token, strings.HasPrefix(r.Header.Get("Origin"), "https://"), int((8 * time.Hour).Seconds()))
+		respond(w, 200, map[string]bool{"ok": true})
 		return
 	}
 	respond(w, 200, map[string]string{"accessToken": token})

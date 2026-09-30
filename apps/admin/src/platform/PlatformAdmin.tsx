@@ -19,6 +19,7 @@ const date = (value: string) => new Date(value).toLocaleString('zh-CN', { hour12
 export function PlatformAdmin({ client: injected }: { client?: PlatformClient }) {
   const client = useMemo(() => injected ?? new PlatformClient(), [injected]);
   const [operator, setOperator] = useState<Operator | null>(null);
+  const [restoring, setRestoring] = useState(true);
   const [tab, setTab] = useState<Tab>('tenants');
   const [selectedTenant, setSelectedTenant] = useState('');
   const [relatedTenant, setRelatedTenant] = useState('');
@@ -35,8 +36,10 @@ export function PlatformAdmin({ client: injected }: { client?: PlatformClient })
   const [noticeTab, setNoticeTab] = useState<'access-jobs' | 'realm-jobs'>('access-jobs');
   const epoch = useRef(0);
   useEffect(() => {
+    let active = true;
     client.onExpired = () => { epoch.current++; setOperator(null); setData(null); setAction(null); setNewCode(''); setNotice(''); };
-    return () => { epoch.current++; client.onExpired = undefined; client.clear(); };
+    client.request<Operator>('/auth/me').then(user => { if (active) setOperator(user); }).catch(() => {}).finally(() => { if (active) setRestoring(false); });
+    return () => { active = false; epoch.current++; client.onExpired = undefined; client.clear(); };
   }, [client]);
   useEffect(() => {
     if (!operator || tab === 'client-versions' || tab === 'administrators' || tab === 'servers' || tab === 'deployments' || tab === 'backups' || tab === 'maintenance') { setData(null); setLoading(false); setError(''); return; }
@@ -50,6 +53,7 @@ export function PlatformAdmin({ client: injected }: { client?: PlatformClient })
       .finally(() => { if (current) setLoading(false); });
     return () => { current = false; controller.abort(); };
   }, [client, operator, tab, filter, archiveFilter, page, reload]);
+  if (restoring) return <main className="platform-login"><p role="status">正在恢复平台会话…</p></main>;
   if (!operator) return <PlatformLogin client={client} onLogin={user => { epoch.current++; setOperator(user); setTab('tenants'); setFilter({ q: '', tenantId: '', state: '', action: '' }); setPage(1); }} />;
   const writable = operator.role === 'operator';
   const changeTab = (next: Tab) => { setTab(next); setSelectedTenant(''); setRelatedTenant(''); setFilter({ q: '', tenantId: '', state: '', action: '' }); setPage(1); setNewCode(''); };
