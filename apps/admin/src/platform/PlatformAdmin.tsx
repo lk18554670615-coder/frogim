@@ -20,6 +20,7 @@ export function PlatformAdmin({ client: injected }: { client?: PlatformClient })
   const client = useMemo(() => injected ?? new PlatformClient(), [injected]);
   const [operator, setOperator] = useState<Operator | null>(null);
   const [restoring, setRestoring] = useState(true);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [tab, setTab] = useState<Tab>('tenants');
   const [selectedTenant, setSelectedTenant] = useState('');
   const [relatedTenant, setRelatedTenant] = useState('');
@@ -63,7 +64,7 @@ export function PlatformAdmin({ client: injected }: { client?: PlatformClient })
   const controls = (children: ReactNode) => writable ? children : <span className="muted">只读</span>;
   const statusOptions = tab === 'tenants' ? ['provisioning', 'active', 'suspending', 'suspended', 'resuming'] : tab === 'accounts' ? ['active', 'provisioning', 'transferring', 'blocked', 'deleted'] : tab === 'codes' ? ['enabled', 'disabled'] : tab === 'realm-jobs' ? ['pending', 'completed'] : tab === 'access-jobs' ? ['waiting', 'applying', 'completed'] : ['pending', 'blocked', 'completed'];
   return <div className="platform-shell">
-    <header><div><img src="/qingwaguagua-mark.png" alt="" /><strong>青蛙呱呱 · 平台运营</strong></div><div><span>{operator.username} · {writable ? '运营管理员' : '只读管理员'}</span><button onClick={async () => { epoch.current++; setOperator(null); setData(null); setSelectedTenant(''); setNewCode(''); setNotice(''); setAction(null); await client.logout().catch(() => {}); }}>退出登录</button></div></header>
+    <header><div><img src="/qingwaguagua-mark.png" alt="" /><strong>青蛙呱呱 · 平台运营</strong></div><div><span>{operator.username} · {writable ? '运营管理员' : '只读管理员'}</span><button disabled={loggingOut} onClick={async () => { if (loggingOut) return; setLoggingOut(true); try { await client.logout(); epoch.current++; setOperator(null); setData(null); setSelectedTenant(''); setNewCode(''); setNotice(''); setAction(null); } catch (err) { setError(text(err)); } finally { setLoggingOut(false); } }}>退出登录</button></div></header>
     <div className="platform-body"><nav aria-label="平台导航">{tabs.map(([id, label]) => <button key={id} aria-current={tab === id ? 'page' : undefined} onClick={() => changeTab(id)}>{label}</button>)}<p>独立平台权限域<br />不访问企业聊天正文</p></nav>
     <main><div className="heading"><div><h1>{tabs.find(([id]) => id === tab)?.[1]}</h1><p className="muted">平台只处理统一认证、企业归属及运维任务，业务数据留在各企业。</p></div><button disabled={loading} onClick={() => setReload(v => v + 1)}>刷新</button></div>
       <p className="preview-banner">新企业须通过受信控制通道和运行依赖检查才能激活；服务器隔离及备份恢复仍需单独验收。</p>

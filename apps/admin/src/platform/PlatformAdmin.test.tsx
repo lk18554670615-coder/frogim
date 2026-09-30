@@ -43,6 +43,16 @@ describe('separate platform operations', () => {
     render(<PlatformAdmin />);
     await screen.findByRole('button', { name: '登录平台' });
   });
+  it('keeps the authenticated view when logout cannot revoke the cookie', async () => {
+    render(<PlatformAdmin />); await login();
+    await screen.findByText('默认企业', { selector: 'strong' });
+    request.mockRejectedValueOnce(new TypeError('network unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: '退出登录' }));
+    await screen.findByText('network unavailable');
+    expect(screen.getByRole('heading', { name: '企业目录' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '退出登录' }));
+    await screen.findByRole('button', { name: '登录平台' });
+  });
   it('opens administrator management without mixing the enterprise permission realm', async () => {
     render(<PlatformAdmin />); await login(); await screen.findByText('默认企业', { selector: 'strong' });
     request.mockResolvedValueOnce(Response.json({ items: [{ id: 'operator', username: '平台运营', role: 'operator', enabled: true, authVersion: 1, createdAt: '', updatedAt: '' }], total: 1, page: 1, pageSize: 25 }));
@@ -61,8 +71,8 @@ describe('separate platform operations', () => {
     expect(request.mock.calls.filter(([url]) => url.endsWith('/client-versions')).map(([url]) => url)).toEqual(['/platform/admin/client-versions']);
     expect(screen.getByRole('button', { name: '编辑 Android 策略' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '退出登录' }));
+    await screen.findByRole('button', { name: '登录平台' });
     expect(screen.queryByRole('region', { name: '平台客户端版本' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '登录平台' })).toBeInTheDocument();
   });
   it('suspends a realm with a durable confirmed request and separate progress page', async () => {
     render(<PlatformAdmin />); await login();
@@ -131,6 +141,7 @@ describe('separate platform operations', () => {
     expect(screen.getByText('请求号：request-ban')).toBeInTheDocument();
     expect(screen.getByRole('combobox')).toHaveTextContent('等待前置任务');
     fireEvent.click(screen.getByRole('button', { name: '退出登录' }));
+    await screen.findByRole('button', { name: '登录平台' });
     expect(screen.queryByText('job-ban')).not.toBeInTheDocument();
   });
   it('does not report malformed acceptance as success or lose the original request', async () => {

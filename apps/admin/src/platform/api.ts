@@ -30,8 +30,8 @@ export class PlatformClient {
 
   async logout(): Promise<void> {
     const epoch = this.generation;
-    try { await this.request('/auth/logout', 'POST', {}); }
-    finally { if (epoch === this.generation) this.clear(); }
+    await this.request('/auth/logout', 'POST', {});
+    if (epoch === this.generation) this.clear();
   }
 
   clear(): void {
