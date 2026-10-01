@@ -7,7 +7,7 @@ import pathlib
 import shutil
 
 
-def package(source, output):
+def package(source, output, expected_version=None, expected_build_number=None):
     source, output = pathlib.Path(source).resolve(), pathlib.Path(output).resolve()
     if output == source or output.is_relative_to(source) or source.is_relative_to(output):
         raise ValueError('source and output must be separate directories')
@@ -16,6 +16,11 @@ def package(source, output):
     required = ['index.html', 'flutter_bootstrap.js', 'app_startup.js', 'main.dart.js', 'assets/FontManifest.json']
     if any(not (source / name).is_file() for name in required):
         raise ValueError('incomplete Flutter build')
+    version_file = source / 'version.json'
+    version_info = json.loads(version_file.read_text(encoding='utf-8')) if version_file.exists() else {}
+    for key, expected in [('version', expected_version), ('build_number', expected_build_number)]:
+        if expected is not None and version_info.get(key) != str(expected):
+            raise ValueError('Flutter build ' + key + ' differs from the release version')
     files = sorted((p for p in source.rglob('*') if p.is_file()), key=lambda p: p.relative_to(source).as_posix())
     digest = hashlib.sha256()
     for path in files:
@@ -49,6 +54,7 @@ def package(source, output):
             p = runtime / (name + suffix)
             if p.exists(): p.unlink()
     manifest = dict(releaseId=release_id, runtimePath='releases/' + release_id,
+        version=version_info.get('version'), buildNumber=version_info.get('build_number'),
         mainSHA256=hashlib.sha256((runtime / 'main.dart.js').read_bytes()).hexdigest(),
         runtimeTreeSHA256=hashlib.sha256('\n'.join(p.relative_to(runtime).as_posix() + ':' + hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((p for p in runtime.rglob('*') if p.is_file()), key=lambda p: p.relative_to(runtime).as_posix())).encode()).hexdigest(),
         fontBytes=sum(p.stat().st_size for p in (runtime / 'assets/assets/fonts').glob('*') if p.suffix in ['.otf', '.ttf']))
@@ -60,5 +66,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('source')
     parser.add_argument('output')
+    parser.add_argument('--expected-version')
+    parser.add_argument('--expected-build-number')
     args = parser.parse_args()
-    print(json.dumps(package(args.source, args.output)))
+    print(json.dumps(package(args.source, args.output, args.expected_version, args.expected_build_number)))

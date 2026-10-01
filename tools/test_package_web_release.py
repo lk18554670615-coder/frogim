@@ -10,6 +10,22 @@ spec.loader.exec_module(packager)
 
 
 class PackagingTests(unittest.TestCase):
+    def test_release_version_is_checked_before_packaging(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            source = root / 'input'
+            (source / 'assets').mkdir(parents=True)
+            for name in ['index.html', 'flutter_bootstrap.js', 'app_startup.js', 'main.dart.js', 'assets/FontManifest.json']:
+                (source / name).write_text('<head></head>' if name == 'index.html' else '[]')
+            (source / 'version.json').write_text('{"version":"1.0.12","build_number":"4016"}')
+            with self.assertRaises(ValueError):
+                packager.package(source, root / 'wrong', '1.0.16', '8023')
+            self.assertFalse((root / 'wrong').exists())
+            (source / 'version.json').write_text('{"version":"1.0.16","build_number":"8023"}')
+            manifest = packager.package(source, root / 'correct', '1.0.16', '8023')
+            self.assertEqual(manifest['version'], '1.0.16')
+            self.assertEqual(manifest['buildNumber'], '8023')
+
     def test_release_urls_change_with_content_and_gzip_matches_original(self):
         with tempfile.TemporaryDirectory() as folder:
             root = pathlib.Path(folder)

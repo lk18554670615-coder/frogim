@@ -37,10 +37,14 @@ ARG APP_ENV=production
 ARG ENABLE_DEMO=false
 ARG TERMS_URL
 ARG PRIVACY_URL
+ARG WEB_BUILD_NAME
+ARG WEB_BUILD_NUMBER
 
 RUN test -n "$WEB_API_BASE_URL" \
     && { [ "$APP_ENV" != "production" ] || { test -n "$TERMS_URL" && test -n "$PRIVACY_URL"; }; } \
     && flutter build web --release \
+      ${WEB_BUILD_NAME:+--build-name=$WEB_BUILD_NAME} \
+      ${WEB_BUILD_NUMBER:+--build-number=$WEB_BUILD_NUMBER} \
       --base-href "$WEB_BASE_HREF" \
       --no-web-resources-cdn \
       --dart-define=APP_ENV="$APP_ENV" \
@@ -50,7 +54,9 @@ RUN test -n "$WEB_API_BASE_URL" \
       --dart-define=TERMS_URL="$TERMS_URL" \
       --dart-define=PRIVACY_URL="$PRIVACY_URL"
 
-RUN python3 /workspace/tools/package-web-release.py build/web build/web-release
+RUN python3 /workspace/tools/package-web-release.py build/web build/web-release \
+      ${WEB_BUILD_NAME:+--expected-version=$WEB_BUILD_NAME} \
+      ${WEB_BUILD_NUMBER:+--expected-build-number=$WEB_BUILD_NUMBER}
 
 FROM nginxinc/nginx-unprivileged:1.29-alpine
 

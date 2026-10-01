@@ -28,7 +28,7 @@ web = root / 'web'
 record = root / 'ops' / ('web-startup-' + rid + '.json')
 backup = root / 'backups' / ('web-startup-' + rid)
 gateway = 'frogim-single-gateway-1'
-shells = ['app_startup.js', 'app_startup.js.gz', 'flutter_bootstrap.js', 'flutter_bootstrap.js.gz', 'flutter_service_worker.js', 'flutter_service_worker.js.gz', 'web-release.json', 'index.html.gz', 'index.html']
+shells = ['app_startup.js', 'app_startup.js.gz', 'flutter_bootstrap.js', 'flutter_bootstrap.js.gz', 'flutter_service_worker.js', 'flutter_service_worker.js.gz', 'version.json', 'version.json.gz', 'web-release.json', 'index.html.gz', 'index.html']
 
 def run(argv):
     result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
@@ -76,6 +76,15 @@ def verify():
         if result != '304|0': raise RuntimeError('conditional static response differs')
         results[path] = dict(cache=headers['cache-control'], compressedBytes=int(headers['content-length']), conditional=result)
     if hashlib.sha256(fetch('/app/releases/' + rid + '/main.dart.js')).hexdigest() != manifest['mainSHA256']: raise RuntimeError('public script digest differs')
+    if manifest.get('version'):
+        for path in ['/app/version.json', '/app/releases/' + rid + '/version.json']:
+            version = json.loads(fetch(path))
+            if version.get('version') != manifest['version'] or version.get('build_number') != manifest['buildNumber']:
+                raise RuntimeError('public Web version differs from release manifest')
+        from urllib.parse import urlencode
+        policy = json.loads(fetch('/platform/v2/config/version?' + urlencode(dict(platform='web', version=manifest['version'], installId='web-release-validation'))))
+        if policy.get('currentVersion') != manifest['version'] or policy.get('forceUpdate') or policy.get('updateAvailable'):
+            raise RuntimeError('Web release is behind the published version policy')
     for path in ['/ready', '/platform/ready', '/platform/']:
         if run(['curl','--silent','--show-error','--max-time','15','-o','/dev/null','-w','%{http_code}',origin+path]).decode() != '200': raise RuntimeError('service unavailable')
     return results

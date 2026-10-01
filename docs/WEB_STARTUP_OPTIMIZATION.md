@@ -15,3 +15,8 @@ HTML 提前加载主脚本和中文字体，主脚本优先；发布包提供 gz
 实际入口验证：HTML 为 no-cache；版本化脚本、两种字体和 CanvasKit 为一年 immutable 缓存，gzip 可用，带 ETag 的二次校验均返回 `304`、响应体 `0` 字节。主脚本压缩传输由 3,564,576 降至 3,307,727 字节，减小约 7.2%；上述四项关键资源合计由 23,916,339 降至 22,597,168 字节。8 个容器均健康，启动时间和重启计数未变；平台与企业 readiness 正常。没有重复线上登录或音视频测试。4 个启动测试、1 个打包测试、实际 Web 构建及 gzip/字体路径校验通过。Windows 本机 Docker 未运行，未声称本机 Docker/Nginx 编译验收通过；生产 Caddy 候选配置验证通过。
 
 本机脱敏证据为 `build/web-startup/release-evidence.json`，服务端回执为 `/data/frogim/releases/light-20261001-c83107e/ops/web-startup-3fe64813fc454fdf.json`。页面和网关的前一版本保存在同一发布根目录的 `backups/web-startup-3fe64813fc454fdf/`，只可用于本次 Web 热更新回退。原轻量架构部署回执与数据库恢复边界保持有效，24 小时只读观察继续按原截止时间执行。
+## Web 版本号校正
+
+2026-10-01 后续检查发现性能修复的 Flutter 构建沿用了 pubspec 的 `1.0.12+4016`，而平台 Web 策略最低及最新均为 `1.0.16`。新缓存地址下的 version.json 为 1.0.12，根路径残留 1.0.16，PackageInfo 优先读取 assetBase，导致最新代码也触发强制更新。重新使用显式 `--build-name 1.0.16 --build-number 8023` 构建；平台版本策略保持原值。
+
+打包增加期望版本与构建号校验并记录到清单，Docker 支持独立的 WEB_BUILD_NAME / WEB_BUILD_NUMBER 参数。Web 热更新同步根路径版本文件，并核对运行时版本、根路径版本及平台公开策略一致；新版本不满足策略时撤回本次 Web 更新。只测试打包与版本校验并构建 Web，不重复认证、业务和音视频回归。版本化运行时创建新的资源地址，保留上一包供回退。
