@@ -250,11 +250,29 @@ func (p *Platform) defaultTenant(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, 200, map[string]bool{"ok": true})
 }
+
+type AdminProfileSync struct {
+	Version  int64      `json:"profileVersion"`
+	SyncedAt *time.Time `json:"syncedAt"`
+	Error    string     `json:"syncError"`
+}
+
+// Management-only metadata: never included in business login grants.
+type AdminUser struct {
+	User
+	RegisteredAt      time.Time         `json:"registeredAt"`
+	MembershipCount   int               `json:"membershipCount"`
+	CurrentMembership *AdminProfileSync `json:"currentMembership"`
+}
+
 func (p *Platform) users(w http.ResponseWriter, r *http.Request) {
 	var b struct {
-		Query  string `json:"query"`
-		Tenant string `json:"tenant"`
-		Page   int    `json:"page"`
+		Query       string `json:"query"`
+		Tenant      string `json:"tenant"`
+		Page        int    `json:"page"`
+		TenantScope string `json:"tenantScope"`
+		Banned      *bool  `json:"banned"`
+		Pending     *bool  `json:"pending"`
 	}
 	if r.Method == "POST" {
 		if !decode(w, r, &b) {
@@ -264,33 +282,50 @@ func (p *Platform) users(w http.ResponseWriter, r *http.Request) {
 		b.Tenant = r.URL.Query().Get("tenant")
 		b.Page, _ = strconv.Atoi(r.URL.Query().Get("page"))
 	}
+	if b.TenantScope == "" {
+		b.TenantScope = "current"
+	}
 	if b.Page < 1 {
 		b.Page = 1
 	}
-	if b.Page > 100000 || len(b.Query) > 120 {
+	if b.Page > 100000 || len(b.Query) > 120 || (b.TenantScope != "current" && b.TenantScope != "membership") {
 		fail(w, 400, "INVALID_ARGUMENT")
 		return
 	}
-	rows, e := p.DB.Query(r.Context(), `SELECT id FROM lp_users WHERE ($1='' OR id=$1 OR phone LIKE '%'||$1||'%' OR profile->>'name' ILIKE '%'||$1||'%') AND ($2='' OR tenant_id=$2) ORDER BY created_at DESC,id LIMIT 101 OFFSET $3`, b.Query, b.Tenant, (b.Page-1)*100)
+	rows, e := p.DB.Query(r.Context(), `SELECT u.id,u.phone,u.tenant_id,u.revision,u.banned,u.pending,u.profile,u.created_at,
+	 (SELECT count(*) FROM lp_memberships m WHERE m.user_id=u.id),cm.profile_version,cm.synced_at,cm.sync_error
+	 FROM lp_users u LEFT JOIN lp_memberships cm ON cm.user_id=u.id AND cm.tenant_id=u.tenant_id
+	 WHERE ($1='' OR u.id=$1 OR u.phone LIKE '%'||$1||'%' OR u.profile->>'name' ILIKE '%'||$1||'%' OR u.profile->>'handle' ILIKE '%'||$1||'%')
+	 AND ($2='' OR ($3='current' AND u.tenant_id=$2) OR ($3='membership' AND EXISTS(SELECT 1 FROM lp_memberships m WHERE m.user_id=u.id AND m.tenant_id=$2)))
+	 AND ($4::boolean IS NULL OR u.banned=$4) AND ($5::boolean IS NULL OR (u.pending<>'')=$5)
+	 ORDER BY u.created_at DESC,u.id LIMIT 101 OFFSET $6`, b.Query, b.Tenant, b.TenantScope, b.Banned, b.Pending, (b.Page-1)*100)
 	if e != nil {
 		fail(w, 503, "DATABASE_UNAVAILABLE")
 		return
 	}
-	ids := []string{}
+	defer rows.Close()
+	items := []AdminUser{}
 	for rows.Next() {
-		var id string
-		_ = rows.Scan(&id)
-		ids = append(ids, id)
-	}
-	rows.Close()
-	items := []User{}
-	for _, id := range ids {
-		u, e := p.user(r.Context(), id)
-		if e != nil {
+		var u AdminUser
+		var profile []byte
+		var version *int64
+		var at *time.Time
+		var syncError *string
+		if rows.Scan(&u.ID, &u.Phone, &u.TenantID, &u.Revision, &u.Banned, &u.Pending, &profile, &u.RegisteredAt, &u.MembershipCount, &version, &at, &syncError) != nil || json.Unmarshal(profile, &u.Profile) != nil {
 			fail(w, 503, "DATABASE_UNAVAILABLE")
 			return
 		}
+		if version != nil {
+			u.CurrentMembership = &AdminProfileSync{Version: *version, SyncedAt: at}
+			if syncError != nil {
+				u.CurrentMembership.Error = *syncError
+			}
+		}
 		items = append(items, u)
+	}
+	if rows.Err() != nil {
+		fail(w, 503, "DATABASE_UNAVAILABLE")
+		return
 	}
 	more := len(items) > 100
 	if more {
@@ -301,7 +336,11 @@ func (p *Platform) users(w http.ResponseWriter, r *http.Request) {
 func (p *Platform) userDetails(w http.ResponseWriter, r *http.Request) {
 	u, e := p.user(r.Context(), r.PathValue("id"))
 	if e != nil {
-		fail(w, 404, "NOT_FOUND")
+		if errors.Is(e, pgx.ErrNoRows) {
+			fail(w, 404, "NOT_FOUND")
+		} else {
+			fail(w, 503, "DATABASE_UNAVAILABLE")
+		}
 		return
 	}
 	rows, e := p.DB.Query(r.Context(), `SELECT tenant_id,profile,profile_version,synced_at,sync_error FROM lp_memberships WHERE user_id=$1 ORDER BY tenant_id`, u.ID)
@@ -321,8 +360,15 @@ func (p *Platform) userDetails(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var pr Profile
-		_ = json.Unmarshal(profile, &pr)
+		if json.Unmarshal(profile, &pr) != nil {
+			fail(w, 503, "DATABASE_UNAVAILABLE")
+			return
+		}
 		items = append(items, map[string]any{"tenantId": id, "profile": pr, "profileVersion": v, "syncedAt": at, "syncError": err, "current": id == u.TenantID})
+	}
+	if rows.Err() != nil {
+		fail(w, 503, "DATABASE_UNAVAILABLE")
+		return
 	}
 	rows.Close()
 	for _, item := range items {
@@ -342,7 +388,18 @@ func (p *Platform) userDetails(w http.ResponseWriter, r *http.Request) {
 			item["syncError"] = "资料同步失败，请检查企业与平台的私网连接"
 		}
 	}
-	jsonResponse(w, 200, map[string]any{"user": u, "memberships": items})
+	var registeredAt time.Time
+	if p.DB.QueryRow(r.Context(), `SELECT created_at FROM lp_users WHERE id=$1`, u.ID).Scan(&registeredAt) != nil {
+		fail(w, 503, "DATABASE_UNAVAILABLE")
+		return
+	}
+	management := AdminUser{User: u, RegisteredAt: registeredAt, MembershipCount: len(items)}
+	for _, item := range items {
+		if item["current"] == true {
+			management.CurrentMembership = &AdminProfileSync{Version: item["profileVersion"].(int64), SyncedAt: item["syncedAt"].(*time.Time), Error: item["syncError"].(string)}
+		}
+	}
+	jsonResponse(w, 200, map[string]any{"user": management, "memberships": items})
 }
 func (p *Platform) createUser(w http.ResponseWriter, r *http.Request) {
 	var b struct {
