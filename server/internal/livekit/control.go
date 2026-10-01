@@ -374,15 +374,28 @@ func (c *Control) prometheusScalar(ctx context.Context, query string) (float64, 
 }
 
 func (c *Control) IssueParticipant(callID, userID, conversationID, mediaType string) (ParticipantSession, error) {
+	return c.issueParticipant(callID, userID, conversationID, mediaType, nil)
+}
+
+// Enterprise metadata survives LiveKit token refresh and binds reconnects to a local identity epoch.
+func (c *Control) IssueEnterpriseParticipant(callID, userID, conversationID, mediaType, tenantID string, epoch int64) (ParticipantSession, error) {
+	return c.issueParticipant(callID, userID, conversationID, mediaType, map[string]string{"tenantId": tenantID, "enterpriseEpoch": strconv.FormatInt(epoch, 10)})
+}
+
+func (c *Control) issueParticipant(callID, userID, conversationID, mediaType string, scope map[string]string) (ParticipantSession, error) {
 	if callID == "" || userID == "" {
 		return ParticipantSession{}, errors.New("call and user identities are required")
 	}
-	metadata, err := json.Marshal(map[string]string{
+	fields := map[string]string{
 		"schemaVersion":  "1",
 		"callId":         callID,
 		"conversationId": conversationID,
 		"mediaType":      mediaType,
-	})
+	}
+	for key, value := range scope {
+		fields[key] = value
+	}
+	metadata, err := json.Marshal(fields)
 	if err != nil {
 		return ParticipantSession{}, err
 	}

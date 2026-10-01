@@ -1,6 +1,14 @@
 import 'package:flutter/foundation.dart';
 
 abstract final class AppConfig {
+  static const platformBaseUrl = String.fromEnvironment('PLATFORM_BASE_URL');
+  static String? activeBusinessUrl;
+  static String activeTenantId = '';
+  static String activeUserId = '';
+  static int activeEnterpriseEpoch = 0;
+  static String get businessBaseUrl => activeBusinessUrl ?? apiBaseUrl;
+  static String get authenticationBaseUrl =>
+      platformBaseUrl.isEmpty ? apiBaseUrl : platformBaseUrl;
   static const environment = String.fromEnvironment(
     'APP_ENV',
     defaultValue: kReleaseMode ? 'production' : 'development',
@@ -27,7 +35,7 @@ abstract final class AppConfig {
   static const termsUrl = String.fromEnvironment('TERMS_URL');
   static const privacyUrl = String.fromEnvironment('PRIVACY_URL');
 
-  static bool get hasLiveBackend => apiBaseUrl.trim().isNotEmpty;
+  static bool get hasLiveBackend => authenticationBaseUrl.trim().isNotEmpty;
 
   static bool get isReleaseLike =>
       environment == 'production' || environment == 'staging';
@@ -38,7 +46,7 @@ abstract final class AppConfig {
 
   static void validate() => validateConfiguration(
     environment: environment,
-    apiBaseUrl: apiBaseUrl,
+    apiBaseUrl: authenticationBaseUrl,
     enableDemo: enableDemo,
     mediaMaxBytes: mediaMaxBytes,
     getuiEnabled: getuiEnabled,

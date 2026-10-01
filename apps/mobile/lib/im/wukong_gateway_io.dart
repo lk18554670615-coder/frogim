@@ -1,3 +1,4 @@
+import '../core/app_config.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -59,6 +60,7 @@ class IoWukongGateway
   WukongConnectionState _state = WukongConnectionState.disconnected;
   WukongSession? _session;
   bool _disposed = false;
+  int _identityGeneration = 0;
   Completer<void>? _fullConnectCompleter;
   Future<void> _fullSendQueue = Future<void>.value();
   bool _reminderSyncing = false;
@@ -97,11 +99,15 @@ class IoWukongGateway
   }
 
   Future<void> _initializeFull(WukongSession session) async {
-    final options = Options.newDefault(
-      session.uid,
-      session.token,
-      addr: session.tcpAddress,
-    )..deviceFlag = session.deviceFlag;
+    final generation = _identityGeneration;
+    bool current() =>
+        !_disposed &&
+        generation == _identityGeneration &&
+        identical(_session, session);
+    final options =
+        Options.newDefault(session.uid, session.token, addr: session.tcpAddress)
+          ..deviceFlag = session.deviceFlag
+          ..databaseNamespace = AppConfig.activeTenantId;
     final ready = await WKIM.shared.setup(options);
     if (!ready) {
       throw StateError(
@@ -110,11 +116,14 @@ class IoWukongGateway
     }
     final connection = WKIM.shared.connectionManager;
     connection.removeOnConnectionStatus(_listenerKey);
-    connection.addOnConnectionStatus(_listenerKey, _onFullConnection);
+    connection.addOnConnectionStatus(_listenerKey, (status, reason, connInfo) {
+      if (current()) _onFullConnection(status, reason, connInfo);
+    });
 
     final eventManager = WKIM.shared.eventManager;
     eventManager.removeEventListener(_listenerKey);
     eventManager.addEventListener(_listenerKey, (event) {
+      if (!current()) return;
       _events.add(
         WukongGatewayEvent(
           kind: WukongGatewayEventKind.messageEvent,
@@ -132,11 +141,13 @@ class IoWukongGateway
     messages.removeNewMsgListener(_listenerKey);
     messages.removeOnRefreshMsgListener(_listenerKey);
     messages.addOnNewMsgListener(_listenerKey, (items) {
+      if (!current()) return;
       for (final item in items) {
         _emitFullMessage(WukongGatewayEventKind.received, item);
       }
     });
     messages.addOnRefreshMsgListener(_listenerKey, (item) {
+      if (!current()) return;
       final mapped = _mapFullMessage(item);
       _events.add(
         WukongGatewayEvent(
@@ -159,6 +170,7 @@ class IoWukongGateway
       }
     });
     messages.addOnMsgInsertedListener((item) {
+      if (!current()) return;
       final mapped = _mapFullMessage(item);
       _events.add(
         WukongGatewayEvent(
@@ -176,6 +188,7 @@ class IoWukongGateway
     final channels = WKIM.shared.channelManager;
     channels.removeOnRefreshListener(_listenerKey);
     channels.addOnRefreshListener(_listenerKey, (item) {
+      if (!current()) return;
       _events.add(
         WukongGatewayEvent(
           kind: WukongGatewayEventKind.conversationChanged,
@@ -190,22 +203,20 @@ class IoWukongGateway
     members.removeNewMemberListener(_listenerKey);
     members.removeRefreshMemberListener(_listenerKey);
     members.removeDeleteMemberListener(_listenerKey);
-    members.addOnNewMemberListener(
-      _listenerKey,
-      (items) => _emitFullMemberChange(items.firstOrNull),
-    );
-    members.addOnRefreshMemberListener(
-      _listenerKey,
-      (item, _) => _emitFullMemberChange(item),
-    );
-    members.addOnDeleteMemberListener(
-      _listenerKey,
-      (items) => _emitFullMemberChange(items.firstOrNull),
-    );
+    members.addOnNewMemberListener(_listenerKey, (items) {
+      if (current()) _emitFullMemberChange(items.firstOrNull);
+    });
+    members.addOnRefreshMemberListener(_listenerKey, (item, _) {
+      if (current()) _emitFullMemberChange(item);
+    });
+    members.addOnDeleteMemberListener(_listenerKey, (items) {
+      if (current()) _emitFullMemberChange(items.firstOrNull);
+    });
 
     final conversations = WKIM.shared.conversationManager;
     conversations.removeOnRefreshMsgListListener(_listenerKey);
     conversations.addOnRefreshMsgListListener(_listenerKey, (items) {
+      if (!current()) return;
       for (final item in items) {
         _events.add(
           WukongGatewayEvent(
@@ -226,6 +237,7 @@ class IoWukongGateway
     final reminders = WKIM.shared.reminderManager;
     reminders.removeOnNewReminderListener(_listenerKey);
     reminders.addOnNewReminderListener(_listenerKey, (items) {
+      if (!current()) return;
       for (final item in items) {
         _events.add(
           WukongGatewayEvent(
@@ -239,6 +251,7 @@ class IoWukongGateway
 
     WKIM.shared.cmdManager.removeCmdListener(_listenerKey);
     WKIM.shared.cmdManager.addOnCmdListener(_listenerKey, (command) {
+      if (!current()) return;
       _events.add(
         WukongGatewayEvent(
           kind: WukongGatewayEventKind.command,
@@ -268,6 +281,7 @@ class IoWukongGateway
 
   @override
   Future<void> disconnect({bool logout = false}) async {
+    _identityGeneration++;
     if (_session != null) {
       WKIM.shared.connectionManager.disconnect(logout);
     }
@@ -310,8 +324,12 @@ class IoWukongGateway
       throw StateError('WuKongIM is not connected');
     }
     final result = Completer<WukongMessage>();
+    final generation = _identityGeneration;
     _fullSendQueue = _fullSendQueue.catchError((_) {}).then((_) async {
       try {
+        if (generation != _identityGeneration) {
+          throw StateError('旧企业待发送任务已取消');
+        }
         result.complete(await _sendFull(message));
       } catch (error, stackTrace) {
         result.completeError(error, stackTrace);
@@ -507,6 +525,7 @@ class IoWukongGateway
     int version,
     Function(full.WKSyncConversation) complete,
   ) {
+    final generation = _identityGeneration;
     () async {
       final result = full.WKSyncConversation()
         ..uid = _session?.uid ?? ''
@@ -533,7 +552,7 @@ class IoWukongGateway
           result.conversations!.add(conversation);
         }
       } finally {
-        complete(result);
+        if (generation == _identityGeneration) complete(result);
       }
     }();
   }
@@ -547,6 +566,7 @@ class IoWukongGateway
     int pullMode,
     Function(full.WKSyncChannelMsg?) complete,
   ) {
+    final generation = _identityGeneration;
     () async {
       final result = full.WKSyncChannelMsg()..messages = [];
       try {
@@ -567,7 +587,7 @@ class IoWukongGateway
                 .toList();
         }
       } finally {
-        complete(result);
+        if (generation == _identityGeneration) complete(result);
       }
     }();
   }
@@ -577,16 +597,20 @@ class IoWukongGateway
     int channelType,
     Function(full.WKChannel) complete,
   ) {
+    final generation = _identityGeneration;
     () async {
       final channel = WukongChannel(id: channelId, type: channelType);
       try {
         final raw = await _dataSource?.channelInfo(channel);
+        if (generation != _identityGeneration) return;
         complete(_fullChannel(raw ?? const {}, channel));
       } catch (_) {
         // The SDK callback has no error channel. Complete with a minimally
         // identified channel so message insertion cannot stall; a later fetch
         // replaces it with authoritative business data.
-        complete(full.WKChannel(channelId, channelType));
+        if (generation == _identityGeneration) {
+          complete(full.WKChannel(channelId, channelType));
+        }
         return;
       }
       try {
@@ -631,6 +655,7 @@ class IoWukongGateway
         ..remoteExtraMap = _map(raw['remote_extra']);
 
   Future<void> _syncFullChannelMembers(WukongChannel channel) async {
+    final generation = _identityGeneration;
     final source = _dataSource;
     if (source == null) return;
     var version = await WKIM.shared.channelMemberManager.getMaxVersion(
@@ -643,7 +668,7 @@ class IoWukongGateway
         version: version,
         limit: 200,
       );
-      if (items.isEmpty) return;
+      if (items.isEmpty || generation != _identityGeneration) return;
       final mapped = items.map((raw) {
         final item = full.WKChannelMember()
           ..channelID = channel.id
@@ -684,6 +709,7 @@ class IoWukongGateway
   }
 
   Future<void> _syncPlatformReminders() async {
+    final generation = _identityGeneration;
     if (_reminderSyncing) {
       _reminderSyncAgain = true;
       return;
@@ -700,7 +726,7 @@ class IoWukongGateway
             version: version,
             limit: 500,
           );
-          if (items.isEmpty) break;
+          if (items.isEmpty || generation != _identityGeneration) break;
           for (final item in items) {
             version = max(version, _int(item['version']));
           }

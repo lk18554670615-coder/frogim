@@ -13,6 +13,7 @@ import '../data/live_repository.dart' show ImApiException;
 import '../im/business_features.dart';
 import '../im/structured_event_text.dart';
 import 'auth_validation.dart';
+import 'app_config.dart';
 import 'client_message_id.dart';
 import 'client_diagnostics.dart';
 import 'client_device.dart';
@@ -352,6 +353,8 @@ class AppController extends ChangeNotifier {
   Future<void>? _authenticationBootstrap;
   bool _stickyAuthenticationError = false;
   int _forwardSessionEpoch = 0;
+  int authenticationGeneration = 0;
+  Future<void>? _enterpriseReset;
   final Set<ForwardBatchTask> _forwardTasks = {};
 
   bool get messagingUnavailable =>
@@ -744,7 +747,11 @@ class AppController extends ChangeNotifier {
   }
 
   Future<String> loadDraft(String conversationId) async {
+    final epoch = _forwardSessionEpoch;
     final draft = await repository.readDraft(conversationId);
+    if (epoch != _forwardSessionEpoch || _disposed) {
+      throw StateError('草稿对应的企业已变化');
+    }
     if (draft.isEmpty) {
       _drafts.remove(conversationId);
     } else {
@@ -802,6 +809,7 @@ class AppController extends ChangeNotifier {
   }
 
   void _enterAuthenticatedShell(AppUser user, {bool refreshProfile = false}) {
+    authenticationGeneration++;
     _invalidateForwardTasks();
     for (final id in _typingUsers.keys.toList()) {
       _clearConversationTyping(id);
@@ -853,6 +861,7 @@ class AppController extends ChangeNotifier {
   Future<void> _bootstrapAuthenticatedSession({
     required bool refreshProfile,
   }) async {
+    final epoch = _forwardSessionEpoch;
     final profileCheck = refreshProfile
         ? _refreshRestoredProfile()
         : Future<bool>.value(false);
@@ -863,7 +872,12 @@ class AppController extends ChangeNotifier {
       coreError = exception;
     }
     final sessionExpired = await profileCheck;
-    if (_disposed || sessionExpired || !authenticated) return;
+    if (_disposed ||
+        sessionExpired ||
+        !authenticated ||
+        epoch != _forwardSessionEpoch) {
+      return;
+    }
     error = coreError == null
         ? null
         : _messageFor(coreError, fallback: '账号已登录，消息列表暂时无法同步');
@@ -1250,6 +1264,14 @@ class AppController extends ChangeNotifier {
     unawaited(_eventSubscription?.cancel());
     _eventSubscription = repository.events.listen((event) {
       if (!_disposed &&
+          (event.type == ImEventType.enterpriseSessionChanging ||
+              event.type == ImEventType.enterpriseSessionChanged ||
+              (event.type == ImEventType.sessionExpired &&
+                  _enterpriseReset != null))) {
+        _handleEvent(event);
+        return;
+      }
+      if (!_disposed &&
           authenticated &&
           currentUser?.id == accountId &&
           _forwardSessionEpoch == sessionEpoch) {
@@ -1259,10 +1281,12 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _connectSafely() async {
+    final epoch = _forwardSessionEpoch;
     final started = Stopwatch()..start();
     try {
       await repository.connect();
     } catch (_) {
+      if (epoch != _forwardSessionEpoch || _disposed) return;
       connected = false;
       ClientDiagnostics.instance.captureOperational(
         kind: 'connection',
@@ -1270,7 +1294,7 @@ class AppController extends ChangeNotifier {
         duration: started.elapsed,
       );
     } finally {
-      if (!_disposed) {
+      if (!_disposed && epoch == _forwardSessionEpoch) {
         connectionAttempted = true;
         connectionRetrying = false;
         notifyListeners();
@@ -1286,9 +1310,10 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _loadCore() async {
+    final sessionEpoch = _forwardSessionEpoch;
     final roleEpoch = _groupRoleEpoch;
     final loadedConversations = await repository.conversations();
-    if (!authenticated) return;
+    if (!authenticated || sessionEpoch != _forwardSessionEpoch) return;
     if (roleEpoch != _groupRoleEpoch) {
       _scheduleConversationRefresh();
     } else {
@@ -1332,7 +1357,7 @@ class AppController extends ChangeNotifier {
         results[2] as _OptionalLoadResult<List<GroupInvitation>>;
     final announcementsResult =
         results[3] as _OptionalLoadResult<List<AppAnnouncement>>;
-    if (!authenticated) return;
+    if (!authenticated || sessionEpoch != _forwardSessionEpoch) return;
     contacts = contactsResult.value;
     contactsLoadError = contactsResult.error;
     requests = requestsResult.value;
@@ -1360,12 +1385,16 @@ class AppController extends ChangeNotifier {
   }
 
   Future<bool> refreshContacts() async {
+    final epoch = _forwardSessionEpoch;
     contactsLoadError = null;
     notifyListeners();
     try {
-      contacts = await repository.contacts();
+      final loaded = await repository.contacts();
+      if (epoch != _forwardSessionEpoch || _disposed) return false;
+      contacts = loaded;
       return true;
     } catch (exception) {
+      if (epoch != _forwardSessionEpoch || _disposed) return false;
       contactsLoadError = _messageFor(exception, fallback: '联系人加载失败，请稍后重试');
       return false;
     } finally {
@@ -1374,13 +1403,17 @@ class AppController extends ChangeNotifier {
   }
 
   Future<bool> refreshFriendRequests() async {
+    final epoch = _forwardSessionEpoch;
     friendRequestsLoadError = null;
     notifyListeners();
     try {
-      requests = await repository.friendRequests();
+      final loaded = await repository.friendRequests();
+      if (epoch != _forwardSessionEpoch || _disposed) return false;
+      requests = loaded;
       _reconcilePendingOutgoingFriendUsers();
       return true;
     } catch (exception) {
+      if (epoch != _forwardSessionEpoch || _disposed) return false;
       friendRequestsLoadError = _messageFor(
         exception,
         fallback: '好友申请加载失败，请稍后重试',
@@ -1392,12 +1425,16 @@ class AppController extends ChangeNotifier {
   }
 
   Future<bool> refreshGroupInvitations() async {
+    final epoch = _forwardSessionEpoch;
     groupInvitationsLoadError = null;
     notifyListeners();
     try {
-      groupInvitations = await repository.groupInvitations();
+      final loaded = await repository.groupInvitations();
+      if (epoch != _forwardSessionEpoch || _disposed) return false;
+      groupInvitations = loaded;
       return true;
     } catch (exception) {
+      if (epoch != _forwardSessionEpoch || _disposed) return false;
       groupInvitationsLoadError = _messageFor(
         exception,
         fallback: '群聊邀请加载失败，请稍后重试',
@@ -3553,6 +3590,13 @@ class AppController extends ChangeNotifier {
 
   void handlePushPayload(Map<String, dynamic> payload) {
     final normalized = _flattenPushPayload(payload);
+    if (AppConfig.platformBaseUrl.isNotEmpty &&
+        (normalized['tenantId'] != AppConfig.activeTenantId ||
+            normalized['recipientId'] != currentUser?.id ||
+            normalized['enterpriseEpoch'] != AppConfig.activeEnterpriseEpoch)) {
+      return;
+    }
+
     unawaited(callController?.handlePushPayload(normalized));
     final conversationId =
         normalized['conversationId']?.toString() ??
@@ -4661,6 +4705,8 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _clearAuthenticatedState() async {
+    authenticationGeneration++;
+    final callsCleared = callController?.clearIdentity();
     presence.setAccount(null);
     messageFeedback.setAccount(null);
     _invalidateForwardTasks();
@@ -4703,6 +4749,9 @@ class AppController extends ChangeNotifier {
     _mediaAutomaticallyRetried.clear();
     _pendingProfileAvatarFingerprint = null;
     _pendingProfileAvatarMediaId = null;
+    _drafts.clear();
+    _pushDeviceId = null;
+    _voipPushDeviceId = null;
     _scheduledMessages.clear();
     scheduledMessageErrors.clear();
     scheduledMessageLoading.clear();
@@ -4740,10 +4789,42 @@ class AppController extends ChangeNotifier {
     _messageHistoryHasMore.clear();
     loading = false;
     if (!_disposed) notifyListeners();
+    await callsCleared;
+  }
+
+  Future<void> _resumeEnterpriseSession(ImEvent event) async {
+    final generation = authenticationGeneration;
+    try {
+      await _enterpriseReset;
+    } catch (_) {
+      _enterpriseReset = null;
+      if (!_disposed) {
+        error = '企业切换后的本机清理未完成，请重新登录';
+        notifyListeners();
+      }
+      return;
+    }
+    if (_disposed || generation != authenticationGeneration) return;
+    final user = repository.currentUser;
+    if (user == null ||
+        user.id != event.payload['userId'] ||
+        AppConfig.activeTenantId != event.payload['tenantId']) {
+      return;
+    }
+    _enterpriseReset = null;
+    _enterAuthenticatedShell(user);
   }
 
   void _handleEvent(ImEvent event) {
     switch (event.type) {
+      case ImEventType.enterpriseSessionChanging:
+        _enterpriseReset = _clearAuthenticatedState();
+        loading = true;
+        if (!_disposed) notifyListeners();
+        return;
+      case ImEventType.enterpriseSessionChanged:
+        unawaited(_resumeEnterpriseSession(event));
+        return;
       case ImEventType.messagesDeleted:
         _applyMessageDeletions(
           event.payload['conversationId'].toString(),

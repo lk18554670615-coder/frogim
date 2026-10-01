@@ -12,9 +12,9 @@ import (
 	"github.com/linli/im/server/internal/model"
 )
 
-// permanentMediaURL is a stable, directly accessible capability URL. It has no
-// expiry and reveals no object-store location or credential. Anyone holding the
-// complete URL can read the media, while the HMAC prevents ID enumeration.
+// permanentMediaURL is stable and reveals no object-store credential. In
+// standalone mode the complete HMAC URL grants access; enterprise mode also
+// requires a current user session or the scoped enterprise admin cookie.
 func (x *API) permanentMediaURL(mediaID string, cover bool) string {
 	mediaID = strings.TrimSpace(mediaID)
 	if mediaID == "" {
@@ -67,6 +67,30 @@ func (x *API) permanentMediaContent(w http.ResponseWriter, r *http.Request) {
 	provided := []byte(strings.TrimSpace(r.PathValue("signature")))
 	if len(expected) != len(provided) || subtle.ConstantTimeCompare(expected, provided) != 1 {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "media is unavailable")
+		return
+	}
+	if x.enterprise != nil {
+		if cookie, err := r.Cookie(enterpriseAdminMediaCookie); r.Header.Get("Authorization") == "" && err == nil {
+			request := r.Clone(r.Context())
+			request.Header = request.Header.Clone()
+			request.Header.Set("Authorization", "Bearer "+cookie.Value)
+			x.requireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				id := mediaID
+				if kind == "cover" {
+					m, err := x.app.GetMedia(id)
+					if err != nil || m.CoverMediaID == "" {
+						writeError(w, 404, "NOT_FOUND", "cover unavailable")
+						return
+					}
+					id = m.CoverMediaID
+				}
+				w.Header().Set("Cache-Control", "private, no-store")
+				w.Header().Add("Vary", "Cookie")
+				x.serveMediaContent(w, r, id)
+			})).ServeHTTP(w, request)
+		} else {
+			x.mediaContentAuthorized(w, r, true)
+		}
 		return
 	}
 	if kind == "cover" {

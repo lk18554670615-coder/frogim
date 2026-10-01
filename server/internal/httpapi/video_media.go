@@ -16,7 +16,7 @@ func (x *API) enrichVideoCover(ctx context.Context, mediaID string, body map[str
 		return
 	}
 	body["coverMediaId"] = m.CoverMediaID
-	if url, err := x.media.DownloadURL(ctx, m.CoverMediaID); err == nil {
+	if url, err := x.downloadMediaURL(ctx, m.CoverMediaID); err == nil {
 		body["cover"] = url
 	}
 }

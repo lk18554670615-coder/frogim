@@ -11,17 +11,31 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/linli/im/server/internal/app"
 	"github.com/linli/im/server/internal/config"
 	"github.com/linli/im/server/internal/httpapi"
 	"github.com/linli/im/server/internal/push"
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/tenancy"
 	"github.com/linli/im/server/internal/wukong"
 )
 
 func main() {
 	configureLogging()
 	cfg := config.Load()
+	options := tenancy.LoadOptions()
+	if err := options.Validate(); err != nil {
+		slog.Error("invalid tenancy configuration", "error", err)
+		os.Exit(1)
+	}
+	if options.Mode == "platform" {
+		if err := tenancy.RunPlatform(cfg, options); err != nil {
+			slog.Error("platform failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := cfg.Validate(); err != nil {
 		slog.Error("invalid configuration", "error", err)
 		os.Exit(1)
@@ -71,6 +85,15 @@ func main() {
 		if err != nil {
 			slog.Error("push provider unavailable", "error", err)
 			os.Exit(1)
+		}
+		if options.Mode == "enterprise" {
+			guard, e := pgxpool.New(context.Background(), cfg.DatabaseURL)
+			if e != nil {
+				slog.Error("push guard failed", "error", e)
+				os.Exit(1)
+			}
+			defer guard.Close()
+			provider = push.EnterpriseProvider{Provider: provider, DB: guard, TenantID: options.TenantID}
 		}
 		go push.NewDispatcherWithOptions(outbox, provider, push.DispatcherOptions{Workers: cfg.PushWorkers, BatchSize: cfg.PushBatchSize, Interval: 100 * time.Millisecond}).Run(workerCtx)
 	}
@@ -133,6 +156,7 @@ func main() {
 		os.Exit(1)
 	}
 	go reconciler.Run(workerCtx)
+	go api.RunTenancySync(workerCtx)
 	go api.RunMediaCleanup(workerCtx)
 	go api.RunUserAccess(workerCtx)
 	go application.RunCallTimeouts(workerCtx)

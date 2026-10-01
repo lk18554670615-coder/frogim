@@ -507,7 +507,7 @@ func (x *API) enrichWukongMedia(ctx context.Context, userID string, message wuko
 	if err != nil || !allowed {
 		return
 	}
-	url, err := x.media.DownloadURL(ctx, mediaID)
+	url, err := x.downloadMediaURL(ctx, mediaID)
 	if err == nil {
 		payload["url"] = url
 		x.enrichVideoCover(ctx, mediaID, payload)

@@ -140,6 +140,8 @@ class _GetuiPushService implements PlatformPushService {
       final vibrationEnabled =
           preferences.getBool('settings.notification.vibration') ?? true;
       final registrationFingerprint = [
+        AppConfig.activeTenantId,
+        AppConfig.activeEnterpriseEpoch,
         userId,
         cid,
         notificationsEnabled,
@@ -151,6 +153,8 @@ class _GetuiPushService implements PlatformPushService {
         final voipToken = await controller.callController?.voipPushToken();
         if (voipToken != null && voipToken.isNotEmpty) {
           final voipFingerprint = [
+            AppConfig.activeTenantId,
+            AppConfig.activeEnterpriseEpoch,
             userId,
             voipToken,
             notificationsEnabled,

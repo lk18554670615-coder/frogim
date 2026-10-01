@@ -14,6 +14,7 @@ import flutter_callkit_incoming
   private var voipRegistry: PKPushRegistry?
   private var screenshotChannel: FlutterMethodChannel?
   private var screenshotObserver: NSObjectProtocol?
+  private var identityChannel: FlutterMethodChannel?
   private var messageFeedbackChannel: FlutterMethodChannel?
   private var messageSound: SystemSoundID = 0
 
@@ -34,6 +35,12 @@ import flutter_callkit_incoming
       forPlugin: "LinliScreenshotDetection"
     ) else {
       return
+    }
+    identityChannel = FlutterMethodChannel(name:"top.hongjinghuanqiu.app/enterprise_identity",binaryMessenger:registrar.messenger())
+    identityChannel?.setMethodCallHandler { call,result in
+      guard call.method=="set", let args=call.arguments as? [String:Any] else {result(FlutterMethodNotImplemented);return}
+      UserDefaults.standard.set(args,forKey:"enterprise_identity")
+      result(nil)
     }
     let feedback = FlutterMethodChannel(
       name: "top.hongjinghuanqiu.app/message_feedback",
@@ -144,6 +151,9 @@ import flutter_callkit_incoming
       return
     }
     let body = payload.dictionaryPayload
+    let identity=UserDefaults.standard.dictionary(forKey:"enterprise_identity") ?? [:]
+    let enabled=identity["enabled"] as? Bool == true
+    let belongs = !enabled || ((identity["userId"] as? String ?? "") != "" && body["tenantId"] as? String == identity["tenantId"] as? String && body["recipientId"] as? String == identity["userId"] as? String && (body["enterpriseEpoch"] as? NSNumber)?.int64Value == (identity["epoch"] as? NSNumber)?.int64Value)
     let serverCallId = (body["callId"] as? String) ?? (body["serverCallId"] as? String) ?? ""
     guard !serverCallId.isEmpty else {
       completion()
@@ -177,7 +187,10 @@ import flutter_callkit_incoming
     SwiftFlutterCallkitIncomingPlugin.sharedInstance?.showCallkitIncoming(
       data,
       fromPushKit: true,
-      completion: completion
+      completion: {
+        if !belongs {SwiftFlutterCallkitIncomingPlugin.sharedInstance?.endCall(data)}
+        completion()
+      }
     )
   }
 

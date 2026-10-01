@@ -9,6 +9,8 @@ import 'package:http/http.dart' as http;
 import '../calls/call_models.dart';
 import '../calls/call_repository.dart';
 import '../core/app_config.dart';
+import '../core/enterprise_connection.dart';
+import '../core/enterprise_native_identity.dart';
 import '../core/auth_validation.dart';
 import '../core/group_message_policy.dart';
 import '../core/models.dart';
@@ -75,6 +77,7 @@ class LiveImRepository
     http.Client? uploadClient,
     SecureLocalStore? store,
     String? apiBaseUrl,
+    String? platformBaseUrl,
     String? clientPlatform,
     BusinessRepository? businessRepository,
     WukongGateway? wukongGateway,
@@ -82,7 +85,8 @@ class LiveImRepository
        _uploadClient = uploadClient ?? client ?? http.Client(),
        _store = store ?? SecureLocalStore(),
        _apiBaseUrl = apiBaseUrl ?? AppConfig.apiBaseUrl,
-       _clientPlatform = clientPlatform ?? _runtimeClientPlatform() {
+       _clientPlatform = clientPlatform ?? _runtimeClientPlatform(),
+       _platformBaseUrl = platformBaseUrl ?? AppConfig.platformBaseUrl {
     _business =
         businessRepository ??
         BusinessRepository(
@@ -289,7 +293,15 @@ class LiveImRepository
   }
 
   final SecureLocalStore _store;
-  final String _apiBaseUrl;
+  String _apiBaseUrl;
+  final String _platformBaseUrl;
+  int _identityGeneration = 0;
+  String? _directoryRefresh;
+  String? _directoryToken;
+  String _tenantId = '';
+  EnterpriseConnection? _enterpriseConnection;
+  bool _directoryOperationPending = false;
+  Timer? _enterpriseRecheckTimer;
   final String _clientPlatform;
   late final BusinessRepository _business;
   late final WukongGateway _wukong;
@@ -551,7 +563,128 @@ class LiveImRepository
     String method,
     String path, [
     Object? body,
-  ]) => _request(method, path, body, false);
+  ]) => _platformBaseUrl.isNotEmpty
+      ? _directoryRequest(method, path, body)
+      : _request(method, path, body, false);
+
+  Future<Map<String, Object?>> _directoryRequest(
+    String method,
+    String path, [
+    Object? body,
+    String? tokenOverride,
+  ]) async {
+    final request = http.Request(
+      method,
+      Uri.parse('${_platformBaseUrl.replaceFirst(RegExp(r"/$"), "")}$path'),
+    );
+    request.headers.addAll({
+      'content-type': 'application/json',
+      'x-client-platform': _clientPlatform,
+    });
+    if (path == '/v2/auth/logout' &&
+        (tokenOverride ?? _directoryToken) != null) {
+      request.headers['authorization'] =
+          'Bearer ${tokenOverride ?? _directoryToken}';
+    }
+    if (body != null) request.body = jsonEncode(body);
+    return _decode(
+      await http.Response.fromStream(
+        await _client.send(request).timeout(const Duration(seconds: 15)),
+      ),
+    );
+  }
+
+  void _validateDirectoryConnection(EnterpriseConnection connection) {
+    final previous = _enterpriseConnection;
+    if (previous == null) return;
+    if (connection.userId == previous.userId &&
+        (connection.assignmentVersion < previous.assignmentVersion ||
+            (connection.tenantId != previous.tenantId &&
+                connection.assignmentVersion <= previous.assignmentVersion) ||
+            (connection.tenantId == previous.tenantId &&
+                (connection.configVersion < previous.configVersion ||
+                    (connection.configVersion == previous.configVersion &&
+                        !connection.sameServices(previous)))))) {
+      throw const FormatException('企业连接配置已过期或版本不一致');
+    }
+  }
+
+  void _validateImConnection(WukongSession session) {
+    final connection = _enterpriseConnection;
+    if (connection != null &&
+        (session.uid != connection.userId ||
+            session.wsUrl.replaceFirst(RegExp(r'/$'), '') !=
+                connection.imWsUrl ||
+            session.tcpUrl.replaceFirst(RegExp(r'/$'), '') !=
+                connection.imTcpUrl)) {
+      throw const FormatException('企业 IM 地址与平台登记配置不一致');
+    }
+  }
+
+  Future<Map<String, Object?>> _exchangeDirectory(
+    Map<String, Object?> data,
+  ) async {
+    final connection = EnterpriseConnection.fromGrant(
+      Map<String, Object?>.from(data['enterprise'] as Map),
+    );
+    final previous = _enterpriseConnection;
+    _validateDirectoryConnection(connection);
+    final sameIdentity =
+        previous != null &&
+        previous.tenantId == connection.tenantId &&
+        previous.userId == connection.userId;
+    final servicesChanged = sameIdentity && !connection.sameServices(previous);
+    if (_tenantId != connection.tenantId ||
+        _userId != connection.userId ||
+        servicesChanged) {
+      _identityGeneration++;
+    }
+    if (_tenantId.isNotEmpty &&
+        (_tenantId != connection.tenantId || servicesChanged)) {
+      await _disconnect(logout: true);
+    }
+    final generation = _identityGeneration;
+    final request = http.Request(
+      'POST',
+      Uri.parse(
+        '${connection.apiBaseUrl.replaceFirst(RegExp(r"/$"), "")}/v2/auth/enterprise-session',
+      ),
+    );
+    request.headers.addAll({
+      'content-type': 'application/json',
+      'x-client-platform': _clientPlatform,
+    });
+    request.body = jsonEncode({'ticket': connection.ticket});
+    final result = _decode(
+      await http.Response.fromStream(
+        await _client.send(request).timeout(const Duration(seconds: 15)),
+      ),
+    );
+    if (generation != _identityGeneration) {
+      throw StateError('旧登录结果已取消');
+    }
+    if ((result['user'] as Map?)?['id'] != connection.userId) {
+      throw const FormatException('企业身份与平台身份不一致');
+    }
+    final im = _parseImSession(result['imSession']);
+    if (im != null &&
+        (im.uid != connection.userId ||
+            im.wsUrl.replaceFirst(RegExp(r'/$'), '') != connection.imWsUrl ||
+            im.tcpUrl.replaceFirst(RegExp(r'/$'), '') != connection.imTcpUrl)) {
+      throw const FormatException('企业 IM 地址与平台登记配置不一致');
+    }
+    _directoryToken = data['accessToken'] as String?;
+    _directoryRefresh = data['refreshToken'] as String?;
+    _tenantId = connection.tenantId;
+    _enterpriseConnection = connection;
+    _apiBaseUrl = connection.apiBaseUrl.replaceFirst(RegExp(r'/$'), '');
+    _business.useEnterprise(_apiBaseUrl);
+    _store.useIdentity('${connection.tenantId}:${connection.userId}');
+    AppConfig.activeBusinessUrl = _apiBaseUrl;
+    AppConfig.activeTenantId = _tenantId;
+    AppConfig.activeUserId = connection.userId;
+    return result;
+  }
 
   Future<Map<String, Object?>> _request(
     String method,
@@ -559,11 +692,35 @@ class LiveImRepository
     Object? body,
     bool isProtected = true,
   ]) async {
+    if (_platformBaseUrl.isNotEmpty && path.startsWith('/v2/users/me/phone')) {
+      final request = http.Request(
+        method,
+        Uri.parse('${_platformBaseUrl.replaceFirst(RegExp(r"/$"), "")}$path'),
+      );
+      request.headers.addAll({
+        'content-type': 'application/json',
+        'authorization': 'Bearer $_directoryToken',
+      });
+      if (body != null) request.body = jsonEncode(body);
+      return _decode(
+        await http.Response.fromStream(
+          await _client.send(request).timeout(const Duration(seconds: 30)),
+        ),
+      );
+    }
+    final expectedTenant = _tenantId;
+    final expectedUser = _userId;
+    final expectedGeneration = _identityGeneration;
     final encodedBody = body == null ? null : jsonEncode(body);
     var response = await _rawRequest(method, path, encodedBody);
     if (isProtected && response.statusCode == 401) {
       final refreshed = await _refreshAccessToken();
       if (refreshed) {
+        if (_tenantId != expectedTenant ||
+            _userId != expectedUser ||
+            _identityGeneration != expectedGeneration) {
+          throw StateError('账号或企业已变化，旧请求已取消');
+        }
         response = await _rawRequest(method, path, encodedBody);
       }
     }
@@ -617,6 +774,7 @@ class LiveImRepository
     String path,
     String? encodedBody,
   ) async {
+    final identity = _identityGeneration;
     final request = http.Request(method, _uri(path));
     request.headers.addAll(_headers);
     if (encodedBody != null) request.body = encodedBody;
@@ -624,7 +782,11 @@ class LiveImRepository
       final streamed = await _client
           .send(request)
           .timeout(const Duration(seconds: 10));
-      return http.Response.fromStream(streamed);
+      final response = await http.Response.fromStream(streamed);
+      if (identity != _identityGeneration) {
+        throw StateError('旧账号回调已失效');
+      }
+      return response;
     } catch (error) {
       if (kDebugMode || kProfileMode) {
         debugPrint(
@@ -668,6 +830,7 @@ class LiveImRepository
       'ACCOUNT_EXISTS' => '该手机号已注册，请直接登录',
       'INVALID_CREDENTIALS' => '手机号、密码或验证码不正确',
       'INVALID_CODE' => '验证码无效或已过期，请重新获取',
+      'OPERATION_PENDING' => '账号操作尚未完成，请联系管理员重试原操作',
       'UNAUTHENTICATED' ||
       'INVALID_REFRESH' ||
       'REFRESH_REUSED' => '登录状态已失效，请重新登录',
@@ -726,6 +889,39 @@ class LiveImRepository
   Future<bool> restoreSession() async {
     final stored = await _store.readJson('session');
     if (stored is! Map<String, Object?>) return false;
+    if (_platformBaseUrl.isNotEmpty) {
+      if (stored['platformBaseUrl'] != _platformBaseUrl ||
+          stored['enterpriseApiBaseUrl'] is! String ||
+          stored['tenantId'] is! String) {
+        return false;
+      }
+      try {
+        final saved = EnterpriseConnection.fromGrant(
+          Map<String, Object?>.from(stored['enterpriseConnection'] as Map),
+        );
+        if (saved.tenantId != stored['tenantId'] ||
+            saved.userId != stored['userId'] ||
+            saved.apiBaseUrl != stored['enterpriseApiBaseUrl']) {
+          return false;
+        }
+        _enterpriseConnection = saved;
+      } catch (_) {
+        return false;
+      }
+      _identityGeneration++;
+      _tenantId = stored['tenantId'] as String;
+      _apiBaseUrl = stored['enterpriseApiBaseUrl'] as String;
+      _directoryRefresh = stored['directoryRefresh'] as String?;
+      _directoryToken = stored['directoryToken'] as String?;
+      _business.useEnterprise(_apiBaseUrl);
+      _store.useIdentity('$_tenantId:${stored['userId']}');
+      AppConfig.activeBusinessUrl = _apiBaseUrl;
+      AppConfig.activeTenantId = _tenantId;
+      AppConfig.activeUserId = stored['userId'] as String? ?? '';
+      AppConfig.activeEnterpriseEpoch =
+          (stored['enterpriseEpoch'] as num?)?.toInt() ?? 0;
+      await syncEnterpriseNativeIdentity();
+    }
     _token = stored['accessToken'] as String?;
     _refreshToken = stored['refreshToken'] as String?;
     _userId = stored['userId'] as String?;
@@ -734,6 +930,7 @@ class LiveImRepository
     if (storedImSession is Map<String, Object?>) {
       try {
         _imSession = WukongSession.fromJson(storedImSession);
+        _validateImConnection(_imSession!);
       } on FormatException {
         _imSession = null;
       }
@@ -938,6 +1135,7 @@ class LiveImRepository
   }).then((_) {});
 
   Future<AppUser> _acceptSession(Map<String, Object?> data) async {
+    if (data['enterprise'] is Map) data = await _exchangeDirectory(data);
     _sessionEpoch++;
     _deletionSyncs.clear();
     _deletionVersions.clear();
@@ -945,6 +1143,10 @@ class LiveImRepository
     mediaAccess.clear(this);
     _mediaToken = null;
     _token = data['accessToken'] as String?;
+    if (_platformBaseUrl.isNotEmpty) {
+      AppConfig.activeEnterpriseEpoch =
+          (data['enterpriseEpoch'] as num?)?.toInt() ?? 0;
+    }
     _refreshToken = data['refreshToken'] as String?;
     final rawUser = data['user'] as Map<String, Object?>?;
     _userId = rawUser?['id'] as String?;
@@ -952,6 +1154,7 @@ class LiveImRepository
       throw const FormatException('登录响应缺少必要凭据');
     }
     _acceptMediaSession(data['mediaAccessToken']);
+    await syncEnterpriseNativeIdentity();
     _imSession = _parseImSession(data['imSession']);
     if (_imSession case final session? when session.uid != _userId) {
       throw const FormatException('WuKongIM session user does not match login');
@@ -1031,6 +1234,7 @@ class LiveImRepository
 
   @override
   Future<String> uploadAvatar(MediaUpload upload) async {
+    final generation = _identityGeneration;
     final prepared = await _sendRequest('POST', '/v2/media/presign', {
       'mime': upload.mimeType,
       'fileName': upload.fileName,
@@ -1056,6 +1260,9 @@ class LiveImRepository
         code: 'AVATAR_UPLOAD_FAILED',
         message: '头像上传失败，请重试',
       );
+    }
+    if (generation != _identityGeneration) {
+      throw StateError('企业已变化，头像上传已取消');
     }
     final checksum = sha256.convert(upload.bytes).toString();
     await _sendRequest('POST', '/v2/media/$mediaId/complete', {
@@ -1277,7 +1484,87 @@ class LiveImRepository
     }
   }
 
-  Future<bool> _performRefresh() async {
+  Future<bool> _performRefresh({bool requireEnterpriseChange = false}) async {
+    if (_platformBaseUrl.isNotEmpty) {
+      final refresh = _directoryRefresh;
+      if (refresh == null) return false;
+      _directoryOperationPending = false;
+      var transitioning = false;
+      try {
+        final data = await _directoryRequest('POST', '/v2/auth/refresh', {
+          'refreshToken': refresh,
+        });
+        if (_directoryRefresh != refresh) return false;
+        final connection = EnterpriseConnection.fromGrant(
+          Map<String, Object?>.from(data['enterprise'] as Map),
+        );
+        _validateDirectoryConnection(connection);
+        final previous = _enterpriseConnection;
+        if (connection.userId != _userId) {
+          throw const FormatException('平台续期身份发生变化');
+        }
+        final changed =
+            previous != null &&
+            (connection.tenantId != previous.tenantId ||
+                connection.assignmentVersion != previous.assignmentVersion ||
+                !connection.sameServices(previous));
+        if (requireEnterpriseChange && !changed) {
+          // Never reclaim the unchanged business session from another device
+          // after an ordinary same-device-type kick.
+          await _directoryRequest('POST', '/v2/auth/logout', {
+            'refreshToken': data['refreshToken'],
+          }, data['accessToken'] as String?);
+          return false;
+        }
+        if (changed) {
+          transitioning = true;
+          _events.add(
+            const ImEvent(
+              type: ImEventType.enterpriseSessionChanging,
+              payload: {},
+            ),
+          );
+          await _disconnect(logout: true);
+          await _clearSession(revokeDirectory: false);
+        }
+        await _acceptSession(data);
+        if (changed && !_events.isClosed) {
+          _events.add(
+            ImEvent(
+              type: ImEventType.enterpriseSessionChanged,
+              payload: {'tenantId': _tenantId, 'userId': _userId},
+            ),
+          );
+        }
+        return true;
+      } on ImApiException catch (error) {
+        _directoryOperationPending =
+            error.statusCode == 409 && error.code == 'OPERATION_PENDING';
+        if (transitioning ||
+            error.statusCode == 401 ||
+            error.statusCode == 403) {
+          await _disconnect(logout: true);
+          await _clearSession();
+          if (!_events.isClosed) {
+            _events.add(
+              const ImEvent(type: ImEventType.sessionExpired, payload: {}),
+            );
+          }
+        }
+        return false;
+      } catch (_) {
+        if (transitioning) {
+          await _disconnect(logout: true);
+          await _clearSession();
+          if (!_events.isClosed) {
+            _events.add(
+              const ImEvent(type: ImEventType.sessionExpired, payload: {}),
+            );
+          }
+        }
+        return false;
+      }
+    }
     final refresh = _refreshToken;
     if (refresh == null) return false;
     try {
@@ -1377,6 +1664,7 @@ class LiveImRepository
     if (issued.uid != _userId) {
       throw const FormatException('WuKongIM session user does not match login');
     }
+    _validateImConnection(issued);
     _imSession = issued;
     await _persistSession();
     return issued;
@@ -1437,6 +1725,33 @@ class LiveImRepository
   Future<void> _handleSameTypeSessionReplacement() async {
     if (_closed || _handlingSessionReplacement || _userId == null) return;
     _handlingSessionReplacement = true;
+    final generation = _identityGeneration;
+    if (_platformBaseUrl.isNotEmpty) {
+      final inFlight = _refreshInFlight;
+      if (inFlight != null) {
+        await inFlight;
+        if (_closed || generation != _identityGeneration || _userId == null) {
+          return;
+        }
+      }
+      final changed = await _performRefresh(requireEnterpriseChange: true);
+      if (changed ||
+          _closed ||
+          generation != _identityGeneration ||
+          _userId == null) {
+        return;
+      }
+      if (_directoryOperationPending) {
+        await _disconnect(logout: true);
+        _handlingSessionReplacement = false;
+        _enterpriseRecheckTimer?.cancel();
+        _enterpriseRecheckTimer = Timer(
+          const Duration(seconds: 5),
+          () => unawaited(_handleSameTypeSessionReplacement()),
+        );
+        return;
+      }
+    }
     final hadSession = _token != null || _refreshToken != null;
     // A same-device-type replacement is a full IM logout. The WuKong SDK has
     // already cleared its credentials, so the gateway session must be
@@ -4319,10 +4634,13 @@ class LiveImRepository
     String? coverId,
     void Function(double)? onProgress,
   }) async {
+    final generation = _identityGeneration;
     final account = _userId;
     final key = 'media-upload-$account-$clientId-$part';
     void checkAccount() {
-      if (account != _userId) throw const FormatException('登录账号已变化，已停止发送');
+      if (account != _userId || generation != _identityGeneration) {
+        throw const FormatException('登录账号或企业已变化，已停止发送');
+      }
     }
 
     final cached = await _store.readJson(key);
@@ -4624,6 +4942,15 @@ class LiveImRepository
   }
 
   Future<void> _persistSession() => _store.writeJson('session', {
+    if (_platformBaseUrl.isNotEmpty) ...{
+      'platformBaseUrl': _platformBaseUrl,
+      'enterpriseApiBaseUrl': _apiBaseUrl,
+      'tenantId': _tenantId,
+      'enterpriseEpoch': AppConfig.activeEnterpriseEpoch,
+      'enterpriseConnection': _enterpriseConnection?.toStoredGrant(),
+      'directoryRefresh': _directoryRefresh,
+      'directoryToken': _directoryToken,
+    },
     'accessToken': _token,
     if (_mediaToken != null) 'mediaAccessToken': _mediaToken,
     'refreshToken': _refreshToken,
@@ -4652,7 +4979,12 @@ class LiveImRepository
     'allowSearchByPhone': user.allowSearchByPhone,
   };
 
-  Future<void> _clearSession() async {
+  Future<void> _clearSession({bool revokeDirectory = true}) async {
+    _enterpriseRecheckTimer?.cancel();
+    _enterpriseRecheckTimer = null;
+    final nativeClear = syncEnterpriseNativeIdentity(clear: true);
+    _identityGeneration++;
+    _business.invalidateIdentity();
     _sessionEpoch++;
     _deletionSyncs.clear();
     _deletionVersions.clear();
@@ -4680,7 +5012,23 @@ class LiveImRepository
     _wukongHasConnected = false;
     _reconnectReconciliationNeeded = false;
     _reconnectReconciliationAttempts = 0;
+    if (revokeDirectory && _directoryRefresh != null) {
+      try {
+        await _directoryRequest('POST', '/v2/auth/logout', {
+          'refreshToken': _directoryRefresh,
+        });
+      } catch (_) {}
+    }
     await _store.remove('session');
+    _directoryRefresh = null;
+    _directoryToken = null;
+    _enterpriseConnection = null;
+    _tenantId = '';
+    AppConfig.activeBusinessUrl = null;
+    AppConfig.activeTenantId = '';
+    AppConfig.activeUserId = '';
+    AppConfig.activeEnterpriseEpoch = 0;
+    await nativeClear;
   }
 
   Future<void> _disconnect({bool logout = false}) async {
@@ -4696,6 +5044,7 @@ class LiveImRepository
 
   @override
   Future<void> close() async {
+    _enterpriseRecheckTimer?.cancel();
     _sessionEpoch++;
     mediaAccess.clear(this);
     _closed = true;
@@ -4715,8 +5064,18 @@ class LiveImRepository
   }
 
   @override
-  Future<CallConfiguration> callConfiguration() async =>
-      CallConfiguration.fromJson(await _get('/v2/calls/config'));
+  Future<CallConfiguration> callConfiguration() async {
+    final configuration = CallConfiguration.fromJson(
+      await _get('/v2/calls/config'),
+    );
+    final connection = _enterpriseConnection;
+    if (connection != null &&
+        configuration.url.replaceFirst(RegExp(r'/$'), '') !=
+            connection.callSignalUrl) {
+      throw const FormatException('企业通话地址与平台登记配置不一致');
+    }
+    return configuration;
+  }
 
   @override
   Future<CallSession> inviteCall({

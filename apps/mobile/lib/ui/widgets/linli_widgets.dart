@@ -42,13 +42,23 @@ class LinliNetworkImage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final trimmed = url.trim();
-    final resolved = trimmed.startsWith('/') && AppConfig.apiBaseUrl.isNotEmpty
-        ? '${AppConfig.apiBaseUrl}$trimmed'
+    final absolute =
+        trimmed.startsWith('/') && AppConfig.businessBaseUrl.isNotEmpty
+        ? '${AppConfig.businessBaseUrl}$trimmed'
         : trimmed;
+    final resolved = mediaAccess.scopeImage(absolute);
+    final identity = AppConfig.activeTenantId.isEmpty
+        ? null
+        : '${AppConfig.activeTenantId}:${AppConfig.activeUserId}';
     return CachedNetworkImage(
+      key: identity == null ? null : ValueKey(identity),
       imageUrl: resolved,
       httpHeaders: mediaAccess.headersFor(resolved),
-      cacheKey: mediaAccess.owns(resolved) ? resolved : cacheKey,
+      cacheKey: identity != null
+          ? '$identity:$resolved'
+          : mediaAccess.owns(resolved)
+          ? resolved
+          : cacheKey,
       width: width,
       height: height,
       fit: fit,
@@ -172,8 +182,8 @@ class PersonAvatar extends StatelessWidget {
     final resolvedAvatarUrl =
         avatarUrl != null &&
             avatarUrl!.startsWith('/') &&
-            AppConfig.apiBaseUrl.isNotEmpty
-        ? '${AppConfig.apiBaseUrl}$avatarUrl'
+            AppConfig.businessBaseUrl.isNotEmpty
+        ? '${AppConfig.businessBaseUrl}$avatarUrl'
         : avatarUrl;
     final fallback = Center(
       child: Text(

@@ -209,6 +209,11 @@ func apnsVoIPPayload(item store.OutboxItem) ([]byte, error) {
 		"nameCaller":     "青蛙呱呱联系人",
 		"handle":         "青蛙呱呱",
 	}
+	for _, key := range []string{"tenantId", "recipientId", "enterpriseEpoch"} {
+		if v, ok := item.Payload[key]; ok {
+			payload[key] = v
+		}
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return nil, errors.New("failed to encode APNs VoIP payload")

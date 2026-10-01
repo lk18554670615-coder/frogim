@@ -10,6 +10,7 @@ import (
 )
 
 type Manager struct {
+	Generation            int64
 	Secret                []byte
 	AccessTTL, RefreshTTL time.Duration
 }
@@ -95,7 +96,7 @@ func (m Manager) sign(userID, typ string, ttl time.Duration, sessionID, deviceKi
 	if err != nil {
 		return "", err
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{TokenType: typ, SessionID: sessionID, DeviceKind: deviceKind, RegisteredClaims: jwt.RegisteredClaims{Subject: userID, ID: id, IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now.Add(-5 * time.Second)), ExpiresAt: jwt.NewNumericDate(now.Add(ttl))}}).SignedString(m.Secret)
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{AuthVersion: m.Generation, TokenType: typ, SessionID: sessionID, DeviceKind: deviceKind, RegisteredClaims: jwt.RegisteredClaims{Subject: userID, ID: id, IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now.Add(-5 * time.Second)), ExpiresAt: jwt.NewNumericDate(now.Add(ttl))}}).SignedString(m.Secret)
 }
 
 func (m Manager) Parse(raw, expected string) (string, error) {

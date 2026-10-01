@@ -7,6 +7,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../core/app_controller.dart';
+import '../../core/app_config.dart';
 import '../../core/app_theme.dart';
 import '../../core/auth_validation.dart';
 import '../../core/models.dart';
@@ -359,7 +360,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 selected: effectiveMode == _LoginMode.password,
                 compact: !showBrand,
               ),
-              if (!showBrand)
+              if (!showBrand && AppConfig.platformBaseUrl.isEmpty)
                 _LoginMode.qr: _LoginModeLabel(
                   label: '扫码登录',
                   selected: effectiveMode == _LoginMode.qr,
@@ -461,7 +462,9 @@ class _LoginScreenState extends State<LoginScreen> {
                       ? '邀请码有效'
                       : inviteValid == false
                       ? '邀请码无效、已停用或已失效'
-                      : '仅首次登录创建账号时使用，已有账号可留空',
+                      : (AppConfig.platformBaseUrl.isEmpty
+                            ? '仅首次登录创建账号时使用，已有账号可留空'
+                            : '注册时选择企业，已有账号归属由管理员管理'),
                   errorText: inviteValid == false ? '请检查邀请码' : null,
                   prefixIcon: const Icon(CupertinoIcons.ticket),
                   suffixIcon: Row(

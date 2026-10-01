@@ -53,6 +53,15 @@ abstract interface class CallMediaEngine {
 }
 
 class LiveKitCallMediaEngine implements CallMediaEngine {
+  LiveKitCallMediaEngine({
+    Future<LocalAudioTrack> Function(AudioCaptureOptions)? captureAudio,
+    Future<LocalVideoTrack> Function(CameraCaptureOptions)? captureVideo,
+  }) : _captureAudio = captureAudio ?? LocalAudioTrack.create,
+       _captureVideo = captureVideo ?? LocalVideoTrack.createCameraTrack;
+
+  final Future<LocalAudioTrack> Function(AudioCaptureOptions) _captureAudio;
+  final Future<LocalVideoTrack> Function(CameraCaptureOptions) _captureVideo;
+
   static const _screenShareChannel = MethodChannel(
     'top.hongjinghuanqiu.app/screen_share',
   );
@@ -143,32 +152,46 @@ class LiveKitCallMediaEngine implements CallMediaEngine {
     required CallConfiguration configuration,
     required CallMediaType mediaType,
   }) async {
+    if (_disposing) throw StateError('通话媒体已关闭');
     if (_room != null || _localAudio != null || _localVideo != null) return;
     if (configuration.provider != 'livekit') {
       throw StateError('不支持的通话媒体服务');
     }
     _mediaType = mediaType;
-    _localAudio = await LocalAudioTrack.create(
+    final audio = await _captureAudio(
       const AudioCaptureOptions(
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
       ),
     );
+    if (_disposing) {
+      await audio.stop();
+      await audio.dispose();
+      throw StateError('通话媒体已关闭');
+    }
+    _localAudio = audio;
     if (mediaType == CallMediaType.video) {
-      _localVideo = await LocalVideoTrack.createCameraTrack(
+      final video = await _captureVideo(
         const CameraCaptureOptions(
           cameraPosition: CameraPosition.front,
           maxFrameRate: 15,
           params: _videoParameters,
         ),
       );
+      if (_disposing) {
+        await video.stop();
+        await video.dispose();
+        throw StateError('通话媒体已关闭');
+      }
+      _localVideo = video;
     }
     _emitMedia();
   }
 
   @override
   Future<void> connect(CallMediaSession session) async {
+    if (_disposing) throw StateError('通话媒体已关闭');
     if (_connected) return;
     if (_localAudio == null) {
       throw StateError('通话媒体尚未初始化');
@@ -193,18 +216,18 @@ class LiveKitCallMediaEngine implements CallMediaEngine {
     _listener = listener;
     listener
       ..on<RoomConnectedEvent>((_) {
-        _connections.add(CallConnectionState.connected);
+        _emitConnection(CallConnectionState.connected);
         _emitMedia();
       })
       ..on<ReconnectingEvent>((_) {
-        _connections.add(CallConnectionState.reconnecting);
+        _emitConnection(CallConnectionState.reconnecting);
       })
       ..on<RoomReconnectedEvent>((_) {
-        _connections.add(CallConnectionState.connected);
+        _emitConnection(CallConnectionState.connected);
         _emitMedia();
       })
       ..on<RoomDisconnectedEvent>((_) {
-        if (!_disposing) _connections.add(CallConnectionState.failed);
+        if (!_disposing) _emitConnection(CallConnectionState.failed);
       })
       ..on<ParticipantConnectedEvent>((_) => _emitMedia())
       ..on<ParticipantDisconnectedEvent>((_) => _emitMedia())
@@ -213,7 +236,7 @@ class LiveKitCallMediaEngine implements CallMediaEngine {
       ..on<TrackMutedEvent>((_) => _emitMedia())
       ..on<TrackUnmutedEvent>((_) => _emitMedia())
       ..on<ActiveSpeakersChangedEvent>((_) => _emitMedia());
-    _connections.add(CallConnectionState.connecting);
+    _emitConnection(CallConnectionState.connecting);
     try {
       await room.connect(
         session.url,
@@ -226,16 +249,22 @@ class LiveKitCallMediaEngine implements CallMediaEngine {
           ),
         ),
       );
+      if (_disposing || !identical(_room, room)) {
+        throw StateError('通话媒体已关闭');
+      }
       _connected = true;
       await room.setSpeakerOn(_speakerEnabled);
       await room.localParticipant?.setMicrophoneEnabled(!_muted);
       if (_mediaType == CallMediaType.video) {
         await room.localParticipant?.setCameraEnabled(_cameraEnabled);
       }
-      _connections.add(CallConnectionState.connected);
+      if (_disposing || !identical(_room, room)) {
+        throw StateError('通话媒体已关闭');
+      }
+      _emitConnection(CallConnectionState.connected);
       _emitMedia();
     } catch (_) {
-      _connections.add(CallConnectionState.failed);
+      _emitConnection(CallConnectionState.failed);
       rethrow;
     }
   }
@@ -277,13 +306,22 @@ class LiveKitCallMediaEngine implements CallMediaEngine {
         !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
     if (value && isAndroid) {
       final allowed = await rtc.Helper.requestCapturePermission();
+      if (_disposing) throw StateError('通话媒体已关闭');
       if (!allowed) throw StateError('未获得屏幕录制权限');
       // Android 14+ requires this after the user grants capture consent but
       // before WebRTC obtains the MediaProjection instance.
       await _screenShareChannel.invokeMethod<void>('startForegroundService');
+      if (_disposing) {
+        await _stopAndroidScreenShareService();
+        throw StateError('通话媒体已关闭');
+      }
     }
     try {
       await participant.setScreenShareEnabled(value, captureScreenAudio: true);
+      if (_disposing) {
+        await participant.setScreenShareEnabled(false);
+        throw StateError('通话媒体已关闭');
+      }
       _screenShareEnabled = value;
       _emitMedia();
     } catch (_) {
@@ -313,6 +351,10 @@ class LiveKitCallMediaEngine implements CallMediaEngine {
     if (options is CameraCaptureOptions) {
       await track.setCameraPosition(options.cameraPosition.switched());
     }
+  }
+
+  void _emitConnection(CallConnectionState state) {
+    if (!_disposing && !_connections.isClosed) _connections.add(state);
   }
 
   void _emitMedia() {

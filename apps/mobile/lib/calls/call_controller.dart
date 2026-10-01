@@ -64,6 +64,22 @@ class CallController extends ChangeNotifier {
   bool _switchingCameraLens = false;
   bool _cameraSuspendedByLifecycle = false;
   bool _disposed = false;
+  int _identityEpoch = 0;
+
+  /// Stop local/native media without issuing old call actions against the new
+  /// enterprise. Increment synchronously to fence pending permission callbacks.
+  Future<void> clearIdentity() async {
+    _identityEpoch++;
+    final id = session?.id;
+    _configuration = null;
+    session = null;
+    phase = CallPhase.idle;
+    _inviteTimer?.cancel();
+    _durationTimer?.cancel();
+    _stopRinging();
+    await Future.wait<void>([_reset(), if (id != null) _systemCalls.end(id)]);
+  }
+
   Conversation? _draftConversation;
   CallMediaType? _draftMediaType;
 
@@ -94,6 +110,7 @@ class CallController extends ChangeNotifier {
     Conversation conversation,
     CallMediaType mediaType,
   ) async {
+    final epoch = _identityEpoch;
     if (phase != CallPhase.idle) throw StateError('当前已有通话进行中');
     final me = currentUser();
     final callee = conversation.kind == ConversationKind.direct
@@ -113,6 +130,7 @@ class CallController extends ChangeNotifier {
       phase = CallPhase.connecting;
       notifyListeners();
       final configuration = await _loadConfiguration();
+      if (epoch != _identityEpoch || _disposed) return;
       final memberCount = conversation.memberCount > 0
           ? conversation.memberCount
           : conversation.members.length;
@@ -120,12 +138,15 @@ class CallController extends ChangeNotifier {
         throw StateError('群通话仅支持 2–${configuration.maxParticipants} 人');
       }
       await _prepareEngine(configuration, mediaType);
-      session = await repository.inviteCall(
+      if (epoch != _identityEpoch || _disposed) return;
+      final invited = await repository.inviteCall(
         callId: callId,
         conversationId: conversation.id,
         calleeUserId: callee?.id,
         mediaType: mediaType,
       );
+      if (epoch != _identityEpoch || _disposed) return;
+      session = invited;
       phase = CallPhase.outgoing;
       _startInviteDeadline(session!.expiresAt);
       notifyListeners();
@@ -140,6 +161,7 @@ class CallController extends ChangeNotifier {
         );
       }
     } catch (error) {
+      if (epoch != _identityEpoch || _disposed) return;
       await _fail(_readableError(error, '无法发起通话'));
       rethrow;
     }
@@ -147,36 +169,45 @@ class CallController extends ChangeNotifier {
 
   Future<void> accept() async {
     if (phase != CallPhase.incoming || session == null || _answering) return;
+    final epoch = _identityEpoch;
+    final incoming = session!;
     _answering = true;
     _stopRinging();
     phase = CallPhase.connecting;
     notifyListeners();
     try {
       final configuration = await _loadConfiguration();
-      await _prepareEngine(configuration, session!.mediaType);
-      session = await repository.acceptCall(session!.id);
+      if (epoch != _identityEpoch || _disposed) return;
+      await _prepareEngine(configuration, incoming.mediaType);
+      if (epoch != _identityEpoch || _disposed) return;
+      final accepted = await repository.acceptCall(incoming.id);
+      if (epoch != _identityEpoch || _disposed) return;
+      session = accepted;
       _inviteTimer?.cancel();
       await _joinMedia();
     } catch (error) {
+      if (epoch != _identityEpoch || _disposed) return;
       await _endAcceptedCallAfterMediaFailure();
       await _fail(_readableError(error, '接听失败，请稍后重试'));
     } finally {
-      _answering = false;
+      if (epoch == _identityEpoch) _answering = false;
     }
   }
 
   Future<void> reject() async {
+    final epoch = _identityEpoch;
     final active = session;
     if (active == null || phase != CallPhase.incoming) return;
     _stopRinging();
     try {
       await repository.rejectCall(active.id, reason: 'declined');
     } finally {
-      await _finish('已拒绝');
+      if (epoch == _identityEpoch) await _finish('已拒绝');
     }
   }
 
   Future<void> end() async {
+    final epoch = _identityEpoch;
     final active = session;
     if (active == null) return;
     try {
@@ -190,7 +221,7 @@ class CallController extends ChangeNotifier {
     } catch (_) {
       // 本地媒体必须立即释放；服务端会通过状态查询或房间清理最终收敛。
     } finally {
-      await _finish('通话结束');
+      if (epoch == _identityEpoch) await _finish('通话结束');
     }
   }
 
@@ -199,6 +230,7 @@ class CallController extends ChangeNotifier {
   }
 
   Future<void> toggleMute() async {
+    final epoch = _identityEpoch;
     if (_changingMute) return;
     final previous = muted;
     final target = !previous;
@@ -207,19 +239,25 @@ class CallController extends ChangeNotifier {
     notifyListeners();
     try {
       await _engine?.setMuted(target);
+      if (epoch != _identityEpoch) return;
       final callId = session?.id;
       if (callId != null) unawaited(_systemCalls.setMuted(callId, target));
+      if (epoch != _identityEpoch) return;
       errorMessage = null;
     } catch (error) {
+      if (epoch != _identityEpoch) return;
       muted = previous;
       errorMessage = _readableError(error, '麦克风状态切换失败，请重试');
     } finally {
-      _changingMute = false;
-      if (!_disposed) notifyListeners();
+      if (epoch == _identityEpoch) {
+        _changingMute = false;
+        if (!_disposed) notifyListeners();
+      }
     }
   }
 
   Future<void> setMuted(bool value) async {
+    final epoch = _identityEpoch;
     if (muted == value) return;
     if (_changingMute) return;
     final previous = muted;
@@ -228,17 +266,22 @@ class CallController extends ChangeNotifier {
     notifyListeners();
     try {
       await _engine?.setMuted(value);
+      if (epoch != _identityEpoch) return;
       errorMessage = null;
     } catch (error) {
+      if (epoch != _identityEpoch) return;
       muted = previous;
       errorMessage = _readableError(error, '麦克风状态切换失败，请重试');
     } finally {
-      _changingMute = false;
-      if (!_disposed) notifyListeners();
+      if (epoch == _identityEpoch) {
+        _changingMute = false;
+        if (!_disposed) notifyListeners();
+      }
     }
   }
 
   Future<void> toggleSpeaker() async {
+    final epoch = _identityEpoch;
     if (_changingSpeaker) return;
     final previous = speakerEnabled;
     final target = !previous;
@@ -247,17 +290,22 @@ class CallController extends ChangeNotifier {
     notifyListeners();
     try {
       await _engine?.setSpeakerEnabled(target);
+      if (epoch != _identityEpoch) return;
       errorMessage = null;
     } catch (error) {
+      if (epoch != _identityEpoch) return;
       speakerEnabled = previous;
       errorMessage = _readableError(error, '扬声器切换失败，请重试');
     } finally {
-      _changingSpeaker = false;
-      if (!_disposed) notifyListeners();
+      if (epoch == _identityEpoch) {
+        _changingSpeaker = false;
+        if (!_disposed) notifyListeners();
+      }
     }
   }
 
   Future<void> toggleCamera() async {
+    final epoch = _identityEpoch;
     if (!isVideo || _changingCamera) return;
     final previous = cameraEnabled;
     final target = !previous;
@@ -266,43 +314,58 @@ class CallController extends ChangeNotifier {
     notifyListeners();
     try {
       await _engine?.setCameraEnabled(target);
+      if (epoch != _identityEpoch) return;
       errorMessage = null;
     } catch (error) {
+      if (epoch != _identityEpoch) return;
       cameraEnabled = previous;
       errorMessage = _readableError(error, '摄像头状态切换失败，请重试');
     } finally {
-      _changingCamera = false;
-      if (!_disposed) notifyListeners();
+      if (epoch == _identityEpoch) {
+        _changingCamera = false;
+        if (!_disposed) notifyListeners();
+      }
     }
   }
 
   Future<void> toggleScreenShare() async {
+    final epoch = _identityEpoch;
     if (!supportsScreenShare || _changingScreenShare) return;
     final target = !screenShareEnabled;
     _changingScreenShare = true;
     try {
       await _engine?.setScreenShareEnabled(target);
+      if (epoch != _identityEpoch) return;
       screenShareEnabled = target;
+      if (epoch != _identityEpoch) return;
       errorMessage = null;
     } catch (error) {
+      if (epoch != _identityEpoch) return;
       errorMessage = _readableError(error, '无法共享屏幕');
     } finally {
-      _changingScreenShare = false;
-      if (!_disposed) notifyListeners();
+      if (epoch == _identityEpoch) {
+        _changingScreenShare = false;
+        if (!_disposed) notifyListeners();
+      }
     }
   }
 
   Future<void> switchCamera() async {
+    final epoch = _identityEpoch;
     if (!isVideo || _switchingCameraLens) return;
     _switchingCameraLens = true;
     try {
       await _engine?.switchCamera();
+      if (epoch != _identityEpoch) return;
       errorMessage = null;
     } catch (error) {
+      if (epoch != _identityEpoch) return;
       errorMessage = _readableError(error, '摄像头切换失败，请重试');
     } finally {
-      _switchingCameraLens = false;
-      if (!_disposed) notifyListeners();
+      if (epoch == _identityEpoch) {
+        _switchingCameraLens = false;
+        if (!_disposed) notifyListeners();
+      }
     }
   }
 
@@ -324,12 +387,14 @@ class CallController extends ChangeNotifier {
   }
 
   Future<void> handlePushPayload(Map<String, dynamic> payload) async {
+    final epoch = _identityEpoch;
     final type = (payload['eventType'] ?? payload['type'])?.toString();
     if (type != 'call.invited' && type != 'call.invite') return;
     final callId = (payload['callId'] ?? payload['call_id'])?.toString();
     if (callId == null || callId.isEmpty || session?.id == callId) return;
     try {
-      await _showIncoming(await repository.getCall(callId));
+      final incoming = await repository.getCall(callId);
+      if (epoch == _identityEpoch && !_disposed) await _showIncoming(incoming);
     } catch (_) {}
   }
 
@@ -342,24 +407,26 @@ class CallController extends ChangeNotifier {
   }
 
   Future<void> _handleSystemCallAction(SystemCallAction action) async {
+    final epoch = _identityEpoch;
     if (_disposed) return;
     if (session?.id != action.serverCallId) {
       if (phase != CallPhase.idle) return;
       final deadline = DateTime.now().add(const Duration(seconds: 12));
       while (currentUser() == null && DateTime.now().isBefore(deadline)) {
         await Future<void>.delayed(const Duration(milliseconds: 150));
+        if (epoch != _identityEpoch || _disposed) return;
       }
       if (currentUser() == null) return;
       try {
-        await _showIncoming(
-          await repository.getCall(action.serverCallId),
-          presentSystemUi: false,
-        );
+        final incoming = await repository.getCall(action.serverCallId);
+        if (epoch != _identityEpoch || _disposed) return;
+        await _showIncoming(incoming, presentSystemUi: false);
       } catch (_) {
         await _systemCalls.end(action.serverCallId);
         return;
       }
     }
+    if (epoch != _identityEpoch || _disposed) return;
     if (session?.id != action.serverCallId) {
       // Android Telecom can retain a ringing self-managed call while the app
       // process is frozen. If the business call has since expired or ended,
@@ -384,13 +451,14 @@ class CallController extends ChangeNotifier {
         try {
           await repository.rejectCall(active.id, reason: 'timeout');
         } catch (_) {}
-        await _finish('无人接听');
+        if (epoch == _identityEpoch) await _finish('无人接听');
       case SystemCallActionType.mute:
         await setMuted(action.muted ?? false);
     }
   }
 
   Future<void> _handleCallEvent(CallSignalEvent event) async {
+    final epoch = _identityEpoch;
     final callMap = event.payload['call'];
     final parsedCall = callMap is Map<String, Object?>
         ? CallSession.fromJson(callMap)
@@ -402,7 +470,9 @@ class CallController extends ChangeNotifier {
       case 'call.accepted':
         if (session?.id != eventCallId) return;
         final wasActive = phase == CallPhase.active;
-        session = parsedCall ?? await repository.getCall(eventCallId!);
+        final accepted = parsedCall ?? await repository.getCall(eventCallId!);
+        if (epoch != _identityEpoch || _disposed) return;
+        session = accepted;
         final currentUserId = currentUser()?.id;
         if (currentUserId == null || !session!.hasJoined(currentUserId)) {
           notifyListeners();
@@ -418,6 +488,7 @@ class CallController extends ChangeNotifier {
         try {
           await _joinMedia();
         } catch (error) {
+          if (epoch != _identityEpoch || _disposed) return;
           await _endAcceptedCallAfterMediaFailure();
           await _fail(_readableError(error, '无法加入通话'));
         }
@@ -441,6 +512,7 @@ class CallController extends ChangeNotifier {
     CallSession incoming, {
     bool presentSystemUi = true,
   }) async {
+    final epoch = _identityEpoch;
     final currentUserId = currentUser()?.id;
     if (incoming.isTerminal ||
         currentUserId == null ||
@@ -469,14 +541,20 @@ class CallController extends ChangeNotifier {
       callerHandle: publicUserHandle(peer?.handle),
       avatarUrl: peer?.avatarUrl ?? conversation?.avatarUrl,
     );
+    if (epoch != _identityEpoch || _disposed) {
+      await _systemCalls.end(incoming.id);
+      return;
+    }
     if (!managedBySystem) _startRinging();
     notifyListeners();
   }
 
   Future<CallConfiguration> _loadConfiguration() async {
+    final epoch = _identityEpoch;
     final existing = _configuration;
     if (existing != null) return existing;
     final loaded = await repository.callConfiguration();
+    if (epoch != _identityEpoch || _disposed) throw StateError('通话身份已变化');
     _configuration = loaded;
     return loaded;
   }
@@ -485,19 +563,29 @@ class CallController extends ChangeNotifier {
     CallConfiguration configuration,
     CallMediaType mediaType,
   ) async {
+    final epoch = _identityEpoch;
     if (_engine != null) return;
     final engine = _engineFactory();
     _engine = engine;
-    _connections = engine.connectionChanges.listen(_onConnectionChanged);
+    _connections = engine.connectionChanges.listen((state) {
+      if (epoch == _identityEpoch && identical(engine, _engine) && !_disposed) {
+        _onConnectionChanged(state);
+      }
+    });
     _mediaChanges = engine.mediaChanges.listen((_) {
+      if (epoch != _identityEpoch || !identical(engine, _engine)) return;
       screenShareEnabled = engine.screenShareEnabled;
       if (!_disposed) notifyListeners();
     });
     await engine.initialize(configuration: configuration, mediaType: mediaType);
+    if (epoch != _identityEpoch || !identical(engine, _engine) || _disposed) {
+      throw StateError('通话身份已变化');
+    }
     await engine.setSpeakerEnabled(speakerEnabled);
   }
 
   Future<void> _joinMedia() async {
+    final epoch = _identityEpoch;
     if (_joining || phase == CallPhase.active) return;
     final active = session;
     if (active == null || active.status != 'accepted') {
@@ -506,11 +594,15 @@ class CallController extends ChangeNotifier {
     _joining = true;
     try {
       final configuration = await _loadConfiguration();
+      if (epoch != _identityEpoch || _disposed) return;
       await _prepareEngine(configuration, active.mediaType);
+      if (epoch != _identityEpoch || _disposed) return;
       final mediaSession = await repository.joinCall(active.id);
-      await _engine!.connect(mediaSession);
+      if (epoch != _identityEpoch || _disposed) return;
+      final engine = _engine;
+      if (engine != null) await engine.connect(mediaSession);
     } finally {
-      _joining = false;
+      if (epoch == _identityEpoch) _joining = false;
     }
   }
 
@@ -535,6 +627,7 @@ class CallController extends ChangeNotifier {
   }
 
   Future<void> _connectionFailed(String message) async {
+    final epoch = _identityEpoch;
     if (_failing) return;
     _failing = true;
     final active = session;
@@ -543,8 +636,10 @@ class CallController extends ChangeNotifier {
         await repository.hangupCall(active.id, reason: 'media_failed');
       } catch (_) {}
     }
-    await _fail(message);
-    _failing = false;
+    if (epoch == _identityEpoch && !_disposed) {
+      await _fail(message);
+      _failing = false;
+    }
   }
 
   Future<void> _endAcceptedCallAfterMediaFailure() async {
@@ -600,6 +695,7 @@ class CallController extends ChangeNotifier {
   }
 
   Future<void> _finish(String message) async {
+    final epoch = _identityEpoch;
     if (phase == CallPhase.idle) return;
     final callId = session?.id;
     if (callId != null) unawaited(_systemCalls.end(callId));
@@ -608,14 +704,16 @@ class CallController extends ChangeNotifier {
     phase = CallPhase.ended;
     if (!_disposed) notifyListeners();
     await Future<void>.delayed(const Duration(milliseconds: 650));
-    await _reset();
+    if (epoch == _identityEpoch && !_disposed) await _reset();
   }
 
   Future<void> _reset() async {
+    final epoch = _identityEpoch;
     _inviteTimer?.cancel();
     _durationTimer?.cancel();
     _stopRinging();
     await _releaseEngine();
+    if (epoch != _identityEpoch) return;
     session = null;
     phase = CallPhase.idle;
     errorMessage = null;
@@ -628,6 +726,11 @@ class CallController extends ChangeNotifier {
     _answering = false;
     _joining = false;
     _failing = false;
+    _changingMute = false;
+    _changingSpeaker = false;
+    _changingCamera = false;
+    _changingScreenShare = false;
+    _switchingCameraLens = false;
     _cameraSuspendedByLifecycle = false;
     _draftConversation = null;
     _draftMediaType = null;
@@ -635,12 +738,14 @@ class CallController extends ChangeNotifier {
   }
 
   Future<void> _releaseEngine() async {
-    await _connections?.cancel();
-    await _mediaChanges?.cancel();
+    final connections = _connections;
+    final changes = _mediaChanges;
+    final engine = _engine;
     _connections = null;
     _mediaChanges = null;
-    final engine = _engine;
     _engine = null;
+    await connections?.cancel();
+    await changes?.cancel();
     if (engine != null) await engine.dispose();
   }
 
@@ -663,6 +768,7 @@ class CallController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _identityEpoch++;
     unawaited(_events.cancel());
     unawaited(_systemActions.cancel());
     unawaited(_systemCalls.dispose());

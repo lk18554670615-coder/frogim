@@ -13,7 +13,15 @@ class WKDBHelper {
   Database? _database;
   Future<bool> init() async {
     var databasesPath = await getDatabasesPath();
-    String path = p.join(databasesPath, 'wk_${WKIM.shared.options.uid}.db');
+    final scope = WKIM.shared.options.databaseNamespace;
+    if (_database != null) {
+      await _database!.close();
+      _database = null;
+    }
+    String path = p.join(
+      databasesPath,
+      'wk_${scope.isEmpty ? '' : '${scope}_'}${WKIM.shared.options.uid}.db',
+    );
     _database = await openDatabase(
       path,
       version: dbVersion,
@@ -28,11 +36,12 @@ class WKDBHelper {
   }
 
   Future<bool> onUpgrade(Database db) async {
-    String path = await rootBundle
-        .loadString('packages/wukongimfluttersdk/assets/sql.txt');
+    String path = await rootBundle.loadString(
+      'packages/wukongimfluttersdk/assets/sql.txt',
+    );
     List<String> names = path.split(';');
     SharedPreferences preferences = await SharedPreferences.getInstance();
-    String wkUid = WKIM.shared.options.uid!;
+    String wkUid = WKIM.shared.options.databaseNamespace.isEmpty ? WKIM.shared.options.uid! : '${WKIM.shared.options.databaseNamespace}:${WKIM.shared.options.uid}';
     int maxVersion = preferences.getInt('wk_max_sql_version_$wkUid') ?? 0;
     int saveVersion = 0;
     for (int i = 0; i < names.length; i++) {
@@ -41,8 +50,9 @@ class WKDBHelper {
       }
       int version = int.parse(names[i]);
       if (version > maxVersion) {
-        String sqlStr = await rootBundle
-            .loadString('packages/wukongimfluttersdk/assets/$version.sql');
+        String sqlStr = await rootBundle.loadString(
+          'packages/wukongimfluttersdk/assets/$version.sql',
+        );
         var sqlList = sqlStr.split(';');
         for (String sql in sqlList) {
           String exeSql = sql.replaceAll('\n', '');

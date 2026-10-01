@@ -58,6 +58,13 @@ func (x *API) wukongSendPolicy(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusOK, wukongPolicySendResponse{ReasonCode: reason, Code: code})
 		return
 	}
+	if x.enterprise != nil {
+		active, e := x.enterprise.Active(r.Context(), request.FromUID, -1)
+		if e != nil || !active {
+			write(w, http.StatusOK, wukongPolicySendResponse{ReasonCode: wukong.ReasonNotAllowSend, Code: "ENTERPRISE_SESSION_OFFLINE"})
+			return
+		}
+	}
 	route, err := x.app.AuthorizeWukongClientMessage(r.Context(), input)
 	if err != nil {
 		reason, code = wukongPolicyError(err)

@@ -33,11 +33,15 @@ import (
 	"github.com/linli/im/server/internal/netutil"
 	"github.com/linli/im/server/internal/push"
 	"github.com/linli/im/server/internal/store"
+	"github.com/linli/im/server/internal/tenancy"
 	"github.com/linli/im/server/internal/wukong"
 	"github.com/linli/im/server/internal/wukongplugin"
 )
 
 type API struct {
+	enterprise      *tenancy.Enterprise
+	tenancyErr      error
+	controlServer   *http.Server
 	accessRecorder  *accesslog.Recorder
 	ipRegion        *ipregion.Resolver
 	cfg             config.Config
@@ -217,9 +221,13 @@ func New(cfg config.Config, a *app.App) *API {
 	x.presence = wukong.NewPresenceCache(presenceLoader)
 	x.mux = http.NewServeMux()
 	x.routes()
+	x.setupTenancy()
 	return x
 }
 func (x *API) SetupError() error {
+	if x.tenancyErr != nil {
+		return x.tenancyErr
+	}
 	if x.cfg.WukongEnabled && x.wukongSetupErr != nil {
 		return fmt.Errorf("WuKongIM setup: %w", x.wukongSetupErr)
 	}
@@ -228,7 +236,7 @@ func (x *API) SetupError() error {
 	}
 	return nil
 }
-func (x *API) Handler() http.Handler { return x.middleware(x.mux) }
+func (x *API) Handler() http.Handler { return x.middleware(x.enterpriseHandler(x.mux)) }
 func (x *API) RunMediaCleanup(ctx context.Context) {
 	if x.cleaner == nil {
 		return
@@ -664,6 +672,21 @@ func (x *API) livekitCallToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session, err := x.livekit.IssueParticipant(call.ID, uid(r), call.ConversationID, call.MediaType)
+	if x.enterprise != nil {
+		issuer, ok := x.livekit.(interface {
+			IssueEnterpriseParticipant(string, string, string, string, string, int64) (livekitcontrol.ParticipantSession, error)
+		})
+		if !ok {
+			writeError(w, 503, "LIVEKIT_UNAVAILABLE", "enterprise call token issuer unavailable")
+			return
+		}
+		epoch, epochErr := x.enterprise.Epoch(r.Context(), uid(r))
+		if epochErr != nil {
+			writeError(w, 403, "ENTERPRISE_SESSION_REVOKED", "enterprise session revoked")
+			return
+		}
+		session, err = issuer.IssueEnterpriseParticipant(call.ID, uid(r), call.ConversationID, call.MediaType, tenancy.LoadOptions().TenantID, epoch)
+	}
 	if err != nil {
 		slog.Error("LiveKit participant token failed", "callId", call.ID, "error", err)
 		writeError(w, http.StatusServiceUnavailable, "LIVEKIT_UNAVAILABLE", "LiveKit token is unavailable")
@@ -1002,6 +1025,12 @@ func (x *API) parseRequestClaims(r *http.Request) (*auth.Claims, error) {
 	return x.auth.ParseClaims(raw, "access")
 }
 func (x *API) deviceSessionActive(claims *auth.Claims) (bool, error) {
+	if x.enterprise != nil {
+		active, e := x.enterprise.Active(context.Background(), claims.Subject, claims.AuthVersion)
+		if e != nil || !active {
+			return false, e
+		}
+	}
 	// Persistent deployments reject pre-device-session tokens. The in-memory
 	// test store keeps them only for isolated protocol tests that issue JWTs
 	// without creating a refresh-session row.
@@ -1194,7 +1223,15 @@ func (x *API) issueUserSession(w http.ResponseWriter, r *http.Request, u *model.
 		writeError(w, http.StatusServiceUnavailable, "IM_UNAVAILABLE", "instant messaging service is temporarily unavailable")
 		return
 	}
-	a, refresh, sessionID, err := x.auth.IssueDeviceSession(u.ID, deviceKindForPlatform(platform))
+	issuer := x.auth
+	if x.enterprise != nil {
+		issuer.Generation, err = x.enterprise.Epoch(r.Context(), u.ID)
+		if err != nil {
+			handleErr(w, err)
+			return
+		}
+	}
+	a, refresh, sessionID, err := issuer.IssueDeviceSession(u.ID, deviceKindForPlatform(platform))
 	if err != nil {
 		handleErr(w, err)
 		return
@@ -1210,6 +1247,9 @@ func (x *API) issueUserSession(w http.ResponseWriter, r *http.Request, u *model.
 		return
 	}
 	response := map[string]any{"user": x.ownProfile(u), "accessToken": a, "refreshToken": refresh, "expiresIn": int(x.cfg.AccessTTL.Seconds())}
+	if x.enterprise != nil {
+		response["enterpriseEpoch"] = issuer.Generation
+	}
 	x.addMediaSession(w, r, response, refreshClaims)
 	if imSession != nil {
 		response["imSession"] = imSession
@@ -1592,6 +1632,7 @@ func (x *API) adminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	x.app.RecordAdminAudit(account.ID, "admin.login", "admin_session", "login", "success", x.clientIP(r), map[string]any{"role": account.RoleID})
+	x.setEnterpriseAdminMediaCookie(w, r, token)
 	response := map[string]any{"accessToken": token, "expiresIn": 900, "id": account.ID, "username": account.Username, "displayName": account.DisplayName, "roleId": account.RoleID, "roleName": account.RoleName, "permissions": account.Permissions}
 	if account.Email != "" {
 		response["email"] = account.Email
@@ -1697,6 +1738,13 @@ func (x *API) issueIMSession(ctx context.Context, userID, platform string) (*wuk
 	}
 	if strings.TrimSpace(platform) == "" {
 		return nil, nil
+	}
+	if x.enterprise != nil {
+		epoch, e := x.enterprise.Epoch(ctx, userID)
+		if e != nil {
+			return nil, e
+		}
+		return x.imSessions.IssueGeneration(ctx, userID, platform, epoch)
 	}
 	return x.imSessions.Issue(ctx, userID, platform)
 }
@@ -1926,7 +1974,7 @@ func (x *API) avatarDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "INVALID_AVATAR_URL", "avatar URL is invalid or expired")
 		return
 	}
-	url, err := x.media.DownloadURL(r.Context(), id)
+	url, err := x.downloadMediaURL(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "avatar is unavailable")
 		return
@@ -2182,12 +2230,16 @@ func (x *API) mediaComplete(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, v)
 }
 func (x *API) mediaDownload(w http.ResponseWriter, r *http.Request) {
+	if x.enterprise != nil {
+		x.mediaContent(w, r)
+		return
+	}
 	allowed, err := x.app.CanAccessMedia(uid(r), r.PathValue("id"))
 	if err != nil || !allowed {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "media is unavailable")
 		return
 	}
-	url, err := x.media.DownloadURL(r.Context(), r.PathValue("id"))
+	url, err := x.downloadMediaURL(r.Context(), r.PathValue("id"))
 	if err != nil {
 		if err == media.ErrForbidden {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "media is unavailable")
@@ -2228,7 +2280,7 @@ func (x *API) bindWukongMedia(w http.ResponseWriter, r *http.Request) {
 		handleErr(w, err)
 		return
 	}
-	url, err := x.media.DownloadURL(r.Context(), mediaID)
+	url, err := x.downloadMediaURL(r.Context(), mediaID)
 	if err != nil {
 		handleErr(w, err)
 		return
@@ -2243,7 +2295,7 @@ func (x *API) wukongMediaURL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "media is unavailable")
 		return
 	}
-	url, err := x.media.DownloadURL(r.Context(), mediaID)
+	url, err := x.downloadMediaURL(r.Context(), mediaID)
 	if err != nil {
 		handleErr(w, err)
 		return
@@ -2274,7 +2326,7 @@ func (x *API) messageWithDownloadURL(ctx context.Context, userID string, message
 	if !allowed {
 		return &copy, nil
 	}
-	url, err := x.media.DownloadURL(ctx, mediaID)
+	url, err := x.downloadMediaURL(ctx, mediaID)
 	if err != nil {
 		return nil, err
 	}

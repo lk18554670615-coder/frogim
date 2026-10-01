@@ -186,7 +186,9 @@ class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
                 ? const _LaunchScreen(key: ValueKey('launch'))
                 : controller.authenticated
                 ? HomeScreen(
-                    key: const ValueKey('home'),
+                    key: ValueKey(
+                      'home-${controller.authenticationGeneration}',
+                    ),
                     controller: controller,
                     onToggleTheme: _toggleTheme,
                   )

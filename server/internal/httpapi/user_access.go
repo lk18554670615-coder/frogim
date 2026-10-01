@@ -90,6 +90,12 @@ func (x *API) recordRegistration(r *http.Request, userID, method string) {
 }
 func (x *API) RunUserAccess(ctx context.Context) { x.accessRecorder.Run(ctx) }
 func (x *API) Close() {
+	if x.controlServer != nil {
+		_ = x.controlServer.Close()
+	}
+	if x.enterprise != nil {
+		x.enterprise.Close()
+	}
 	if x.ipRegion != nil {
 		x.ipRegion.Close()
 	}

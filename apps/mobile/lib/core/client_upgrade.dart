@@ -65,14 +65,20 @@ class ClientUpgradeService {
   ClientUpgradeService({
     http.Client? client,
     String? apiBaseUrl,
+    String? platformBaseUrl,
     this.platform,
     this.version,
     this.installId,
   }) : _client = client ?? http.Client(),
-       _apiBaseUrl = apiBaseUrl ?? AppConfig.apiBaseUrl;
+       _apiBaseUrl =
+           platformBaseUrl ?? apiBaseUrl ?? AppConfig.authenticationBaseUrl,
+       _preserveBasePath =
+           platformBaseUrl != null ||
+           (apiBaseUrl == null && AppConfig.platformBaseUrl.isNotEmpty);
 
   final http.Client _client;
   final String _apiBaseUrl;
+  final bool _preserveBasePath;
   final String? platform;
   final String? version;
   final String? installId;
@@ -85,15 +91,19 @@ class ClientUpgradeService {
         version ?? (await PackageInfo.fromPlatform()).version.trim();
     final stableInstallId =
         installId ?? await ClientInstallationIdentity.getOrCreate();
-    final uri = Uri.parse(base)
-        .resolve('/v2/config/version')
-        .replace(
-          queryParameters: {
-            'platform': clientPlatform,
-            'version': clientVersion,
-            'installId': stableInstallId,
-          },
-        );
+    final uri =
+        (_preserveBasePath
+                ? Uri.parse(
+                    '${base.replaceFirst(RegExp(r"/$"), "")}/v2/config/version',
+                  )
+                : Uri.parse(base).resolve('/v2/config/version'))
+            .replace(
+              queryParameters: {
+                'platform': clientPlatform,
+                'version': clientVersion,
+                'installId': stableInstallId,
+              },
+            );
     final response = await _client
         .get(uri, headers: const {'Accept': 'application/json'})
         .timeout(const Duration(seconds: 8));

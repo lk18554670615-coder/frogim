@@ -19,6 +19,47 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test(
+    'enterprise identity change cancels a delayed media permission before sending invite',
+    () async {
+      final fixture = _Fixture();
+      addTearDown(fixture.dispose);
+      final permission = Completer<void>();
+      fixture.engine.initializeGate = permission;
+      final starting = fixture.controller.startCall(
+        fixture.conversation,
+        CallMediaType.video,
+      );
+      await Future<void>.delayed(Duration.zero);
+      await fixture.controller.clearIdentity();
+      permission.complete();
+      await starting;
+      expect(fixture.repository.inviteCount, 0);
+      expect(fixture.engine.connectCount, 0);
+      expect(fixture.controller.phase, CallPhase.idle);
+      expect(fixture.controller.session, isNull);
+      expect(fixture.repository.lastHangupReason, isNull);
+    },
+  );
+
+  test(
+    'enterprise identity change removes active local call without sending old hangup',
+    () async {
+      final fixture = _Fixture();
+      addTearDown(fixture.dispose);
+      await fixture.controller.startCall(
+        fixture.conversation,
+        CallMediaType.audio,
+      );
+      final id = fixture.controller.session!.id;
+      await fixture.controller.clearIdentity();
+      expect(fixture.controller.phase, CallPhase.idle);
+      expect(fixture.controller.session, isNull);
+      expect(fixture.systemCalls.endedCallIds, contains(id));
+      expect(fixture.repository.lastHangupReason, isNull);
+    },
+  );
+
+  test(
     'Android cold-start accept restores media without presenting incoming UI again',
     () async {
       final fixture = _Fixture(incoming: true);
@@ -604,6 +645,7 @@ class _FakeCallRepository implements CallRepository {
 
   final events = StreamController<CallSignalEvent>.broadcast();
   CallSession session;
+  int inviteCount = 0;
   int acceptCount = 0;
   int joinCount = 0;
   String? lastHangupReason;
@@ -675,21 +717,24 @@ class _FakeCallRepository implements CallRepository {
     required String conversationId,
     String? calleeUserId,
     required CallMediaType mediaType,
-  }) async => session = CallSession(
-    id: callId,
-    conversationId: conversationId,
-    kind: calleeUserId == null ? 'group' : 'direct',
-    callerId: 'me',
-    calleeId: calleeUserId ?? '',
-    participantIds: calleeUserId == null
-        ? const ['me', 'peer']
-        : ['me', calleeUserId],
-    joinedUserIds: const ['me'],
-    mediaType: mediaType,
-    status: 'invited',
-    invitedAt: DateTime.now(),
-    expiresAt: DateTime.now().add(const Duration(seconds: 30)),
-  );
+  }) async {
+    inviteCount++;
+    return session = CallSession(
+      id: callId,
+      conversationId: conversationId,
+      kind: calleeUserId == null ? 'group' : 'direct',
+      callerId: 'me',
+      calleeId: calleeUserId ?? '',
+      participantIds: calleeUserId == null
+          ? const ['me', 'peer']
+          : ['me', calleeUserId],
+      joinedUserIds: const ['me'],
+      mediaType: mediaType,
+      status: 'invited',
+      invitedAt: DateTime.now(),
+      expiresAt: DateTime.now().add(const Duration(seconds: 30)),
+    );
+  }
 
   @override
   Future<CallSession> getCall(String callId) async => session;
@@ -769,6 +814,7 @@ class _FakeCallRepository implements CallRepository {
 class _FakeEngine implements CallMediaEngine {
   _FakeEngine({this.initializeError});
 
+  Completer<void>? initializeGate;
   final Object? initializeError;
   final connections = StreamController<CallConnectionState>.broadcast();
   final media = StreamController<void>.broadcast();
@@ -804,6 +850,7 @@ class _FakeEngine implements CallMediaEngine {
     required CallConfiguration configuration,
     required CallMediaType mediaType,
   }) async {
+    await initializeGate?.future;
     if (initializeError case final error?) throw error;
     initialized = true;
   }

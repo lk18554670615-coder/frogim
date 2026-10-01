@@ -17,7 +17,9 @@ const mediaCookieName = "im_media_session"
 // Web video elements cannot attach Authorization headers. This HttpOnly cookie
 // is accepted ONLY by the media content route, never by ordinary business APIs.
 func (x *API) addMediaSession(w http.ResponseWriter, r *http.Request, response map[string]any, claims *auth.Claims) {
-	token, err := x.auth.IssueMediaSession(claims.Subject, claims.SessionID, claims.DeviceKind)
+	issuer := x.auth
+	issuer.Generation = claims.AuthVersion
+	token, err := issuer.IssueMediaSession(claims.Subject, claims.SessionID, claims.DeviceKind)
 	if err != nil {
 		return
 	}
@@ -33,7 +35,14 @@ func (x *API) setMediaCookie(w http.ResponseWriter, r *http.Request, token strin
 	if secure {
 		sameSite = http.SameSiteNoneMode
 	}
-	http.SetCookie(w, &http.Cookie{Name: mediaCookieName, Value: token, Path: "/v2/media/", HttpOnly: true, Secure: secure, SameSite: sameSite, MaxAge: maxAge})
+	cookiePath := "/v2/media/"
+	if x.enterprise != nil {
+		cookiePath = scopedMediaCookiePath(x.enterprise.PublicAPIBase(), cookiePath)
+	}
+	http.SetCookie(w, &http.Cookie{Name: mediaCookieName, Value: token, Path: cookiePath, HttpOnly: true, Secure: secure, SameSite: sameSite, MaxAge: maxAge})
+	if x.enterprise != nil {
+		http.SetCookie(w, &http.Cookie{Name: mediaCookieName, Value: token, Path: scopedMediaCookiePath(x.enterprise.PublicAPIBase(), "/v2/media-public/"), HttpOnly: true, Secure: secure, SameSite: sameSite, MaxAge: maxAge})
+	}
 }
 
 func (x *API) mediaSession(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +58,13 @@ func (x *API) mediaSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (x *API) mediaContent(w http.ResponseWriter, r *http.Request) {
+	x.mediaContentAuthorized(w, r, false)
+}
+
+// A verified HMAC URL keeps the original shareable media capability, but in
+// enterprise mode its reader must also hold a current, revocable local session.
+// Only permanentMediaContent may set capability after verifying that HMAC.
+func (x *API) mediaContentAuthorized(w http.ResponseWriter, r *http.Request, capability bool) {
 	w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
 	w.Header().Add("Vary", "Cookie")
 	w.Header().Add("Vary", "Authorization")
@@ -90,10 +106,12 @@ func (x *API) mediaContent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 401, "SESSION_REPLACED", "login session expired")
 		return
 	}
-	allowed, err := x.app.CanAccessMedia(claims.Subject, r.PathValue("id"))
-	if err != nil || !allowed {
-		writeError(w, 404, "NOT_FOUND", "media is unavailable")
-		return
+	if !capability {
+		allowed, err := x.app.CanAccessMedia(claims.Subject, r.PathValue("id"))
+		if err != nil || !allowed {
+			writeError(w, 404, "NOT_FOUND", "media is unavailable")
+			return
+		}
 	}
 	mediaID := r.PathValue("id")
 	if strings.HasSuffix(r.URL.Path, "/cover") {

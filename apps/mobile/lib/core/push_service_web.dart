@@ -37,6 +37,7 @@ class _WebPushService implements PlatformPushService {
   bool _backgroundSyncing = false;
   String? _backgroundRegistrationFingerprint;
   String? _vapidPublicKey;
+  String _enterpriseScope = '';
   DateTime? _webPushConfigCheckedAt;
   web.ServiceWorkerRegistration? _pushRegistration;
 
@@ -110,6 +111,16 @@ class _WebPushService implements PlatformPushService {
   @override
   Future<void> sync(AppController controller) async {
     if (_disposed) return;
+    final scope =
+        '${AppConfig.activeTenantId}:${AppConfig.activeEnterpriseEpoch}:${controller.currentUser?.id}';
+    if (scope != _enterpriseScope) {
+      _enterpriseScope = scope;
+      _lastSequences.clear();
+      _snapshotReady = false;
+      _backgroundRegistrationFingerprint = null;
+      _vapidPublicKey = null;
+      _webPushConfigCheckedAt = null;
+    }
     if (!controller.authenticated) {
       _lastSequences.clear();
       _snapshotReady = false;
@@ -248,6 +259,7 @@ class _WebPushService implements PlatformPushService {
       final userId = controller.currentUser?.id;
       if (userId == null) return;
       final fingerprint = [
+        _enterpriseScope,
         userId,
         serialized,
         notificationsEnabled,
@@ -276,12 +288,13 @@ class _WebPushService implements PlatformPushService {
   }
 
   Future<String?> _loadVapidPublicKey() async {
+    final scope = _enterpriseScope;
     final checkedAt = _webPushConfigCheckedAt;
     if (checkedAt != null &&
         DateTime.now().difference(checkedAt) < const Duration(minutes: 5)) {
       return _vapidPublicKey;
     }
-    final base = AppConfig.apiBaseUrl.trim();
+    final base = AppConfig.businessBaseUrl.trim();
     if (base.isEmpty) return null;
     final response = await http
         .get(
@@ -290,6 +303,9 @@ class _WebPushService implements PlatformPushService {
         )
         .timeout(const Duration(seconds: 8));
     if (response.statusCode < 200 || response.statusCode >= 300) return null;
+    if (scope != _enterpriseScope) {
+      return null;
+    }
     final decoded = jsonDecode(response.body);
     if (decoded is! Map || decoded['enabled'] != true) {
       _vapidPublicKey = null;
@@ -328,7 +344,8 @@ class _WebPushService implements PlatformPushService {
   }) async {
     final userId = _controller?.currentUser?.id;
     if (userId == null) return;
-    final key = '$userId:${conversation.id}:${conversation.lastMessageSeq}';
+    final key =
+        '$_enterpriseScope:$userId:${conversation.id}:${conversation.lastMessageSeq}';
     final storageKey = '$_notificationPrefix$key';
     final previous = int.tryParse(
       web.window.localStorage.getItem(storageKey) ?? '',

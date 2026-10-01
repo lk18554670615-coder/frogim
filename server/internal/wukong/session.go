@@ -106,11 +106,18 @@ func NewSessionIssuer(client *Client, secret, tcpURL, wsURL string, stores ...Cr
 }
 
 func (s *SessionIssuer) Issue(ctx context.Context, uid, platform string) (*ImSession, error) {
+	return s.IssueGeneration(ctx, uid, platform, 0)
+}
+func (s *SessionIssuer) IssueGeneration(ctx context.Context, uid, platform string, generation int64) (*ImSession, error) {
 	deviceFlag, sdk, err := platformDevice(platform)
 	if err != nil {
 		return nil, err
 	}
-	mac := hmac.New(sha256.New, s.secret)
+	secret := s.secret
+	if generation > 0 {
+		secret = append(append([]byte{}, secret...), []byte("\x00generation:"+strconv.FormatInt(generation, 10))...)
+	}
+	mac := hmac.New(sha256.New, secret)
 	_, _ = mac.Write([]byte("wukongim-token-v1\x00" + uid + "\x00" + strconv.Itoa(deviceFlag)))
 	token := "wk1_" + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	if err = s.ensureProvisioned(ctx, uid, token, deviceFlag, DeviceLevelMaster); err != nil {

@@ -3,10 +3,59 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:linli_im/core/models.dart';
 import 'package:linli_im/core/media_access.dart';
+import 'package:linli_im/core/app_config.dart';
 import 'package:linli_im/ui/screens/chat_screen.dart';
 import 'package:linli_im/ui/widgets/linli_widgets.dart';
 
 void main() {
+  testWidgets('企业头像凭据与缓存按企业用户隔离，切换后不复用旧图片状态', (tester) async {
+    final owner = Object();
+    final signature = List.filled(43, 'a').join();
+    final url =
+        'https://media.example.com/v2/media-public/avatar/$signature/content';
+    addTearDown(() {
+      mediaAccess.clear(owner);
+      AppConfig.activeTenantId = '';
+      AppConfig.activeUserId = '';
+    });
+    AppConfig.activeTenantId = 'a';
+    AppConfig.activeUserId = 'alice';
+    mediaAccess.configure(
+      owner: owner,
+      apiBaseUrl: 'https://media.example.com',
+      userId: 'alice',
+      token: 'a-media',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PersonAvatar(name: 'A', avatarUrl: url),
+      ),
+    );
+    final first = tester.widget<CachedNetworkImage>(
+      find.byType(CachedNetworkImage),
+    );
+    expect(first.httpHeaders, {'Authorization': 'Media a-media'});
+    expect(first.imageUrl, '$url?viewer=alice');
+    AppConfig.activeTenantId = 'b';
+    mediaAccess.configure(
+      owner: owner,
+      apiBaseUrl: 'https://media.example.com',
+      userId: 'alice',
+      token: 'b-media',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PersonAvatar(name: 'B', avatarUrl: url),
+      ),
+    );
+    final second = tester.widget<CachedNetworkImage>(
+      find.byType(CachedNetworkImage),
+    );
+    expect(second.key, isNot(first.key));
+    expect(second.cacheKey, isNot(first.cacheKey));
+    expect(second.httpHeaders, {'Authorization': 'Media b-media'});
+    await tester.pumpWidget(const SizedBox());
+  });
   testWidgets('旧签名图片在气泡和预览中改用固定鉴权地址', (tester) async {
     final owner = Object();
     mediaAccess.configure(

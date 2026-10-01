@@ -30,6 +30,8 @@ class LinliCallIntentService : FlutterIntentService() {
     }
 
     private fun showNativeIncomingCall(context: Context, payload: JSONObject) {
+        val identity=context.getSharedPreferences("enterprise_identity",Context.MODE_PRIVATE)
+        if(identity.getBoolean("enabled",false) && (identity.getString("userId","").isNullOrEmpty() || payload.optString("tenantId")!=identity.getString("tenantId","") || payload.optString("recipientId")!=identity.getString("userId","") || payload.optLong("enterpriseEpoch",-1)!=identity.getLong("epoch",0))) return
         val serverCallId = payload.optString("callId")
         if (serverCallId.isBlank()) return
         val conversationId = payload.optString("conversationId")

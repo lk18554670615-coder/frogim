@@ -33,8 +33,9 @@ class MediaAccess {
       return null;
     }
     return _base!
-        .resolve(
-          '/v2/media/${Uri.encodeComponent(mediaId)}/${cover ? 'cover' : 'content'}',
+        .replace(
+          path:
+              '${_base!.path.replaceFirst(RegExp(r"/$"), "")}/v2/media/${Uri.encodeComponent(mediaId)}/${cover ? 'cover' : 'content'}',
         )
         .replace(queryParameters: {'viewer': _userId!})
         .toString();
@@ -65,7 +66,44 @@ class MediaAccess {
         uri.queryParameters['viewer'] != _userId) {
       return false;
     }
-    return RegExp(r'^/v2/media/[^/]+/(content|cover)$').hasMatch(uri.path);
+    final root = base.path.replaceFirst(RegExp(r"/$"), "");
+    final publicPrefix = '$root/v2/media-public/';
+    if (uri.path.startsWith(publicPrefix)) {
+      return RegExp(
+        r'^[A-Za-z0-9_-]+/[A-Za-z0-9_-]{43}/(content|cover)$',
+      ).hasMatch(uri.path.substring(publicPrefix.length));
+    }
+    final prefix = '$root/v2/media/';
+    return uri.path.startsWith(prefix) &&
+        RegExp(
+          r'^[A-Za-z0-9_-]+/(content|cover)$',
+        ).hasMatch(uri.path.substring(prefix.length));
+  }
+
+  String scopeImage(String source) {
+    final uri = Uri.tryParse(source);
+    final base = _base;
+    if (!enabled ||
+        uri == null ||
+        base == null ||
+        !uri.hasAuthority ||
+        uri.userInfo.isNotEmpty ||
+        uri.origin != base.origin) {
+      return source;
+    }
+    final viewer = uri.queryParameters['viewer'];
+    if (viewer != null && viewer != _userId) return source;
+    final prefix =
+        '${base.path.replaceFirst(RegExp(r"/$"), "")}/v2/media-public/';
+    if (!uri.path.startsWith(prefix) ||
+        !RegExp(
+          r'^[A-Za-z0-9_-]+/[A-Za-z0-9_-]{43}/(content|cover)$',
+        ).hasMatch(uri.path.substring(prefix.length))) {
+      return source;
+    }
+    return uri
+        .replace(queryParameters: {...uri.queryParameters, 'viewer': _userId!})
+        .toString();
   }
 
   Map<String, String> headersFor(String source) =>

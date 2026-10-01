@@ -49,7 +49,19 @@ class BusinessRepository
     this._fixedMediaUrl,
   );
 
-  final String _apiBaseUrl;
+  String _apiBaseUrl;
+  int _identityGeneration = 0;
+  void invalidateIdentity() {
+    _identityGeneration++;
+  }
+
+  void useEnterprise(String address) {
+    if (_apiBaseUrl != address) {
+      _identityGeneration++;
+    }
+    _apiBaseUrl = address;
+  }
+
   final String _platform;
   final String? Function() _accessToken;
   final Future<bool> Function()? _refreshAccessToken;
@@ -464,6 +476,7 @@ class BusinessRepository
     MediaUpload upload, {
     void Function(double progress)? onProgress,
   }) async {
+    final generation = _identityGeneration;
     onProgress?.call(0);
     final prepared = await request('POST', '/v2/media/presign', {
       'mime': upload.mimeType,
@@ -503,6 +516,9 @@ class BusinessRepository
         'MEDIA_UPLOAD_FAILED',
         'media upload failed',
       );
+    }
+    if (generation != _identityGeneration) {
+      throw StateError('企业已变化，文件上传已取消');
     }
     await request(
       'POST',
@@ -826,15 +842,22 @@ class BusinessRepository
     String path, [
     Object? body,
   ]) async {
+    final expectedGeneration = _identityGeneration;
     var response = await _send(method, path, body);
     if (response.statusCode == 401 && _refreshAccessToken != null) {
       final refreshed = await _refreshAccessToken();
-      if (refreshed) response = await _send(method, path, body);
+      if (refreshed) {
+        if (expectedGeneration != _identityGeneration) {
+          throw StateError('企业已变化，旧请求已取消');
+        }
+        response = await _send(method, path, body);
+      }
     }
     return _decode(response);
   }
 
   Future<http.Response> _send(String method, String path, Object? body) async {
+    final expectedGeneration = _identityGeneration;
     final token = _accessToken();
     final request = http.Request(method, Uri.parse('$_apiBaseUrl$path'));
     request.headers.addAll({
@@ -847,7 +870,11 @@ class BusinessRepository
     final streamed = await _client
         .send(request)
         .timeout(const Duration(seconds: 10));
-    return http.Response.fromStream(streamed);
+    final response = await http.Response.fromStream(streamed);
+    if (expectedGeneration != _identityGeneration) {
+      throw StateError('旧企业回调已失效');
+    }
+    return response;
   }
 
   Map<String, Object?> _decode(http.Response response) {

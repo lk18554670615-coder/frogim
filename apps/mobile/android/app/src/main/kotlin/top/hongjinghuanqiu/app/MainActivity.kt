@@ -46,6 +46,16 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger,"top.hongjinghuanqiu.app/enterprise_identity").setMethodCallHandler { call,result ->
+            if(call.method=="set") {
+                getSharedPreferences("enterprise_identity",MODE_PRIVATE).edit()
+                    .putBoolean("enabled",call.argument<Boolean>("enabled")?:false)
+                    .putString("tenantId",call.argument<String>("tenantId")?:"")
+                    .putString("userId",call.argument<String>("userId")?:"")
+                    .putLong("epoch",(call.argument<Number>("epoch")?:0).toLong()).commit()
+                result.success(null)
+            } else result.notImplemented()
+        }
         messageFeedback = LinliMessageFeedback(this, flutterEngine.dartExecutor.binaryMessenger)
         systemCallChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,

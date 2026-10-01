@@ -15,8 +15,17 @@ class SecureLocalStore {
   final FlutterSecureStorage _secureStorage;
   final AesGcm _cipher = AesGcm.with256bits();
   SecretKey? _memoryKey;
+  String _identityScope = '';
+  void useIdentity(String scope) {
+    _identityScope = scope;
+  }
+
+  String _scoped(String key) => key == 'session' || _identityScope.isEmpty
+      ? key
+      : 'identity.$_identityScope.$key';
 
   Future<void> writeJson(String key, Object value) async {
+    key = _scoped(key);
     final secretKey = await _key();
     final nonce = _cipher.newNonce();
     final box = await _cipher.encrypt(
@@ -34,6 +43,7 @@ class SecureLocalStore {
   }
 
   Future<Object?> readJson(String key) async {
+    key = _scoped(key);
     final prefs = await SharedPreferences.getInstance();
     final envelope = prefs.getString('$_prefix$key');
     if (envelope == null) return null;
@@ -55,6 +65,7 @@ class SecureLocalStore {
   }
 
   Future<void> remove(String key) async {
+    key = _scoped(key);
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('$_prefix$key');
   }

@@ -33,6 +33,8 @@ enum ConversationKind { direct, group }
 enum ImEventType {
   groupHistoryChanged,
   sessionExpired,
+  enterpriseSessionChanging,
+  enterpriseSessionChanged,
   messageCreated,
   messageChanged,
   messageRecalled,
