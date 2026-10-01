@@ -133,8 +133,12 @@ if args.phase=='prepare':
     original=original[:begin]+'''    handle /platform {
       redir /platform/ 302
     }
-    handle /platform/* { reverse_proxy platform:8080 }
-    handle /v2/config/version { reverse_proxy platform:8080 }
+    handle /platform/* {
+      reverse_proxy platform:8080
+    }
+    handle /v2/config/version {
+      reverse_proxy platform:8080
+    }
 '''+original[end:]
     begin=original.index('    @rtc ');end=original.index('    @private ',begin)
     original=original[:begin]+'''    @old_rtc path /rtc /rtc/*
@@ -147,7 +151,7 @@ if args.phase=='prepare':
     }
 '''+original[end:]
     # Fixed entry clears attacker-supplied forwarding headers before either API.
-    original=original.replace('reverse_proxy platform:8080 }','reverse_proxy platform:8080 {\n      header_up -X-Frogim-*\n      header_up X-Forwarded-For {remote_host}\n      header_up X-Forwarded-Proto https\n    }\n    }')
+    original=original.replace('reverse_proxy platform:8080\n','reverse_proxy platform:8080 {\n        header_up -X-Frogim-*\n        header_up X-Forwarded-For {remote_host}\n        header_up X-Forwarded-Proto https\n      }\n')
     original=original.replace('header Content-Type "text/html; charset=utf-8"\n      file_server','header Content-Type "text/html; charset=utf-8"\n      try_files {path} {path}.html\n      file_server')
     (ROOT/'gateway'/'Caddyfile.active').write_text(original)
     route=original.index('  route {');opening=original.index('{',route);depth=1;i=opening+1
@@ -184,6 +188,7 @@ if args.phase=='prepare':
     run(['docker','exec','-i',PG,'pg_restore','--exit-on-error','--no-owner','--no-acl','-U',PGUSER,'-d',REHEARSAL_SOURCE],(ROOT/'backups'/'rehearsal-source.dump').read_bytes())
     rehearsal=copy.deepcopy(cfg);rehearsal['sourceDatabaseUrl']=with_db(dburl,REHEARSAL_SOURCE);rehearsal['platformDatabaseUrl']=with_db(dburl,REHEARSAL_TARGET)
     write(ROOT/'config'/'rehearsal.json',rehearsal)
+    os.chown(ROOT/'config'/'rehearsal.json',uid,gid)
     state('prepared')
     print('prepared',image,flush=True)
 
@@ -220,7 +225,8 @@ elif args.phase=='freeze':
     run(['docker','exec','-e','REDISCLI_AUTH='+r_env['REDIS_PASSWORD'],'frogim-shared-default-shared-redis-1','redis-cli','SAVE'])
     snapshots=read(ROOT/'ops'/'containers-before.json')
     paths={m['Source'] for name in ['frogim-single-im-1','frogim-single-minio-1','frogim-shared-default-shared-redis-1'] for m in snapshots[name]['Mounts'] if m['Destination'] in ['/data','/config/wk.yaml']}
-    paths.update([str(ROOT/'ops'),str(ROOT/'config'),str(ROOT/'backups'/'enterprise-final.dump'),read(ROOT/'ops'/'pointer-before.json')['releaseRoot']+'/config'])
+    paths.update(m['Source'] for m in snapshots[API]['Mounts'] if m['Destination']=='/plugins')
+    paths.update([str(ROOT/'ops'),str(ROOT/'config'),str(ROOT/'gateway'),str(ROOT/'backups'/'enterprise-final.dump'),read(ROOT/'ops'/'pointer-before.json')['releaseRoot']+'/config'])
     key=ROOT/'backups'/'encryption.key';key.write_text(secrets.token_urlsafe(48))
     archive=ROOT/'backups'/'cutover-backup.tar.enc'
     tar=subprocess.Popen(['tar','-cf','-','--absolute-names',*sorted(paths)],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
