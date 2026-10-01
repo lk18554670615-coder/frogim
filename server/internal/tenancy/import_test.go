@@ -48,10 +48,10 @@ func TestStandaloneImport(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	exec(source, `CREATE TABLE im_users(id text PRIMARY KEY,phone text,name text,handle text,gender text,signature text,avatar_media_id text,avatar_url text,allow_search_by_handle boolean,allow_search_by_phone boolean,banned boolean,created_at timestamptz,deleted_at timestamptz,banned_until timestamptz,password_hash text); INSERT INTO im_users VALUES('normal','13844440001','甲','handle1','unspecified','签名',NULL,'',true,false,false,now(),NULL,NULL,'hash'),('invalid','bad','乙','handle2','unspecified','',NULL,'',true,false,false,now(),NULL,NULL,''),('timed','13844440003','丙','handle3','unspecified','',NULL,'',true,false,false,now(),NULL,now()+interval '1 day',''),('deleted','13844440004','丁','handle4','unspecified','',NULL,'',true,false,false,now(),now(),NULL,'')`)
+	exec(source, `CREATE TABLE im_users(id text PRIMARY KEY,phone text,name text,handle text,gender text,signature text,avatar_media_id text,avatar_url text,allow_search_by_handle boolean,allow_search_by_phone boolean,banned boolean,created_at timestamptz,deleted_at timestamptz,banned_until timestamptz,password_hash text); INSERT INTO im_users VALUES('normal','13844440001','甲','handle1','unspecified','签名',NULL,'',true,false,false,now(),NULL,NULL,'hash'),('invalid','bad','乙','handle2','unspecified','',NULL,'',true,false,false,now(),NULL,NULL,''),('timed','13844440003','丙','handle3','unspecified','',NULL,'',true,false,true,now(),NULL,now()+interval '1 day',''),('expired','13844440005','戊','handle5','unspecified','',NULL,'',true,false,true,now(),NULL,now()-interval '1 day','hash'),('deleted','13844440004','丁','handle4','unspecified','',NULL,'',true,false,false,now(),now(),NULL,'')`)
 	tenant := Tenant{ID: "enterprise-a", Name: "客户A企业", Code: "A", ControlURL: "https://enterprise-a:8443", Services: Services{API: "https://example.com", IMWS: "wss://example.com/im", IMTCP: "tcp://example.com:5100", RTC: "wss://example.com/livekit", Media: "https://example.com"}}
 	r, err := ImportStandalone(ctx, source, nil, tenant.ID, "preflight")
-	if err != nil || r.Total != 4 || r.Deleted != 1 || r.InvalidPhone != 1 || r.Disabled != 2 || r.WithoutPassword != 2 {
+	if err != nil || r.Total != 5 || r.Deleted != 1 || r.InvalidPhone != 1 || r.Disabled != 2 || r.WithoutPassword != 2 {
 		t.Fatal(r, err)
 	}
 	if err = InitializeImportPlatform(ctx, target, tenant); err != nil {
@@ -71,8 +71,13 @@ func TestStandaloneImport(t *testing.T) {
 	}
 	var n int
 	_ = target.QueryRow(ctx, `SELECT count(*) FROM lp_users`).Scan(&n)
-	if n != 3 {
+	if n != 4 {
 		t.Fatal(n)
+	}
+	var expiredBanned bool
+	_ = target.QueryRow(ctx, `SELECT banned FROM lp_users WHERE id='expired'`).Scan(&expiredBanned)
+	if expiredBanned {
+		t.Fatal("expired ban extended by import")
 	}
 	var same bool
 	_ = target.QueryRow(ctx, `SELECT banned AND password_hash='' FROM lp_users WHERE id='invalid'`).Scan(&same)

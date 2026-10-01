@@ -81,7 +81,7 @@ def restore_database(name,dump):
     cfg=read(ROOT/'config'/'import.json');owner=urllib.parse.unquote(urllib.parse.urlsplit(cfg['sourceDatabaseUrl']).username)
     sql('postgres',"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='%s' AND pid<>pg_backend_pid()"%name)
     sql('postgres','DROP DATABASE "'+name+'"');create_db(name,owner)
-    run(['docker','exec','-i',PG,'pg_restore','--exit-on-error','--no-owner','--no-acl','-U',PGUSER,'-d',name],dump.read_bytes())
+    run(['docker','exec','-i',PG,'pg_restore','--exit-on-error','--no-owner','--no-acl','--role',owner,'-U',PGUSER,'-d',name],dump.read_bytes())
 
 if args.phase=='prepare':
     if (ROOT/'ops'/'state.json').exists():raise RuntimeError('release already prepared; use its recorded next phase')
@@ -185,7 +185,7 @@ if args.phase=='prepare':
     for file in ['Caddyfile.active','Caddyfile.maintenance']:
         run(['docker','run','--rm','--entrypoint','/usr/bin/caddy','-v',str(ROOT/'gateway')+':/config/light:ro','-v','/data/linli-im/shared/letsencrypt:/etc/letsencrypt:ro',gateway_base,'validate','--config','/config/light/'+file,'--adapter','caddyfile'])
     for name in [REHEARSAL_SOURCE,REHEARSAL_TARGET]:create_db(name,owner)
-    run(['docker','exec','-i',PG,'pg_restore','--exit-on-error','--no-owner','--no-acl','-U',PGUSER,'-d',REHEARSAL_SOURCE],(ROOT/'backups'/'rehearsal-source.dump').read_bytes())
+    run(['docker','exec','-i',PG,'pg_restore','--exit-on-error','--no-owner','--no-acl','--role',owner,'-U',PGUSER,'-d',REHEARSAL_SOURCE],(ROOT/'backups'/'rehearsal-source.dump').read_bytes())
     rehearsal=copy.deepcopy(cfg);rehearsal['sourceDatabaseUrl']=with_db(dburl,REHEARSAL_SOURCE);rehearsal['platformDatabaseUrl']=with_db(dburl,REHEARSAL_TARGET)
     write(ROOT/'config'/'rehearsal.json',rehearsal)
     os.chown(ROOT/'config'/'rehearsal.json',uid,gid)
@@ -200,7 +200,7 @@ elif args.phase=='rehearse':
     # Restore into a third isolated DB, verify the exact original snapshot.
     cfg=read(ROOT/'config'/'import.json');owner=urllib.parse.unquote(urllib.parse.urlsplit(cfg['sourceDatabaseUrl']).username)
     restore='light_rehearsal_restore';create_db(restore,owner)
-    run(['docker','exec','-i',PG,'pg_restore','--exit-on-error','--no-owner','--no-acl','-U',PGUSER,'-d',restore],(ROOT/'backups'/'rehearsal-source.dump').read_bytes())
+    run(['docker','exec','-i',PG,'pg_restore','--exit-on-error','--no-owner','--no-acl','--role',owner,'-U',PGUSER,'-d',restore],(ROOT/'backups'/'rehearsal-source.dump').read_bytes())
     if before!=fingerprints(restore):raise RuntimeError('backup restoration mismatch')
     # Exercise the same drop/recreate/restore procedure needed for in-place rollback.
     sql(restore,"UPDATE im_users SET signature=signature||'rehearsal rollback'")

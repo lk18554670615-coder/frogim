@@ -36,7 +36,7 @@ func ImportStandalone(ctx context.Context, source, platform *pgxpool.Pool, tenan
 		return report, errors.New("source snapshot unavailable")
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `SELECT id,phone,password_hash,name,COALESCE(handle,''),gender,signature,COALESCE(avatar_media_id,''),avatar_url,allow_search_by_handle,allow_search_by_phone,banned,created_at,deleted_at,(banned OR COALESCE(banned_until>now(),false)) FROM im_users ORDER BY id`)
+	rows, err := tx.Query(ctx, `SELECT id,phone,password_hash,name,COALESCE(handle,''),gender,signature,COALESCE(avatar_media_id,''),avatar_url,allow_search_by_handle,allow_search_by_phone,banned,created_at,deleted_at,(banned AND (banned_until IS NULL OR banned_until>now())) FROM im_users ORDER BY id`)
 	if err != nil {
 		return report, errors.New("source schema unavailable")
 	}
@@ -49,6 +49,7 @@ func ImportStandalone(ctx context.Context, source, platform *pgxpool.Pool, tenan
 			rows.Close()
 			return report, errors.New("source profile unreadable")
 		}
+		u.Profile.Banned = u.Banned
 		report.Total++
 		b, _ := json.Marshal(u)
 		fingerprint.Write(b)
