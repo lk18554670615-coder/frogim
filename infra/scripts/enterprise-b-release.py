@@ -89,6 +89,23 @@ def wait_health(name):
     raise RuntimeError('readiness timed out: ' + name)
 
 
+def permissions_b():
+    """Keep private files restricted while making them readable by the image UID."""
+    root = B_ROOT
+    c = read(root / 'compose.json')
+    for service, paths in [('api', ['config/certs', 'data/plugins']), ('im', ['data/im', 'data/logs', 'data/plugins', 'config/wk.yaml']), ('livekit', ['config/livekit.yaml'])]:
+        image = json.loads(run(['docker', 'image', 'inspect', c['services'][service]['image']]))[0]
+        user = c['services'][service].get('user') or image['Config'].get('User') or '0'
+        uid = int(user.split(':')[0])
+        gid = int(user.split(':')[1]) if ':' in user else uid
+        for relative in paths:
+            path = root / relative
+            for item in [path, *(path.rglob('*') if path.is_dir() else [])]:
+                os.chown(item, uid, gid)
+                item.chmod(0o700 if item.is_dir() else (0o550 if item.suffix == '.wkp' else 0o600))
+    print('B private configuration ownership matches immutable image users')
+
+
 def firewall(root, own, peer, ports, subnets):
     """Filter original destination before Docker DNAT; retain unrelated rules."""
     lines = ['#!/bin/sh', 'set -eu',
@@ -219,6 +236,8 @@ def prepare_b():
     services['gateway'].update(ports=['80:80', '443:443'], volumes=[str(root / 'certificates') + ':/etc/letsencrypt:ro', str(root / 'config/acme-webroot') + ':/var/www/certbot:ro', str(root / 'config/gateway') + ':/config/light:ro', str(root / 'bundle/web') + ':/srv/web:ro', str(root / 'bundle/legal') + ':/srv/legal:ro', str(root / 'downloads') + ':/srv/downloads:ro'], networks=['business', 'edge'])
     for service in services.values():
         service.update(restart='unless-stopped', logging={'driver': 'json-file', 'options': {'max-size': '10m', 'max-file': '3'}})
+    for name in ['api', 'im', 'livekit']:
+        services[name]['user'] = '0:0'
     config = {'name': PROJECT, 'services': services, 'networks': {name: {'internal': name != 'edge', 'ipam': {'config': [{'subnet': f'192.168.{64 + index}.0/24'}]}} for index, name in enumerate(['business', 'data', 'edge'])}}
     write(root / 'compose.json', escaped(config))
     shutil.copy2(root / 'bundle/ca.pem', root / 'config/certs/ca.pem')
@@ -254,6 +273,9 @@ def connect_a():
         run(['openssl', 'verify', '-CAfile', str(certs / 'ca.pem'), str(folder / 'cert.next.pem')])
         shutil.copy2(folder / 'cert.next.pem', folder / 'cert.pem')
     c['services']['platform']['ports'] = [A_IP + ':8443:8443']
+    if 'edge' not in c['services']['platform']['networks']:
+        # Docker does not publish ports for a container on internal-only networks.
+        c['services']['platform']['networks'].append('edge')
     c['services']['api']['ports'] = ['127.0.0.1:18810:8080', A_IP + ':8444:8443']
     for name in ['api', 'platform']:
         c['services'][name]['environment']['IM_ALLOWED_ORIGINS'] = ORIGINS
@@ -279,7 +301,7 @@ def now():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('phase', choices=['package-a', 'prepare-b', 'connect-a'])
+    parser.add_argument('phase', choices=['package-a', 'prepare-b', 'permissions-b', 'connect-a'])
     args = parser.parse_args()
     os.umask(0o077)
-    {'package-a': package_a, 'prepare-b': prepare_b, 'connect-a': connect_a}[args.phase]()
+    {'package-a': package_a, 'prepare-b': prepare_b, 'permissions-b': permissions_b, 'connect-a': connect_a}[args.phase]()

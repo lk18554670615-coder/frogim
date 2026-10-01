@@ -33,6 +33,12 @@ def mtls(certs):
     return context
 
 
+def control(certs, url):
+    # curl retains full CA/IP verification and works with the existing control CA.
+    # New Python/OpenSSL strict mode additionally requires absent legacy CA extensions.
+    return json.loads(r.run(['curl', '--fail', '--silent', '--show-error', '--max-time', '15', '--tlsv1.3', '--cacert', str(certs / 'ca.pem'), '--cert', str(certs / 'cert.pem'), '--key', str(certs / 'key.pem'), '-H', 'Content-Type: application/json', '--data', '{}', url]))
+
+
 def sign_b():
     folder = r.A_ROOT / 'ops/enterprise-b-release/b-certificate'
     folder.mkdir(exist_ok=True)
@@ -116,9 +122,8 @@ def directory(enable=False):
         proof = r.read(r.A_ROOT / 'ops/enterprise-b-release/connectivity.json')
         if not proof.get('privateMTLS') or not proof.get('publicControlBlocked'):
             raise RuntimeError('network acceptance not recorded; keep B disabled')
-        context = mtls(r.A_ROOT / 'config/certs/platform')
         for tenant in [a, b]:
-            ready = http(tenant['controlUrl'] + '/internal/directory/ready', {}, context=context)
+            ready = control(r.A_ROOT / 'config/certs/platform', tenant['controlUrl'] + '/internal/directory/ready')
             if ready != {'status': 'ready', 'tenantId': tenant['id'], 'services': tenant['services']}:
                 raise RuntimeError('authenticated deployment evidence differs')
         if not b['enabled']:

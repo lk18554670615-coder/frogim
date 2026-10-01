@@ -39,14 +39,14 @@ Docker-USER 的 FROGIM_CONTROL 按 DNAT 前目的 IP/端口校验来源；允许
 ## 执行阶段
 
 使用 PowerShell 7、严格主机验证 SSH；远端 Python 在 Linux 执行。
-`enterprise-b-release.py` 分阶段 package-a、prepare-b、connect-a。
+`enterprise-b-release.py` 分阶段 package-a、prepare-b、permissions-b、connect-a。
 `enterprise-b-ops.py` 分阶段 sign-b、issue、init-media、register、enable、backup、restore-check、timers。
 prepare-b 从 stdin 接收 B 后台密码；register、enable 从 stdin 接收已有平台管理员 JSON 凭据。
 明文输入不保存在服务器配置目录。所有私有错误保存服务端，不打印环境和令牌。
 
 1. A package-a 保存平台数据库、原容器配置、证书、防火墙和定时任务，打包现有不可变镜像、正式 Web 和签名插件。
 2. 通过严格验证的 SSH 将包传到 B，校验摘要后 prepare-b。生产内部凭据全部重新生成；同一 App 的供应商配置复用，实收尚未验收。
-3. 签发 B 私网证书和独立 IP 公网证书；B 目录尚不开放登录。
+3. 签发 B 私网证书和独立 IP 公网证书。按用户补充要求，API、IM、LiveKit 使用 root，permissions-b 根据实际运行 UID 分配证书、插件、IM 数据及配置所有者，保持私钥仅所有者可读；B 目录尚不开放登录。
 4. connect-a 仅短暂重建平台与 A API，保持镜像、业务地址、数据库和 JWT 不变。失败恢复原配置及叶证书。
 5. 审计接口更新 A 控制地址、登记停止登录的 B；初始化 B 七项服务和媒体应用权限。
 6. 核对私网身份、服务地址、public readiness、静态摘要及端口隔离后，审计启用 B。
