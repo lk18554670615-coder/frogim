@@ -20,6 +20,8 @@
 
 ## 2026-10-01 正式发布记录
 
+后续 Web 静态性能热更新已于同日 17:21 发布，API 和数据服务没有重启，部署提交字段仍指原 API 版本；Web 版本摘要与独立回执见 `docs/WEB_STARTUP_OPTIMIZATION.md`。原 24 小时观察截止时间保持不变。
+
 北京时间 2026-10-01 14:17:25 开放 Web。部署提交 `4f5f8b01a4e386bb26cbef10e12ba10836084868`，发布 tag `release/light-tenancy-web-20261001-r1`，均已推送 Gitee。运行目录 `/data/frogim/releases/light-20261001-c83107e` 的名称来自最初发布适配提交；最终版本以 `release-manifest.json` 和 `ops/deployment-completed.json` 为准。
 
 现网预检确认此前为单企业 `33d9ea2`，原业务库 `single_main_33d9ea2`，企业 Redis DB2。此次沿用这些数据服务，新增 `platform_light` 与一个平台容器，合计 8 个运行容器。平台不使用 Redis，不接管普通企业业务流量；企业后台的账号及密码保持原值。平台管理员用户名为 `admin`，密码按本次用户指定值设置为 bcrypt 哈希，临时明文初始化输入已删除。

@@ -9,3 +9,9 @@ HTML 提前加载主脚本和中文字体，主脚本优先；发布包提供 gz
 仅运行启动脚本和打包的针对性测试，并完成生产 Web 构建。校验全部字体路径、gzip 解压一致、固定生产平台地址及自托管渲染引擎。发布只更新 Web 文件与 Caddy 静态规则，保留之前的页面和配置用于回退，不重启 API、IM、平台或数据服务，不修改账号及数据。本轮首次访问仍需下载完整字体；主要消除后续打开时的重复传输。
 
 后续 Web 构建完成后，用 `tools/package-web-release.py` 将原始 Flutter 输出包装到另一个新目录。Docker Web 构建已接入这一阶段。Caddy 直接提供文件时须使用 `infra/templates/web-static.caddy.template` 的分版本缓存规则；Nginx 内部规则不能替代外部 Caddy 的规则。旧发布目录保留，不能覆盖同一内容地址下的文件。服务器热更新使用 `infra/scripts/publish-web-static.py` 的 prepare、publish 阶段，先验证内容摘要和候选配置；发布失败仅恢复 Web 页面与 Caddy 配置，不回退认证或数据库。
+
+北京时间 2026-10-01 17:21:05 已发布。代码提交 `d4d8df3` 与 tag `release/web-startup-20261001` 已推送；静态版本为 `3fe64813fc454fdf`。运行时目录摘要 `16c40e30e37b3094b3a988f2f639f519d6ccccb4f7123a7485decc0f4f5fef59`，主 Dart 脚本摘要仍为 `fa2cc45aa30843fd51c4ad1bdae057d96fc78c75f81c558f059175b6d0edf9cd`，与优化前完全相同，业务代码未改。
+
+实际入口验证：HTML 为 no-cache；版本化脚本、两种字体和 CanvasKit 为一年 immutable 缓存，gzip 可用，带 ETag 的二次校验均返回 `304`、响应体 `0` 字节。主脚本压缩传输由 3,564,576 降至 3,307,727 字节，减小约 7.2%；上述四项关键资源合计由 23,916,339 降至 22,597,168 字节。8 个容器均健康，启动时间和重启计数未变；平台与企业 readiness 正常。没有重复线上登录或音视频测试。4 个启动测试、1 个打包测试、实际 Web 构建及 gzip/字体路径校验通过。Windows 本机 Docker 未运行，未声称本机 Docker/Nginx 编译验收通过；生产 Caddy 候选配置验证通过。
+
+本机脱敏证据为 `build/web-startup/release-evidence.json`，服务端回执为 `/data/frogim/releases/light-20261001-c83107e/ops/web-startup-3fe64813fc454fdf.json`。页面和网关的前一版本保存在同一发布根目录的 `backups/web-startup-3fe64813fc454fdf/`，只可用于本次 Web 热更新回退。原轻量架构部署回执与数据库恢复边界保持有效，24 小时只读观察继续按原截止时间执行。
