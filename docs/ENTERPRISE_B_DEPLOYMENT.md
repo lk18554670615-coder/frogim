@@ -72,3 +72,15 @@ Web 企业码 B 注册、消息和上传使用合成账号，不在生产重复�
 线上只检查容器健康、readiness、入口、静态资源、证书和私网身份/地址一致性。
 音视频按约定跳过；移动端、供应商推送实收及跨公网功能表现待验收。
 部署实际结果、摘要、备份恢复证据和观察记录在服务端 ops 及本机 build/enterprise-b-release。
+
+## 2026-10-01 实际发布记录
+
+- B 于北京时间 2026-10-01 20:56:33 通过审计接口启用；A 仍为唯一默认企业，没有调换现有用户。B 从空数据开始，启用时用户和身份映射均为零。
+- 发布提交 `b1ae89ad7fb2251d3db4639ab93ce5b7ceb9acbd`，tag `release/enterprise-b-ready-20261001`，均已推送。复用正式 Web 1.0.16+8024，资源版本 `67444ea69853fd11`；实际镜像、配置、证书和静态资源摘要见部署回执。
+- A 回执：`/data/frogim/releases/light-20261001-c83107e/ops/enterprise-b-release/deployment-completed.json`；B 回执：`/data/frogim/enterprise-b/ops/deployment-completed.json`。两份无凭据回执已保存至本机 `build/enterprise-b-release`。
+- 本地定向故障测试覆盖 A→B→A、首次建号和头像复制、旧凭据失效、不可达、复制失败、进程重启和原操作重试；隔离数据库测试覆盖确认丢失后重试。本地 Web 使用合成账号完成企业码 B 注册、双向消息及文件上传，音视频未测试。证据为 `build/light-tenancy/evidence/direct-enterprise.json` 和 `build/enterprise-b-release/local-evidence.json`，另有双方页面截图。
+- 上线可用性检查：A 八项、B 七项容器均健康，入口/readiness 返回 200；A 四项、B 六项静态资源核对摘要及类型。私网 mTLS 企业身份和服务地址一致，公网 8443/8444 无 TLS 响应。没有在线重复业务功能测试。
+- B 完整备份：`/data/frogim/enterprise-b/backups/20261001T124206Z`。摘要校验、独立无网络 PostgreSQL 恢复和归档解包通过，未覆盖生产数据；没有宣称完整七容器恢复启动已验收。隔离记录在 `ops/restore-check.json`。
+- B 每日备份保留七份完成备份，证书每十二小时检查；定时任务目标已核对，证书服务实际执行成功。原 B 旧目录保留，临时传输授权和隔离数据库容器已清除。
+- 24 小时观察截止北京时间 2026-10-02 20:56:33，自动观察 ID `a-b`。逐次聚合记录保存在 `build/enterprise-b-release/observation`。首次持久化采样为 UTC 2026-10-01 13:12:32—13:12:34；日志查询覆盖 B 启用后至该次采样，但不能代表持续监测全部指标。A 累计失败推送一条来自 UTC 07:57:31，B 启用后新增失败为零；少量网关 503 位于正式业务路径之外。观察结束需列出实际样本、日志覆盖与缺失时段。
+- 移动端、供应商推送实收、跨公网业务功能和异机备份待验收；音视频按用户要求跳过。本轮未修改企业 A 业务数据、账号归属或平台默认企业。
