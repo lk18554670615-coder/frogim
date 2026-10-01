@@ -1,5 +1,6 @@
 import gzip
 import importlib.util
+import json
 import pathlib
 import tempfile
 import unittest
@@ -10,6 +11,30 @@ spec.loader.exec_module(packager)
 
 
 class PackagingTests(unittest.TestCase):
+    def test_emoji_is_removed_only_from_web_startup_manifest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            source = root / 'input'
+            (source / 'assets/assets/fonts').mkdir(parents=True)
+            for name in ['index.html', 'flutter_bootstrap.js', 'app_startup.js', 'main.dart.js']:
+                (source / name).write_text('<head></head>')
+            fonts = [
+                dict(family='NotoSansSC', fonts=[dict(asset='assets/fonts/NotoSansSC-Regular.otf')]),
+                dict(family='NotoColorEmoji', fonts=[dict(asset='assets/fonts/NotoColorEmoji.ttf')]),
+            ]
+            original = json.dumps(fonts)
+            (source / 'assets/FontManifest.json').write_text(original)
+            for font in fonts:
+                (source / 'assets' / font['fonts'][0]['asset']).write_bytes(b'font' * 1000)
+            manifest = packager.package(source, root / 'output')
+            runtime = root / 'output' / manifest['runtimePath']
+            eager_fonts = json.loads((runtime / 'assets/FontManifest.json').read_text())
+            self.assertEqual([f['family'] for f in eager_fonts], ['NotoSansSC'])
+            self.assertEqual(manifest['deferredFonts'], [fonts[1]])
+            self.assertEqual(gzip.decompress((runtime / 'assets/assets/fonts/NotoColorEmoji.ttf.gz').read_bytes()), b'font' * 1000)
+            self.assertEqual((source / 'assets/FontManifest.json').read_text(), original)
+            self.assertNotIn('NotoColorEmoji', (root / 'output/index.html').read_text())
+
     def test_release_version_is_checked_before_packaging(self):
         with tempfile.TemporaryDirectory() as folder:
             root = pathlib.Path(folder)

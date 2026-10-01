@@ -21,15 +21,25 @@ def package(source, output, expected_version=None, expected_build_number=None):
     for key, expected in [('version', expected_version), ('build_number', expected_build_number)]:
         if expected is not None and version_info.get(key) != str(expected):
             raise ValueError('Flutter build ' + key + ' differs from the release version')
+    font_manifest_path = source / 'assets/FontManifest.json'
+    fonts = json.loads(font_manifest_path.read_text(encoding='utf-8'))
+    deferred_fonts = [font for font in fonts if font.get('family') == 'NotoColorEmoji']
+    for font in deferred_fonts:
+        for item in font['fonts']:
+            if not (source / 'assets' / item['asset']).is_file():
+                raise ValueError('deferred emoji font asset missing')
+    startup_manifest = json.dumps([font for font in fonts if font.get('family') != 'NotoColorEmoji'], separators=(',', ':')).encode()
     files = sorted((p for p in source.rglob('*') if p.is_file()), key=lambda p: p.relative_to(source).as_posix())
     digest = hashlib.sha256()
     for path in files:
         digest.update(path.relative_to(source).as_posix().encode())
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
+        digest.update(hashlib.sha256(startup_manifest if path == font_manifest_path else path.read_bytes()).digest())
     release_id = digest.hexdigest()[:16]
     shutil.copytree(source, output)
     runtime = output / 'releases' / release_id
     shutil.copytree(source, runtime)
+    for directory in [output, runtime]:
+        (directory / 'assets/FontManifest.json').write_bytes(startup_manifest)
     html = (output / 'index.html').read_text(encoding='utf-8')
     html = html.replace('</head>', '<meta name="app-resource-base" content="releases/' + release_id + '/">\n'
         '<link rel="preload" href="releases/' + release_id + '/main.dart.js" as="script" fetchpriority="high">\n'
@@ -55,6 +65,7 @@ def package(source, output, expected_version=None, expected_build_number=None):
             if p.exists(): p.unlink()
     manifest = dict(releaseId=release_id, runtimePath='releases/' + release_id,
         version=version_info.get('version'), buildNumber=version_info.get('build_number'),
+        deferredFonts=deferred_fonts,
         mainSHA256=hashlib.sha256((runtime / 'main.dart.js').read_bytes()).hexdigest(),
         runtimeTreeSHA256=hashlib.sha256('\n'.join(p.relative_to(runtime).as_posix() + ':' + hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((p for p in runtime.rglob('*') if p.is_file()), key=lambda p: p.relative_to(runtime).as_posix())).encode()).hexdigest(),
         fontBytes=sum(p.stat().st_size for p in (runtime / 'assets/assets/fonts').glob('*') if p.suffix in ['.otf', '.ttf']))

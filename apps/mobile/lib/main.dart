@@ -16,6 +16,7 @@ import 'core/client_diagnostics.dart';
 import 'core/bundled_licenses.dart';
 import 'core/push_service.dart';
 import 'core/web_context_menu.dart';
+import 'core/web_emoji_font.dart';
 import 'data/im_repository.dart';
 import 'data/live_repository.dart';
 import 'ui/screens/home_screen.dart';
@@ -114,6 +115,7 @@ class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
     unawaited(controller.initialize());
     unawaited(_restoreTheme());
     unawaited(_checkUpgrade());
+    WebEmojiFont.instance.loadAfterFirstFrame();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _launchReleaseTimer = Timer(_minimumLaunchVisibility, () {
@@ -151,7 +153,10 @@ class _LinliAppState extends State<LinliApp> with WidgetsBindingObserver {
     controller.messageFeedback.setForeground(
       state == AppLifecycleState.resumed,
     );
-    if (state == AppLifecycleState.resumed) unawaited(_checkUpgrade());
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_checkUpgrade());
+      WebEmojiFont.instance.loadAfterFirstFrame();
+    }
   }
 
   @override

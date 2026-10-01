@@ -76,6 +76,11 @@ def verify():
         if result != '304|0': raise RuntimeError('conditional static response differs')
         results[path] = dict(cache=headers['cache-control'], compressedBytes=int(headers['content-length']), conditional=result)
     if hashlib.sha256(fetch('/app/releases/' + rid + '/main.dart.js')).hexdigest() != manifest['mainSHA256']: raise RuntimeError('public script digest differs')
+    deferred = {font['family'] for font in manifest.get('deferredFonts', [])}
+    if deferred:
+        eager = json.loads(fetch('/app/releases/' + rid + '/assets/FontManifest.json'))
+        if any(font['family'] in deferred for font in eager):
+            raise RuntimeError('background font still blocks engine startup')
     if manifest.get('version'):
         for path in ['/app/version.json', '/app/releases/' + rid + '/version.json']:
             version = json.loads(fetch(path))
