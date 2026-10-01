@@ -11,7 +11,7 @@ spec.loader.exec_module(packager)
 
 
 class PackagingTests(unittest.TestCase):
-    def test_emoji_is_removed_only_from_web_startup_manifest(self):
+    def test_chinese_is_on_demand_and_emoji_stays_in_background(self):
         with tempfile.TemporaryDirectory() as folder:
             root = pathlib.Path(folder)
             source = root / 'input'
@@ -29,11 +29,12 @@ class PackagingTests(unittest.TestCase):
             manifest = packager.package(source, root / 'output')
             runtime = root / 'output' / manifest['runtimePath']
             eager_fonts = json.loads((runtime / 'assets/FontManifest.json').read_text())
-            self.assertEqual([f['family'] for f in eager_fonts], ['NotoSansSC'])
+            self.assertEqual(eager_fonts, [])
             self.assertEqual(manifest['deferredFonts'], [fonts[1]])
             self.assertEqual(gzip.decompress((runtime / 'assets/assets/fonts/NotoColorEmoji.ttf.gz').read_bytes()), b'font' * 1000)
             self.assertEqual((source / 'assets/FontManifest.json').read_text(), original)
             self.assertNotIn('NotoColorEmoji', (root / 'output/index.html').read_text())
+            self.assertNotIn('NotoSansSC', (root / 'output/index.html').read_text())
 
     def test_release_version_is_checked_before_packaging(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -50,6 +51,19 @@ class PackagingTests(unittest.TestCase):
             manifest = packager.package(source, root / 'correct', '1.0.16', '8023')
             self.assertEqual(manifest['version'], '1.0.16')
             self.assertEqual(manifest['buildNumber'], '8023')
+
+    def test_real_build_without_matching_font_mirror_cannot_be_packaged(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            source = root / 'input'
+            (source / 'assets').mkdir(parents=True)
+            for name in ['index.html', 'app_startup.js', 'main.dart.js']:
+                (source / name).write_text('<head></head>')
+            (source / 'flutter_bootstrap.js').write_text('{"engineRevision":"abcdef"}')
+            (source / 'assets/FontManifest.json').write_text('[]')
+            with self.assertRaises(FileNotFoundError):
+                packager.package(source, root / 'output')
+            self.assertFalse((root / 'output').exists())
 
     def test_release_urls_change_with_content_and_gzip_matches_original(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -13,6 +13,9 @@
     config.assetBase = base.href;
     config.canvasKitBaseUrl = new URL('canvaskit/', base).href;
   }
+  // The build preparation mirrors this engine's fallback font shards.
+  // CanvasKit requests only shards needed by text actually being rendered.
+  config.fontFallbackBaseUrl = new URL('font-fallbacks/', config.assetBase || document.baseURI).href;
   function fail() { startup?.fail(); }
   startup?.setStage('正在加载应用资源…');
   window._flutter.loader.load({

@@ -151,7 +151,9 @@ ThemeData buildLinliTheme(Brightness brightness, {String? fontFamily}) {
   );
 
   final baseText = TextStyle(
-    fontFamily: fontFamily ?? (kIsWeb ? 'NotoSansSC' : null),
+    // CanvasKit loads missing Chinese glyphs from its versioned font shards.
+    // Do not select the full bundled Chinese font for the Web startup frame.
+    fontFamily: fontFamily ?? (kIsWeb ? 'Roboto' : null),
     fontFamilyFallback: [
       if (kIsWeb) 'NotoColorEmoji',
       'PingFang SC',

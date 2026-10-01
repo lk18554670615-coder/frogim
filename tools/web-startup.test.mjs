@@ -47,6 +47,7 @@ test('versioned URLs reach the loader and engine; runApp alone does not hide the
   assert.equal(load.config.entrypointBaseUrl, 'https://example.test/app/releases/0123456789abcdef/');
   assert.equal(load.config.assetBase, load.config.entrypointBaseUrl);
   assert.equal(load.config.canvasKitBaseUrl, load.config.assetBase + 'canvaskit/');
+  assert.equal(load.config.fontFallbackBaseUrl, load.config.assetBase + 'font-fallbacks/');
   load.onEntrypointLoaded({ initializeEngine(config) { engineConfig = config; return Promise.resolve({ runApp() {} }); } });
   await new Promise(setImmediate);
   assert.equal(engineConfig.assetBase, load.config.assetBase); assert.equal(p.removed(), false);
@@ -59,4 +60,11 @@ test('initialization failure produces a recoverable error without hiding it', as
   load.onEntrypointLoaded({ initializeEngine() { return Promise.reject(new Error('engine failed')); } });
   await new Promise(setImmediate);
   assert.match(p.nodes.get('app-startup-status').textContent, /加载失败/); assert.equal(p.removed(), false);
+});
+test('unpackaged local Web resolves font shards under the application base', () => {
+  const p = page(); let load;
+  p.context.document.querySelector = () => null;
+  p.context.window._flutter = { loader: { load(options) { load = options; return Promise.resolve(); } } };
+  runInNewContext(bootstrapSource, p.context);
+  assert.equal(load.config.fontFallbackBaseUrl, 'https://example.test/app/font-fallbacks/');
 });

@@ -20,6 +20,11 @@ RUN apt-get update \
 
 WORKDIR /workspace
 
+# Mirror the exact engine font shards once, independently of application code.
+# Runtime requests stay on our origin; the client downloads only needed shards.
+COPY tools/prepare_web_fonts.py tools/prepare_web_fonts.py
+RUN python3 -c "from tools.prepare_web_fonts import prepare; prepare('/opt/flutter', '/opt/web-font-cache')"
+
 COPY packages/getuiflut packages/getuiflut
 COPY third_party/device_info_plus-13.2.0-four-platform third_party/device_info_plus-13.2.0-four-platform
 COPY third_party/flutter_webrtc-1.4.0-full-display third_party/flutter_webrtc-1.4.0-full-display
@@ -54,7 +59,8 @@ RUN test -n "$WEB_API_BASE_URL" \
       --dart-define=TERMS_URL="$TERMS_URL" \
       --dart-define=PRIVACY_URL="$PRIVACY_URL"
 
-RUN python3 /workspace/tools/package-web-release.py build/web build/web-release \
+RUN python3 /workspace/tools/prepare_web_fonts.py build/web --flutter-sdk "$FLUTTER_ROOT" --cache /opt/web-font-cache \
+    && python3 /workspace/tools/package-web-release.py build/web build/web-release \
       ${WEB_BUILD_NAME:+--expected-version=$WEB_BUILD_NAME} \
       ${WEB_BUILD_NUMBER:+--expected-build-number=$WEB_BUILD_NUMBER}
 

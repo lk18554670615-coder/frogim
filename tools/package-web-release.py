@@ -4,7 +4,9 @@ import gzip
 import hashlib
 import json
 import pathlib
+import re
 import shutil
+from prepare_web_fonts import validate as validate_fonts
 
 
 def package(source, output, expected_version=None, expected_build_number=None):
@@ -23,12 +25,18 @@ def package(source, output, expected_version=None, expected_build_number=None):
             raise ValueError('Flutter build ' + key + ' differs from the release version')
     font_manifest_path = source / 'assets/FontManifest.json'
     fonts = json.loads(font_manifest_path.read_text(encoding='utf-8'))
+    bootstrap = (source / 'flutter_bootstrap.js').read_text(encoding='utf-8')
+    engine = re.search(r'"engineRevision"\s*:\s*"([a-f0-9]+)"', bootstrap)
+    if engine:
+        validate_fonts(source / 'font-fallbacks', engine.group(1))
     deferred_fonts = [font for font in fonts if font.get('family') == 'NotoColorEmoji']
+    if (source / 'web-font-policy.json').exists():
+        deferred_fonts = json.loads((source / 'web-font-policy.json').read_text(encoding='utf-8'))['backgroundFonts']
     for font in deferred_fonts:
         for item in font['fonts']:
             if not (source / 'assets' / item['asset']).is_file():
                 raise ValueError('deferred emoji font asset missing')
-    startup_manifest = json.dumps([font for font in fonts if font.get('family') != 'NotoColorEmoji'], separators=(',', ':')).encode()
+    startup_manifest = json.dumps([font for font in fonts if font.get('family') not in ('NotoColorEmoji', 'NotoSansSC')], separators=(',', ':')).encode()
     files = sorted((p for p in source.rglob('*') if p.is_file()), key=lambda p: p.relative_to(source).as_posix())
     digest = hashlib.sha256()
     for path in files:
@@ -42,8 +50,7 @@ def package(source, output, expected_version=None, expected_build_number=None):
         (directory / 'assets/FontManifest.json').write_bytes(startup_manifest)
     html = (output / 'index.html').read_text(encoding='utf-8')
     html = html.replace('</head>', '<meta name="app-resource-base" content="releases/' + release_id + '/">\n'
-        '<link rel="preload" href="releases/' + release_id + '/main.dart.js" as="script" fetchpriority="high">\n'
-        '<link rel="preload" href="releases/' + release_id + '/assets/assets/fonts/NotoSansSC-Regular.otf" as="fetch" crossorigin fetchpriority="low">\n</head>')
+        '<link rel="preload" href="releases/' + release_id + '/main.dart.js" as="script" fetchpriority="high">\n</head>')
     # Leave bootstrap/startup at revalidated URLs; their resource-base comes from
     # the current HTML. The SDK itself can use the immutable release URL.
     html = html.replace('src="wukongimjssdk-', 'src="releases/' + release_id + '/wukongimjssdk-')
@@ -65,7 +72,7 @@ def package(source, output, expected_version=None, expected_build_number=None):
             if p.exists(): p.unlink()
     manifest = dict(releaseId=release_id, runtimePath='releases/' + release_id,
         version=version_info.get('version'), buildNumber=version_info.get('build_number'),
-        deferredFonts=deferred_fonts,
+        deferredFonts=deferred_fonts, chineseFonts='on-demand',
         mainSHA256=hashlib.sha256((runtime / 'main.dart.js').read_bytes()).hexdigest(),
         runtimeTreeSHA256=hashlib.sha256('\n'.join(p.relative_to(runtime).as_posix() + ':' + hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((p for p in runtime.rglob('*') if p.is_file()), key=lambda p: p.relative_to(runtime).as_posix())).encode()).hexdigest(),
         fontBytes=sum(p.stat().st_size for p in (runtime / 'assets/assets/fonts').glob('*') if p.suffix in ['.otf', '.ttf']))

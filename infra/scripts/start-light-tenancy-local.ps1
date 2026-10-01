@@ -1,4 +1,4 @@
-param([switch]$SkipBuild,[switch]$SkipClientBuild,[switch]$RefreshConfig,[string]$Flutter='C:/Users/lee/fvm/versions/3.44.8/bin/flutter.bat')
+param([switch]$SkipBuild,[switch]$SkipClientBuild,[switch]$RefreshConfig,[string]$Flutter='C:/Users/lee/fvm/versions/3.44.8/bin/flutter.bat',[string]$Python='python',[string]$FontProxy='')
 $ErrorActionPreference='Stop'
 if($PSVersionTable.PSVersion.Major -lt 7){throw 'Run with PowerShell 7 (pwsh).'}
 $root=Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
@@ -26,6 +26,10 @@ if(!$SkipBuild){
 if(!$SkipClientBuild){
  Push-Location -LiteralPath apps/mobile
  try{& $Flutter build web --no-pub --release --base-href / --no-web-resources-cdn --dart-define=APP_ENV=development --dart-define=PLATFORM_BASE_URL=http://127.0.0.1:18700/platform --dart-define=ENABLE_DEMO=false;AssertCommand}finally{Pop-Location}
+ $sdk=Split-Path (Split-Path $Flutter -Parent) -Parent
+ $fontArgs=@('tools/prepare_web_fonts.py','apps/mobile/build/web','--flutter-sdk',$sdk,'--cache','build/web-font-cache')
+ if($FontProxy){$fontArgs+=@('--proxy',$FontProxy)}
+ & $Python @fontArgs;AssertCommand
 }
 $compose=Join-Path $root 'build/light-tenancy/compose.json'
 docker compose -f $compose up -d postgres-a postgres-b redis-a redis-b platform;AssertCommand

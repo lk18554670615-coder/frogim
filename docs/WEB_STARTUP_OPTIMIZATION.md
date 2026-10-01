@@ -30,3 +30,22 @@ HTML 提前加载主脚本和中文字体，主脚本优先；发布包提供 gz
 只验证首帧不被未完成下载阻塞、重复请求、失败重试、原生无额外加载，以及 Web 包首屏清单仅排除 Emoji、资源仍完整可用。内置浏览器控制超时，本轮未获取实际浏览器下载时序或首屏秒数。
 
 北京时间 2026-10-01 完成 Emoji 后台加载发布，代码 `bf3e77b`，资源版本 `67444ea69853fd11`，Web `1.0.16+8024`。3 项后台加载测试、3 项打包测试、受影响 Dart 文件分析及生产 Web 构建通过；真实构建的中文及图标字体路径完整，Emoji 字体与源文件一致且 gzip 可逆。线上首屏 FontManifest 不含 NotoColorEmoji，独立字体资源可用且保持 immutable，版本策略无更新误报。8 个容器健康且没有重启，readiness 正常。服务端回执为 `/data/frogim/releases/light-20261001-c83107e/ops/web-startup-67444ea69853fd11.json`，本机记录 `build/web-emoji-background/publish.log`。内置浏览器控制超时，实际浏览器首帧与字体请求时序仍未测得。
+
+## Web 中文字体按需加载（本机，未发布）
+
+2026-10-01 后续调整仅作用于 Web：主题使用 CanvasKit 的默认 Roboto 家族，移除 Web 首屏 FontManifest 中的完整 NotoSansSC，以及 HTML 中文字体 preload。原生 pubspec、字体文件和主题选择保持原样。Emoji 继续首帧后后台注册，不改为使用时才下载。
+
+复用 Flutter 引擎按缺失字符选择、缓存和注册回退字体的机制。`tools/prepare_web_fonts.py` 从实际 Flutter SDK 的已编译 Web 引擎元数据提取字体分片及默认 Latin 字体；首次构建下载并缓存，运行时从本应用同源 `font-fallbacks/` 请求，不访问 Google。包含完整的引擎回退目录以保留其他语言和符号支持，但浏览器只请求显示文字需要的文件。准备缓存共 725 个文件、21,803,256 字节，不是浏览器每次下载量。
+
+镜像带引擎版本及逐文件 SHA-256；版本不匹配、缺失或内容校验失败时不生成发布包。生产 Web Dockerfile 和本机启动脚本均接入准备阶段。手工构建在 `flutter build web` 后、版本化打包前执行：
+
+```text
+python3 tools/prepare_web_fonts.py apps/mobile/build/web --flutter-sdk /opt/flutter --cache build/web-font-cache
+python3 tools/package-web-release.py apps/mobile/build/web build/web-release
+```
+
+本机 PowerShell 使用实际 Python 可执行文件；启动脚本支持 `-Python` 指定它，以及 `-FontProxy` 指定构建时下载代理。缓存中断可续用已完成文件，原 Flutter 源码及手机字体不修改。
+
+本机实际浏览器 `http://127.0.0.1:18780/` 检查了会话列表中文字形及搜索框输入“龘罕见汉字”。首次观察到 10 个中文分片，合计文件大小 310,700 字节，未请求原 8,331,336 字节中文整包；输入生僻字后补载 `.108`、`.80`、`.107`、`.21` 分片。字体资源均为本机同源，字体错误日志为空；没有把资源清单当作完整页面秒数。搜索接口的已有输入格式错误提示与字体检查分开记录，本轮不改搜索业务。
+
+针对性证据：7 项 Python 镜像与打包测试、5 项启动脚本测试、3 项 Emoji 后台加载测试通过，Web release 构建及版本化打包完成。资源版本 `701ee09319e6bfbe`、本机版本 `1.0.17+8025`；`build/web-font-on-demand/browser-evidence.json` 记录资源检查，`build/web-font-on-demand/packaged-web/web-release.json` 记录构建摘要。未执行现网发布或全量回归。
