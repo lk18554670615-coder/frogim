@@ -1,0 +1,9 @@
+ARG APP_IMAGE
+ARG WEB_IMAGE=caddy:2.10-alpine
+FROM ${APP_IMAGE} AS app
+FROM ${WEB_IMAGE} AS web
+FROM caddy:2.10-alpine
+COPY --from=app /srv/admin /srv/admin
+# In enterprise-only mode WEB_IMAGE is the app image; /srv/platform is unused.
+ARG WEB_SOURCE=/usr/share/nginx/html
+COPY --from=web ${WEB_SOURCE} /srv/web

@@ -11,6 +11,10 @@
 **/coverage
 **/node_modules
 **/.data
+**/.fvm
+**/key.properties
+**/local.properties
+**/*.jks
 artifacts
 data
 docs/archive
