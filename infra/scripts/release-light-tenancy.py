@@ -280,7 +280,7 @@ elif args.phase=='open':
     old_root=pathlib.Path(read(ROOT/'ops'/'pointer-before.json')['releaseRoot'])
     renewal=(old_root/'renew-certificate.sh').read_text().replace('/config/Caddyfile','/config/light/Caddyfile')
     (ROOT/'renew-certificate.sh').write_text(renewal);os.chmod(ROOT/'renew-certificate.sh',0o700)
-    dropin=pathlib.Path('/etc/systemd/system/qingwa-cert-renew.service.d/light-tenancy.conf')
+    dropin=pathlib.Path('/etc/systemd/system/qingwa-cert-renew.service.d/zz-light-tenancy.conf')
     dropin.parent.mkdir(exist_ok=True);dropin.write_text('[Service]\nExecStart=\nExecStart='+str(ROOT/'renew-certificate.sh')+'\n')
     run(['systemctl','daemon-reload'])
     manifest=read(ROOT/'release-manifest.json')
