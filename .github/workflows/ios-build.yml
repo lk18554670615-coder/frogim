@@ -26,6 +26,26 @@ on:
         required: true
         default: false
         type: boolean
+      build_android:
+        description: '构建现有签名的 Android APK'
+        required: true
+        default: false
+        type: boolean
+      release_only:
+        description: '仅定向认证测试与签名打包，跳过全量编译测试任务'
+        required: true
+        default: false
+        type: boolean
+      release_version:
+        description: '客户端版本'
+        required: true
+        default: '1.0.17'
+        type: string
+      release_build_number:
+        description: '客户端构建号'
+        required: true
+        default: '8025'
+        type: string
 
 concurrency:
   group: ios-${{ github.workflow }}-${{ github.ref }}
@@ -38,9 +58,12 @@ env:
   FLUTTER_STORAGE_BASE_URL: https://storage.googleapis.com
   PUB_HOSTED_URL: https://pub.dev
   IOS_BUNDLE_ID: top.hongjinghuanqiu.app
+  MOBILE_RELEASE_VERSION: ${{ inputs.release_version || '1.0.17' }}
+  MOBILE_RELEASE_BUILD_NUMBER: ${{ inputs.release_build_number || github.run_number }}
 
 jobs:
   compile:
+    if: github.event_name != 'workflow_dispatch' || inputs.release_only != true
     name: Compile iOS without signing
     runs-on: macos-26
     timeout-minutes: 60
@@ -85,9 +108,11 @@ jobs:
       - name: Compile release iOS app without signing
         run: |
           flutter build ios --release --no-codesign \
-            --build-number="${GITHUB_RUN_NUMBER}" \
+            --build-name="${MOBILE_RELEASE_VERSION}" \
+            --build-number="${MOBILE_RELEASE_BUILD_NUMBER}" \
             --dart-define=APP_ENV=production \
             --dart-define=API_BASE_URL=https://18.163.165.233 \
+            --dart-define=PLATFORM_BASE_URL=https://18.163.165.233/platform \
             --dart-define=ENABLE_DEMO=false \
             --dart-define=GETUI_ENABLED=false \
             --dart-define=TERMS_URL=https://18.163.165.233/legal/terms \
@@ -111,8 +136,11 @@ jobs:
   signed-ipa:
     name: Build signed IPA
     if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_dispatch' && inputs.build_signed_ipa == true)
+      always() &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.build_signed_ipa == true)) &&
+      (needs.compile.result == 'success' ||
+      (github.event_name == 'workflow_dispatch' && inputs.release_only == true))
     needs: compile
     runs-on: macos-26
     timeout-minutes: 60
@@ -210,13 +238,21 @@ jobs:
         run: pod update WebRTC-SDK
         working-directory: apps/mobile/ios
 
+      - name: Targeted authentication tests
+        if: github.event_name == 'workflow_dispatch' && inputs.release_only == true
+        run: |
+          flutter test test/app_config_test.dart test/enterprise_auth_request_test.dart test/enterprise_auth_ui_test.dart --reporter compact
+          python3 -m unittest discover -s tool -p test_ios_signing.py -v
+
       - name: Build signed IPA
         run: |
           flutter build ipa --release \
-            --build-number="${GITHUB_RUN_NUMBER}" \
+            --build-name="${MOBILE_RELEASE_VERSION}" \
+            --build-number="${MOBILE_RELEASE_BUILD_NUMBER}" \
             --export-options-plist="${{ steps.signing.outputs.export_options_path }}" \
             --dart-define=APP_ENV=production \
             --dart-define=API_BASE_URL=https://18.163.165.233 \
+            --dart-define=PLATFORM_BASE_URL=https://18.163.165.233/platform \
             --dart-define=ENABLE_DEMO=false \
             --dart-define=GETUI_ENABLED="${GETUI_ENABLED}" \
             --dart-define=GETUI_APP_ID="${GETUI_APP_ID}" \
@@ -225,6 +261,18 @@ jobs:
             --dart-define=TERMS_URL=https://18.163.165.233/legal/terms \
             --dart-define=PRIVACY_URL=https://18.163.165.233/legal/privacy \
             --dart-define=MEDIA_MAX_BYTES=104857600
+
+      - name: Verify exported IPA signature and version
+        shell: bash
+        run: |
+          ipa=$(find build/ios/ipa -name '*.ipa' -print -quit)
+          test -n "$ipa"
+          unzip -q "$ipa" -d "${RUNNER_TEMP}/ipa-check"
+          app=$(find "${RUNNER_TEMP}/ipa-check/Payload" -maxdepth 1 -name '*.app' -print -quit)
+          codesign --verify --deep --strict "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Info.plist")" = "${MOBILE_RELEASE_VERSION}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$app/Info.plist")" = "${MOBILE_RELEASE_BUILD_NUMBER}"
+          shasum -a 256 "$ipa"
 
       - name: Upload signed IPA
         uses: actions/upload-artifact@v4
@@ -249,3 +297,77 @@ jobs:
             "${RUNNER_TEMP}/distribution.mobileprovision" \
             "${RUNNER_TEMP}/distribution-profile.plist" \
             "${RUNNER_TEMP}/ExportOptions.plist"
+
+
+  android-apk:
+    name: Build signed Android APK
+    if: github.event_name == 'workflow_dispatch' && inputs.build_android == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/mobile
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      RELEASE_STORE_FILE: ${{ github.workspace }}/apps/mobile/android/ci-release.jks
+      RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+      RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      GETUI_APP_ID: ${{ secrets.GETUI_APP_ID }}
+      GETUI_APP_KEY: ${{ secrets.GETUI_APP_KEY }}
+      GETUI_APP_SECRET: ${{ secrets.GETUI_APP_SECRET }}
+      GETUI_APPID: ${{ secrets.GETUI_APP_ID }}
+      GETUI_ENABLED: ${{ secrets.GETUI_APP_ID != '' && secrets.GETUI_APP_KEY != '' && secrets.GETUI_APP_SECRET != '' && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version-file: apps/mobile/.fvmrc
+          cache: true
+          pub-cache: true
+      - name: Install existing release signing material
+        shell: bash
+        run: |
+          for name in ANDROID_KEYSTORE_BASE64 RELEASE_STORE_PASSWORD RELEASE_KEY_ALIAS RELEASE_KEY_PASSWORD; do
+            test -n "${!name}" || { echo "::error::Missing signing Secret $name"; exit 1; }
+          done
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RELEASE_STORE_FILE"
+          chmod 600 "$RELEASE_STORE_FILE"
+      - name: Resolve dependencies and run targeted authentication tests
+        run: |
+          flutter pub get
+          flutter test test/app_config_test.dart test/enterprise_auth_request_test.dart test/enterprise_auth_ui_test.dart --reporter compact
+      - name: Build signed APK
+        run: |
+          flutter build apk --release \
+            --build-name="${MOBILE_RELEASE_VERSION}" \
+            --build-number="${MOBILE_RELEASE_BUILD_NUMBER}" \
+            --dart-define=APP_ENV=production \
+            --dart-define=API_BASE_URL=https://18.163.165.233 \
+            --dart-define=PLATFORM_BASE_URL=https://18.163.165.233/platform \
+            --dart-define=ENABLE_DEMO=false \
+            --dart-define=GETUI_ENABLED="${GETUI_ENABLED}" \
+            --dart-define=GETUI_APP_ID="${GETUI_APP_ID}" \
+            --dart-define=GETUI_APP_KEY="${GETUI_APP_KEY}" \
+            --dart-define=GETUI_APP_SECRET="${GETUI_APP_SECRET}" \
+            --dart-define=TERMS_URL=https://18.163.165.233/legal/terms \
+            --dart-define=PRIVACY_URL=https://18.163.165.233/legal/privacy \
+            --dart-define=MEDIA_MAX_BYTES=104857600
+      - name: Verify Android signature
+        run: |
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs build/app/outputs/flutter-apk/app-release.apk
+          sha256sum build/app/outputs/flutter-apk/app-release.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-signed-${{ env.MOBILE_RELEASE_VERSION }}-${{ env.MOBILE_RELEASE_BUILD_NUMBER }}
+          path: apps/mobile/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove temporary Android signing material
+        if: always()
+        run: rm -f "$RELEASE_STORE_FILE"
