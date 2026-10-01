@@ -2,6 +2,7 @@ import 'dart:convert';
 
 class AuthPolicy {
   const AuthPolicy({
+    this.platformMode = false,
     this.registrationEnabled = true,
     this.inviteRegistrationMode = 'optional',
     this.passwordMinLength = 8,
@@ -12,6 +13,7 @@ class AuthPolicy {
   });
 
   final bool registrationEnabled;
+  final bool platformMode;
   final String inviteRegistrationMode;
   final int passwordMinLength;
   final int passwordMaxBytes;
@@ -31,6 +33,7 @@ class AuthPolicy {
         .clamp(1, 1440)
         .toInt();
     return AuthPolicy(
+      platformMode: json['platformMode'] == true,
       registrationEnabled: json['registrationEnabled'] is bool
           ? json['registrationEnabled']! as bool
           : true,

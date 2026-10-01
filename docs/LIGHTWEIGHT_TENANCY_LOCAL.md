@@ -82,3 +82,9 @@ Web 页面所在端口只用于静态资源和独立浏览器存储；企业业�
 2026-10-01 发布历史补齐：版本页在客户端选择下提供并列的“当前策略 / 发布历史”，地址支持 `?client=android&tab=history`，刷新和浏览器返回保留视图；历史按客户端分页，每页 20 条，详情使用只读抽屉。平台新增 `lp_version_history` 和只读 `GET /platform/admin/versions/{client}/history?page=N`；每次成功保存将完整策略、版本代次、操作者、理由、时间与当前策略及审计在同一事务提交，失败或冲突不产生发布记录。增量迁移只补已有当前策略的初始快照，注明原发布时间和操作者未知，不还原被覆盖的旧策略。
 
 本次仅运行 16 项相关后台测试、4 项独立数据库历史测试及原版本策略子测试、`internal/tenancy` vet 与平台构建，全部通过。独立临时数据库覆盖重复迁移、旧快照、权限、冲突、审计失败回滚、分页和非法参数，并已销毁。更新前已备份本机平台数据库；只重建本机平台容器并更新平台静态资源，企业容器保持运行。浏览器实际保存合成 Android 推荐更新策略 1.0.13（最低 1.0.10），确认发布历史刷新保留、详情、旧 1.0.12 快照、客户端隔离及返回行为。下载地址是本机验收页，不代表 APK 发布。证据为 `version-history-review.json`、`version-history-ui.log`、`version-history-db.log`、`version-history-build.log`、`version-history-top-final.jpg` 和 `version-history-detail.jpg`，未进行生产发布或全量回归。
+
+2026-10-01 注册与登录企业码调整：多租户验证码及密码登录不显示人员邀请码、扫码或手动校验，不提交邀请码或企业码。注册始终显示“企业码（选填）”，留空进入默认企业；填写后提交时自动校验，人员邀请码必填或禁用策略不影响平台注册。继续使用 `inviteCode` 请求字段；原单企业模式和登录后个人邀请码功能保留。配置加载前按固定平台地址判断模式，避免旧内容闪现。服务端与客户端明确区分无效或停用企业码、默认企业不可用，不静默改归属。
+
+仅运行 22 项相关认证页面、策略及请求测试，另以固定平台地址单独运行 1 项配置未加载时的页面测试，全部通过；受影响 6 个 Dart 文件分析、Web release 构建、Go `internal/tenancy` vet 和构建通过。独立临时数据库测试实际注册空码及非默认企业码，并验证无效码、停用企业、默认企业不可用及失败不创建账号；测试库已销毁。仅更新本机平台镜像和 Web 静态资源，15 个本机容器继续运行，平台 readiness 和 Web 返回 200。实际浏览器检查 1280px 桌面及 390px 移动布局的验证码登录、密码登录和注册页面，无人员邀请码或扫码/校验按钮。移动布局为浏览器响应式检查，不代表原生安装包验收。本次不做全量回归、不发布现网。
+
+证据位于 `build/light-tenancy/evidence`：`enterprise-auth-ui.log`、`enterprise-auth-initial-policy.log`、`enterprise-auth-db.log`、`enterprise-auth-analysis.log`、`enterprise-auth-web-build.log`、`enterprise-auth-review.json`，截图为 `enterprise-auth-login-desktop.png`、`enterprise-auth-password-desktop.png`、`enterprise-auth-register-desktop.png` 及对应 `mobile.png`。既有 `docs/SERVER_CUTOVER_20260930.md` 保持原内容。

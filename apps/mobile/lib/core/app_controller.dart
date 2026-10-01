@@ -992,7 +992,7 @@ class AppController extends ChangeNotifier {
       final user = await repository.login(
         phone.trim(),
         code.trim(),
-        inviteCode: inviteCode.trim(),
+        inviteCode: platformAuthentication ? '' : inviteCode.trim(),
       );
       enteredShell = true;
       _enterAuthenticatedShell(user);
@@ -1105,7 +1105,9 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       return false;
     }
-    if (authPolicy.invitationRequired && inviteCode.trim().isEmpty) {
+    if (!platformAuthentication &&
+        authPolicy.invitationRequired &&
+        inviteCode.trim().isEmpty) {
       error = '创建新账号需要填写邀请码';
       notifyListeners();
       return false;
@@ -1149,13 +1151,19 @@ class AppController extends ChangeNotifier {
     try {
       return await repository.validateInviteCode(code);
     } catch (exception) {
-      error = _messageFor(exception, fallback: '邀请码校验失败，请稍后重试');
+      error = _messageFor(
+        exception,
+        fallback: platformAuthentication ? '企业码校验失败，请稍后重试' : '邀请码校验失败，请稍后重试',
+      );
       notifyListeners();
       return false;
     }
   }
 
   Future<InviteCodeProfile> loadInviteCode() => repository.inviteCode();
+
+  bool get platformAuthentication =>
+      AppConfig.platformBaseUrl.isNotEmpty || authPolicy.platformMode;
 
   Future<InviteCodeProfile?> changeInviteCode(String value) async {
     loading = true;

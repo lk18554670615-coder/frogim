@@ -444,6 +444,7 @@ class _LoginScreenState extends State<LoginScreen> {
               },
             ),
             if (effectiveMode == _LoginMode.code &&
+                !widget.controller.platformAuthentication &&
                 widget.controller.authPolicy.invitationEnabled) ...[
               const SizedBox(height: 12),
               TextFormField(
@@ -927,7 +928,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
   Future<bool> _validateInviteCode() async {
     if (inviteCode.text.trim().isEmpty) {
       setState(() => inviteValid = null);
-      return !widget.controller.authPolicy.invitationRequired;
+      return widget.controller.platformAuthentication ||
+          !widget.controller.authPolicy.invitationRequired;
     }
     setState(() => inviteChecking = true);
     final valid = await widget.controller.validateInviteCode(inviteCode.text);
@@ -1038,7 +1040,24 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 validator: (value) =>
                     (value?.trim().isNotEmpty ?? false) ? null : '请输入昵称',
               ),
-              if (widget.controller.authPolicy.invitationEnabled) ...[
+              if (widget.controller.platformAuthentication) ...[
+                const SizedBox(height: 14),
+                TextFormField(
+                  key: const Key('register-enterprise-code'),
+                  controller: inviteCode,
+                  textCapitalization: TextCapitalization.characters,
+                  textInputAction: TextInputAction.next,
+                  onChanged: (_) {
+                    setState(() => inviteValid = null);
+                    widget.controller.clearError();
+                  },
+                  decoration: InputDecoration(
+                    labelText: '企业码（选填）',
+                    helperText: '填写后加入对应企业，留空加入默认企业',
+                    errorText: inviteValid == false ? '请确认企业码及企业是否允许注册' : null,
+                  ),
+                ),
+              ] else if (widget.controller.authPolicy.invitationEnabled) ...[
                 const SizedBox(height: 14),
                 TextFormField(
                   key: const Key('register-invite-code'),

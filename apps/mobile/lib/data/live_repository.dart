@@ -860,6 +860,8 @@ class LiveImRepository
       'HANDLE_CHANGE_LIMIT' => '呱呱号修改次数已用完',
       'CONFIRMATION_REQUIRED' => '请完成二次确认后再继续',
       'INVITE_CODE_REQUIRED' => '创建新账号需要填写邀请码',
+      'INVALID_ENTERPRISE_CODE' => '企业码无效或对应企业已停用，请确认后重试',
+      'DEFAULT_ENTERPRISE_UNAVAILABLE' => '默认企业暂不可用，请填写有效企业码或联系管理员',
       'INVITE_CODE_INVALID' => '邀请码无效、已停用或已失效',
       'INVITE_CODE_DISABLED' => '邀请码功能当前未启用',
       'INVITE_CODE_STATUS_DISABLED' => '邀请码已被后台停用，请联系管理员',
@@ -990,7 +992,8 @@ class LiveImRepository
       'phone': phone,
       'code': code,
       'name': '青蛙用户',
-      if (inviteCode.trim().isNotEmpty) 'inviteCode': inviteCode.trim(),
+      if (_platformBaseUrl.isEmpty && inviteCode.trim().isNotEmpty)
+        'inviteCode': inviteCode.trim(),
     });
     return _acceptSession(data);
   }

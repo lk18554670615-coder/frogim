@@ -175,6 +175,55 @@ func TestDirectoryFlow(t *testing.T) {
 			t.Fatalf("missing sync failure status: %d", w.Code)
 		}
 	})
+	t.Run("enterprise_registration_errors", func(t *testing.T) {
+		var defaultID string
+		if err := db.QueryRow(ctx, `SELECT id FROM lp_tenants WHERE is_default`).Scan(&defaultID); err != nil {
+			t.Fatal(err)
+		}
+		register := func(phone, enterprise string) *httptest.ResponseRecorder {
+			return testRequest(p, "POST", "/v2/auth/register", map[string]any{"phone": phone, "code": "123456", "password": "LocalUser123!", "name": "企业码测试", "inviteCode": enterprise}, "")
+		}
+		explicitID := "b"
+		if defaultID == explicitID {
+			explicitID = "a"
+		}
+		for i, code := range []string{"", " " + explicitID + " "} {
+			w := register(fmt.Sprintf("1383333000%d", i), code)
+			if w.Code != 200 {
+				t.Fatalf("valid registration %d %s", w.Code, w.Body)
+			}
+			var reply struct {
+				Enterprise Grant `json:"enterprise"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &reply); err != nil {
+				t.Fatal(err)
+			}
+			expected := defaultID
+			if code != "" {
+				expected = explicitID
+			}
+			if reply.Enterprise.Tenant.ID != expected {
+				t.Fatal("wrong enterprise")
+			}
+		}
+		if w := register("13833330002", "missing"); w.Code != 400 || !strings.Contains(w.Body.String(), "INVALID_ENTERPRISE_CODE") {
+			t.Fatalf("invalid: %d %s", w.Code, w.Body)
+		}
+		if _, err := db.Exec(ctx, `UPDATE lp_tenants SET enabled=false`); err != nil {
+			t.Fatal(err)
+		}
+		defer db.Exec(ctx, `UPDATE lp_tenants SET enabled=true`)
+		if w := register("13833330003", "a"); w.Code != 400 || !strings.Contains(w.Body.String(), "INVALID_ENTERPRISE_CODE") {
+			t.Fatalf("disabled: %d %s", w.Code, w.Body)
+		}
+		if w := register("13833330004", ""); w.Code != 503 || !strings.Contains(w.Body.String(), "DEFAULT_ENTERPRISE_UNAVAILABLE") {
+			t.Fatalf("default: %d %s", w.Code, w.Body)
+		}
+		var n int
+		if err := db.QueryRow(ctx, `SELECT count(*) FROM lp_users WHERE phone IN ('13833330002','13833330003','13833330004')`).Scan(&n); err != nil || n != 0 {
+			t.Fatal("failed registrations created users", err)
+		}
+	})
 	t.Run("unified_version_policy", func(t *testing.T) {
 		body := map[string]any{"version": 0, "reason": "test", "confirmed": true, "policy": map[string]any{"minimumVersion": "1.0.12", "latestVersion": "1.0.13", "downloadUrl": "https://example.com/downloads/app.apk"}}
 		if w := testRequest(p, "PUT", "/admin/versions/android", body, "viewer"); w.Code != 403 {

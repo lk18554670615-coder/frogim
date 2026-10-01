@@ -242,10 +242,21 @@ func (p *Platform) tenant(ctx context.Context, id string) (Tenant, error) {
 	_ = json.Unmarshal(b, &t.Services)
 	return t, e
 }
+
+var errInvalidEnterpriseCode = errors.New("invalid enterprise code")
+var errDefaultEnterpriseUnavailable = errors.New("default enterprise unavailable")
+
 func (p *Platform) registrationTenant(ctx context.Context, code string) (Tenant, error) {
+	code = strings.TrimSpace(code)
 	var id string
 	e := p.DB.QueryRow(ctx, `SELECT id FROM lp_tenants WHERE enabled AND (($1<>'' AND upper(code)=upper($1)) OR ($1='' AND is_default))`, code).Scan(&id)
 	if e != nil {
+		if errors.Is(e, pgx.ErrNoRows) {
+			if code == "" {
+				return Tenant{}, errDefaultEnterpriseUnavailable
+			}
+			return Tenant{}, errInvalidEnterpriseCode
+		}
 		return Tenant{}, e
 	}
 	return p.tenant(ctx, id)
@@ -270,6 +281,14 @@ func (p *Platform) register(w http.ResponseWriter, r *http.Request) {
 	}
 	u, e := p.addUser(r.Context(), b)
 	if e != nil {
+		if errors.Is(e, errInvalidEnterpriseCode) {
+			fail(w, 400, "INVALID_ENTERPRISE_CODE")
+			return
+		}
+		if errors.Is(e, errDefaultEnterpriseUnavailable) {
+			fail(w, 503, "DEFAULT_ENTERPRISE_UNAVAILABLE")
+			return
+		}
 		fail(w, 409, "REGISTRATION_FAILED")
 		return
 	}
@@ -440,7 +459,13 @@ func (p *Platform) validateCode(w http.ResponseWriter, r *http.Request) {
 	}
 	t, e := p.registrationTenant(r.Context(), b.Code)
 	if e != nil {
-		fail(w, 400, "INVALID_ENTERPRISE_CODE")
+		if errors.Is(e, errInvalidEnterpriseCode) {
+			fail(w, 400, "INVALID_ENTERPRISE_CODE")
+		} else if errors.Is(e, errDefaultEnterpriseUnavailable) {
+			fail(w, 503, "DEFAULT_ENTERPRISE_UNAVAILABLE")
+		} else {
+			fail(w, 503, "DATABASE_UNAVAILABLE")
+		}
 		return
 	}
 	jsonResponse(w, 200, map[string]any{"valid": true, "tenantName": t.Name})
