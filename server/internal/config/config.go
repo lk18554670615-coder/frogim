@@ -34,6 +34,7 @@ type Config struct {
 	AllowedOrigins                                                          []string
 	S3Secure, S3PublicSecure                                                bool
 	DevMode                                                                 bool
+	PlatformAuthentication                                                  bool
 	SeedDemo                                                                bool
 	TrustProxy                                                              bool
 	DevAllowContainerBind                                                   bool
@@ -114,7 +115,7 @@ func (c Config) Validate() error {
 		if c.DevAllowContainerBind || c.DevIPTestOnly {
 			return errors.New("development container and IP-test flags are forbidden in production")
 		}
-		if !strings.HasPrefix(c.OTPWebhookURL, "https://") || len(c.OTPWebhookToken) < 24 {
+		if !c.PlatformAuthentication && (!strings.HasPrefix(c.OTPWebhookURL, "https://") || len(c.OTPWebhookToken) < 24) {
 			return errors.New("production requires an HTTPS OTP webhook and high-entropy token")
 		}
 		switch c.PushProvider {

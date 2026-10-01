@@ -39,7 +39,10 @@ func NewPlatform(ctx context.Context, c config.Config, o Options) (*Platform, er
 	if len(c.JWTSecret) < 32 || c.DatabaseURL == "" || c.AdminUsername == "" || c.AdminPasswordHash == "" {
 		return nil, errors.New("platform requires database, signing secret and administrator")
 	}
-	if !c.DevMode && (!strings.HasPrefix(c.OTPWebhookURL, "https://") || len(c.OTPWebhookToken) < 24) {
+	if o.FixedOTPCode != "" && (c.OTPWebhookURL != "" || c.OTPWebhookToken != "") {
+		return nil, errors.New("fixed verification and SMS must not be enabled together")
+	}
+	if !c.DevMode && o.FixedOTPCode == "" && (!strings.HasPrefix(c.OTPWebhookURL, "https://") || len(c.OTPWebhookToken) < 24) {
 		return nil, errors.New("production platform requires HTTPS SMS provider")
 	}
 	db, e := openPool(ctx, c.DatabaseURL)
@@ -106,7 +109,7 @@ func (p *Platform) Handler() http.Handler {
 	m.HandleFunc("PUT /admin/versions/{id}", p.admin(p.saveVersion, true))
 	if p.o.StaticDir != "" {
 		m.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasPrefix(r.URL.Path, "/v2/") || strings.HasPrefix(r.URL.Path, "/admin/") {
+			if strings.HasPrefix(r.URL.Path, "/v2/") || strings.HasPrefix(r.URL.Path, "/admin/") || strings.HasPrefix(r.URL.Path, "/internal/") || r.URL.Path == "/metrics" {
 				fail(w, 404, "NOT_FOUND")
 				return
 			}
@@ -147,6 +150,7 @@ func (p *Platform) allowed(ctx context.Context, key string, max int) bool {
 }
 
 var phonePattern = regexp.MustCompile(`^[0-9]{11}$`)
+var regexpFixedOTP = regexp.MustCompile(`^[0-9]{6}$`)
 
 func (p *Platform) verifyOTP(ctx context.Context, phone, code, purpose string) bool {
 	if purpose == "login" || purpose == "register" {
@@ -155,8 +159,8 @@ func (p *Platform) verifyOTP(ctx context.Context, phone, code, purpose string) b
 	if !phonePattern.MatchString(phone) || !p.allowed(ctx, "verify:"+phone, 20) {
 		return false
 	}
-	if p.cfg.DevMode {
-		return len(p.cfg.DevOTPCode) > 0 && subtle.ConstantTimeCompare([]byte(code), []byte(p.cfg.DevOTPCode)) == 1
+	if fixed := p.fixedOTP(); fixed != "" {
+		return subtle.ConstantTimeCompare([]byte(code), []byte(fixed)) == 1
 	}
 	var stored string
 	e := p.DB.QueryRow(ctx, `UPDATE lp_otp SET attempts=attempts+1 WHERE phone=$1 AND purpose=$2 AND expires_at>now() AND attempts<5 RETURNING code_hash`, phone, purpose).Scan(&stored)
@@ -191,7 +195,7 @@ func (p *Platform) code(w http.ResponseWriter, r *http.Request) {
 		fail(w, 429, "RATE_LIMITED")
 		return
 	}
-	if !p.cfg.DevMode {
+	if p.fixedOTP() == "" {
 		if !serviceURL(p.cfg.OTPWebhookURL, "http", false) || p.cfg.OTPWebhookToken == "" {
 			fail(w, 503, "SMS_UNAVAILABLE")
 			return
@@ -218,6 +222,15 @@ func (p *Platform) code(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	jsonResponse(w, 200, map[string]any{"sent": true, "retryAfter": 60})
+}
+func (p *Platform) fixedOTP() string {
+	if p.o.FixedOTPCode != "" {
+		return p.o.FixedOTPCode
+	}
+	if p.cfg.DevMode {
+		return p.cfg.DevOTPCode
+	}
+	return ""
 }
 func numericCode() string {
 	n, e := rand.Int(rand.Reader, big.NewInt(1000000))

@@ -21,6 +21,7 @@ import (
 type Options struct {
 	Mode, TenantID, PlatformURL, ControlAddr, Certificate, Key, CA, StaticDir string
 	PublicAPI, PublicMedia                                                    string
+	FixedOTPCode                                                              string
 }
 
 func LoadOptions() Options {
@@ -28,7 +29,7 @@ func LoadOptions() Options {
 	if m == "" {
 		m = "standalone"
 	}
-	return Options{m, os.Getenv("IM_TENANT_ID"), os.Getenv("IM_PLATFORM_URL"), os.Getenv("IM_CONTROL_ADDR"), os.Getenv("IM_CONTROL_CERT"), os.Getenv("IM_CONTROL_KEY"), os.Getenv("IM_CONTROL_CA"), os.Getenv("IM_PLATFORM_STATIC_DIR"), os.Getenv("IM_ENTERPRISE_API_URL"), os.Getenv("IM_ENTERPRISE_MEDIA_URL")}
+	return Options{m, os.Getenv("IM_TENANT_ID"), os.Getenv("IM_PLATFORM_URL"), os.Getenv("IM_CONTROL_ADDR"), os.Getenv("IM_CONTROL_CERT"), os.Getenv("IM_CONTROL_KEY"), os.Getenv("IM_CONTROL_CA"), os.Getenv("IM_PLATFORM_STATIC_DIR"), os.Getenv("IM_ENTERPRISE_API_URL"), os.Getenv("IM_ENTERPRISE_MEDIA_URL"), os.Getenv("IM_PLATFORM_FIXED_OTP_CODE")}
 }
 func (o Options) Validate() error {
 	if o.Mode == "standalone" {
@@ -36,6 +37,9 @@ func (o Options) Validate() error {
 	}
 	if o.Mode != "platform" && o.Mode != "enterprise" {
 		return errors.New("IM_MODE must be standalone, platform or enterprise")
+	}
+	if o.FixedOTPCode != "" && (o.Mode != "platform" || !regexpFixedOTP.MatchString(o.FixedOTPCode)) {
+		return errors.New("fixed OTP requires platform mode and exactly six digits")
 	}
 	if o.ControlAddr == "" || o.Certificate == "" || o.Key == "" || o.CA == "" {
 		return errors.New("tenancy requires a private mTLS listener and certificate, key, CA")

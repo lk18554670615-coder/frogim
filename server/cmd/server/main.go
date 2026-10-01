@@ -36,6 +36,9 @@ func main() {
 		}
 		return
 	}
+	// Enterprise ordinary-user authentication is closed by the API wrapper;
+	// SMS belongs to the platform while all other production checks still apply.
+	cfg.PlatformAuthentication = options.Mode == "enterprise"
 	if err := cfg.Validate(); err != nil {
 		slog.Error("invalid configuration", "error", err)
 		os.Exit(1)

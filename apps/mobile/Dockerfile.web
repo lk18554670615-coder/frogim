@@ -30,6 +30,7 @@ WORKDIR /workspace/apps/mobile
 RUN flutter pub get
 
 ARG WEB_API_BASE_URL
+ARG PLATFORM_BASE_URL
 ARG WEB_BASE_HREF=/web/
 ARG APP_ENV=production
 ARG ENABLE_DEMO=false
@@ -43,6 +44,7 @@ RUN test -n "$WEB_API_BASE_URL" \
       --no-web-resources-cdn \
       --dart-define=APP_ENV="$APP_ENV" \
       --dart-define=API_BASE_URL="$WEB_API_BASE_URL" \
+      --dart-define=PLATFORM_BASE_URL="$PLATFORM_BASE_URL" \
       --dart-define=ENABLE_DEMO="$ENABLE_DEMO" \
       --dart-define=TERMS_URL="$TERMS_URL" \
       --dart-define=PRIVACY_URL="$PRIVACY_URL"

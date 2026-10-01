@@ -55,7 +55,7 @@ func (x *API) enterpriseHandler(next http.Handler) http.Handler {
 			return
 		}
 		if strings.HasPrefix(p, "/v2/auth/") && p != "/v2/auth/enterprise-session" && p != "/v2/auth/logout" && p != "/v2/auth/im-session" && p != "/v2/auth/media-session" {
-			writeError(w, 409, "PLATFORM_AUTH_REQUIRED", "authenticate through the platform")
+			writeError(w, 409, "PLATFORM_AUTH_REQUIRED", "当前客户端需要升级，请先使用网页版："+strings.TrimRight(x.enterprise.PublicAPIBase(), "/")+"/app/")
 			return
 		}
 		// Credentials and global identity cannot be edited in the enterprise console.
