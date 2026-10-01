@@ -20,3 +20,5 @@ HTML 提前加载主脚本和中文字体，主脚本优先；发布包提供 gz
 2026-10-01 后续检查发现性能修复的 Flutter 构建沿用了 pubspec 的 `1.0.12+4016`，而平台 Web 策略最低及最新均为 `1.0.16`。新缓存地址下的 version.json 为 1.0.12，根路径残留 1.0.16，PackageInfo 优先读取 assetBase，导致最新代码也触发强制更新。重新使用显式 `--build-name 1.0.16 --build-number 8023` 构建；平台版本策略保持原值。
 
 打包增加期望版本与构建号校验并记录到清单，Docker 支持独立的 WEB_BUILD_NAME / WEB_BUILD_NUMBER 参数。Web 热更新同步根路径版本文件，并核对运行时版本、根路径版本及平台公开策略一致；新版本不满足策略时撤回本次 Web 更新。只测试打包与版本校验并构建 Web，不重复认证、业务和音视频回归。版本化运行时创建新的资源地址，保留上一包供回退。
+
+北京时间 2026-10-01 17:35:10 完成版本校正发布，代码 `649365a`，资源版本 `bae47298d59bde37`。运行时与根路径版本均为 `1.0.16+8023`，平台公开版本查询返回 forceUpdate=false、updateAvailable=false。业务脚本摘要与上次一致；8 个容器健康且均未重启，readiness 正常，缓存与压缩校验通过。回执 `/data/frogim/releases/light-20261001-c83107e/ops/web-startup-bae47298d59bde37.json`，本机记录 `build/web-version-fix/publish.log`。2 项打包针对性测试及显式版本 Web 构建通过；没有重复线上功能测试。
