@@ -28,3 +28,5 @@ HTML 提前加载主脚本和中文字体，主脚本优先；发布包提供 gz
 2026-10-01 按用户要求：首屏加载中文字体，首帧显示后立即后台下载 Emoji 字体，不等用户打开表情面板。Flutter 引擎会等待 FontManifest 中全部字体，因此只更改预加载标签无效；Web 打包阶段从首屏 FontManifest 排除 NotoColorEmoji，保留完整字体资源、许可、压缩和版本缓存。WebEmojiFont 在首帧结束后让出当前帧，再通过 FontLoader 注册同一 NotoColorEmoji 家族。下载不参与启动等待，失败保持页面可用并在下次前台恢复时重试；重复请求共享同一次加载，成功后不重复下载。原生 FontManifest 与加载行为保持原样。
 
 只验证首帧不被未完成下载阻塞、重复请求、失败重试、原生无额外加载，以及 Web 包首屏清单仅排除 Emoji、资源仍完整可用。内置浏览器控制超时，本轮未获取实际浏览器下载时序或首屏秒数。
+
+北京时间 2026-10-01 完成 Emoji 后台加载发布，代码 `bf3e77b`，资源版本 `67444ea69853fd11`，Web `1.0.16+8024`。3 项后台加载测试、3 项打包测试、受影响 Dart 文件分析及生产 Web 构建通过；真实构建的中文及图标字体路径完整，Emoji 字体与源文件一致且 gzip 可逆。线上首屏 FontManifest 不含 NotoColorEmoji，独立字体资源可用且保持 immutable，版本策略无更新误报。8 个容器健康且没有重启，readiness 正常。服务端回执为 `/data/frogim/releases/light-20261001-c83107e/ops/web-startup-67444ea69853fd11.json`，本机记录 `build/web-emoji-background/publish.log`。内置浏览器控制超时，实际浏览器首帧与字体请求时序仍未测得。
