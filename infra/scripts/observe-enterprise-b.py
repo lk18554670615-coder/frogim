@@ -50,7 +50,7 @@ for name in ['qingwa-backup', 'qingwa-cert-renew']:
 disk = shutil.disk_usage(root)
 data_bytes = int(run(['du', '-sb', str(root / 'data')]).split()[0])
 issues = [service + ' not healthy' for service, value in health.items() if not value['running'] or value['health'] != 'healthy']
-issues += [path + ' unavailable' for path, status in availability.items() if status != '200']
+issues += [path + ' unexpected status' for path, status in availability.items() if status != ('404' if path == '/app/' else '200')]
 issues += [name + ' timer target unavailable' for name, value in timers.items() if value['active'] != 'active' or not value['correctTarget']]
 if database['profileSyncFailures'] or database['incompleteRevocations']:
     issues.append('unfinished sync or revocation requires review')

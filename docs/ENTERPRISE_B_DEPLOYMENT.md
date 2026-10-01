@@ -10,8 +10,8 @@
 企业 PostgreSQL 数据库 enterprise_b，Redis DB0，均使用新的本机数据目录。
 部署不导入 A 或本机业务数据，不接触 `/data/linli-im` 旧数据。
 
-- `https://43.198.32.187/` 跳转 `/app/`。
-- `/app/` 复用正式 Web，认证仍访问 `https://18.163.165.233/platform`。
+- 统一 Web 聊天入口仅为 `https://18.163.165.233/app/`，平台返回当前企业地址，用户直接连接其业务服务。
+- B 的 `/`、`/app`、`/app/*`、`/web`、`/web/*` 返回 404，不跳转至 A；HTTP 和 HTTPS 均关闭聊天入口。
 - `/admin/` 是企业 B 后台；`/v2/`、`/im`、`/livekit/`、媒体入口直连 B。
 - 媒体桶保持 nexachat-media；MinIO 管理及数据库端口不对外映射。
 - 旧 `/rtc` 关闭，内部接口不经公网网关公开。

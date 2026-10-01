@@ -77,6 +77,24 @@ def compose(root, *arguments):
                 '-f', str(root / 'compose.json'), *arguments], diagnostic=root / 'ops/last-error-private.log')
 
 
+def disable_chat_entry(gateway):
+    """Enterprise B serves business/admin only; the shared Web lives on A."""
+    blocked = '''    @disabled_chat path / /app /app/* /web /web/*
+    handle @disabled_chat {
+      header Cache-Control no-store
+      respond "not found" 404
+    }
+'''
+    start = gateway.index('    @root path /')
+    end = gateway.index('    handle /v2/config/version {', start)
+    gateway = gateway[:start] + blocked + gateway[end:]
+    start = gateway.index('    @web_alias path /web /web/*')
+    end = gateway.index('    handle /admin {', start)
+    gateway = gateway[:start] + gateway[end:]
+    # Preserve ACME; HTTP chat links must also be unavailable.
+    return gateway.replace(':80 {\n', ':80 {\n' + blocked, 1)
+
+
 def wait_health(name):
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
@@ -180,7 +198,7 @@ def package_a():
       }
     }
 ''' + gateway[end:]
-    (bundle / 'Caddyfile').write_text(gateway.replace('18.163.165.233/fullchain', '43.198.32.187/fullchain').replace('18.163.165.233/privkey', '43.198.32.187/privkey').replace('default_sni 18.163.165.233', 'default_sni 43.198.32.187').replace('redir https://18.163.165.233{uri}', 'redir https://43.198.32.187{uri}'))
+    (bundle / 'Caddyfile').write_text(disable_chat_entry(gateway.replace('18.163.165.233/fullchain', '43.198.32.187/fullchain').replace('18.163.165.233/privkey', '43.198.32.187/privkey').replace('default_sni 18.163.165.233', 'default_sni 43.198.32.187').replace('redir https://18.163.165.233{uri}', 'redir https://43.198.32.187{uri}')))
     for folder in ['web', 'legal']:
         shutil.copytree(A_ROOT / folder, bundle / folder)
     shutil.copy2(A_ROOT / 'config/certs/ca.pem', bundle / 'ca.pem')
