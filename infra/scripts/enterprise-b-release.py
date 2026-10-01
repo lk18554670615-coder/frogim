@@ -107,7 +107,7 @@ def permissions_b():
 
 
 def firewall(root, own, peer, ports, subnets):
-    """Filter original destination before Docker DNAT; retain unrelated rules."""
+    """Guard DNAT and host-proxy control traffic; retain unrelated rules."""
     lines = ['#!/bin/sh', 'set -eu',
              'iptables -N DOCKER-USER 2>/dev/null || true',
              'iptables -N FROGIM_CONTROL 2>/dev/null || true',
@@ -119,6 +119,10 @@ def firewall(root, own, peer, ports, subnets):
             lines.append(base + f' -s {source} -j ACCEPT')
         lines.append(base + ' -j DROP')
     lines.append('iptables -A FROGIM_CONTROL -j RETURN')
+    # Same-bridge requests to a published host port use Docker's userland
+    # proxy instead of DNAT. They traverse INPUT, not DOCKER-USER, so the
+    # same restricted allowlist must precede UFW's host-input rejection.
+    lines.append('iptables -C INPUT -j FROGIM_CONTROL 2>/dev/null || iptables -I INPUT 1 -j FROGIM_CONTROL')
     script = root / 'ops/control-firewall.sh'
     script.write_text('\n'.join(lines) + '\n')
     script.chmod(0o700)
