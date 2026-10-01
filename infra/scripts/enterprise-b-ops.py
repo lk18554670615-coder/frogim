@@ -5,7 +5,6 @@ import importlib.util
 import json
 import pathlib
 import shutil
-import ssl
 import subprocess
 import sys
 import tarfile
@@ -24,13 +23,6 @@ def http(url, body=None, token='', context=None):
     request = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None, headers=headers)
     with urllib.request.urlopen(request, timeout=20, context=context) as response:
         return json.load(response)
-
-
-def mtls(certs):
-    context = ssl.create_default_context(cafile=str(certs / 'ca.pem'))
-    context.minimum_version = ssl.TLSVersion.TLSv1_3
-    context.load_cert_chain(str(certs / 'cert.pem'), str(certs / 'key.pem'))
-    return context
 
 
 def control(certs, url):
@@ -72,7 +64,7 @@ def issue_or_renew(issue=False):
         r.run(['openssl', 'x509', '-in', str(cert), '-noout', '-checkend', '43200'])
         if not issue:
             for verb in ['validate', 'reload']:
-                r.run(['docker', 'exec', 'frogim-enterprise-b-gateway-1', 'caddy', verb, '--config', '/config/light/Caddyfile', '--adapter', 'caddyfile'])
+                r.run(['docker', 'exec', 'frogim-enterprise-b-gateway-1', 'caddy', verb, *(['--force'] if verb == 'reload' else []), '--config', '/config/light/Caddyfile', '--adapter', 'caddyfile'])
         r.write(root / 'ops/certificate.json', {'at': r.now(), 'sha256': r.sha(cert), 'ip': '43.198.32.187', 'validated': True})
         print('B IP certificate validated' + (' and gateway reloaded' if not issue else ''))
     finally:
@@ -160,7 +152,7 @@ def backup():
                 r.compose(root, 'stop', service)
                 started.append(service)
         with tarfile.open(target / 'data-config.tar.gz', 'w:gz') as archive:
-            for path in ['data/redis', 'data/im', 'data/media', 'data/plugins', 'config', 'compose.json', 'certificates', 'bundle/images.json']:
+            for path in ['data/redis', 'data/im', 'data/media', 'data/plugins', 'config', 'compose.json', 'certificates', 'bundle/images.json', 'bundle/web', 'bundle/legal']:
                 archive.add(root / path, arcname=path)
         r.write(target / 'complete.json', {'at': r.now(), 'files': {p.name: r.sha(p) for p in target.iterdir() if p.is_file()}, 'scope': 'enterprise-b-only'})
     finally:
