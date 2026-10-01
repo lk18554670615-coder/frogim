@@ -49,3 +49,11 @@ python3 tools/package-web-release.py apps/mobile/build/web build/web-release
 本机实际浏览器 `http://127.0.0.1:18780/` 检查了会话列表中文字形及搜索框输入“龘罕见汉字”。首次观察到 10 个中文分片，合计文件大小 310,700 字节，未请求原 8,331,336 字节中文整包；输入生僻字后补载 `.108`、`.80`、`.107`、`.21` 分片。字体资源均为本机同源，字体错误日志为空；没有把资源清单当作完整页面秒数。搜索接口的已有输入格式错误提示与字体检查分开记录，本轮不改搜索业务。
 
 针对性证据：7 项 Python 镜像与打包测试、5 项启动脚本测试、3 项 Emoji 后台加载测试通过，Web release 构建及版本化打包完成。资源版本 `701ee09319e6bfbe`、本机版本 `1.0.17+8025`；`build/web-font-on-demand/browser-evidence.json` 记录资源检查，`build/web-font-on-demand/packaged-web/web-release.json` 记录构建摘要。未执行现网发布或全量回归。
+
+### 正式发布记录
+
+北京时间 2026-10-02 06:42:53 将生产地址构建发布到 233 的 `/app/`：代码 `ec56c4d`，tag `release/web-font-on-demand-20261002`，资源版本 `900ab9f3d697a0b2`，Web `1.0.16+8026`（与现有 Web 版本策略一致，不变更移动端版本）。源代码及 tag 已推送 Gitee、GitHub；生产包不含本机平台地址或测试账号。
+
+服务器重新预检后完成资源摘要校验、上一包及入口配置备份和候选配置验证，再原子替换入口文件并热加载原有静态规则。未重启容器、变更 API 或数据库，也没有重复线上登录或业务测试。8 个容器均健康且启动时间、重启次数未变；`/ready`、`/platform/ready`、`/platform/` 可用。公开 HTML 只预加载主脚本，不预加载中文整包；Web 首屏字体清单无 NotoSansSC、NotoColorEmoji。默认 Latin、常用及生僻中文分片可访问，内容摘要匹配、一年 immutable 缓存与 `304` 校验通过。Web 版本查询无更新误报，B 的 `/app/` 仍返回 404。
+
+主脚本 SHA-256 `d5cc14286b89e5f541e461c8960c49013b8cd381f60d51b95d64e74818995893`；运行时树 SHA-256 `7515a07fd9105441aabc8436663a5ae8ff59a8dd1c899c0de6b9ad8c3d02786c`。本机证据 `build/web-font-publish-20261002/`；服务器回执 `/data/frogim/releases/light-20261001-c83107e/ops/web-startup-900ab9f3d697a0b2.json`，上一包备份 `backups/web-startup-900ab9f3d697a0b2/`，上一运行时目录完整保留。受控回退使用同一预置脚本的 `rollback` 操作并核对没有更新的部署覆盖当前版本。本次发布不启动持续观察。
