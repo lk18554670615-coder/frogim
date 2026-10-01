@@ -41,7 +41,8 @@ Docker-USER 的 FROGIM_CONTROL 按 DNAT 前目的 IP/端口校验来源；允许
 使用 PowerShell 7、严格主机验证 SSH；远端 Python 在 Linux 执行。
 `enterprise-b-release.py` 分阶段 package-a、prepare-b、connect-a。
 `enterprise-b-ops.py` 分阶段 sign-b、issue、init-media、register、enable、backup、restore-check、timers。
-prepare-b 从 stdin 接收后台密码。所有私有错误保存服务端，不打印环境和令牌。
+prepare-b 从 stdin 接收 B 后台密码；register、enable 从 stdin 接收已有平台管理员 JSON 凭据。
+明文输入不保存在服务器配置目录。所有私有错误保存服务端，不打印环境和令牌。
 
 1. A package-a 保存平台数据库、原容器配置、证书、防火墙和定时任务，打包现有不可变镜像、正式 Web 和签名插件。
 2. 通过严格验证的 SSH 将包传到 B，校验摘要后 prepare-b。生产内部凭据全部重新生成；同一 App 的供应商配置复用，实收尚未验收。

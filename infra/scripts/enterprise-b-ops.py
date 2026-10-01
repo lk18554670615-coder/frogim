@@ -88,7 +88,9 @@ def init_media():
 
 
 def admin():
-    credentials = r.read(r.A_ROOT / 'config/operator-input.json')
+    credentials = json.load(sys.stdin)
+    if set(credentials) != {'username', 'password'}:
+        raise RuntimeError('supply administrator credentials on stdin; do not persist plaintext')
     response = http('https://18.163.165.233/platform/admin/auth/login', credentials)
     return response['token']
 
