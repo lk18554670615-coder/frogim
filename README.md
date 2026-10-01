@@ -65,6 +65,85 @@ Android 与 iOS 应用统一使用包名/Bundle ID `top.hongjinghuanqiu.app`，�
 
 ## 生产部署
 
+### 轻量多租户：从源码一键部署
+
+适用于**全新 Linux amd64 / systemd 服务器**。在服务器上拉取源码并构建服务和静态资源，不需要传递镜像包，也不需要在主机安装 Go、Node.js 或 Flutter。以 root 或 `sudo` 运行；Ubuntu、Debian 可按脚本提示安装系统依赖及 Docker，其他 Linux 发行版需预先安装 Docker Engine、Buildx 和 Compose。
+
+#### 1. 准备部署信息
+
+先安装 Git，并准备以下信息。Ubuntu、Debian 尚未安装 Git 时执行：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git
+```
+
+| 信息 | 填写方式 |
+|---|---|
+| 部署模式 | 首台选择“平台＋企业”；新增企业服务器选择“仅企业” |
+| 源码版本 | 默认 `main`，也可指定包含部署脚本的 tag 或提交 |
+| 项目名、部署目录 | 使用独立目录，例如 `/data/frogim/frogim-main`；不接管已有数据目录 |
+| 企业资料 | 企业 ID、具体名称、企业码；例如 `enterprise-a`、客户A企业、`A` |
+| 地址 | 本机公网 HTTPS 地址、私网 IPv4、RTC 公网 IPv4；公网地址不含路径 |
+| 企业后台 | 初始化用户名、密码；密码在交互输入中隐藏 |
+| 推送 | 真实个推 App ID / App Key / MasterSecret，或 HTTPS webhook 及 token |
+| 公网证书 | `acme` 自动申请及联系邮箱，或 `files` 已有完整证书链和私钥路径 |
+| 平台＋企业额外信息 | 平台管理员、验证码策略：六位固定码或短信 HTTPS webhook |
+| 仅企业额外信息 | 已有平台公网地址、私网 IP、管理员，以及平台 SSH 主机、端口、用户、私钥、已核实的 Ed25519 主机指纹和控制 CA 目录 |
+| 控制访问白名单 | 平台及必要企业的私网 IP / CIDR，逗号分隔 |
+
+仅企业模式的平台公网地址填写如 `https://18.163.165.233`，不附加 `/platform`。平台 SSH 用户默认 root，需具有 Docker、CA 签发、iptables 和 systemd 操作权限。本工具建立的控制 CA 位于 `<平台部署目录>/config/ca`；其他已有平台填写其实际 CA 目录。企业私钥在企业服务器生成，只将 CSR 交给平台签发。
+
+提前配置云安全组：公网业务需要 TCP **80、443、5100、7881** 和 UDP **7882–7889**；ACME 申请需要公网 80 可达。控制端口 **8443 / 8444** 仅允许必要私网来源。数据库、Redis、MinIO 管理和 IM 管理端口不开放公网。脚本设置主机控制访问白名单，不自动修改云安全组。
+
+#### 2. 拉取源码并运行
+
+以下命令在目标 Linux 服务器执行：
+
+```bash
+git clone https://gitee.com/fanxinet_fanxinet/newimceshi.git
+cd newimceshi
+sudo bash infra/scripts/deploy-light-tenancy.sh
+```
+
+也可从 GitHub 拉取 `https://github.com/lk18554670615-coder/frogim.git`。按提示输入前一步准备的信息并确认，脚本固定源码提交和构建镜像 ID，完成证书、数据服务、企业登记与启用。企业先登记为停止登录，核对 mTLS 身份、服务地址和 readiness 后才启用。
+
+| 模式 | 容器与数据 | 发布后入口 |
+|---|---|---|
+| 平台＋企业 | 8 个容器；PostgreSQL 一个实例、两个数据库；平台不使用 Redis | `/` 跳转 `/app/`；平台 `/platform/`；企业后台 `/admin/` |
+| 仅企业 | 7 个容器；独立 PostgreSQL、Redis、媒体与 IM 数据 | 企业后台 `/admin/`；`/`、`/app/*`、`/web/*` 返回 404 |
+
+用户统一从平台所在服务器的 `/app/` 登录，后续业务直连所属企业。新增企业不会改变已有用户归属或默认企业。固定验证码作为独立平台配置使用，不开启整套开发模式；管理员密码仅保存哈希。
+
+#### 3. 查看结果与中断续跑
+
+完成后使用交互设置的管理员登录对应后台。企业 readiness 为 `/ready`，平台＋企业模式还提供 `/platform-ready`。固定提交、入口和配置摘要在 `<部署目录>/ops/completed.json`，镜像 ID 在 `ops/images.json`。
+
+中断后使用**原部署目录**继续。以下为默认平台目录示例，企业服务器替换为自己的目录：
+
+```bash
+sudo bash infra/scripts/deploy-light-tenancy.sh --root /data/frogim/frogim-main
+```
+
+续跑保持原源码、配置和密钥，跳过已完成阶段；不会重新注册同一企业。尚未生成密码哈希或需要再次登录平台时会重新询问密码。此工具不用于现网升级、账号迁移或覆盖已有部署。
+
+#### 4. 常用运维操作
+
+```bash
+# 检查入口及容器健康
+sudo python3 /data/frogim/frogim-main/ops/deploy.py --root /data/frogim/frogim-main --operation check
+
+# 执行一次一致性备份，会短暂停止业务写入
+sudo python3 /data/frogim/frogim-main/ops/deploy.py --root /data/frogim/frogim-main --operation backup
+
+# ACME 检查续期；已有文件模式则安装原路径中的新证书并重载网关
+sudo python3 /data/frogim/frogim-main/ops/deploy.py --root /data/frogim/frogim-main --operation renew
+```
+
+脚本设置每日备份，保留最近 7 份完成备份；ACME 每 12 小时检查续期。备份留在服务器，不自动配置异地目标或持续观察。配置和密钥文件仅 root 可访问，不提交到 Git。代理、回执、恢复边界及实际验证范围见[源码部署说明](docs/SOURCE_DEPLOYMENT.md)；首次公网证书申请和跨机 SSH 接入仍需在新环境验收。
+
+### 原单企业部署方式
+
 生产定义默认拒绝弱密钥、示例域名、开发验证码和 `noop`/`log` 推送。Web/API 只有 Caddy 暴露 80/443；LiveKit 按配置暴露 7881/TCP 与 7882–7889/UDP。API、后台、数据库、缓存、对象存储和监控均位于内部网络。
 
 ```bash
@@ -84,6 +163,7 @@ make production-deploy
 - [系统架构](docs/ARCHITECTURE.md)
 - [配置中心](docs/CONFIGURATION.md)
 - [生产部署](docs/DEPLOYMENT.md)
+- [轻量多租户源码部署](docs/SOURCE_DEPLOYMENT.md)
 - [日常运维](docs/OPERATIONS.md)
 - [备份恢复](docs/BACKUP_RESTORE.md)
 - [安全基线](docs/SECURITY.md)
