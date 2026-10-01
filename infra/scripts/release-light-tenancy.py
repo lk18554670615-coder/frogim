@@ -61,7 +61,7 @@ def tool(config,phase,label):
     output=run(['docker','run','--rm','--network','frogim-shared-default_data','--entrypoint','/opt/frogim/light-tenancy-import','-v',str(config)+':/private/import.json:ro',read(ROOT/'ops'/'images.json')['api'],'-config','/private/import.json','-phase',phase])
     data=json.loads(output);write(ROOT/'ops'/(label+'.json'),data);print(label,json.dumps(data),flush=True);return data
 def fingerprints(db):
-    names=['im_users','im_friendships','im_conversations','im_messages','im_members','im_groups','im_media']
+    names=['im_users','im_friendships','im_conversations','im_wukong_message_index','im_members','im_groups','im_media']
     return {name:sql(db,'SELECT count(*)||\'|\'||COALESCE(md5(string_agg(row_to_json(t)::text,\'\' ORDER BY row_to_json(t)::text)),md5(\'\')) FROM '+name+' t') for name in names}
 def wait_health(name):
     end=time.monotonic()+120
