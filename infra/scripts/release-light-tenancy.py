@@ -115,7 +115,6 @@ if args.phase=='prepare':
     password_hash=run(['docker','run','--rm','-i','--entrypoint','/opt/frogim/light-tenancy-import',image,'-hash-password-stdin'],credentials['password'].encode()).decode()
     secret=secrets.token_urlsafe(48)
     platform_env=dict(IM_MODE='platform',IM_ADDR=':8080',IM_ENV='production',IM_DEV_MODE='false',IM_DATABASE_URL=with_db(dburl,TARGET),IM_JWT_SECRET=secret,IM_ADMIN_USERNAME=credentials['username'],IM_ADMIN_PASSWORD_HASH=password_hash,IM_PLATFORM_FIXED_OTP_CODE='123456',IM_ALLOWED_ORIGINS='https://18.163.165.233',IM_PLATFORM_STATIC_DIR='/srv/platform',IM_CONTROL_ADDR=':8443',IM_CONTROL_CA='/certs/ca.pem',IM_CONTROL_CERT='/certs/cert.pem',IM_CONTROL_KEY='/certs/key.pem')
-    write(ROOT/'config'/'credentials.json',credentials)
     common_certs=lambda host:[str(certs/host)+':/certs:ro']
     c['networks']['control']={'internal':True}
     p=copy.deepcopy(c['services']['api']);p.update(image=image,entrypoint=['/opt/frogim/im-server'],environment=platform_env,volumes=common_certs('platform'),networks=['business','control','shared-data'],ports=[]);p.pop('depends_on',None)
@@ -190,6 +189,8 @@ if args.phase=='prepare':
     write(ROOT/'config'/'rehearsal.json',rehearsal)
     os.chown(ROOT/'config'/'rehearsal.json',uid,gid)
     state('prepared')
+    (ROOT/'config'/'operator-input.json').unlink()
+    credentials.clear()
     print('prepared',image,flush=True)
 
 elif args.phase=='rehearse':
