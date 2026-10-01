@@ -1,6 +1,6 @@
 # 平台用户信息完善
 
-2026-10-01 实现完成，本地功能验证通过，尚未发布服务器。1440px / 1024px 实际视觉检查待完成。
+2026-10-01 实现完成，本地功能及 1440px / 1024px 实际视觉验证通过，准备发布服务器。
 
 ## 实现
 
@@ -31,9 +31,9 @@
 
 ## 待完成与发布边界
 
-内置浏览器控制连接超时。通过 computer-use 尝试桌面检查时，工具终止了本轮 Computer Use，原因为 **could not determine the current browser URL on Windows with enough confidence to enforce policy**。没有绕过检查、没有进行隐藏浏览器截图，不能将构建或 DOM 测试记为实际视觉通过。
+前一轮浏览器检查曾被安全检查中止；本轮已通过内置浏览器完成用户列表与资料抽屉在 1440px / 1024px 下的实际检查。筛选栏统一搜索与下拉框的 42px 高度、字体、边框、8px 圆角和焦点样式；宽屏四列，1024px 两列，搜索单独占一行，页面无横向溢出。补齐通用页面 select 样式，避免浏览器默认控件混入平台样式；企业后台不变。页面测试 13 项及平台构建再次通过。
 
-本机预览入口 `http://127.0.0.1:18700/platform/users`。完成 1440px / 1024px 用户列表与资料抽屉的实际视觉检查后，才继续发布。
+视觉证据在 `build/platform-users/filters-1440.jpg`、`filters-1024.jpg`、`profile-1440.jpg`、`profile-1024.jpg`。本机预览入口 `http://127.0.0.1:18700/platform/users`。
 
 服务器已通过严格主机验证 SSH 做只读预检：轻量架构正在运行，平台容器健康；平台后台内置于镜像 `/srv/platform`，不是单独的静态挂载。发布必须同时更新该平台镜像中的 `/opt/frogim/im-server` 和 `/srv/platform`；只重建 platform 服务，保留原镜像及 compose 配置用于回退，不调用整套切换或迁移脚本，不重启企业 API、网关、IM、通话及数据服务。
 
