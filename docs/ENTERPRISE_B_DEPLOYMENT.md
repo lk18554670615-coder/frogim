@@ -93,3 +93,7 @@ Web 企业码 B 注册、消息和上传使用合成账号，不在生产重复�
 ### 同机资料查询修复
 
 用户反馈平台资料抽屉提示企业不可达。针对性诊断确认：主机到 A/B 的 profile-status 均返回 200；使用平台容器的同一网络命名空间、UID、证书和 Go TLS 客户端，访问 B 返回 200，访问同机 A 的主机发布端口超时。Docker NAT 对同一网桥排除 DNAT，改走主机 userland proxy；原控制白名单只挂接 DOCKER-USER，遗漏 INPUT。修复为 INPUT 复用现有受限白名单，不扩大端口或来源，不修改平台接口、企业数据或镜像，不重启业务服务。后续实际检查结果以本机 `build/enterprise-b-release/profile-*` 回执为准；持续观察仍保持停用。
+
+### 统一 Web 入口
+
+北京时间 2026-10-01 21:48 按用户要求仅保留 A 的 `/app/`。变更提交 `cbd8ec7d4a8a953041d9f9f1b79409ce59604c16` 已推送。B 网关配置验证通过后热重载，HTTP/HTTPS 的根路径、`/app` 及其全部资源、`/web` 均返回 404，无重定向；B `/admin/`、`/ready` 和 A `/app/` 返回 200。网关保持健康且未重启，业务服务未变。实际回执为 B `ops/web-entry-disabled/completed.json` 和本机 `build/enterprise-b-release/b-chat-entry-disabled.json`；之前部署回执中的双 Web 入口属于发布时历史状态。观察脚本预期已同步为 B `/app/` 返回 404，自动观察继续停用。Web 文件仅保留为既有发布/备份材料，B 网关不再提供这些文件。
