@@ -13,7 +13,7 @@ ROOT=pathlib.Path(args.root).resolve()
 if ROOT.parent!=pathlib.Path('/data/frogim/releases') or not ROOT.name.startswith('light-'):
     raise SystemExit('release root outside allowed directory')
 os.umask(0o077)
-for folder in ['ops','config','backups','build']: (ROOT/folder).mkdir(parents=True,exist_ok=True)
+for folder in ['ops','config','backups','build','gateway']: (ROOT/folder).mkdir(parents=True,exist_ok=True)
 PG='frogim-shared-default-shared-postgres-1'
 API='frogim-single-api-1'
 GATEWAY='frogim-single-gateway-1'
@@ -97,10 +97,10 @@ if args.phase=='prepare':
     if urllib.parse.urlsplit(dburl).path!='/'+SOURCE:raise RuntimeError('business database changed')
     (ROOT/'backups'/'rehearsal-source.dump').write_bytes(run(['docker','exec',PG,'pg_dump','-U',PGUSER,'-d',SOURCE,'-Fc']))
     print('snapshot bytes', (ROOT/'backups'/'rehearsal-source.dump').stat().st_size,flush=True)
-    certs=ROOT/'config'/'certs';certs.mkdir()
+    certs=ROOT/'config'/'certs';certs.mkdir(exist_ok=True)
     run(['openssl','req','-x509','-newkey','rsa:3072','-nodes','-days','365','-subj','/CN=light-tenancy-control-ca','-keyout',str(certs/'ca.key'),'-out',str(certs/'ca.pem')])
     for host,identity in [('platform','platform'),('api','enterprise-a')]:
-        folder=certs/host;folder.mkdir()
+        folder=certs/host;folder.mkdir(exist_ok=True)
         run(['openssl','req','-newkey','rsa:3072','-nodes','-subj','/CN='+identity,'-keyout',str(folder/'key.pem'),'-out',str(folder/'request.csr')])
         (folder/'extensions').write_text('subjectAltName=DNS:'+host+'\nextendedKeyUsage=serverAuth,clientAuth\n')
         run(['openssl','x509','-req','-days','365','-in',str(folder/'request.csr'),'-CA',str(certs/'ca.pem'),'-CAkey',str(certs/'ca.key'),'-CAcreateserial','-extfile',str(folder/'extensions'),'-out',str(folder/'cert.pem')])
@@ -130,42 +130,56 @@ if args.phase=='prepare':
     write(ROOT/'config'/'import.json',cfg)
     original=pathlib.Path(next(m['Source'] for m in snapshots[GATEWAY]['Mounts'] if m['Destination']=='/config/Caddyfile')).read_text()
     begin=original.index('    @legacy_version ');end=original.index('    @backend ',begin)
-    original=original[:begin]+'''    handle /platform { redir /platform/ 302 }
+    original=original[:begin]+'''    handle /platform {
+      redir /platform/ 302
+    }
     handle /platform/* { reverse_proxy platform:8080 }
     handle /v2/config/version { reverse_proxy platform:8080 }
 '''+original[end:]
     begin=original.index('    @rtc ');end=original.index('    @private ',begin)
     original=original[:begin]+'''    @old_rtc path /rtc /rtc/*
-    handle @old_rtc { respond "not found" 404 }
+    handle @old_rtc {
+      respond "not found" 404
+    }
     @calls path /livekit /livekit/*
-    handle @calls { reverse_proxy api:8080 }
+    handle @calls {
+      reverse_proxy api:8080
+    }
 '''+original[end:]
     # Fixed entry clears attacker-supplied forwarding headers before either API.
     original=original.replace('reverse_proxy platform:8080 }','reverse_proxy platform:8080 {\n      header_up -X-Frogim-*\n      header_up X-Forwarded-For {remote_host}\n      header_up X-Forwarded-Proto https\n    }\n    }')
     original=original.replace('header Content-Type "text/html; charset=utf-8"\n      file_server','header Content-Type "text/html; charset=utf-8"\n      try_files {path} {path}.html\n      file_server')
-    (ROOT/'config'/'Caddyfile.active').write_text(original)
+    (ROOT/'gateway'/'Caddyfile.active').write_text(original)
     route=original.index('  route {');opening=original.index('{',route);depth=1;i=opening+1
     while depth:
         depth+=(original[i]=='{')-(original[i]=='}');i+=1
     maintenance=original[:opening+1]+'\n    header Cache-Control no-store\n    respond "服务升级维护中，请稍后重试" 503\n  '+original[i-1:]
-    (ROOT/'config'/'Caddyfile.maintenance').write_text(maintenance)
-    shutil.copy2(ROOT/'config'/'Caddyfile.active',ROOT/'config'/'Caddyfile')
+    (ROOT/'gateway'/'Caddyfile.maintenance').write_text(maintenance)
+    shutil.copy2(ROOT/'gateway'/'Caddyfile.active',ROOT/'gateway'/'Caddyfile')
     legal_source=next(m['Source'] for m in snapshots[GATEWAY]['Mounts'] if m['Destination']=='/srv/legal')
-    shutil.copytree(legal_source,ROOT/'legal')
+    shutil.copytree(legal_source,ROOT/'legal',dirs_exist_ok=True)
     (ROOT/'legal'/'upgrade.html').write_text('<!doctype html><meta charset="utf-8"><title>客户端升级说明</title><h1>服务已升级为统一平台认证</h1><p>现有账号和历史数据保留，请重新登录。</p><p>本次先开放网页版；Android、iOS 新版本后续提供，旧移动端停止业务访问。</p><p><a href="/app/">打开网页版</a></p>')
     volumes=[v for v in c['services']['gateway']['volumes'] if not v.endswith(':/config/Caddyfile:ro') and not v.endswith(':/config/Caddyfile') and not v.endswith(':/srv/legal:ro')]
-    volumes += [str(ROOT/'config')+':/config/light:ro',str(ROOT/'web')+':/srv/web:ro']
+    volumes += [str(ROOT/'gateway')+':/config/light:ro',str(ROOT/'web')+':/srv/web:ro']
     volumes.append(str(ROOT/'legal')+':/srv/legal:ro')
     c['services']['gateway']['volumes']=volumes
     c['services']['gateway']['entrypoint']=['/usr/bin/caddy','run','--config','/config/light/Caddyfile','--adapter','caddyfile']
     c['services']['gateway']['healthcheck']['test']=['CMD','/usr/bin/caddy','validate','--config','/config/light/Caddyfile','--adapter','caddyfile']
     write(ROOT/'compose.json',escaped(c))
+    os.chmod(ROOT/'gateway',0o755)
+    for path in (ROOT/'gateway').iterdir():os.chmod(path,0o644)
+    uid=int(run(['docker','run','--rm','--entrypoint','id',image,'-u']))
+    gid=int(run(['docker','run','--rm','--entrypoint','id',image,'-g']))
+    for host in ['platform','api']:
+        folder=certs/host;os.chown(folder,uid,gid)
+        for path in folder.iterdir():os.chown(path,uid,gid)
+    os.chown(ROOT/'config'/'import.json',uid,gid)
     compose(ROOT/'compose.json','config','-q')
     for service in ['platform','api']:
         compose(ROOT/'compose.json','run','--rm','--no-deps','--entrypoint','/opt/frogim/light-tenancy-import',service,'-check-config')
     # No active services changed during preparation.
     for file in ['Caddyfile.active','Caddyfile.maintenance']:
-        run(['docker','run','--rm','--entrypoint','/usr/bin/caddy','-v',str(ROOT/'config')+':/config/light:ro','-v','/data/linli-im/shared/letsencrypt:/etc/letsencrypt:ro',gateway_base,'validate','--config','/config/light/'+file,'--adapter','caddyfile'])
+        run(['docker','run','--rm','--entrypoint','/usr/bin/caddy','-v',str(ROOT/'gateway')+':/config/light:ro','-v','/data/linli-im/shared/letsencrypt:/etc/letsencrypt:ro',gateway_base,'validate','--config','/config/light/'+file,'--adapter','caddyfile'])
     for name in [REHEARSAL_SOURCE,REHEARSAL_TARGET]:create_db(name,owner)
     run(['docker','exec','-i',PG,'pg_restore','--exit-on-error','--no-owner','--no-acl','-U',PGUSER,'-d',REHEARSAL_SOURCE],(ROOT/'backups'/'rehearsal-source.dump').read_bytes())
     rehearsal=copy.deepcopy(cfg);rehearsal['sourceDatabaseUrl']=with_db(dburl,REHEARSAL_SOURCE);rehearsal['platformDatabaseUrl']=with_db(dburl,REHEARSAL_TARGET)
@@ -197,7 +211,7 @@ elif args.phase=='freeze':
         if not inspect(name)['State']['Running']:raise RuntimeError('active deployment changed')
     state('freezing')
     # Switch only the entry to maintenance, then stop all business writers.
-    shutil.copy2(ROOT/'config'/'Caddyfile.maintenance',ROOT/'config'/'Caddyfile')
+    shutil.copy2(ROOT/'gateway'/'Caddyfile.maintenance',ROOT/'gateway'/'Caddyfile')
     compose(ROOT/'compose.json','up','-d','--no-deps','gateway')
     compose(ROOT/'ops'/'compose-before.json','stop','api','im','livekit','minio')
     (ROOT/'backups'/'enterprise-final.dump').write_bytes(run(['docker','exec',PG,'pg_dump','-U',PGUSER,'-d',SOURCE,'-Fc']))
@@ -254,7 +268,7 @@ elif args.phase=='open':
     (ROOT/'backups'/'platform-preopen.dump').write_bytes(run(['docker','exec',PG,'pg_dump','-U',PGUSER,'-d',TARGET,'-Fc']))
     state('opening',dict(manifestSHA256=sha(ROOT/'release-manifest.json')))
     sql(TARGET,"BEGIN; UPDATE lp_tenants SET enabled=true WHERE id='enterprise-a' AND NOT enabled; INSERT INTO lp_audit(actor,action,object_id,reason,result) VALUES('admin','release.open','enterprise-a','轻量平台正式开服','success'); COMMIT")
-    shutil.copy2(ROOT/'config'/'Caddyfile.active',ROOT/'config'/'Caddyfile')
+    shutil.copy2(ROOT/'gateway'/'Caddyfile.active',ROOT/'gateway'/'Caddyfile')
     check_gateway();run(['docker','exec',GATEWAY,'caddy','reload','--config','/config/light/Caddyfile','--adapter','caddyfile'])
     old_root=pathlib.Path(read(ROOT/'ops'/'pointer-before.json')['releaseRoot'])
     renewal=(old_root/'renew-certificate.sh').read_text().replace('/config/Caddyfile','/config/light/Caddyfile')
